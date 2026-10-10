@@ -1387,12 +1387,12 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [x] Preserve declared/physical launch ambiguity after cd; test PWD controls.
   - [x] Run focused regressions, source checks and pinned evidence/skill host cases.
   - [x] Record exact results and commit the verified phase (`5e2584f`).
-- [ ] Phase 2: pre-dispatch approval recovery (F12-F13).
+- [x] Phase 2: pre-dispatch approval recovery (F12-F13).
   - [x] Separate recoverable verification failures from invoked-write uncertainty.
   - [x] Separate rejected Safe previews from actual presentation/priority loss.
   - [x] Verify all four no-input recovery triggers and both replacement-Safe orders.
   - [x] Preserve Cancel, real hide, changed identity and single-shot write controls.
-  - [ ] Run source/host verification, record results and commit.
+  - [x] Run source/host verification, record results and commit (`ac5505c`).
 - [ ] Phase 3: root-only presentation (F34).
   - [ ] Reconcile hidden-normal-approval request with governing physical-visibility contract.
   - [ ] Define descendant route readiness, original deadline and negative controls.
@@ -1543,3 +1543,25 @@ explicit request.
   **9 passed**, offline boundaries. No publication performed.
 - Environment: Node **24.21.0**, npm **12.2.0**, OpenCode **1.18.35**. SDK errors and
   model responses are synthetic; no live-provider judgment or physical audio claim.
+
+### Phase 3 gate: F34 awaiting governing-contract reconciliation
+
+- **Expected:** F34 authorizes normal countdowns and approval with the root-only
+  panel intentionally absent on same-root descendant routes, including reports
+  completing while already hidden.
+- **Found:** the active session's governing maintainer instructions require final
+  highlighting and a matching painted frame for normal approval, make genuine
+  visibility loss durable, and name production history as the sole normal-mode
+  physical-cover exception. The source, README and tests implement that contract.
+- **Impact:** implementing F34 as written would change a governing approval guard.
+  Editing the repository's `AGENTS.md` does not itself replace instructions already
+  supplied to this execution session. No hidden-approval bypass was implemented.
+- **Options:** resume F34 in a session whose governing presentation instructions
+  explicitly incorporate the requested same-root exception, or explicitly defer
+  F34 and continue the independent remaining work packages under the current rule.
+  Phase 3 remains unchecked; implementation has stopped at this ordered gate.
+- **Separate Phase 4 dependency:** installed `@opencode-ai/plugin` **1.18.35**
+  `dist/tui.d.ts` exposes neither native permission-stack mounting nor actionable
+  selection control. F33 additionally requires supported upstream host work, not
+  a report-only stack or notification-suppression substitute. No host changes or
+  compatibility claims were made.
