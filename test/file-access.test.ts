@@ -17,7 +17,11 @@ import type { EditContext } from "../src/types.js"
 
 const timing = { totalMs: 80, pathMs: 15, captureMs: 25, concurrency: 2 }
 const limits = { maxFiles: 6, maxEvidenceBytes: 131072 }
-const input = { command: "cat source", cwd: "/virtual", userPrompt: "Inspect source" }
+// Isolate source-capture ownership after the context loader's launch-path probe,
+// as in the production evaluator. Standalone launch probes are tested separately.
+const input = { command: "cat source", cwd: "/virtual", userPrompt: "Inspect source",
+  execution: { tool: "bash" as const, requestedWorkdir: null, instanceDirectory: "/virtual", instanceWorktree: "/virtual",
+    cwdSource: "assistant.path.cwd" as const, canonicalCwd: "/virtual" } }
 const signal = () => new AbortController().signal
 
 test("source parent traversal stays physical even with a lexically normalizing host realpath", async t => {
@@ -79,6 +83,46 @@ function controlledTime(t: TestContext) {
   t.mock.timers.enable({ apis: ["setTimeout"] })
   return { advance(ms: number) { now += ms; t.mock.timers.tick(ms) } }
 }
+
+test("standalone launch-cwd probes preserve direct capture and own timeout/cancellation through settlement", async t => {
+  for (const cancel of [false, true]) await t.test(cancel ? "cancel" : "timeout", async t => {
+    const clock = controlledTime(t), fixture = fakeIO(), entered = deferred<void>(), held = deferred<string>()
+    const probed: string[] = []
+    const files = new FileAccess({ ...fixture.io, realpath: async filename => {
+      probed.push(filename)
+      if (filename === "/virtual") { entered.resolve(); return held.promise }
+      return filename
+    } }, timing)
+    const abort = new AbortController()
+    const pending = collectEvidence({ command: "cat source; cd .. && python decoy.py", cwd: "/virtual", userPrompt: "Inspect" },
+      limits, abort.signal, files.scope(abort.signal))
+    try {
+      await entered.promise
+      assert.equal(files.outstanding, 1)
+      if (cancel) {
+        abort.abort(new Error("launch lookup cancelled"))
+        await assert.rejects(pending, /launch lookup cancelled/)
+        assert.deepEqual(probed, ["/virtual"])
+        assert.ok(!fixture.calls.includes("open"))
+      } else {
+        clock.advance(timing.pathMs)
+        const result = await pending
+        assert.equal(result.files[0]?.contents, "fixture\n")
+        assert.equal(result.files[1]?.contents, undefined)
+        assert.match(result.files[1]!.status, /working directory unresolved/)
+        assert.match(result.limitations.join(" "), /logical PWD/)
+        assert.deepEqual(probed, ["/virtual", "/virtual/source"])
+        assert.equal(fixture.calls.filter(call => call === "open").length, 1)
+      }
+      assert.equal(files.outstanding, 1, "timed-out or cancelled launch lookup retains its actual slot")
+    } finally {
+      held.resolve("/virtual")
+      await pending.catch(() => {})
+      await nextTurn()
+      assert.equal(files.outstanding, 0)
+    }
+  })
+})
 
 test("physical parent probes own late directory descriptors and cleanup after timeout or cancellation", async t => {
   for (const stage of ["open", "descriptor", "close"]) for (const cancel of [false, true]) await t.test(`${stage} ${cancel ? "cancel" : "timeout"}`, async t => {

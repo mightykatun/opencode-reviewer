@@ -7,6 +7,9 @@ const python = /^python(?:[23](?:\.\d+)*)?$/
 const shell = /^(?:ba|da|k|z)?sh$/
 const assignment = /^[A-Za-z_][A-Za-z_0-9]*=/
 export interface Reference { filename: string; cwd: string | null; executable: boolean }
+/** A declared launch path can name the physical directory without establishing
+ * the shell's logical PWD. String callers supply an already-known logical cwd. */
+export interface LaunchCwd { declared: string | null; canonical: string | null }
 
 function literal(word: string) { return !word.includes(VARIABLE) && !word.startsWith("~") }
 function unsupportedWhitespace(char: string) { return /\s/.test(char) && char !== " " && char !== "\t" }
@@ -98,6 +101,9 @@ function unsupportedShellSyntax(command: string, budget: DiscoveryBudget): strin
       i++
       inWord = true
     } else if (quote) { if (char === quote) quote = "" }
+    else if (char === "$" && command[i + 1] === "'") {
+      return "ANSI-C shell quoting is outside byte-faithful literal discovery; script targets were not resolved."
+    }
     else if (char === "'" || char === '"') { quote = char; inWord = true }
     else if (unsupportedWhitespace(char)) return whitespace
     else if (char === "#") {
@@ -127,7 +133,7 @@ class DiscoveryState {
   previousOperator: string | undefined
   conditionalCwd = false
   explicitCdpath = false
-  constructor(public cwd: string | null, readonly depth: number, readonly budget: DiscoveryBudget) {}
+  constructor(public cwd: string | null, readonly depth: number, readonly budget: DiscoveryBudget, readonly logicalCwdKnown: boolean) {}
 
   note(text: string) { this.budget.notice(text); if (!this.limitations.includes(text)) this.limitations.push(text) }
   invalidateCwd(text: string) { this.cwd = null; this.note(text) }
@@ -150,7 +156,7 @@ class DiscoveryState {
   }
   nested(command: string, physical: boolean) {
     if (physical) this.note("Physical shell directory mode is outside literal cwd inference; nested relative script targets are unresolved.")
-    const nested = scan(command, this.explicitCdpath || physical ? null : this.cwd, this.depth + 1, this.budget)
+    const nested = scan(command, this.explicitCdpath || physical ? null : this.cwd, this.depth + 1, this.budget, this.logicalCwdKnown)
     if (nested.references.length) this.qualifySnapshot()
     this.references.push(...nested.references)
     nested.limitations.forEach((text) => this.note(text))
@@ -258,6 +264,8 @@ function builtin(executable: string, args: Words, state: DiscoveryState, next?: 
     const searchesCdpath = target && !path.isAbsolute(target) && !/^\.\.?(?:\/|$)/.test(target)
     if (state.previousOperator === "|" || next === "|") {
       state.invalidateCwd("Pipeline directory changes do not establish a reliable cwd for later script targets.")
+    } else if (!state.logicalCwdKnown) {
+      state.invalidateCwd("Declared and canonical launch directories do not establish the shell's logical PWD; working directory after cd is unresolved and relative script targets will not be guessed.")
     } else if (args.length === 1 && target && !target.startsWith("-") && literal(target) && !state.uncertainWord
       && !(state.explicitCdpath && searchesCdpath) && next === "&&" && state.cwd) {
       state.cwd = path.resolve(state.cwd, target)
@@ -360,6 +368,12 @@ function interpreter(isPython: boolean, args: Words, state: DiscoveryState) {
 }
 
 function visit(args: string[], state: DiscoveryState, next?: string) {
+  // Negation changes pipeline status, not a builtin's in-process effects. Do
+  // not reuse ordinary && success inference or preserve cwd for unknown operands.
+  if (args[0] === "!") {
+    state.invalidateCwd("Shell negation is outside literal state inference; negated source targets and the subsequent working directory are unresolved.")
+    return
+  }
   // `time` is shell syntax and can run builtins in this process. Do not unwrap
   // it as an external launcher or guess the effects of the timed pipeline.
   // Explicit paths and `command time` retain their external-command semantics.
@@ -394,12 +408,14 @@ function visit(args: string[], state: DiscoveryState, next?: string) {
 }
 
 /** Literal discovery only. shell-quote is a tokenizer, not a shell evaluator. */
-export function discover(command: string, cwd: string | null, depth = 0, signal?: AbortSignal): { references: Reference[]; limitations: string[] } {
-  return scan(command, cwd, depth, new DiscoveryBudget(signal))
+export function discover(command: string, cwd: string | null | LaunchCwd, depth = 0, signal?: AbortSignal): { references: Reference[]; limitations: string[] } {
+  const launch = typeof cwd === "string" || cwd === null ? { declared: cwd, canonical: cwd } : cwd
+  return scan(command, launch.declared, depth, new DiscoveryBudget(signal),
+    launch.canonical !== null && launch.declared === launch.canonical)
 }
 
-function scan(command: string, cwd: string | null, depth: number, budget: DiscoveryBudget): { references: Reference[]; limitations: string[] } {
-  const state = new DiscoveryState(cwd, depth, budget)
+function scan(command: string, cwd: string | null, depth: number, budget: DiscoveryBudget, logicalCwdKnown: boolean): { references: Reference[]; limitations: string[] } {
+  const state = new DiscoveryState(cwd, depth, budget, logicalCwdKnown)
   const result = { references: state.references, limitations: state.limitations }
   try {
     budget.admit(command)

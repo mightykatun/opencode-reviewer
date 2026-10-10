@@ -55,6 +55,125 @@ test("quoted skill filenames preserve punctuation rather than capturing prose-cl
   assert.deepEqual(skillReferences("Read notes.md!", signal()).references, ["notes.md"])
 })
 
+test("skill command operands retain whole concatenated and escaped quote identities instead of collecting decoys", async t => {
+  const f = await fixture(t)
+  for (const name of ["check.py", "tool.py", "s.py", 'check.py"']) await writeFile(`${f.base}/${name}`, "UNREFERENCED COMMAND DECOY")
+  const cases = [
+    ['"scripts/"check.py', "scripts/check.py"],
+    ["'scripts/'check.py", "scripts/check.py"],
+    ['scripts/"check".py', "scripts/check.py"],
+    ["'scripts/'\"check\".py", "scripts/check.py"],
+    ['"scripts/check.py"', "scripts/check.py"],
+    ["'scripts/check.py'", "scripts/check.py"],
+    ['"scripts/check tool.py"', "scripts/check tool.py"],
+    [String.raw`scripts/check\ tool.py`, "scripts/check tool.py"],
+    [String.raw`"scripts/check\"tool.py"`, 'scripts/check"tool.py'],
+    [String.raw`scripts/check\"tool.py`, 'scripts/check"tool.py'],
+    [String.raw`'scripts/check'\''s.py'`, "scripts/check's.py"],
+    [String.raw`"scripts/check's.py"`, "scripts/check's.py"],
+  ]
+  const opened: string[] = []
+  const access = new FileAccess({ realpath, open: (async (...args: Parameters<typeof open>) => { opened.push(String(args[0])); return open(...args) }) as typeof open })
+  for (const [operand, target] of cases) {
+    const expected = `ACTUAL SUPPORT: ${target}`
+    await writeFile(`${f.base}/${target}`, expected)
+    f.context.skill.content = `Run \`python ${operand}\`.`
+    opened.length = 0
+    const s = signal(), result = await collectSkillEvidence(f.context, limits, s, access.scope(s))
+    assert.equal(result.skill.content, f.context.skill.content)
+    assert.deepEqual(result.files.map(file => [file.filename, file.status, file.contents]), [[target, "captured", expected]], operand)
+    assert.deepEqual(opened, [`${f.base}/${target}`], operand)
+    assert.equal(result.partial, false, operand)
+    assert.doesNotMatch(JSON.stringify(result), /UNREFERENCED COMMAND DECOY|DISK CONTENT CHANGED/)
+  }
+  assert.deepEqual(skillReferences('Run `./scripts/"check".py --check`.', signal()).references, ["./scripts/check.py"])
+})
+
+test("unsupported skill commands are omitted atomically, including earlier literal operands and fragment decoys", async t => {
+  const f = await fixture(t)
+  await writeFile(`${f.base}/check.py`, "UNREFERENCED COMMAND DECOY")
+  const commands = [
+    'python "scripts/"check.py; cat check.py',
+    'python "scripts/"check.py && cat check.py',
+    'python "scripts/"check.py | cat check.py',
+    'python "scripts/"check.py > check.py',
+    'python "scripts/"check.py # check.py',
+    'python "scripts/"check.py "$ROOT/"check.py',
+    'python "scripts/"check.py $(cat check.py)',
+    'python "scripts/"check.py `cat check.py` --check',
+    'python "scripts/"check.py <(cat check.py)',
+    'python "scripts/"check.py scripts/*.py',
+    'python "scripts/"check.py scripts/[ab].py',
+    'python "scripts/"check.py scripts/{a,b}.py',
+    'python "scripts/"check.py ~/check.py',
+    String.raw`python "scripts/"check.py $'scripts/'check.py`,
+    'python "scripts/"check.py "unclosed check.py',
+    "python scripts/check.py 'unclosed check.py",
+    'python scripts/check.py \\',
+    'python scripts/check.py\ncat check.py',
+    'python scripts/check.py\rcheck.py',
+    'python scripts/check.py\0check.py',
+    'python scripts/check.py\u007fcheck.py',
+  ]
+  const opened: string[] = []
+  const access = new FileAccess({ realpath, open: (async (...args: Parameters<typeof open>) => { opened.push(String(args[0])); return open(...args) }) as typeof open })
+  for (const command of commands) {
+    // Double-backtick Markdown spans also contain literal shell backticks.
+    const text = `Run \`\`${command}\`\`. Read \`docs/context.md\`.`
+    const discovered = skillReferences(text, signal())
+    assert.deepEqual(discovered.references, ["docs/context.md"], command)
+    assert.match(discovered.limitations.join(" "), /Unsupported shell syntax.*whole command was omitted/, command)
+    if (command.includes("\0")) continue // Mandatory catalog instructions reject NUL independently.
+    f.context.skill.content = text
+    opened.length = 0
+    const s = signal(), result = await collectSkillEvidence(f.context, limits, s, access.scope(s))
+    assert.equal(result.skill.content, text)
+    assert.deepEqual(result.files.map(file => file.filename), ["docs/context.md"], command)
+    assert.deepEqual(opened, [`${f.base}/docs/context.md`], command)
+    assert.equal(result.partial, true, command)
+    assert.doesNotMatch(JSON.stringify(result.files), /UNREFERENCED COMMAND DECOY|REVIEW SOURCE ONLY/)
+  }
+})
+
+test("decoded skill command references still obey skill directory confinement", async t => {
+  const f = await fixture(t, 'Run `cat "../"secret.txt`.')
+  const result = await collectSkillEvidence(f.context, limits, signal())
+  assert.deepEqual(result.files.map(file => file.filename), ["../secret.txt"])
+  assert.match(result.files[0]!.status, /outside the skill directory/)
+  assert.equal(result.partial, true)
+  assert.doesNotMatch(JSON.stringify(result), /OUTSIDE CONTENT/)
+})
+
+test("skill command token and argument limits omit the entire command without retaining a literal prefix", t => {
+  t.mock.method(performance, "now", () => 0)
+  const tooMany = skillReferences('`python scripts/check.py ' + "x ".repeat(16384) + '`', signal())
+  assert.deepEqual(tooMany.references, [])
+  assert.match(tooMany.limitations.join(" "), /bounded work limit/)
+  const tooLong = skillReferences('`python scripts/check.py "' + "x".repeat(4097) + '.py"` Read `docs/context.md`.', signal())
+  assert.deepEqual(tooLong.references, ["docs/context.md"])
+  assert.match(tooLong.limitations.join(" "), /argument length limit.*whole command was omitted/)
+})
+
+test("skill command tokenization shares discovery's time budget and propagates mid-scan cancellation", async t => {
+  const text = '`python "scripts/"check.py' + " --flag".repeat(100) + '`'
+  for (const abort of [false, true]) await t.test(abort ? "parent cancellation" : "work deadline", t => {
+    const controller = new AbortController(), reason = Error("stop command discovery")
+    let checks = 0
+    // Allow the enclosing code span scan, then interrupt literal tokenization.
+    t.mock.method(performance, "now", () => {
+      if (++checks <= text.length + 10) return 0
+      if (abort) controller.abort(reason)
+      return abort ? 0 : 251
+    })
+    if (abort) assert.throws(() => skillReferences(text, controller.signal), error => error === reason)
+    else {
+      const result = skillReferences(text, controller.signal)
+      assert.deepEqual(result.references, [])
+      assert.match(result.limitations.join(" "), /bounded work limit/)
+    }
+  })
+})
+
 test("unsupported nested Markdown destinations are omitted whole with a limitation and no fragment decoys", async t => {
   const f = await fixture(t)
   for (const name of [".md", "foo", "bar.md", "foo(bar).md"]) await writeFile(`${f.base}/${name}`, "UNREFERENCED LINK DECOY")

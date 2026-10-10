@@ -92,7 +92,10 @@ export async function collectEvidence(
   if (input.command.length > limits.maxEvidenceBytes) throw new Error("Command exceeds configured evidence budget")
   const commandBytes = Buffer.byteLength(input.command)
   if (commandBytes > limits.maxEvidenceBytes) throw new Error("Command exceeds configured evidence budget")
-  const discovery = discover(input.command, input.cwd, 0, signal)
+  // Context already owns the launch-path probe. Standalone collectors use the
+  // same bounded scope; never replace the declared path with its canonical alias.
+  const canonical = input.execution ? input.execution.canonicalCwd : input.cwd ? (await scope.canonical(input.cwd)).path : null
+  const discovery = discover(input.command, { declared: input.cwd, canonical }, 0, signal)
   const evidence: Evidence = { ...input, kind: "shell", files: [], limitations: [
     ...(input.limitations ?? []),
     "Only literal Python/shell source and supported cat/head file operands are collected. Files are full review-time snapshots, not command output. Imports, dependencies, other runtimes and calls inside source files are not recursively inspected.",

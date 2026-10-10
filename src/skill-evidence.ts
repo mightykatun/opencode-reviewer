@@ -6,6 +6,50 @@ import { FileLimit, omittedFile } from "./files.js"
 import { fileAccess, type FileScope } from "./file-access.js"
 import { reviewStage } from "./deadline.js"
 
+/** Decode only literal shell words, atomically. Adjacent quoted/unquoted pieces
+ * belong to one argument. This never interprets expansions or shell controls. */
+function commandTokens(text: string, check: () => boolean, maxTokens: number) {
+  const parts: string[] = []
+  let value = "", quote = "", active = false
+  const unsupported = { limitation: "Unsupported shell syntax in a skill command was not resolved; the whole command was omitted." }
+  for (let cursor = 0; cursor < text.length; cursor++) {
+    if (!check()) return undefined
+    const char = text[cursor]!
+    if (/[\u0000-\u0008\u000a-\u001f\u007f]/.test(char)) return unsupported
+    if (quote === "'") {
+      if (char === "'") quote = ""
+      else value += char
+    } else if (char === "\\") {
+      const next = text[++cursor]
+      if (next === undefined || /[\u0000-\u001f\u007f]/.test(next)) return unsupported
+      // In double quotes, backslashes before ordinary characters stay literal.
+      value += quote === '"' && !/["\\$`]/.test(next) ? `\\${next}` : next
+      active = true
+    } else if (quote === '"') {
+      if (char === '"') quote = ""
+      else if (char === "$" || char === "`") return unsupported
+      else value += char
+    } else if (char === " " || char === "\t") {
+      if (active) {
+        if (parts.length >= maxTokens) return undefined
+        parts.push(value); value = ""; active = false
+      }
+    } else if (char === "'" || char === '"') {
+      quote = char; active = true
+    } else {
+      if (/[|&;<>()[\]{}$`*?~#]/.test(char) || (char === "!" && !active)) return unsupported
+      value += char; active = true
+    }
+    if (value.length > 4096) return { limitation: "Skill command exceeded the literal argument length limit; the whole command was omitted." }
+  }
+  if (quote) return unsupported
+  if (active) {
+    if (parts.length >= maxTokens) return undefined
+    parts.push(value)
+  }
+  return { parts }
+}
+
 /** Literal references in main instructions only. No directory walks, expansion,
  * execution, external retrieval or recursive reading of supporting files. */
 export function skillReferences(text: string, signal: AbortSignal) {
@@ -68,20 +112,37 @@ export function skillReferences(text: string, signal: AbortSignal) {
     } else if (char === "`" || char === '"' || char === "'") {
       // Apostrophes inside prose words do not begin quoted filenames.
       if (char === "'" && /[\p{L}\p{N}]/u.test(text[cursor - 1] ?? "")) { cursor++; continue }
-      const start = ++cursor
-      while (cursor < text.length && text[cursor] !== char) {
+      const opening = cursor++
+      // Matching Markdown backtick runs keep nested shell backticks inside the
+      // same span, where unsupported substitutions can be omitted as a whole.
+      while (char === "`" && text[cursor] === char) {
         if (!check()) { exhausted = true; break }
         cursor++
       }
+      const width = cursor - opening, start = cursor
+      let close = -1
+      while (cursor < text.length && !exhausted) {
+        if (!check()) { exhausted = true; break }
+        if (text[cursor] !== char) { cursor++; continue }
+        const run = cursor++
+        while (char === "`" && text[cursor] === char) {
+          if (!check()) { exhausted = true; break }
+          cursor++
+        }
+        if (cursor - run === width) { close = run; break }
+      }
       if (exhausted) break
-      if (cursor === text.length) { limitations.add("Unclosed quoted skill reference was not resolved."); break }
-      const quoted = text.slice(start, cursor++)
-      // Split only recognizable inline commands. All their operands are literal
-      // tokens, including trailing punctuation, rather than surrounding prose.
+      if (close === -1) { limitations.add("Unclosed quoted skill reference was not resolved."); break }
+      const quoted = text.slice(start, close)
+      // Validate the entire recognized command before publishing any references;
+      // unsupported syntax must never leave a plausible prefix/suffix file behind.
       const command = char === "`" && /^(?:(?:python(?:\d+(?:\.\d+)*)?|node|bun|deno|bash|sh|zsh|cat|head|source|uv|npx|git)\s|[^\s]+\.(?:py|sh|bash|js|mjs|ts)\s|\.{1,2}\/[^\s]+\s+--)/.test(quoted)
       if (command) {
-        for (const part of quoted.matchAll(/"([^"]+)"|'([^']+)'|[^\s]+/g)) {
-          if (!add(part[1] ?? part[2] ?? part[0], "literal")) { exhausted = true; break }
+        const parsed = commandTokens(quoted, check, 16384 - tokens)
+        if (!parsed) exhausted = true
+        else if ("limitation" in parsed) limitations.add(parsed.limitation)
+        else for (const part of parsed.parts) {
+          if (!add(part, "literal")) { exhausted = true; break }
         }
       } else exhausted = !add(quoted, "literal")
     } else if (/[\s<>()[\]{}]/.test(char)) cursor++

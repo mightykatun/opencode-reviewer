@@ -24,6 +24,11 @@ const actualSource = 'print("ACTUAL_HOST_LAUNCH_SOURCE")\n'
 await writeFile(`${project}/job.py`, actualSource)
 await writeFile(`${outside}/job.py`, 'print("PHYSICAL_SHELL_TARGET_WORKDIR_DECOY")\n')
 await writeFile(`${temp}/job.py`, 'print("TIMED_CD_LEXICAL_DECOY")\n')
+await mkdir(`${project}/sub`)
+await writeFile(`${project}/sub/job.py`, 'print("ACTUAL_NEGATED_CD_SOURCE")\n')
+await writeFile(`${project}/é.py`, 'print("ACTUAL_ANSI_BYTE_SOURCE")\n')
+await writeFile(`${project}/Ã©.py`, 'print("ANSI_BYTE_DECOY")\n')
+await writeFile(`${outside}/deep/direct.py`, 'print("ACTUAL_DIRECT_SYMLINK_SOURCE")\n')
 await symlink(`${skill}/nested/deep`, `${skill}/link`)
 await symlink(`${skill}/SKILL.md`, `${skill}/main-alias.md`)
 await writeFile(`${skill}/nested/SKILL.md`, "ACTUAL_SYMLINK_PARENT_SUPPORT\n")
@@ -33,7 +38,8 @@ await writeFile(`${skill}/.md`, "UNREFERENCED_MARKDOWN_FRAGMENT_DECOY\n")
 await writeFile(`${skill}/foo(bar).md`, "UNSUPPORTED_DESTINATION_MUST_BE_OMITTED\n")
 const supportingSource = `from pathlib import Path\nPath(${JSON.stringify(`${project}/support-executed`)}).write_text("must not execute")\n`
 await writeFile(`${skill}/scripts/check.py`, supportingSource)
-const skillText = "# Evidence fixture\n\nFor the user's fixture inspection, read `notes.md!`, `link/../SKILL.md`, `main-alias.md`, [unsupported](foo(bar).md), and `scripts/check.py`. Do not execute supporting scripts.\n"
+await writeFile(`${skill}/check.py`, "UNREFERENCED_COMMAND_FRAGMENT_DECOY\n")
+const skillText = "# Evidence fixture\n\nFor the user's fixture inspection, read `notes.md!`, `link/../SKILL.md`, `main-alias.md`, [unsupported](foo(bar).md), and inspect the command `python \"scripts/\"check.py`. Do not execute supporting scripts.\n"
 await writeFile(`${skill}/SKILL.md`, "---\nname: evidence-fixture\ndescription: Inspect the isolated evidence fixture\n---\n\n" + skillText)
 const prompts = `${temp}/prompts`
 if (scenario === "prompt-symlink") {
@@ -51,6 +57,9 @@ const operations = [
     `trap 'cd ${outside}' DEBUG; python3 job.py`,
     "time cd link && python3 ../job.py",
   ].map(command => ({ tool: "bash", input: { command, description: "Unmodeled shell cwd evidence" } })),
+  { tool: "bash", input: { command: String.raw`python3 $'\xc3\xa9.py'`, description: "ANSI-C byte identity" } },
+  { tool: "bash", input: { command: "! cd sub; python3 job.py", description: "Negated builtin cwd identity" } },
+  { tool: "bash", input: { command: "printf 'LAUNCH_PWD=%s\\n' \"$PWD\"; python3 direct.py; cd .. && python3 job.py", workdir: `${project}/link`, description: "Symlinked launch and inherited PWD identity" } },
 ]
 const plugin = `${temp}/reviewer.mjs`
 const bundle = `${temp}/bundle.mjs`
@@ -110,10 +119,21 @@ const server = createServer(async (req, res) => {
           assert.equal(evidence.execution.canonicalCwd, project)
           assert.deepEqual(evidence.files.map(file => file.contents), [actualSource])
           assert.equal(evidence.files[0].path, `${project}/job.py`)
+        } else if (index === 7) {
+          assert.deepEqual(evidence.files, [])
+          assert.match(evidence.limitations.join(" "), /ANSI-C shell quoting/)
+        } else if (index === 9) {
+          assert.equal(evidence.cwd, `${project}/link`)
+          assert.equal(evidence.execution.canonicalCwd, `${outside}/deep`)
+          assert.equal(evidence.files.length, 2)
+          assert.equal(evidence.files[0].contents, 'print("ACTUAL_DIRECT_SYMLINK_SOURCE")\n')
+          assert.equal(evidence.files[1].contents, undefined)
+          assert.match(evidence.files[1].status, /working directory unresolved/)
+          assert.match(evidence.limitations.join(" "), /logical PWD/)
         } else {
           assert.ok(evidence.files.length)
           assert.ok(evidence.files.every(file => file.contents === undefined && /working directory unresolved/.test(file.status)))
-          assert.match(evidence.limitations.join(" "), /Physical shell|through trap|Shell timed/)
+          assert.match(evidence.limitations.join(" "), /Physical shell|through trap|Shell timed|Shell negation/)
         }
         assert.doesNotMatch(JSON.stringify(evidence.files), /DECOY/)
       }
@@ -170,10 +190,19 @@ try {
     assert.match(JSON.stringify(outputs.get(0)), /<skill_content/)
     assert.match(JSON.stringify(outputs.get(1)), /ACTUAL_HOST_LAUNCH_SOURCE/)
     assert.doesNotMatch(JSON.stringify(outputs.get(1)), /DECOY/)
-    for (let index = 2; index < operations.length; index++) {
+    for (let index = 2; index < 7; index++) {
       assert.match(JSON.stringify(outputs.get(index)), /PHYSICAL_SHELL_TARGET_WORKDIR_DECOY/)
       assert.doesNotMatch(JSON.stringify(outputs.get(index)), /ACTUAL_HOST_LAUNCH_SOURCE|TIMED_CD_LEXICAL_DECOY/)
     }
+    assert.match(JSON.stringify(outputs.get(7)), /ACTUAL_ANSI_BYTE_SOURCE/)
+    assert.doesNotMatch(JSON.stringify(outputs.get(7)), /ANSI_BYTE_DECOY/)
+    assert.match(JSON.stringify(outputs.get(8)), /ACTUAL_NEGATED_CD_SOURCE/)
+    assert.doesNotMatch(JSON.stringify(outputs.get(8)), /ACTUAL_HOST_LAUNCH_SOURCE/)
+    const launchOutput = JSON.stringify(outputs.get(9))
+    assert.ok(launchOutput.includes(`LAUNCH_PWD=${outside}/deep`), "pinned Bash rejects inherited project PWD for the symlinked launch")
+    assert.match(launchOutput, /ACTUAL_DIRECT_SYMLINK_SOURCE/)
+    assert.match(launchOutput, /PHYSICAL_SHELL_TARGET_WORKDIR_DECOY/)
+    assert.doesNotMatch(launchOutput, /ACTUAL_HOST_LAUNCH_SOURCE/)
     const operationsReviewed = reviews.filter(evidence => evidence.kind !== "external-directory")
     assert.deepEqual(operationsReviewed.map(evidence => evidence.permission.tool.callID), operations.map((_, index) => "w2-" + index))
   }
@@ -181,7 +210,7 @@ try {
   assert.deepEqual(errors, [])
   await writeFile(`${artifacts}/final.txt`, capture())
   await writeFile(`${artifacts}/results.json`, JSON.stringify({ scenario, temp, hostVersion: "1.18.35", operations, reviews, outputs: [...outputs], requests }, null, 2))
-  console.log(`PASS evidence ${scenario}: ${scenario === "capture" ? "native workdir normalization, physical/trap/time omissions, literal skill references and main identity" : "valid prompt symlink rejected, native permission remains manual, no reviewer POST"}; ${artifacts}`)
+  console.log(`PASS evidence ${scenario}: ${scenario === "capture" ? "native workdir/PWD identity, ANSI-C and negation omissions, physical/trap/time omissions, whole skill command operands and main identity" : "valid prompt symlink rejected, native permission remains manual, no reviewer POST"}; ${artifacts}`)
 } catch (error) {
   if (started) await writeFile(`${artifacts}/failed.txt`, capture()).catch(() => {})
   await writeFile(`${artifacts}/failure.json`, JSON.stringify({ temp, error: String(error), stack: error.stack, errors, reviews, outputs: [...outputs], requests }, null, 2))

@@ -128,6 +128,7 @@ export async function loadContext(request: PermissionRequest, reader: ContextRea
     const canonical = await scope.canonical(cwd)
     execution.canonicalCwd = canonical.path
     if (!canonical.path) limitations.push(`Execution directory could not be canonicalized (${canonical.reason}); cwd is the declared launch path, not a verified physical path.`)
+    else if (canonical.path !== cwd) limitations.push("Declared launch directory differs from its canonical path. Inherited shell PWD is unavailable; neither path alone establishes the logical working directory after cd.")
   }
   return {
     ...conversation, kind: "shell", command, cwd, execution,
