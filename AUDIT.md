@@ -1398,14 +1398,14 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [x] Verify all four no-input recovery triggers and both replacement-Safe orders.
   - [x] Preserve Cancel, real hide, changed identity and single-shot write controls.
   - [x] Run source/host verification, record results and commit (`ac5505c`).
-- [ ] Phase 3: root-only presentation (F34).
+- Phase 3: root-only presentation (F34), **deferred by user direction**.
   - [ ] Reconcile hidden-normal-approval request with governing physical-visibility contract.
   - [ ] Define descendant route readiness, original deadline and negative controls.
   - [ ] Implement only after that contract gate is resolved; verify source and real TUI.
 - [ ] Phase 4: painted proof and host presentation (F14-F15,F32).
-  - [ ] Separate pending renewed paint from proven physical loss.
-  - [ ] Preserve a stable live owner across same-session sidebar handoff.
-  - [ ] Validate mouse-disabled readiness and real coverage controls.
+  - [x] Separate pending renewed paint from proven physical loss.
+  - [x] Preserve a stable live owner across same-session sidebar handoff.
+  - [x] Validate mouse-disabled readiness and real coverage controls.
   - F33 cancelled by user direction; native stacking is out of scope.
   - [ ] Verify exact resize/handoff/preemption cases and commit supported changes.
 - [ ] Phase 5: persistence progress (F06-F09).
@@ -1583,3 +1583,53 @@ explicit request.
   session. Resume implementation after the governing session instructions are
   updated to include F34, or obtain direction to continue independent packages
   while F34 stays blocked. Existing verified commits are unchanged.
+
+### Continuation scope
+
+The user subsequently deferred F34 and instructed continuation of the remaining
+fixes. Phase 4 and later packages proceed under the existing physical-presentation
+contract. F33 remains dropped. Neither disposition claims an implemented fix.
+
+### Phase 4 disposition: F14/F15 fixed; F32 measured compatibility limitation
+
+- Controller, geometry and live-panel proof distinguish visible, pending renewed
+  paint and proven loss. Pending paint cannot dispatch or reset the countdown end.
+  `src/review-presentation.ts` tracks public sidebar ownership and keeps review
+  publications out of the Solid ownership observer. Live/history trees survive
+  native wide/overlay owner replacement; no replacement at the real frame proves loss.
+- Deterministic geometry/controller tests cover timer, post-list and deferred-write
+  boundaries, fresh verification after renewed paint, original deadlines, and real
+  loss controls. Client-Solid integration exercises nine actual reactive/SSE cases.
+- A first recovery regression run caught a view-dependent ownership effect treating
+  a retry publication as a frame. It was fixed with ownership-only tracking and
+  untracked callback reads, then passed unchanged real recovery assertions.
+- `npm run check`: **1,081 source checks**, **111 helper tests**, typecheck and build
+  passed. The source count includes one wrapper verifying nine client-Solid tests.
+- Commands below use `node scripts/test-runtime.mjs`; all passed on OpenCode
+  **1.18.35**, Node **24.21.0**, npm **12.2.0**:
+
+  | Arguments | Result under `.runtime/` |
+  | --- | --- |
+  | `smoke-approval-geometry.mjs benign-width` | `runtime-run-JN4cLS/results.json` |
+  | `smoke-approval-geometry.mjs sidebar-handoff-live` | `runtime-run-vsRpgc/results.json` |
+  | `smoke-approval-geometry.mjs sidebar-handoff-history` | `runtime-run-HSS3Uv/results.json` |
+  | `smoke-approval-geometry.mjs resize` | `runtime-run-cVtB3S/results.json` |
+  | `smoke-approval-recovery.mjs correction-after` | `runtime-run-ZuDVUt/results.json` |
+  | `smoke-history-auto.mjs hide` | `runtime-run-8U2iqH/results.json` |
+  | `smoke-history-auto.mjs narrow` | `runtime-run-qz7SY4/results.json` |
+  | `smoke-history-auto.mjs dialog` | `runtime-run-v8yosp/results.json` |
+  | `smoke-history-auto.mjs fullscreen` | `runtime-run-VNpUqi/results.json` |
+  | `smoke-mouse-proof.mjs normal` | `runtime-run-uSWV7h/results.json` |
+  | `smoke-mouse-proof.mjs fast` | `runtime-run-4ehpH3/results.json` |
+
+- Benign-width uses a bounded public frame-callback gate: actual RESIZE, actual
+  countdown callback with pending proof and zero writes, then released real FRAME.
+  Handoff cases retain one live/Markdown/history owner and no missing-report frame,
+  with exactly one once at the original deadline. These are exact cases, not a full matrix.
+- **F32 disposition:** confirmed pinned-host limitation, production change deferred
+  for supported upstream painted-ownership support independent of mouse input.
+  OpenTUI 0.4.5 skips hit-grid population with mouse disabled. Normal final reports
+  and fast previews/finals were visible, but had no owned hits and made zero replies
+  or executions beyond the configured delay. Public dialogs and native fullscreen
+  controls were independently exercised. No geometry-only approval override or
+  forced mouse enablement was introduced.

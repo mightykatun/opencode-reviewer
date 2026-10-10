@@ -11,6 +11,7 @@ import { SCANNER_INTERVAL_MS } from "./appearance.js"
 import { remainingTime, reviewStage } from "./deadline.js"
 import { uiText } from "./ui-text.js"
 import type { HistoryTarget } from "./history-records.js"
+import type { PresentationCheck, PresentationState, ReviewPresentation } from "./review-presentation.js"
 
 export type AutoApproval = { status: "countdown"; seconds: number } | { status: "checking" | "allowing" | "cancelled" | "failed" | "approved" }
 
@@ -42,6 +43,7 @@ interface Entry {
   approvalArmed?: boolean
   /** The revoked reservation still owns its physical verification read. */
   approvalPaused?: boolean
+  approvalPaintPending?: boolean
   fastApproval?: "pending" | "confirmed"
 }
 
@@ -59,6 +61,8 @@ type Options = ReviewOptions & Partial<Pick<Config, "autoApprove" | "fastMode" |
 export interface Approval extends ApprovalTransport {
   /** Recompute actual presentation/order, rather than trusting a stale UI effect. */
   visibleID(): string | undefined
+  /** Distinguish revoked paint from established physical/native-priority loss. */
+  presentation?(check?: PresentationCheck): ReviewPresentation
 }
 
 export type ApprovalFact = { type: "dispatched" | "confirmed" | "settled"; request: PermissionRequest; automatic: boolean;
@@ -168,16 +172,21 @@ export class Controller {
   }
 
   /** Normal mode requires final rendering; fast mode requires physical panel visibility. */
-  presented(id?: string) {
+  presented(value?: string | ReviewPresentation) {
     if (this.stopped) return
+    const proof = typeof value === "string" ? { state: "visible" as const, id: value } : value ?? { state: "lost" as const }
+    const id = proof.state === "lost" ? undefined : proof.id
     if (id !== this.visibleID) {
       const old = this.visibleID
       this.visibleID = id
       if (old) this.cancelAutoApproval(old, "visibility")
     }
     const entry = id ? this.entries.get(id) : undefined
-    if (entry?.approvalArmed && !this.physicallyEligible(entry)) this.cancelAutoApproval(entry.view.request.id, "visibility")
-    if (entry) this.startApproval(entry)
+    if (entry?.approvalArmed && this.physicalState(entry) === "lost") this.cancelAutoApproval(entry.view.request.id, "visibility")
+    if (entry && proof.state === "visible") {
+      this.startApproval(entry)
+      if (entry.view.autoApproval?.status === "countdown" && !entry.cancelTimer && !entry.approvalAbort) this.schedule(entry)
+    }
   }
 
   /** Rating/settlement callbacks are not painted-frame observations. They may
@@ -281,15 +290,17 @@ export class Controller {
       : this.options.fastMode === true && entry.view.status === "analyzing" && entry.view.progress?.preview?.safe === true
   }
 
-  private physicallyEligible(entry: Entry) {
-    return this.active(entry) && !entry.view.resolved && !entry.fastApproval && this.options.autoApprove === true
-      && (!this.modes || (entry.root !== undefined && this.modes.enabled(entry.root)))
-      && this.visibleID === entry.view.request.id
-      && this.approval?.visibleID() === entry.view.request.id
+  private physicalState(entry: Entry, check: PresentationCheck = "eligibility"): PresentationState {
+    if (!this.active(entry) || entry.view.resolved || entry.fastApproval || this.options.autoApprove !== true
+      || (this.modes && (entry.root === undefined || !this.modes.enabled(entry.root)))
+      || this.visibleID !== entry.view.request.id) return "lost"
+    const proof = this.approval?.presentation?.(check)
+    if (proof) return proof.state !== "lost" && proof.id === entry.view.request.id ? proof.state : "lost"
+    return this.approval?.visibleID() === entry.view.request.id ? "visible" : "lost"
   }
 
   private eligible(entry: Entry) {
-    return !this.manual.has(entry.view.request.id) && !entry.approvalPaused && this.safe(entry) && this.physicallyEligible(entry)
+    return !this.manual.has(entry.view.request.id) && !entry.approvalPaused && this.safe(entry) && this.physicalState(entry) === "visible"
   }
 
   /** Rating rejection revokes the reservation, even if Safe returns before its GET.
@@ -315,8 +326,10 @@ export class Controller {
     entry.view = { ...entry.view, autoApproval: entry.approvalRefresh ? { status: "checking" } : undefined }
   }
 
-  private approvalEligible(entry: Entry) {
-    if (!this.physicallyEligible(entry)) this.cancelAutoApproval(entry.view.request.id, "visibility")
+  private approvalEligible(entry: Entry, check: "timer" | "verification" = "verification") {
+    const state = this.physicalState(entry, check)
+    if (state === "lost") this.cancelAutoApproval(entry.view.request.id, "visibility")
+    else if (state === "pending") entry.approvalPaintPending = true
     else if (!this.safe(entry)) this.pauseRating(entry)
     return this.eligible(entry)
   }
@@ -343,7 +356,7 @@ export class Controller {
       try {
         // A later rating clear may already have revoked this recovery, too.
         abort.signal.throwIfAborted()
-        if (!this.physicallyEligible(entry)) { this.cancelAutoApproval(entry.view.request.id, "visibility"); return }
+        if (this.physicalState(entry) === "lost") { this.cancelAutoApproval(entry.view.request.id, "visibility"); return }
         const pending = await withDeadline(AbortSignal.any([entry.abort.signal, abort.signal]), 5000,
           signal => this.approvalList(signal))
         if (!this.active(entry) || this.manual.has(entry.view.request.id)) return
@@ -361,7 +374,7 @@ export class Controller {
   }
 
   private schedule(entry: Entry) {
-    if (!this.active(entry) || entry.view.autoApproval?.status !== "countdown") return
+    if (!this.active(entry) || entry.view.autoApproval?.status !== "countdown" || entry.cancelTimer) return
     const remaining = Math.max(0, entry.deadline! - this.time.now())
     // Wake at the next displayed-second boundary, including the initial grace,
     // rather than letting a fixed one-second polling cadence lag behind it.
@@ -369,13 +382,18 @@ export class Controller {
     entry.cancelTimer = this.time.after(next, () => {
       entry.cancelTimer = undefined
       if (!this.active(entry) || entry.view.autoApproval?.status !== "countdown") return
-      if (!this.eligible(entry)) { this.cancelAutoApproval(entry.view.request.id, "visibility"); return }
+      const visible = this.approvalEligible(entry, "timer")
+      if (this.manual.has(entry.view.request.id)) return
       const seconds = Math.min(this.options.autoApproveDelaySeconds ?? 15,
         Math.max(0, Math.ceil((entry.deadline! - this.time.now()) / 1000)))
-      if (seconds === 0) { void this.approveNow(entry.view.request.id, true); return }
       if (entry.view.autoApproval.seconds !== seconds) {
         entry.view = { ...entry.view, autoApproval: { status: "countdown", seconds } }
         this.publish()
+      }
+      if (seconds === 0) {
+        // No polling loop or grace restart while waiting for renewed paint.
+        if (visible) void this.approveNow(entry.view.request.id, true)
+        return
       }
       this.schedule(entry)
     })
@@ -402,6 +420,7 @@ export class Controller {
     entry.cancelTimer?.()
     entry.cancelTimer = undefined
     const abort = entry.approvalAbort = new AbortController()
+    entry.approvalPaintPending = false
     entry.view = { ...entry.view, autoApproval: { status: "checking" } }
     this.publish()
     let dispatched = false
@@ -532,6 +551,18 @@ export class Controller {
         else if (!entry.approvalRefresh && entry.approvalAbort === abort) entry.approvalAbort = undefined
         // Exhausted churn has already settled its reads, but still needs a poll.
         else if (entry.approvalRefresh && entry.approvalAbort === abort && !this.approvalRead) entry.approvalAbort = undefined
+        if (entry.approvalPaintPending && !entry.approvalAbort && !entry.approvalRefresh && this.active(entry)
+          && !this.manual.has(id) && this.safe(entry)) {
+          entry.approvalPaintPending = false
+          entry.view = { ...entry.view, autoApproval: this.options.fastMode ? undefined : { status: "countdown",
+            seconds: Math.min(this.options.autoApproveDelaySeconds ?? 15, Math.max(0, Math.ceil((entry.deadline! - this.time.now()) / 1000))) } }
+          this.publish()
+          // Only a fresh synchronous proof can resume. Preserve the original end.
+          if (this.eligible(entry)) {
+            if (this.options.fastMode) this.startApproval(entry)
+            else this.schedule(entry)
+          }
+        }
       }
     }
   }

@@ -29,7 +29,8 @@ export const runtimeInventory = {
   "smoke-session-mode.mjs": host(["default"], ["notifications"], { requires: ["linux", "git", "python3", "tmux", "bundle"] }),
   "smoke-skills.mjs": host(["root", "subagent", "subagent-view", "disabled", "unsafe", "fast"], [], { requires: ["linux", "git", "python3", "tmux", "bundle", "node-sqlite"] }),
   "smoke-evidence.mjs": host(["capture", "prompt-symlink"], [], { requires: ["linux", "git", "python3", "bash", "tmux", "bundle"] }),
-  "smoke-approval-geometry.mjs": host(["resize", "initially-short", "history-short"], [], { requires: ["linux", "git", "python3", "tmux", "bundle"] }),
+  "smoke-approval-geometry.mjs": host(["resize", "initially-short", "history-short", "benign-width", "sidebar-handoff-live", "sidebar-handoff-history"], [], { requires: ["linux", "git", "python3", "tmux", "bundle"] }),
+  "smoke-mouse-proof.mjs": host(["normal", "fast"], [], { requires: ["linux", "git", "python3", "tmux", "bundle"] }),
   "smoke-approval-recovery.mjs": host(["read-error", "read-timeout", "correction-after", "correction-before", "transport-after", "transport-before"], [], {
     requires: ["linux", "git", "python3", "tmux", "bundle"] }),
   "smoke-history.mjs": host(["browse", "scroll", "empty-error", "resume", "shared", "delete", "visibility", "disabled-invalid"], [], {

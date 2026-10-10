@@ -11,10 +11,12 @@ import type { HistoryCover } from "./history-cover.js"
 import { ReviewDescription } from "./review-description.js"
 import { ReviewGeometryProof } from "./review-geometry.js"
 import { uiText } from "./ui-text.js"
+import type { PresentationCheck, PresentationState, ReviewPresentation } from "./review-presentation.js"
 
 /** Opt-in observations of real renderables, never a readiness override. */
 export interface HistoryRenderProbeEvent {
-  stage: "render-after" | "frame"
+  stage: "render-after" | "frame" | "presentation"
+  check?: PresentationCheck
   at: number
   panel: number
   markdown?: number
@@ -28,6 +30,7 @@ export interface HistoryRenderProbeEvent {
   covered: boolean
   physical: boolean
   eligible: boolean
+  presentation: PresentationState
   auto?: string
   seconds?: number
   history?: "loading" | "ready" | "error"
@@ -48,15 +51,17 @@ interface LiveReviewPanelProps extends ReviewActions {
   /** Fresh native selection, also called synchronously at the write boundary. */
   select(): View | undefined
   sidebarSession(): string | undefined
+  sidebarState(): PresentationState
+  sidebarOwner(): unknown
   historyState(): HistoryViewState
   historyCover: HistoryCover
   historyProbe?: HistoryRenderProbe
   config?: Pick<Config, "autoApprove" | "fastMode">
   traceFor?: (view: View) => DiagnosticTrace | undefined
   lifetimeText(): string | undefined
-  onPresented(id?: string): void
+  onPresented(proof?: ReviewPresentation): void
   /** Install the synchronous getter and return its identity-guarded release. */
-  registerPresentation(visible: () => string | undefined): () => void
+  registerPresentation(visible: (check?: PresentationCheck) => ReviewPresentation): () => void
 }
 
 function ReviewLoading(props: { api: TuiPluginApi; retrying: boolean }) {
@@ -180,38 +185,44 @@ export function LiveReviewPanel(props: LiveReviewPanelProps) {
       api.renderer.hitTest(panel.x + 2, panel.y + panel.height - 3)])) return true
     try { return !!historyProbe?.cover && ownsPanelProbes(historyProbe.cover()) } catch { return false }
   }
-  const observeRender = (stage: HistoryRenderProbeEvent["stage"], eligible: boolean) => {
+  const observeRender = (stage: HistoryRenderProbeEvent["stage"], eligible: boolean, proof?: PresentationState, check?: PresentationCheck) => {
     if (!historyProbe || !panel) return
     const countCode = (node: Renderable): number => Number(node instanceof CodeRenderable)
       + node.getChildren().reduce((total, child) => total + countCode(child), 0)
     const assessment = view().assessment
     const auto = view().autoApproval
     try {
-      const pending = historyProbe.observe(Object.freeze({ stage, at: performance.now(), panel: panel.num,
+      const pending = historyProbe.observe(Object.freeze({ stage, check, at: performance.now(), panel: panel.num,
         markdown: description?.num, final: !!assessment, streaming: description?.streaming ?? true,
         contentMatches: !!assessment && description?.content === displayText(assessment.desc),
         children: description?.getChildrenCount() ?? 0, codeBlocks: description ? countCode(description) : 0,
         highlighting: !!description && !highlightingComplete(description),
         painted: !!assessment && paintedAssessment === assessment, covered: coveredByProbe(),
-        physical: ownsPanelProbes(panel), eligible, auto: auto?.status,
+        physical: ownsPanelProbes(panel), eligible, presentation: proof ?? presentation().state, auto: auto?.status,
         seconds: auto?.status === "countdown" ? auto.seconds : undefined,
         history: historyState().open ? historyState().status : undefined }))
       if (pending) void Promise.resolve(pending).catch(() => {})
     } catch { /* Fixture observations cannot change approval behavior. */ }
   }
-  const visible = (frame = false) => {
-    if (!props.sidebarSession()) return
-    if (!geometry.visible({ width: api.renderer.width, height: api.renderer.height, fast: config?.fastMode === true,
-      panel, heading, rating: ratingRegion, report: scroll, footer }, frame) || select()?.request.id !== id) return
+  const presentation = (frame = false): ReviewPresentation => {
+    const lost = { state: "lost" } as const
+    const pending = { state: "pending", id } as const
+    if (!props.sidebarSession() || select()?.request.id !== id) return lost
+    const sidebar = props.sidebarState()
+    if (sidebar === "lost") return lost
+    const layout = geometry.state({ width: api.renderer.width, height: api.renderer.height, fast: config?.fastMode === true,
+      owner: props.sidebarOwner(), panel, heading, rating: ratingRegion, report: scroll, footer }, frame)
+    if (layout === "lost") return lost
+    if (sidebar === "pending" || layout === "pending") return pending
     // Fast mode needs the current native blocker physically visible,
     // but never waits for final Markdown or a completed assessment.
-    if (config?.fastMode) return ownsPanelProbes(panel) ? id : undefined
-    if (!paintedAssessment || paintedAssessment !== view().assessment) return
+    if (config?.fastMode) return ownsPanelProbes(panel) ? { state: "visible", id } : lost
+    if (!paintedAssessment || paintedAssessment !== view().assessment) return pending
     // Final Markdown can have measured height while its text
     // is still hidden pending highlighting. Wait for it once;
     // scrolling newly exposed code must not interrupt the countdown.
     if (readyAssessment !== paintedAssessment) {
-      if (!description || description.isDestroyed || !description.getChildrenCount() || !highlightingComplete(description)) return
+      if (!description || description.isDestroyed || !description.getChildrenCount() || !highlightingComplete(description)) return pending
       readyAssessment = paintedAssessment
     }
     // Public hit testing detects native fullscreen portals that cover
@@ -220,16 +231,23 @@ export function LiveReviewPanel(props: LiveReviewPanelProps) {
     // outermost rows left uncovered by native fullscreen. The footer
     // padding also retains its hit target when buttons are replaced
     // by Allowing… before the next frame updates the hit grid.
-    if (!ownsPanelProbes(panel) && !coveredByProbe()) return
-    return id
+    if (!ownsPanelProbes(panel) && !coveredByProbe()) return lost
+    return { state: "visible", id }
   }
-  const releasePresentation = config?.autoApprove ? props.registerPresentation(visible) : undefined
+  const releasePresentation = config?.autoApprove ? props.registerPresentation((check = "eligibility") => {
+    const proof = presentation()
+    observeRender("presentation", proof.state === "visible", proof.state, check)
+    return proof
+  }) : undefined
   if (config?.autoApprove || props.traceFor) {
+    const resize = () => geometry.invalidate()
+    api.renderer.on(CliRenderEvents.RESIZE, resize)
     const frame = () => {
       // Expire the previous hit-grid handoff before proving this
       // frame. Keep the new proof for transitions before next paint.
       historyCover.frame()
-      const presented = visible(true)
+      const proof = presentation(true)
+      const presented = proof.state === "visible"
       const trace = props.traceFor?.(view())
       if (trace) {
         // Preview visibility probes the status row, not an as-yet absent
@@ -244,7 +262,7 @@ export function LiveReviewPanel(props: LiveReviewPanelProps) {
         if (presented && paintedAssessment && paintedAssessment === view().assessment && ownsPanelProbes(panel)) trace.once("final-render")
       }
       if (config?.autoApprove) {
-        props.onPresented(presented)
+        props.onPresented(proof)
         if (presented && view().autoApproval?.status === "countdown") trace?.once("approval-countdown")
       }
       observeRender("frame", !!presented)
@@ -252,6 +270,7 @@ export function LiveReviewPanel(props: LiveReviewPanelProps) {
     api.renderer.on(CliRenderEvents.FRAME, frame)
     onCleanup(() => {
       api.renderer.off(CliRenderEvents.FRAME, frame)
+      api.renderer.off(CliRenderEvents.RESIZE, resize)
       if (config?.autoApprove) {
         releasePresentation!()
         props.onPresented()

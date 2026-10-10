@@ -1,3 +1,5 @@
+import type { PresentationState } from "./review-presentation.js"
+
 /** Layout proof is independent of occlusion and Markdown readiness. A hit on any
  * panel child cannot prove that the approval controls still fit in the viewport. */
 export interface ReviewRegion {
@@ -12,6 +14,7 @@ export interface ReviewRegion {
 
 export interface ReviewLayout {
   width: number; height: number; fast: boolean
+  owner?: unknown
   panel?: ReviewRegion; heading?: ReviewRegion; rating?: ReviewRegion
   report?: ReviewRegion; footer?: ReviewRegion
 }
@@ -43,14 +46,36 @@ export function reviewGeometry(input: ReviewLayout, footerContents = true): bool
  * otherwise zero-sized new children would cancel a valid Checking -> Allowing
  * transition. Viewport/container changes invalidate that proof immediately. */
 export class ReviewGeometryProof {
-  private painted?: { regions: (ReviewRegion | undefined)[]; bounds: number[] }
-  visible(input: ReviewLayout, frame = false): boolean {
+  private painted?: { regions: (ReviewRegion | undefined)[]; bounds: number[]; owner: unknown }
+  private renewed = false
+  invalidate() { this.renewed = true }
+  state(input: ReviewLayout, frame = false): PresentationState {
     const regions = [input.panel, input.heading, input.rating, ...(input.fast ? [] : [input.report, input.footer])]
     const bounds = [input.width, input.height, ...regions.flatMap(region => region
       ? [region.x, region.y, region.width, region.height] : [])]
-    if (frame) this.painted = reviewGeometry(input) ? { regions, bounds } : undefined
-    return reviewGeometry(input, false) && !!this.painted
+    if (frame) {
+      this.painted = reviewGeometry(input) ? { regions, bounds, owner: input.owner } : undefined
+      this.renewed = false
+      return this.painted ? "visible" : "lost"
+    }
+    const same = !this.renewed && !!this.painted && input.owner === this.painted.owner
       && regions.length === this.painted.regions.length && regions.every((region, i) => region === this.painted!.regions[i])
       && bounds.length === this.painted.bounds.length && bounds.every((value, i) => value === this.painted!.bounds[i])
+    if (reviewGeometry(input, false)) return same ? "visible" : "pending"
+    // RESIZE precedes Yoga layout. A right-anchored panel can still have its old
+    // x coordinates during a wide/overlay handoff. Only an otherwise unchanged,
+    // previously painted layout may project horizontally into the new viewport.
+    // This is pending proof, not a usable hit grid. Short/clipped layouts fail.
+    if (this.painted && input.height === this.painted.bounds[1]
+      && regions.every((region, i) => region === this.painted!.regions[i])
+      && bounds.slice(2).every((value, i) => value === this.painted!.bounds[i + 2])) {
+      const dx = input.width - this.painted.bounds[0]!
+      const shift = (region: ReviewRegion | undefined): ReviewRegion | undefined => region && ({ x: region.x + dx,
+        y: region.y, width: region.width, height: region.height, visible: region.visible, isDestroyed: region.isDestroyed })
+      if (reviewGeometry({ ...input, panel: shift(input.panel), heading: shift(input.heading), rating: shift(input.rating),
+        report: shift(input.report), footer: shift(input.footer) }, false)) return "pending"
+    }
+    return "lost"
   }
+  visible(input: ReviewLayout, frame = false): boolean { return this.state(input, frame) === "visible" }
 }

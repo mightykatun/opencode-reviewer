@@ -34,6 +34,7 @@ import { HistoryCover } from "./history-cover.js"
 import type { HistoryTarget } from "./history-records.js"
 import { historyCommands } from "./history-commands.js"
 import { LiveReviewPanel, type HistoryRenderProbe } from "./live-review-panel.js"
+import { observePresentationOwnership, SidebarPresentation, type PresentationCheck, type ReviewPresentation, type PresentationState } from "./review-presentation.js"
 export type { HistoryRenderProbe, HistoryRenderProbeEvent } from "./live-review-panel.js"
 export type { DiagnosticEvent, DiagnosticObserver } from "./diagnostics.js"
 
@@ -100,6 +101,7 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
   const historyStore = new HistoryStore(api.state.path.state)
   const [views, setViews] = createSignal<View[]>([])
   const [sidebar, setSidebar] = createSignal<{ sessionID: string; token: symbol }>()
+  const sidebarProof = new SidebarPresentation()
   const hostTrace = observer ? new DiagnosticTrace(observer, 0) : undefined
   const traces = observer ? new WeakMap<object, DiagnosticTrace>() : undefined
   let reviewSequence = 0
@@ -147,7 +149,7 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
   }
   const files = new FileAccess(fileIO)
   const approval = approvalTransport(api.client, api.state.path.directory)
-  let visibleApproval: () => string | undefined = () => undefined
+  let visibleApproval: (check?: PresentationCheck) => ReviewPresentation = () => ({ state: "lost" })
   const controller: Controller = new Controller(async (request, parent, onIdentified, onProgress, execution = { review: randomUUID() }) => {
     const trace = observer ? new DiagnosticTrace(observer, ++reviewSequence) : undefined
     if (trace) traces!.set(request, trace)
@@ -184,7 +186,8 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
         view ? "approval-verification" : "approval-read", () => approval.list(signal))
     },
     once: (request, signal) => measured(traces?.get(request), "approval-reply", () => approval.once(request, signal)),
-  } : approval), visibleID: () => visibleApproval() }, modes, onApproval: fact => {
+  } : approval), visibleID: () => { const proof = visibleApproval(); return proof.state === "visible" ? proof.id : undefined },
+    presentation: check => visibleApproval(check) }, modes, onApproval: fact => {
     history.approval(fact)
     notifications?.fact(fact)
   }, onLifecycle: history.lifecycle })
@@ -244,10 +247,15 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
       sidebar_content: (_ctx, props) => {
         // Observe the native sidebar's lifetime without changing its contents or
         // visibility settings. A token protects a new mount from stale cleanup.
-        const token = Symbol()
         createEffect(() => {
+          const token = sidebarProof.mount(props.session_id, api.renderer.width)
           setSidebar({ sessionID: props.session_id, token })
-          onCleanup(() => setSidebar((current) => current?.token === token ? undefined : current))
+          onCleanup(() => {
+            const route = api.route.current
+            sidebarProof.unmount(token, route.name === "session" ? route.params?.sessionID as string : undefined,
+              api.renderer.width, api.ui.dialog.open || api.kv.get("sidebar") === "hide")
+            setSidebar((current) => current?.token === token ? undefined : current)
+          })
         })
         return null
       },
@@ -255,7 +263,12 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
         const [width, setWidth] = createSignal(api.renderer.width)
         const resized = () => setWidth(api.renderer.width)
         api.renderer.on(CliRenderEvents.RESIZE, resized)
-        onCleanup(() => api.renderer.off(CliRenderEvents.RESIZE, resized))
+        const sidebarFrame = () => sidebarProof.frame()
+        api.renderer.on(CliRenderEvents.FRAME, sidebarFrame)
+        onCleanup(() => {
+          api.renderer.off(CliRenderEvents.RESIZE, resized)
+          api.renderer.off(CliRenderEvents.FRAME, sidebarFrame)
+        })
         createEffect(() => {
           const route = api.route.current
           notifications?.routeChanged()
@@ -286,23 +299,35 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
           const route = api.route.current
           notifications?.visit(route.name === "session" ? route.params?.sessionID as string | undefined : undefined)
         })
-        const presentationSession = () => {
+        const routeSession = () => {
           const route = api.route.current
           if (api.ui.dialog.open || route.name !== "session") return
           const id = route.params?.sessionID
-          if (typeof id !== "string") return
-          if (sidebar()?.sessionID === id) return id
+          return typeof id === "string" ? id : undefined
+        }
+        const sidebarState = (): PresentationState => {
+          const id = routeSession()
+          if (!id) return "lost"
+          sidebar() // reactive ownership; the synchronous getter reads fresh proof too
+          const state = sidebarProof.state(id)
+          if (state !== "lost") return state
           // The native host omits its sidebar on subagent routes. Provide the
           // same review panel there when the viewport has room for 42 columns.
-          if (id && api.state.session.get(id)?.parentID && width() >= 120 && api.renderer.width >= 120) return id
+          if (api.state.session.get(id)?.parentID && width() >= 120 && api.renderer.width >= 120) return "visible"
+          return "lost"
         }
+        const presentationSession = () => sidebarState() === "visible" ? routeSession() : undefined
         const select = () => {
           const route = api.route.current
           if (api.ui.dialog.open || route.name !== "session") return
           const id = route.params?.sessionID
           return visibleReview(controller.views, typeof id === "string" ? id : undefined, (id) => api.state.session.get(id))
         }
-        const current = createMemo(() => { views(); return presentationSession() ? select() : undefined })
+        // Native sidebar owners are observers, not owners of either report tree.
+        // A synchronous wide/overlay slot gap must not dispose Markdown/scroll.
+        const current = createMemo(() => { views(); return select() })
+        observePresentationOwnership(() => ({ session: routeSession(), owner: sidebar()?.token, state: sidebarState() }),
+          () => visibleApproval(), proof => controller.presented(proof))
         // A stable slot root keeps the host's array normalization from replacing
         // the live sibling when the optional history sibling appears/disappears.
         return (<box position="absolute" top={0} right={0} bottom={0} width={42} zIndex={1}
@@ -313,18 +338,18 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
               const initial = current()!
               const view = () => views().find((item) => item.request.id === id) ?? initial
               return <LiveReviewPanel api={api} id={id} view={view} select={select} config={config}
-                sidebarSession={presentationSession} historyState={historyState} historyCover={historyCover} historyProbe={historyProbe}
+                sidebarSession={routeSession} sidebarState={sidebarState} sidebarOwner={() => sidebar()?.token}
+                historyState={historyState} historyCover={historyCover} historyProbe={historyProbe}
                 traceFor={traces ? view => traces.get(view.request) : undefined} lifetimeText={lifetime.text}
                 onApprove={id => controller.approveNow(id)} onCancel={id => controller.cancelAutoApproval(id)}
                 onPresented={id => controller.presented(id)} registerPresentation={visible => {
                   visibleApproval = visible
-                  return () => { if (visibleApproval === visible) visibleApproval = () => undefined }
+                  return () => { if (visibleApproval === visible) visibleApproval = () => ({ state: "lost" }) }
                 }} />
             }}
           </Show>
-          <Show when={historyState().open && sidebar() && !api.ui.dialog.open && api.route.current.name === "session"
-            && api.route.current.params?.sessionID === sidebar()?.sessionID}>
-            <HistoryView api={api} controller={browser} state={historyState()} input={historyInput} cover={historyCover} session={sidebar()!.sessionID} />
+          <Show when={historyState().open && routeSession()} keyed>
+            {session => <HistoryView api={api} controller={browser} state={historyState()} input={historyInput} cover={historyCover} session={session} />}
           </Show>
         </box>)
       },

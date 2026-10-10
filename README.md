@@ -135,6 +135,9 @@ When browsing a direct subagent, the same front-of-queue review appears in a
 right-hand panel at terminal widths of at least 120 columns. Its auto-approval
 countdown can start there without returning to the parent conversation.
 
+Automatic approval requires mouse tracking for the host's painted-panel ownership
+checks. With mouse tracking disabled, reports remain available for manual review.
+
 Skill-load review is enabled by default; set `skill` permissions to `ask` in
 `opencode.json` to receive reviews. Its prompt requires both bounded risk and clear
 relevance to the current work. A harmless but irrelevant skill is rated Unsafe.
