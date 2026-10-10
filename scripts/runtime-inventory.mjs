@@ -30,6 +30,8 @@ export const runtimeInventory = {
   "smoke-skills.mjs": host(["root", "subagent", "subagent-view", "disabled", "unsafe", "fast"], [], { requires: ["linux", "git", "python3", "tmux", "bundle", "node-sqlite"] }),
   "smoke-evidence.mjs": host(["capture", "prompt-symlink"], [], { requires: ["linux", "git", "python3", "bash", "tmux", "bundle"] }),
   "smoke-approval-geometry.mjs": host(["resize", "initially-short", "history-short"], [], { requires: ["linux", "git", "python3", "tmux", "bundle"] }),
+  "smoke-approval-recovery.mjs": host(["read-error", "read-timeout", "correction-after", "correction-before", "transport-after", "transport-before"], [], {
+    requires: ["linux", "git", "python3", "tmux", "bundle"] }),
   "smoke-history.mjs": host(["browse", "scroll", "empty-error", "resume", "shared", "delete", "visibility", "disabled-invalid"], [], {
     hosts: 2, requires: ["linux", "git", "tmux", "bundle", "source-sqlite"] }),
   "smoke-history-auto.mjs": host(historyCases, [], { alias: { entrypoint: "smoke-history-render.mjs", flags: ["production-history"] },

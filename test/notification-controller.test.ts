@@ -200,3 +200,56 @@ for (const fastMode of [false, true]) test(`${fastMode ? "fast" : "normal"} sust
   assert.equal(writes, 1, "read churn did not install a manual tombstone")
   assert.deepEqual(messages, [])
 })
+
+for (const fastMode of [false, true]) for (const failure of ["GET 503", "GET timeout"] as const) {
+  test(`${fastMode ? "fast" : "normal"} ${failure} remains silent through settlement and bounded reconciliation`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] })
+    let reads = 0, writes = 0, release!: (pending: PermissionRequest[]) => void
+    let recover!: (pending: PermissionRequest[]) => void
+    const first = new Promise<PermissionRequest[]>(resolve => { release = resolve })
+    const recovery = new Promise<PermissionRequest[]>(resolve => { recover = resolve })
+    const messages: NotificationMessage[] = [], facts: ApprovalFact[] = []
+    const target = { root: "root", sessionID: "root", title: "Fixture" }
+    const policy = new NotificationPolicy(parseNotificationConfig({ staleReminderSeconds: 1 }), true, {
+      async show(message) { messages.push(message); return { close() {} } }, dispose() {},
+    })
+    const controller = new Controller(async () => ({ safe: true, desc: "Fixture" }),
+      views => policy.snapshot(views, new Map([["root", { kind: "permission", id: "p" }]])), {
+        reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, fastMode },
+        clock: { now: () => 0, after: () => () => {} }, approval: {
+          visibleID: () => "p",
+          list: () => ++reads === 1 ? failure === "GET 503" ? Promise.reject(Error("503")) : first
+            : reads === 2 ? recovery : Promise.resolve([request]),
+          once: async () => { writes++ },
+        }, onApproval: fact => {
+          facts.push(fact)
+          if (fact.type === "confirmed") policy.approved(fact.request, target)
+        },
+      })
+    t.after(async () => { await controller.dispose(); await policy.dispose() })
+    controller.asked(request); policy.permission(request, target, true)
+    await settle(); controller.presented("p")
+    const operation = controller.approveNow("p", true)
+    await settle()
+    if (failure === "GET timeout") {
+      t.mock.timers.tick(5000); await operation
+      assert.equal(reads, 1)
+      for (let i = 0; i < 20; i++) {
+        controller.reconcile([request], controller.revision); controller.presented("p")
+      }
+      t.mock.timers.tick(10000); await settle()
+      assert.equal(reads, 1); assert.equal(messages.length, 0)
+      release([request]); await settle()
+    }
+    assert.equal(reads, 2); assert.equal(writes, 0)
+    assert.equal(controller.views[0]?.autoApproval?.status, "checking")
+    assert.equal(messages.length, 0, "read-only recovery cannot create an attention episode")
+    recover([structuredClone(request)]); await operation; await settle()
+    controller.presented("p"); await controller.approveNow("p", true); await settle()
+    assert.equal(reads, 3); assert.equal(writes, 1)
+    assert.deepEqual(messages.map(message => message.kind), ["approved"])
+    assert.deepEqual(facts.map(fact => [fact.type, fact.result]), [
+      ["settled", "not-sent"], ["dispatched", undefined], ["confirmed", undefined], ["settled", undefined],
+    ])
+  })
+}

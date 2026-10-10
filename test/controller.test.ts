@@ -926,10 +926,13 @@ for (const stage of ["countdown", "checking", "failed", "allowing"] as const) te
     list: () => {
       reads++
       if (stage === "checking" && reads === 1) return new Promise((yes) => { resolve = yes })
-      if (stage === "failed") return Promise.reject(new Error("failed verification"))
       return Promise.resolve([request("a")])
     },
-    once: () => { writes++; return new Promise((yes) => { finish = yes }) },
+    once: () => {
+      writes++
+      if (stage === "failed") return Promise.reject(new Error("uncertain invoked write"))
+      return new Promise((yes) => { finish = yes })
+    },
   }, modes: gate })
   controller.asked(request("a"))
   await tick()
@@ -948,7 +951,7 @@ for (const stage of ["countdown", "checking", "failed", "allowing"] as const) te
   await tick()
   controller.presented("a")
   await controller.approveNow("a")
-  assert.equal(writes, stage === "allowing" ? 1 : 0)
+  assert.equal(writes, ["failed", "allowing"].includes(stage) ? 1 : 0)
   assert.equal(controller.views[0]?.autoApproval?.status, ["failed", "allowing"].includes(stage) ? "failed" : "cancelled")
   resolve?.([request("a")]); finish?.()
   await approval

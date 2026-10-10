@@ -637,7 +637,10 @@ for (const effect of ["hide", "reply", "delete", "dispose"] as const) test(`sync
 test("five-second verification deadline retains noncooperative list ownership without overlapping recovery", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] })
   const fresh = deferred<PermissionRequest[]>()
-  const f = fixture(t, { transport: { list: () => fresh.promise, once: async () => {} } })
+  const recovery = deferred<PermissionRequest[]>()
+  let reads = 0
+  const f = fixture(t, { transport: { list: () => ++reads === 1 ? fresh.promise
+    : reads === 2 ? recovery.promise : Promise.resolve([request()]), once: async () => {} } })
   await f.add()
   f.present()
   const operation = f.controller.approveNow("b-review")
@@ -648,17 +651,30 @@ test("five-second verification deadline retains noncooperative list ownership wi
   assert.equal(f.reads[0]?.aborted, false)
   t.mock.timers.tick(1)
   await settle()
-  assert.equal(f.view()?.autoApproval?.status, "failed")
+  assert.equal(f.view()?.autoApproval?.status, "checking")
   assert.equal(f.reads[0]?.aborted, true)
   assert.equal(f.reads.length, 1, "a timed-out unsettled read still owns the read slot")
   await operation
-  const publications = f.publications.length
+  const oldRevision = f.controller.revision
+  for (let i = 0; i < 20; i++) {
+    f.controller.reconcile([request()], f.controller.revision); f.present()
+  }
+  assert.equal(reads, 1, "polls and frames cannot release unsettled verification")
   fresh.resolve([request()])
   await settle()
-  assert.equal(f.publications.length, publications)
+  assert.equal(reads, 2, "only actual settlement permits a bounded fresh recovery read")
+  f.controller.reconcile([request()], oldRevision); f.present()
   assert.equal(f.view()?.assessment, safe)
-  assert.equal(f.view()?.autoApproval?.status, "failed")
+  assert.equal(f.view()?.autoApproval?.status, "checking")
   assert.equal(f.writes.length, 0)
+  recovery.resolve([structuredClone(request())]); await settle(); f.present()
+  assert.deepEqual(f.view()?.autoApproval, { status: "countdown", seconds: 15 })
+  f.clock.jump(15199); await settle(); assert.equal(f.writes.length, 0)
+  f.clock.jump(1); await settle()
+  assert.equal(reads, 3); assert.equal(f.writes.length, 1)
+  assert.deepEqual(f.facts.map(fact => [fact.type, fact.result]), [
+    ["settled", "not-sent"], ["dispatched", undefined], ["confirmed", undefined], ["settled", undefined],
+  ])
 })
 
 test("stale-read retry shares the original five-second budget and never overlaps an unsettled read", async t => {
@@ -668,7 +684,7 @@ test("stale-read retry shares the original five-second budget and never overlaps
   const f = fixture(t, { transport: {
     list: async () => {
       maximum = Math.max(maximum, ++active)
-      try { return await (++reads === 1 ? first.promise : second.promise) }
+      try { return await (++reads === 1 ? first.promise : reads === 2 ? second.promise : Promise.resolve([request()])) }
       finally { active-- }
     }, once: async () => {},
   } })
@@ -691,6 +707,38 @@ test("stale-read retry shares the original five-second budget and never overlaps
   second.resolve([request()]); await settle()
   assert.equal(active, 0)
   assert.equal(f.writes.length, 0, "late settlement cannot dispatch")
+  assert.equal(reads, 3, "recovery receives a new read only after actual settlement")
+  f.present(); f.clock.jump(15200); await settle()
+  assert.equal(reads, 4); assert.equal(maximum, 1); assert.equal(f.writes.length, 1)
+})
+
+test("old resolved read-slot timeout recovers the new request only after old I/O settles", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const oldRead = deferred<PermissionRequest[]>()
+  let reads = 0, active = 0, maximum = 0
+  const f = fixture(t, { transport: { list: async () => {
+    maximum = Math.max(maximum, ++active)
+    try { return ++reads === 1 ? await oldRead.promise : [request("c-new")] }
+    finally { active-- }
+  }, once: async () => {} } })
+  await f.add(); f.present()
+  const old = f.controller.approveNow("b-review", true)
+  await settle(); f.controller.replied("b-review"); await old
+  await f.add(request("c-new")); f.present()
+  const next = f.controller.approveNow("c-new", true)
+  await settle(); t.mock.timers.tick(5000); await next
+  assert.equal(reads, 1); assert.equal(f.writes.length, 0)
+  assert.equal(f.view("c-new")?.autoApproval?.status, "checking")
+  for (let i = 0; i < 20; i++) {
+    f.controller.reconcile([request("c-new")], f.controller.revision); f.present()
+  }
+  assert.equal(reads, 1)
+  oldRead.resolve([request()]); await settle()
+  assert.equal(reads, 2); assert.equal(maximum, 1)
+  assert.equal(f.view(), undefined, "late old snapshot cannot resurrect a resolved review")
+  f.present(); f.clock.jump(15200); await settle()
+  assert.equal(reads, 3); assert.equal(maximum, 1)
+  assert.deepEqual(f.writes.map(write => write.request.id), ["c-new"])
 })
 
 for (const outcome of ["resolve", "reject"] as const) test(`canceled verification owns its read across a newer approval until late ${outcome}`, async t => {
@@ -915,17 +963,83 @@ for (const failure of ["HTTP", "network", "unconfirmed acknowledgement", "unknow
   })
 }
 
-test("unknown verification and recovery errors leave the completed review intact and cannot arm another attempt", async (t) => {
+test("unknown verification and recovery errors wait for fresh reconciliation, never frames", async (t) => {
   const f = fixture(t, { transport: { list: async () => { throw undefined }, once: async () => {} } })
   await f.add()
   f.present()
   const before = f.view()!
   await f.controller.approveNow("b-review")
-  assert.deepEqual(f.view(), { ...before, autoApproval: { status: "failed" } })
-  f.present()
-  await f.controller.approveNow("b-review")
+  assert.deepEqual(f.view(), { ...before, autoApproval: { status: "checking" } })
+  for (let i = 0; i < 20; i++) {
+    f.present(); await f.controller.approveNow("b-review")
+  }
   assert.equal(f.reads.length, 2)
   assert.equal(f.writes.length, 0)
+  f.controller.reconcile([request()], f.controller.revision); f.present()
+  assert.equal(f.view()?.autoApproval?.status, "countdown")
+})
+
+test("SDK verification GET 503 recovers with a fresh identical request and exactly one once", async t => {
+  const sdk = sdkTransport((req, index) => index === 0
+    ? Response.json({ name: "Error", data: { message: "PRIVATE" } }, { status: 503 })
+    : Response.json(req.method === "GET" ? [request()] : true))
+  const f = fixture(t, { transport: sdk.transport })
+  await f.add(); f.present(); await f.controller.approveNow("b-review", true)
+  assert.deepEqual(sdk.requests.map(req => req.method), ["GET", "GET"])
+  assert.equal(f.view()?.assessment, safe)
+  assert.equal(f.view()?.autoApproval, undefined)
+  assert.deepEqual(f.facts.map(fact => [fact.type, fact.result]), [["settled", "not-sent"]])
+  f.present(); f.clock.jump(15200); await settle()
+  assert.deepEqual(sdk.requests.map(req => req.method), ["GET", "GET", "GET", "POST"])
+  assert.equal(f.writes.length, 1)
+  assert.equal(JSON.stringify(f.publications).includes("PRIVATE"), false)
+})
+
+for (const effect of ["cancel", "hide", "disable", "changed scope"] as const) {
+  test(`read-only recovery cannot revive ${effect}, even after identical reconciliation returns`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] })
+    const read = deferred<PermissionRequest[]>()
+    const f = fixture(t, { transport: { list: () => read.promise, once: async () => {} } })
+    await f.add(); f.present()
+    const operation = f.controller.approveNow("b-review", true)
+    await settle(); t.mock.timers.tick(5000); await operation
+    if (effect === "cancel") f.controller.cancelAutoApproval("b-review")
+    if (effect === "hide") { f.host.shown = false; f.present() }
+    if (effect === "disable") f.mode(false)
+    if (effect === "changed scope") {
+      const changed = request(); changed.metadata.command = "unreviewed command"
+      f.controller.reconcile([changed], f.controller.revision)
+    }
+    read.resolve([request()]); await settle()
+    f.host.shown = true
+    if (effect === "disable") f.mode(true)
+    f.controller.reconcile([request()], f.controller.revision); await settle()
+    f.present(); f.clock.jump(60000); await settle()
+    assert.equal(f.writes.length, 0); assert.equal(f.reads.length, 1)
+    assert.equal(f.view()?.autoApproval?.status, effect === "changed scope" ? "failed" : "cancelled")
+  })
+}
+
+test("bounded recovery timeout retains its own I/O and requires a post-settlement poll", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const recovery = deferred<PermissionRequest[]>()
+  let reads = 0
+  const f = fixture(t, { transport: { list: () => ++reads === 1 ? Promise.reject(Error("GET 503"))
+    : reads === 2 ? recovery.promise : Promise.resolve([request()]), once: async () => {} } })
+  await f.add(); f.present()
+  const operation = f.controller.approveNow("b-review", true)
+  await settle(); assert.equal(reads, 2)
+  t.mock.timers.tick(5000); await operation
+  const beforeSettlement = f.controller.revision
+  f.controller.reconcile([request()], beforeSettlement); f.present()
+  assert.equal(f.view()?.autoApproval?.status, "checking")
+  recovery.resolve([request()]); await settle()
+  f.controller.reconcile([request()], beforeSettlement); f.present()
+  assert.equal(f.view()?.autoApproval?.status, "checking", "an earlier poll cannot release recovery")
+  for (let i = 0; i < 20; i++) f.present()
+  assert.equal(reads, 2)
+  f.controller.reconcile([request()], f.controller.revision); f.present(); f.clock.jump(15200); await settle()
+  assert.equal(f.writes.length, 1); assert.equal(reads, 3)
 })
 
 test("uncertain acknowledgement reconciles a disappeared permission without retrying once", async (t) => {

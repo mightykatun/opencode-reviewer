@@ -16,9 +16,9 @@
 - **User-requested presentation change:** keep the reviewer side panel visible only
   in the top-level conversation. Navigating into its subagents should hide the
   panel while normal review countdowns and automatic approvals continue (F34).
-- **Implementation status:** findings below are open. This is a fixing plan, not a
-  record of completed fixes. Audit reproductions assert the existing failure; port
-  them into regression tests with the desired behavior before claiming a fix.
+- **Implementation status:** F01-F04 and F12-F13 have post-fix dispositions below;
+  remaining findings are open. Historical audit reproductions assert the original
+  failure; only implementation-disposition results describe verification of fixes.
 - **Repository changes by this review:** this document only. `AUDIT.md` was already
   empty when this handoff was requested. No production fixes have been applied.
 
@@ -1380,18 +1380,18 @@ results above are not post-fix verification. Checkboxes below require new eviden
 
 - [x] Read the full plan and referenced implementation, tests and fixture contracts.
 - [x] Derive work packages and identify public-host and presentation-contract gates.
-- [ ] Phase 1: evidence identity and supported syntax (F01-F04).
+- [x] Phase 1: evidence identity and supported syntax (F01-F04).
   - [x] Reject or faithfully decode ANSI-C byte operands; test Bash byte identity.
   - [x] Handle negation without preserving falsely known cwd; test state changes.
   - [x] Parse whole literal skill-command operands, including concatenated quotes.
   - [x] Preserve declared/physical launch ambiguity after cd; test PWD controls.
   - [x] Run focused regressions, source checks and pinned evidence/skill host cases.
-  - [ ] Record exact results and commit the verified phase.
+  - [x] Record exact results and commit the verified phase (`5e2584f`).
 - [ ] Phase 2: pre-dispatch approval recovery (F12-F13).
-  - [ ] Separate recoverable verification failures from invoked-write uncertainty.
-  - [ ] Separate rejected Safe previews from actual presentation/priority loss.
-  - [ ] Verify all four no-input recovery triggers and both replacement-Safe orders.
-  - [ ] Preserve Cancel, real hide, changed identity and single-shot write controls.
+  - [x] Separate recoverable verification failures from invoked-write uncertainty.
+  - [x] Separate rejected Safe previews from actual presentation/priority loss.
+  - [x] Verify all four no-input recovery triggers and both replacement-Safe orders.
+  - [x] Preserve Cancel, real hide, changed identity and single-shot write controls.
   - [ ] Run source/host verification, record results and commit.
 - [ ] Phase 3: root-only presentation (F34).
   - [ ] Reconcile hidden-normal-approval request with governing physical-visibility contract.
@@ -1485,3 +1485,61 @@ explicit request.
 - Node **24.21.0**, npm **12.2.0**, OpenCode **1.18.35**. No live-model judgment or
   full runtime matrix is claimed. Unsupported syntax is intentionally omitted with
   factual limitations, not evaluated by the production collector.
+
+### Phase 2 disposition: F12-F13 fixed (2026-10-10)
+
+- `src/controller.ts` separates armed automation lifetime, revoked rating
+  reservations, reconciliation waits, durable manual state and actual dispatch.
+  Recoverable pre-dispatch failures retain the physical GET slot until settlement,
+  then use bounded fresh reconciliation. Rearming requires an identical pending
+  request. Repeated frames do not replenish reads; invoked writes never retry.
+- Rejected previews revoke their reservation even when replacement Safe arrives
+  before the old GET settles. Rating/settlement callbacks do not manufacture a
+  hide observation from their own unpainted layout changes. Fresh physical checks
+  remain at verification and write boundaries; actual frame-observed hide, priority
+  loss, Cancel and mode disable remain durable.
+- Final Unsafe/unavailable results clear obsolete checking display immediately,
+  allowing their proper manual notification while retaining unsettled read ownership.
+  Late settlement cannot resurrect automation or replay attention.
+- Regressions in `test/approval.test.ts`, `test/fast-mode.test.ts`,
+  `test/controller.test.ts`, `test/notification-controller.test.ts` and new
+  `test/phase2-reviewer.test.ts` cover all four F12 triggers, both F13 ordering cases,
+  actual SSE retries/corrections, nonstream controls, final Unsafe, uncertainty and
+  notification behavior. The old failed-verification tombstone test now creates an
+  actually invoked uncertain write, preserving its intended no-retry control.
+- New `scripts/smoke-approval-recovery.mjs` uses real native permissions, actual
+  panel proof, SDK result gates, real HTTP/SSE and isolated notification recording.
+  All six cases require zero writes from rejected work, one eventual native once,
+  one execution, zero user input and no false attention. Registered in runtime
+  inventory and the release active-policy sparse checkout.
+- The first real `correction-after` run failed at
+  `.runtime/runtime-run-5HEwev/results.json`: repeated rating clears sampled stale
+  layout between publication and FRAME. This was fixed in the controller, with
+  source regression and successful real-host rerun; fixture assertions were retained.
+- Final `npm run check`: typecheck, **1,058 source tests**, **111 helper tests**,
+  and build passed. Focused eight-file controller/presentation run: **328 passed**.
+- Executed recovery commands (each prefixed by
+  `node scripts/test-runtime.mjs smoke-approval-recovery.mjs`):
+
+  | Scenario | Passing runner result |
+  | --- | --- |
+  | `read-error` | `.runtime/runtime-run-DFG525/results.json` |
+  | `read-timeout` | `.runtime/runtime-run-IqregF/results.json` |
+  | `correction-after` | `.runtime/runtime-run-ahspgy/results.json` |
+  | `correction-before` | `.runtime/runtime-run-FfIBSA/results.json` |
+  | `transport-after` | `.runtime/runtime-run-RSpGu0/results.json` |
+  | `transport-before` | `.runtime/runtime-run-pc5vAW/results.json` |
+
+- `node scripts/test-runtime.mjs smoke-fast-mode.mjs hidden` and `dialog`: passed,
+  results `.runtime/runtime-run-vDZ3G7/results.json` and
+  `.runtime/runtime-run-n056nH/results.json`.
+- `node scripts/test-runtime.mjs smoke-session-mode.mjs`: passed,
+  `.runtime/runtime-run-FnrpZj/results.json`.
+- `node scripts/test-runtime.mjs --profile ci`: all **7 exact cases passed**,
+  `.runtime/runtime-run-PRXt2g/results.json`.
+- `npm run check:package`: two reproducible builds and exact five-file archive
+  passed, SHA-256 `8e4ad5b592d7e2e2034698d30418ee76b51c137365ecddda0e660d8c24eaedf8`.
+- `node --test test/release-artifact-smoke.test.mjs test/npm-cli-smoke.test.mjs`:
+  **9 passed**, offline boundaries. No publication performed.
+- Environment: Node **24.21.0**, npm **12.2.0**, OpenCode **1.18.35**. SDK errors and
+  model responses are synthetic; no live-provider judgment or physical audio claim.
