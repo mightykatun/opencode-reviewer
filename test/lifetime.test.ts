@@ -48,3 +48,19 @@ test("invalid aggregate components and overflow fail explicitly", () => {
   assert.throws(() => add({ ...original, safe: Number.MAX_SAFE_INTEGER }, original))
   assert.equal(validate(original), original)
 })
+
+test("statistics abbreviate token counts without rounding up or changing recorded totals", () => {
+  for (const [input, output, expected] of [
+    [544897, 111913, "544k in 111k out"],
+    [2300, 999, "2.3k in 999 out"],
+    [1000, 0, "1k in 0 out"],
+    [999999, 1000000, "999k in 1M out"],
+    [2300000, 12999, "2.3M in 12.9k out"],
+    [2300000000, 2300000000000, "2.3B in 2.3T out"],
+    [Number.MAX_SAFE_INTEGER, 1000000000000000, "9Q in 1Q out"],
+  ] as const) {
+    const totals = { ...empty(), requests: 1, tokenRequests: 1, input, output, since: 1 }
+    assert.ok(lifetimeReport(totals).split("\n").includes(`Tokens: ${expected}`))
+    assert.equal(totals.input, input); assert.equal(totals.output, output)
+  }
+})

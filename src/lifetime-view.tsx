@@ -1,4 +1,5 @@
-import { createSignal, onCleanup } from "solid-js"
+import { createSignal, For, onCleanup } from "solid-js"
+import { RGBA } from "@opentui/core"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { lifetimeCost, lifetimeReport } from "./lifetime.js"
 import { StatisticsController, type StatisticsState } from "./statistics-controller.js"
@@ -36,6 +37,13 @@ export function lifetimeTracker(api: TuiPluginApi, store: Pick<HistoryStore, "qu
 }
 
 function StatisticsDialog(props: { api: TuiPluginApi; controller: StatisticsController; state: StatisticsState; token: number }) {
+  const [hover, setHover] = createSignal<StatisticsState["view"]>()
+  const selectedForeground = () => {
+    const theme = props.api.theme.current
+    if (theme.selectedListItemText.a !== 0) return theme.selectedListItemText
+    const { r, g, b } = theme.accent
+    return 0.299 * r + 0.587 * g + 0.114 * b > 0.5 ? RGBA.fromInts(0, 0, 0) : RGBA.fromInts(255, 255, 255)
+  }
   const depth = props.api.ui.dialog.depth
   const toggle = () => props.controller.select(props.state.view === "lifetime" ? "conversation" : "lifetime")
   const unregister = props.api.keymap.registerLayer({ priority: 110, mode: "modal",
@@ -57,11 +65,20 @@ function StatisticsDialog(props: { api: TuiPluginApi; controller: StatisticsCont
         <text fg={props.api.theme.current.text}><b>{uiText.lifetime.title}</b></text>
         <text fg={props.api.theme.current.textMuted} onMouseUp={() => props.api.ui.dialog.clear()}>{uiText.lifetime.close}</text>
       </box>
-      <box flexDirection="row" gap={3}>
-        <text fg={props.state.view === "conversation" ? props.api.theme.current.accent : props.api.theme.current.textMuted}
-          onMouseUp={() => props.controller.select("conversation")}>{uiText.lifetime.scopeTab("conversation", props.state.view === "conversation")}</text>
-        <text fg={props.state.view === "lifetime" ? props.api.theme.current.accent : props.api.theme.current.textMuted}
-          onMouseUp={() => props.controller.select("lifetime")}>{uiText.lifetime.scopeTab("lifetime", props.state.view === "lifetime")}</text>
+      <box flexDirection="row" gap={1}>
+        <For each={["conversation", "lifetime"] as const}>{scope => {
+          const active = () => props.state.view === scope
+          return <box paddingLeft={1} paddingRight={1}
+            backgroundColor={active() ? props.api.theme.current.accent
+              : hover() === scope ? props.api.theme.current.backgroundElement : props.api.theme.current.backgroundPanel}
+            onMouseOver={() => setHover(scope)} onMouseOut={() => setHover(undefined)}
+            onMouseUp={event => {
+              if (event.button !== 0 || props.api.renderer.getSelection()?.getSelectedText()) return
+              props.controller.select(scope)
+            }}>
+            <text fg={active() ? selectedForeground() : props.api.theme.current.textMuted}>{uiText.lifetime.scopeTab(scope)}</text>
+          </box>
+        }}</For>
       </box>
       <text fg={props.api.theme.current.text}>{message()}</text>
       <text fg={props.api.theme.current.textMuted}>{uiText.lifetime.switchScope}</text>

@@ -13,7 +13,7 @@ import { tsImport } from "tsx/esm/api"
 import { smokeRuntime } from "./smoke-runtime.mjs"
 import { runtimeArguments } from "./runtime-inventory.mjs"
 import { readObservation, publishObservation } from "./smoke-observations.mjs"
-import { activatePalette } from "./smoke-ui.mjs"
+import { activatePalette, renditionRows } from "./smoke-ui.mjs"
 
 runtimeArguments("smoke-statistics.mjs")
 
@@ -92,6 +92,11 @@ const server = createServer(async (req, res) => {
 })
 const send = (...keys) => runtime.tmux("send-keys", "-t", "statistics", ...keys)
 const capture = () => runtime.tmux("capture-pane", "-p", "-t", "statistics")
+const selectedScope = scope => renditionRows(runtime.tmux("capture-pane", "-p", "-e", "-t", "statistics")).some(row => {
+  const at = row.text.indexOf(scope)
+  return row.text.includes("Conversation") && row.text.includes("Lifetime") && at >= 0
+    && row.backgrounds.slice(at - 1, at + scope.length + 1).every(color => color === "157,124,216")
+})
 const until = async (check, timeout = 20000) => {
   const end = Date.now() + timeout
   while (Date.now() < end) { if (await check(capture())) return; await sleep(100) }
@@ -99,22 +104,22 @@ const until = async (check, timeout = 20000) => {
 }
 const save = name => writeFile(path.join(artifacts, `${name}.txt`), capture())
 const palette = async title => {
-  const postcondition = title === "Reviewer: Statistics" ? s => s.includes("Reviewer statistics") && s.includes("[Lifetime]")
+  const postcondition = title === "Reviewer: Statistics" ? s => s.includes("Reviewer statistics") && selectedScope("Lifetime")
     : title === "Reviewer: Report history" ? s => s.includes("Analysis history")
     : title === "Reviewer: Disable for conversation" ? s => s.includes("Reviewer disabled for this conversation.")
     : title === "Fixture: Prepare statistics" ? async () => !!(await readObservation(info, { optional: true }))?.deep
     : async () => (await readObservation(info)).route === ids[title.slice("Fixture: ".length)]
   await activatePalette({ send, capture: () => runtime.tmux("capture-pane", "-p", "-e", "-t", "statistics") }, title, postcondition)
 }
-const open = async () => { await palette("Reviewer: Statistics"); await until(s => s.includes("Reviewer statistics") && s.includes("[Lifetime]")) }
+const open = async () => { await palette("Reviewer: Statistics"); await until(s => s.includes("Reviewer statistics") && selectedScope("Lifetime")) }
 const close = async () => { send("Escape"); await until(s => !s.includes("Reviewer statistics")) }
 const check = async (lines, scope) => {
-  await until(s => s.includes(`[${scope}]`) && lines.every(line => s.includes(line)))
-  assert.doesNotMatch(capture(), /Recorded Reviewer activity|Partial history:|\(partial history\)|before history tracking/)
+  await until(s => selectedScope(scope) && lines.every(line => s.includes(line)))
+  assert.doesNotMatch(capture(), /\[Conversation\]|\[Lifetime\]|Recorded Reviewer activity|Partial history:|\(partial history\)|before history tracking/)
 }
-const rootLines = ["Reviews: 3", "Retries: 3", "Tokens: 1260 in 90 out", "Cost: $0.0900", "Safe: 2 (66.7%)", "Unsafe: 1 (33.3%)",
+const rootLines = ["Reviews: 3", "Retries: 3", "Tokens: 1.2k in 90 out", "Cost: $0.0900", "Safe: 2 (66.7%)", "Unsafe: 1 (33.3%)",
   "Auto-approved: 2 (66.7%)", "Average time to full report: 0.20s", "Average time to rating: 0.10s"]
-const lifetimeLines = ["Reviews: 4", "Retries: 4", "Tokens: 3280 in 120 out", "Cost: $0.1200", "Safe: 3 (75.0%)", "Unsafe: 1 (25.0%)",
+const lifetimeLines = ["Reviews: 4", "Retries: 4", "Tokens: 3.2k in 120 out", "Cost: $0.1200", "Safe: 3 (75.0%)", "Unsafe: 1 (25.0%)",
   "Auto-approved: 3 (75.0%)", "Average time to full report: 0.40s", "Average time to rating: 0.20s"]
 const seed = (session, owner, n, safe) => {
   const context = { scope: project, root: owner, session, review: `r-${n}`, permission: `p-${n}`, category: "bash",
@@ -150,7 +155,7 @@ try {
   await open(); await check(lifetimeLines, "Lifetime"); await save("lifetime")
   send("Tab"); await check(rootLines, "Conversation"); await save("conversation-root")
   // Exercise click switching as well as the public dialog-mode Tab binding.
-  const line = capture().split("\n").findIndex(line => line.includes("[Conversation]"))
+  const line = capture().split("\n").findIndex(line => line.includes("Conversation") && line.includes("Lifetime"))
   const x = capture().split("\n")[line].indexOf("Lifetime") + 2
   for (const release of [false, true]) send("-l", `\x1b[<0;${x};${line + 1}${release ? "m" : "M"}`)
   await check(lifetimeLines, "Lifetime"); await close()
@@ -158,7 +163,7 @@ try {
     await palette(`Fixture: ${child}`); await open(); send("Tab"); await check(rootLines, "Conversation"); await save(child); await close()
   }
   await palette("Fixture: other"); await open(); send("Tab")
-  await check(["Reviews: 1", "Tokens: 2020 in 30 out", "Safe: 1 (100.0%)"], "Conversation"); await save("other-root"); await close()
+  await check(["Reviews: 1", "Tokens: 2k in 30 out", "Safe: 1 (100.0%)"], "Conversation"); await save("other-root"); await close()
   assert.deepEqual(sql.query({ type: "totals" }), before, "switching/reopening does not account new work")
   await palette("Fixture: root"); await palette("Reviewer: Disable for conversation")
   await open(); send("Tab"); await check(rootLines, "Conversation"); await save("disabled"); await close()
@@ -166,14 +171,14 @@ try {
   await start("--session", ids.deep); await until(s => s.includes("Subagent"), 90000)
   await open(); send("Tab"); await check(rootLines, "Conversation"); await save("resumed-descendant")
   seed(ids.deep, ids.root, 400, true)
-  await check(["Reviews: 4", "Retries: 4", "Tokens: 2080 in 120 out", "Safe: 3 (75.0%)"], "Conversation"); await save("shared-update")
+  await check(["Reviews: 4", "Retries: 4", "Tokens: 2k in 120 out", "Safe: 3 (75.0%)"], "Conversation"); await save("shared-update")
   const persisted = sql.query({ type: "totals" })
   await close(); runtime.tmux("kill-session", "-t", "statistics")
   sql.close(); sql = undefined
   const old = new DatabaseSync(file); old.exec("DROP TABLE conversation_totals"); old.close()
   await start("--session", ids.root); await until(s => s.includes("tab agents"), 90000)
   await open(); send("Tab")
-  await check(["Reviews: 4", "Tokens: 2080 in 120 out"], "Conversation"); await save("retained-v1-baseline")
+  await check(["Reviews: 4", "Tokens: 2k in 120 out"], "Conversation"); await save("retained-v1-baseline")
   sql = new HistorySQL(new DatabaseSync(file))
   assert.deepEqual(sql.query({ type: "totals" }), persisted)
   assert.equal(calls, modelCalls, "statistics browsing and resume do not invoke models")
@@ -186,15 +191,15 @@ try {
   const releaseAncestry = release => publishObservation(ancestryControl, { release })
   await close(); await palette("Fixture: stalled")
   for (let n = 0; n < 4; n++) {
-    await open(); send("Tab"); await until(s => s.includes("[Conversation]") && s.includes("Loading"))
+    await open(); send("Tab"); await until(s => selectedScope("Conversation") && s.includes("Loading"))
     await close()
   }
   await palette("Fixture: latest"); await open(); send("Tab")
-  await until(s => s.includes("[Conversation]") && s.includes("Loading"))
+  await until(s => selectedScope("Conversation") && s.includes("Loading"))
   assert.equal((await ancestry()).reads[ids.stalled], 1)
   assert.equal((await ancestry()).active, 1)
   await releaseAncestry(true)
-  await check(["Reviews: 1", "Tokens: 1574 in 30 out", "Unsafe: 1 (100.0%)"], "Conversation")
+  await check(["Reviews: 1", "Tokens: 1.5k in 30 out", "Unsafe: 1 (100.0%)"], "Conversation")
   await save("ancestry-statistics-recovered"); await close()
   await until(async () => (await ancestry()).active === 0)
   await releaseAncestry(false)

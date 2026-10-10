@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 // Interpret only SGR rendition. tmux -e captures text and colors without issuing
 // terminal commands. The selected command must have a distinct, painted background.
-function rows(ansi) {
+export function renditionRows(ansi) {
   let background
   return ansi.split("\n").map(line => {
     let text = ""
@@ -29,7 +29,7 @@ function rows(ansi) {
 }
 
 export function selectedPaletteResult(ansi, title) {
-  const lines = rows(ansi)
+  const lines = renditionRows(ansi)
   if (!lines.some(row => row.text.includes("Commands"))) return false
   const matches = lines.map((row, index) => ({ ...row, index, at: row.text.indexOf(title) })).filter(row => row.at >= 0)
   if (matches.length < 2) return false
