@@ -1402,17 +1402,17 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [ ] Reconcile hidden-normal-approval request with governing physical-visibility contract.
   - [ ] Define descendant route readiness, original deadline and negative controls.
   - [ ] Implement only after that contract gate is resolved; verify source and real TUI.
-- [ ] Phase 4: painted proof and host presentation (F14-F15,F32).
+- [x] Phase 4: painted proof and host presentation (F14-F15,F32).
   - [x] Separate pending renewed paint from proven physical loss.
   - [x] Preserve a stable live owner across same-session sidebar handoff.
   - [x] Validate mouse-disabled readiness and real coverage controls.
   - F33 cancelled by user direction; native stacking is out of scope.
-  - [ ] Verify exact resize/handoff/preemption cases and commit supported changes.
+  - [x] Verify exact resize/handoff/preemption cases and commit supported changes (`b4da5a4`).
 - [ ] Phase 5: persistence progress (F06-F09).
-  - [ ] Design resumable bounded legacy baseline transactions and replay ownership.
-  - [ ] Batch dirty recovery with complete healthy-pass and deletion commit fences.
-  - [ ] Separate refresh invalidation from coalesced freshness requests.
-  - [ ] Bound steady-state browsing work while retaining selected-row repair checks.
+  - [x] Design resumable bounded legacy baseline transactions and replay ownership.
+  - [x] Batch dirty recovery with complete healthy-pass and deletion commit fences.
+  - [x] Separate refresh invalidation from coalesced freshness requests.
+  - [x] Bound steady-state browsing work while retaining selected-row repair checks.
   - [ ] Verify slow/large/shared-worker cases and relevant host fixtures; commit.
 - [ ] Phase 6: storage privacy (F05,F23,F25).
   - [ ] Define secure deletion and owned cleanup on both SQLite adapters.
@@ -1633,3 +1633,45 @@ contract. F33 remains dropped. Neither disposition claims an implemented fix.
   or executions beyond the configured delay. Public dialogs and native fullscreen
   controls were independently exercised. No geometry-only approval override or
   forced mouse enablement was introduced.
+
+### Phase 5 disposition: F06-F09 fixed
+
+- `history-migration.ts` persists per-root review/attempt/approval cursors and
+  accumulators in transactions of at most 128 steps with a 40 ms cooperative
+  budget. All current writers gate root mutation/deletion on completed bootstrap;
+  cursor progress never advances writer replay or reconstructs lifetime totals.
+  Worker/store bootstrap operations yield independently of the original event.
+  Actual slice ownership survives read timeout and worker termination.
+- `history-browsing.ts` uses trigger-maintained structural generations covering
+  same/foreign-connection SQL changes, bounded 32-root/128-rank caches, and a
+  visible-history partial index. Selected context/payload is validated every poll.
+  Cold validation and uncached rank remain linear; unchanged polling avoids them.
+- Maintenance dirty recovery yields after 100 rows or 50 ms with 10 ms gaps,
+  preserving one actual read, root-first exact-404 proof, revision restarts and
+  complete healthy confirmation. Refresh commits coalesce follow-up freshness;
+  navigation/deletion/maintenance and accounting failures still invalidate results.
+- New bootstrap/browsing/progress tests include an 80,000-review, 10,000-attempt
+  slowed source worker with forced watchdog restart; rollback/cross-client replay;
+  deletion followed by unrelated-root progress; 100k-row browsing and repair;
+  continuous write backlog publication and notification-target selection.
+- Focused worker measurement: 1,954 committed slices, maximum successful slice
+  45.7 ms, 49.2 s total including watchdog/retry. The time budget is cooperative,
+  not a claim that SQLite I/O cannot stall. Unchanged 1k/10k/100k selections used
+  eight SQL reads with zero validation/count/rank row visits. Cold 100k selection
+  measured 438.9 ms; warm average 0.134 ms in the focused run.
+- Deterministic 1,000-session/10-deletion scheduler controls: 210 ms with immediate
+  responses, 2,400 ms with 1 ms replies, 4,390 ms including an existing idle timer;
+  1,990 host reads, maximum concurrency one. These are synthetic scheduler timings.
+- `npm run check`: **1,101 source checks**, **111 helper tests**, typecheck and build passed.
+- After build, these `node scripts/test-runtime.mjs` invocations passed:
+
+  | Arguments | Result under `.runtime/` |
+  | --- | --- |
+  | `smoke-history-storage.mjs` | `runtime-run-u0d6fS/results.json` |
+  | `smoke-history-maintenance.mjs` | `runtime-run-qUnUoR/results.json` |
+  | `smoke-history.mjs shared` | `runtime-run-dg1pb5/results.json` |
+  | `smoke-statistics.mjs` | `runtime-run-50bmO0/results.json` |
+  | `smoke-history-auto.mjs notification` | `runtime-run-WUQwWK/results.json` |
+
+- Actual packed Bun adapter and shared host behavior passed. Large slow-worker
+  measurements use Node SQLite; no equivalent Bun scale timing is claimed.

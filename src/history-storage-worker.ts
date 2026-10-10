@@ -66,8 +66,9 @@ if (parentPort) {
       } else if (message.type === "close") { sql?.close(); sql = undefined }
       else {
         if (!sql) throw new Error("History worker not open")
-        if (message.type === "apply") value = sql.apply(message.writer, message.sequence, message.event)
-        else if (message.type === "query") value = sql.query(message.query)
+        if (message.type === "apply") value = sql.applyReady(message.writer, message.sequence, message.event)
+        else if (message.type === "query") value = sql.queryReady(message.query)
+        else if (message.type === "bootstrap") value = sql.bootstrap(message.root)
         else throw new HistoryInvalid("Invalid history worker operation")
       }
       parentPort!.postMessage({ id: message.id, value })

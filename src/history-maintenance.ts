@@ -2,7 +2,7 @@ import type { HistoryScope } from "./history-records.js"
 import type { HistorySessions } from "./history-schema.js"
 import type { HistoryStore } from "./history-store.js"
 
-type Store = Pick<HistoryStore, "query" | "admit" | "maintenanceRevision" | "maintenanceScanRevision" | "maintenancePending" | "maintenanceReconciled" | "markMaintenanceDirty">
+type Store = Pick<HistoryStore, "query" | "admit" | "maintenanceDirty" | "maintenanceRevision" | "maintenanceScanRevision" | "maintenancePending" | "maintenanceReconciled" | "markMaintenanceDirty">
 export type SessionRead = (session: string, signal: AbortSignal) => Promise<unknown>
 
 /** session.get in the pinned public SDK uses the legacy NotFoundError envelope,
@@ -19,8 +19,10 @@ export function sessionPresence(result: unknown, session: string): "present" | "
   return "unknown"
 }
 
-/** One ownership page (<=100), one row per two-second turn, one actual host/read
- * transaction. Scope is fixed by the caller's invocation client, never a stored
+/** One ownership page (<=100), one actual host/read transaction. Idle scanning
+ * checks one row per two-second turn. Dirty recovery yields after 100 rows or
+ * 50 ms, then resumes after 10 ms; an already-started row retains ownership through
+ * actual settlement. Scope is fixed by the caller's invocation client, never a stored
  * target directory. No missed-ID queue. A failed pass resumes then retries from
  * the beginning; only a complete healthy pass can release the recovery gate.
  */
@@ -38,10 +40,10 @@ export class HistoryMaintenance {
   private ending = false
   private turn?: AbortController
   constructor(private scope: string, private store: Store, private get: SessionRead,
-    private invalidate: (session: string) => void = () => {}) {}
+    private invalidate: (session: string) => void = () => {}, private now: () => number = () => performance.now()) {}
   start() { if (!this.stopped && !this.timer && !this.active) this.schedule() }
   private schedule() {
-    if (!this.stopped) this.timer = setTimeout(() => { this.timer = undefined; void this.step().finally(() => this.schedule()) }, 2000)
+    if (!this.stopped) this.timer = setTimeout(() => { this.timer = undefined; void this.step().finally(() => this.schedule()) }, this.store.maintenanceDirty ? 10 : 2000)
   }
   /** Also exposed for deterministic fixtures. Concurrent calls cannot duplicate work. */
   async step() {
@@ -49,6 +51,7 @@ export class HistoryMaintenance {
     this.active = true
     const turn = this.turn = new AbortController()
     const deadline = setTimeout(() => turn.abort(), 5000)
+    const until = this.now() + 50, rows = this.store.maintenanceDirty ? 100 : 1
     try {
       if (this.scanRevision !== this.store.maintenanceScanRevision) {
         this.scanRevision = this.store.maintenanceScanRevision
@@ -56,31 +59,38 @@ export class HistoryMaintenance {
         this.after = undefined; this.page = []; this.healthy = true; this.cleaned = false; this.ending = false
       }
       if (this.ending) { this.finishPass(); return }
-      if (!this.page.length) {
-        const read = this.store.query({ type: "sessions", scope: this.scope, after: this.after, limit: 100 }, turn.signal)
-        let result: HistorySessions
-        try { result = await read as HistorySessions } finally { await read.settled?.catch(() => {}) }
+      for (let n = 0; n < rows; n++) {
         if (this.stopped || turn.signal.aborted) { this.healthy = false; return }
-        if (!result.sessions.length) {
-          this.ending = true
-          this.finishPass()
-          return
+        if (this.scanRevision !== this.store.maintenanceScanRevision) return
+        if (!this.page.length) {
+          const read = this.store.query({ type: "sessions", scope: this.scope, after: this.after, limit: 100 }, turn.signal)
+          let result: HistorySessions
+          try { result = await read as HistorySessions } finally { await read.settled?.catch(() => {}) }
+          if (this.stopped || turn.signal.aborted) { this.healthy = false; return }
+          if (this.scanRevision !== this.store.maintenanceScanRevision) return
+          if (!result.sessions.length) {
+            this.ending = true
+            this.finishPass()
+            return
+          }
+          this.page = result.sessions; this.after = result.after
         }
-        this.page = result.sessions; this.after = result.after
-      }
-      const context = this.page.shift()!
-      if (context.scope !== this.scope) { this.healthy = false; return }
-      // Root first, even when it has no own report row. Native root deletion
-      // cascades, so deleting only the first absent child would leave root detail.
-      const root = await this.presence(context.root)
-      if (this.stopped) return
-      if (root === "missing") this.remove({ ...context, session: context.root })
-      else if (root === "unknown") this.healthy = false
-      else if (context.session !== context.root) {
-        const child = await this.presence(context.session)
-        if (this.stopped) return
-        if (child === "missing") this.remove(context)
-        else if (child === "unknown") this.healthy = false
+        if (this.now() >= until) return
+        const context = this.page.shift()!
+        if (context.scope !== this.scope) { this.healthy = false; return }
+        // Root first, even when it has no own report row. Native root deletion
+        // cascades, so deleting only the first absent child would leave root detail.
+        const root = await this.presence(context.root)
+        if (this.stopped || this.scanRevision !== this.store.maintenanceScanRevision) return
+        if (root === "missing") this.remove({ ...context, session: context.root })
+        else if (root === "unknown") this.healthy = false
+        else if (context.session !== context.root) {
+          const child = await this.presence(context.session)
+          if (this.stopped || this.scanRevision !== this.store.maintenanceScanRevision) return
+          if (child === "missing") this.remove(context)
+          else if (child === "unknown") this.healthy = false
+        }
+        if (this.now() >= until) return
       }
     } catch { this.healthy = false }
     finally { clearTimeout(deadline); this.turn = undefined; this.active = false }

@@ -92,7 +92,7 @@ test("deletion, rollback and restart cannot reduce or double-count conversation 
   assert.equal(conversation(reopened).totals.input, before.input + 50)
 })
 
-test("existing v1 retained facts form a partial baseline without query writes or lifetime reconstruction", t => {
+test("existing v1 retained facts form a durable partial baseline without lifetime reconstruction", t => {
   const f = fixture(t)
   seed(f.apply, { ...context, session: "deleted", permission: "deleted", review: "deleted" }, 100)
   seed(f.apply, { ...context, session: "survivor" }, 200)
@@ -104,7 +104,7 @@ test("existing v1 retained facts form a partial baseline without query writes or
   const first = conversation(migrated)
   assert.equal(first.partialHistory, true); assert.equal(first.totals.input, 420)
   assert.equal(first.totals.activity.reviews, 1)
-  assert.equal(f.db.prepare("SELECT count(*) n FROM conversation_totals").get()!.n, 0, "opening or switching views does not write totals")
+  assert.equal(f.db.prepare("SELECT count(*) n FROM conversation_totals").get()!.n, 1, "bootstrap publishes one durable root accumulator")
   assert.deepEqual(conversation(migrated), first)
   assert.deepEqual((migrated.query({ type: "totals" }) as HistoryTotals).totals, global)
   migrated.apply("new-client", 1, encodeEvent({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: "survivor" }, at: 11 }))
@@ -121,8 +121,21 @@ test("historical baseline pages beyond 100 reviews and rejects corrupt attributi
   assert.deepEqual(conversation(migrated).totals, before)
   assert.equal(conversation(migrated).partialHistory, true)
   f.db.exec("UPDATE attempts SET finalized='bad JSON' WHERE id=(SELECT id FROM attempts LIMIT 1)")
+  assert.deepEqual(conversation(migrated).totals, before, "materialized totals never depend on later detail corruption")
+  f.db.exec("DELETE FROM conversation_totals")
   assert.throws(() => conversation(migrated))
   assert.deepEqual((migrated.query({ type: "totals" }) as HistoryTotals).totals, before)
+})
+
+test("an empty legacy root retains partial coverage without inventing removed facts", t => {
+  const f = fixture(t)
+  seed(f.apply)
+  f.apply({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.session }, at: 10 })
+  const lifetime = f.sql.query({ type: "totals" })
+  f.db.exec("DELETE FROM conversation_totals")
+  assert.equal(conversation(f.sql).partialHistory, true)
+  assert.deepEqual(conversation(f.sql).totals, empty())
+  assert.deepEqual(f.sql.query({ type: "totals" }), lifetime)
 })
 
 for (const kind of ["accepted", "finalized"] as const) test(`legacy ${kind} maximum escaped metadata migrates without changing lifetime`, t => {
@@ -135,7 +148,7 @@ for (const kind of ["accepted", "finalized"] as const) test(`legacy ${kind} maxi
   f.db.exec("DROP TABLE conversation_totals")
   const migrated = f.reopen()
   assert.deepEqual(conversation(migrated).totals, before)
-  assert.equal(f.db.prepare("SELECT count(*) n FROM conversation_totals").get()!.n, 0)
+  assert.equal(f.db.prepare("SELECT count(*) n FROM conversation_totals").get()!.n, 1)
   migrated.apply("new", 1, encodeEvent({ type: "attemptFinalized", context, at: 2, attempt: "next", usage: { input: 3, output: 1 } }))
   assert.equal(conversation(migrated).totals.input, before.input + 3)
   assert.equal(conversation(migrated).partialHistory, true)

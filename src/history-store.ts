@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { Worker } from "node:worker_threads"
-import { encodeEvent, HISTORY_OPERATION_OVERHEAD, HISTORY_QUEUE_BYTES, HISTORY_RETRY_MS, HistoryInvalid, snapshotQuery } from "./history-records.js"
+import { encodeEvent, HISTORY_OPERATION_OVERHEAD, HISTORY_QUEUE_BYTES, HISTORY_RETRY_MS, HistoryInvalid, rootID, snapshotQuery } from "./history-records.js"
 import type { HistoryEvent, HistoryQuery } from "./history-records.js"
 import type { HistoryResult } from "./history-schema.js"
 
@@ -44,8 +44,8 @@ export class HistoryWorker implements HistoryTransport {
   async terminate(): Promise<void> { if (!this.dead) void this.worker.terminate().catch(() => {}); await this.exited }
 }
 
-interface Queued { sequence: number; event: string; bytes: number }
-interface Read { query: HistoryQuery; resolve: (result: HistoryResult) => void; reject: (error: Error) => void; settled: () => void; started: boolean }
+interface Queued { sequence: number; event: string; bytes: number; root: string }
+interface Read { query: HistoryQuery; resolve: (result: HistoryResult) => void; reject: (error: Error) => void; settled: () => void; started: boolean; finished: boolean; bootstrap?: string }
 export type HistoryRead = Promise<HistoryResult> & { settled?: Promise<void> }
 export interface HistoryStoreOptions {
   adapter?: "node" | "bun"; source?: string; transport?: () => HistoryTransport
@@ -69,6 +69,8 @@ export class HistoryStore {
   private blocked = false
   private writeFailed = false
   private preferRead = false
+  private bootstraps = new Set<string>()
+  private preferBootstrap = true
   private failures = new Set<() => unknown>()
   private commits = new Set<() => unknown>()
   private disposal?: Promise<void>
@@ -120,7 +122,7 @@ export class HistoryStore {
       if (event.type === "sessionDeleted") this.markMaintenanceDirty()
       return false
     }
-    this.queue.push({ sequence: ++this.sequence, event: serialized, bytes }); this.bytes += bytes
+    this.queue.push({ sequence: ++this.sequence, event: serialized, bytes, root: rootID(event.context) }); this.bytes += bytes
     this.pump(); return true
   }
   query(query: HistoryQuery, signal?: AbortSignal): HistoryRead {
@@ -131,12 +133,12 @@ export class HistoryStore {
     const promise: HistoryRead = new Promise((resolve, reject) => {
       let done = false
       const finish = (result?: HistoryResult, error?: Error) => {
-        if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener("abort", abort)
+        if (done) return; done = true; read.finished = true; clearTimeout(timer); signal?.removeEventListener("abort", abort)
         const index = this.reads.indexOf(read); if (index >= 0) this.reads.splice(index, 1)
         if (!read.started) settle()
         error ? reject(error) : resolve(result!)
       }
-      const read: Read = { query, resolve: result => finish(result), reject: error => finish(undefined, error), settled: settle, started: false }
+      const read: Read = { query, resolve: result => finish(result), reject: error => finish(undefined, error), settled: settle, started: false, finished: false }
       const abort = () => finish(undefined, new Error("History read aborted"))
       const timer = setTimeout(() => finish(undefined, new Error("History read timeout")), 3000)
       if (signal?.aborted) { abort(); return }
@@ -150,17 +152,27 @@ export class HistoryStore {
     if (this.active || this.stopped) return
     if (this.timer) { this.cancel(this.timer); this.timer = undefined }
     const write = !this.blocked && this.queue.length > 0 && this.now() >= this.retryAt
-    const read = this.reads.length && (!write || this.preferRead) ? this.reads.shift() : undefined
-    if (!read && !write) {
-      if (this.queue.length && !this.blocked) this.timer = this.schedule(() => { this.timer = undefined; this.pump() }, Math.max(0, this.retryAt - this.now()))
+    const bootstrap = !this.blocked && this.now() >= this.retryAt && (this.preferBootstrap || (!write && !this.reads.length))
+      ? this.bootstraps.values().next().value : undefined
+    const read = !bootstrap && this.reads.length && (!write || this.preferRead) ? this.reads.shift() : undefined
+    if (!read && !write && !bootstrap) {
+      if ((this.queue.length || this.bootstraps.size) && !this.blocked) this.timer = this.schedule(() => { this.timer = undefined; this.pump() }, Math.max(0, this.retryAt - this.now()))
       return
     }
     this.active = true
     if (read) read.started = true
-    void this.run(read)
+    void this.run(read, bootstrap)
   }
-  private async run(read?: Read) {
+  private rememberBootstrap(root: string) {
+    // Eight admitted readers plus the FIFO head. Expired readers cannot grow a
+    // permanent side queue; their durable cursor resumes on a subsequent poll.
+    if (!this.bootstraps.has(root) && this.bootstraps.size >= 9) this.bootstraps.delete(this.bootstraps.values().next().value!)
+    this.bootstraps.add(root); this.preferBootstrap = true
+  }
+  private async run(read?: Read, bootstrap?: string) {
     // Termination is a deadline action; never create a replacement until exit is observed.
+    const bootstrapReaders = bootstrap ? this.reads.filter(reader => reader.bootstrap === bootstrap) : []
+    for (const reader of bootstrapReaders) reader.started = true
     let watchdog: ReturnType<typeof setTimeout> | undefined
     let terminating: Promise<void> | undefined
     try {
@@ -173,22 +185,37 @@ export class HistoryStore {
         this.opened = true
       }
       if (this.stopped) return
-      if (read) {
+      if (bootstrap) {
+        const result = await worker.call({ type: "bootstrap", root: bootstrap })
+        this.bootstraps.delete(bootstrap)
+        if (!result.done) this.bootstraps.add(bootstrap)
+        this.preferBootstrap = false; this.retryAt = 0
+      } else if (read) {
         if ((read.query.type === "totals" || read.query.type === "conversationTotals") && this.writeFailed) throw new Error("History accounting unavailable")
         const revision = this.dirtyRevision
         if (read.query.type === "history" && this.dirty) throw new Error("History reconciliation pending")
         const result = await worker.call({ type: "query", query: read.query })
+        if (result?.pending) {
+          read.bootstrap = result.pending; this.rememberBootstrap(result.pending)
+          if (!read.finished) this.reads.push(read)
+          return
+        }
         if (read.query.type === "history" && (this.dirty || revision !== this.dirtyRevision)) throw new Error("History reconciliation pending")
         read.resolve(result); this.preferRead = false
       }
       else {
         const item = this.queue[0]!
-        await worker.call({ type: "apply", writer: this.writer, sequence: item.sequence, event: item.event })
+        const result = await worker.call({ type: "apply", writer: this.writer, sequence: item.sequence, event: item.event })
+        if (result?.pending) { this.rememberBootstrap(result.pending); this.preferRead = true; return }
         if (this.stopped) return
         this.queue.shift(); this.bytes -= item.bytes; this.retryAt = 0; this.writeFailed = false; this.preferRead = true; this.notify(this.commits)
       }
     } catch (error) {
       if (read) read.reject(error as Error)
+      else if (bootstrap && this.queue[0]?.root !== bootstrap) {
+        this.bootstraps.delete(bootstrap)
+        for (const reader of [...this.reads]) if (reader.bootstrap === bootstrap) reader.reject(error as Error)
+      }
       else {
         this.writeFailed = true
         // Invalid transactions retain their admitted FIFO. They cannot be skipped without
@@ -205,7 +232,11 @@ export class HistoryStore {
         await terminating
         this.worker = undefined; this.opened = false
       }
-      read?.settled()
+      if (read) { read.started = false; if (read.finished) read.settled() }
+      for (const reader of bootstrapReaders) {
+        reader.started = false
+        if (reader.finished) reader.settled()
+      }
       this.active = false; this.pump()
     }
   }

@@ -258,3 +258,43 @@ test("legacy escaped metadata baseline cannot block affected and unrelated roots
   await turn()
   assert.equal((await store.query({ type: "totals" }) as any).totals.input, 10)
 })
+
+test("query-driven bootstrap failure stays read-local and a later poll resumes its durable work", async t => {
+  const db = new DatabaseSync(":memory:"), sql = new HistorySQL(db)
+  sql.apply("seed", 1, encodeEvent({ type: "reviewAccepted", context, at: 1, accepted: { safe: true, completedAt: 1 } }))
+  db.exec("DELETE FROM conversation_totals")
+  let fail = true
+  const store = new HistoryStore("/state", { transport: () => ({ async call(m) {
+    if (m.type === "apply") return sql.applyReady(m.writer as string, m.sequence as number, m.event as string)
+    if (m.type === "query") return sql.queryReady(m.query as any)
+    if (m.type === "bootstrap") {
+      if (fail) { fail = false; throw Error("temporary bootstrap read failure") }
+      return sql.bootstrap(m.root as string)
+    }
+    return {}
+  }, async terminate() {} }) })
+  t.after(async () => { await store.dispose(); sql.close() })
+  const query = { type: "conversationTotals" as const, scope: context.scope, root: context.root }
+  await assert.rejects(store.query(query), /temporary/)
+  assert.equal(store.admit({ ...event, context: { ...context, root: "other", session: "other", review: "other", permission: "other" } }), true)
+  assert.equal((await store.query(query) as any).totals.safe, 1)
+  assert.equal((await store.query({ type: "totals" }) as any).totals.safe, 1)
+})
+
+test("aborted bootstrap read retains actual slice ownership and releases only after settlement", async t => {
+  const entered = deferred<void>(), release = deferred<void>(), controller = new AbortController()
+  let first = true, calls = 0
+  const store = new HistoryStore("/state", { transport: () => ({ async call(m) {
+    calls++
+    if (m.type === "query") { if (first) { first = false; return { pending: "a".repeat(64) } }; return { total: 0 } }
+    if (m.type === "bootstrap") { entered.resolve(); await release.promise; return { done: true } }
+    return {}
+  }, async terminate() { release.resolve() } }) })
+  t.after(async () => { release.resolve(); await store.dispose() })
+  const read = store.query({ type: "conversationTotals", scope: "/project", root: "root" }, controller.signal)
+  let settled = false; void read.settled!.then(() => { settled = true })
+  await entered.promise; controller.abort(); await assert.rejects(read, /aborted/)
+  assert.equal(settled, false)
+  const followup = store.query({ type: "totals" }); await turn(); assert.equal(calls, 3)
+  release.resolve(); await read.settled; await followup; assert.equal(settled, true)
+})

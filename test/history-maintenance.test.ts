@@ -43,6 +43,7 @@ function fixture(t: any) {
     admit: (event: HistoryEvent) => { events.push(event); if (fail) return false; apply(event); return true },
     get maintenanceRevision() { return revision },
     get maintenanceScanRevision() { return scanRevision },
+    get maintenanceDirty() { return dirty },
     get maintenancePending() { return false },
     markMaintenanceDirty: (origin?: "cleanup") => { revision++; if (origin !== "cleanup") scanRevision++; dirty = true; return revision },
     maintenanceReconciled: (r = revision) => { if (r !== revision || fail) return false; dirty = false; return true },
@@ -110,6 +111,7 @@ test("indexed pages stay <=100, one row per turn, scopes isolated, dirty revisio
   for (let n = 0; n < 105; n++) f.apply(resolved({ ...context, session: "s" + n, permission: "p" + n, review: "r" + n }))
   const pages: any[] = [], calls: string[] = []
   const store = { ...f.store, get maintenanceRevision() { return f.store.maintenanceRevision },
+    get maintenanceDirty() { return f.store.maintenanceDirty },
     get maintenanceScanRevision() { return f.store.maintenanceScanRevision }, query: async (q: any) => {
     pages.push(q); return f.store.query(q)
   } }
@@ -139,7 +141,7 @@ test("timed-out storage read retains settled ownership instead of spawning repla
   let release!: () => void, calls = 0
   const settled = new Promise<void>(resolve => { release = resolve })
   const store = { query: () => { calls++; return Object.assign(Promise.reject(Error("timeout")), { settled }) },
-    admit: () => true, maintenanceRevision: 0, maintenanceScanRevision: 0, maintenancePending: false,
+    admit: () => true, maintenanceDirty: false, maintenanceRevision: 0, maintenanceScanRevision: 0, maintenancePending: false,
     maintenanceReconciled: () => true, markMaintenanceDirty: () => 0 }
   const m = new HistoryMaintenance("/project", store, async () => { throw Error("unexpected") })
   const first = m.step(); await Promise.resolve(); await m.step(); assert.equal(calls, 1)
@@ -268,8 +270,7 @@ test("cleanup invalidates cached root descendants across pages and external chan
   // An external event during/restarting confirmation must not be absorbed into cleanup's revision.
   f.store.markMaintenanceDirty()
   assert.equal(f.dirty(), true)
-  await m.step(); assert.equal(f.dirty(), true)
-  await m.step(); assert.equal(f.dirty(), false)
+  await m.step(); assert.equal(f.dirty(), false, "the surviving row and empty page fit in one recovery batch")
   assert.ok(calls <= 6, `root cascade should invalidate every cached child: ${calls}`)
   assert.equal(f.events.filter(e => e.type === "sessionDeleted").length, 1)
   assert.equal((f.sql.query({ type: "sessions", scope: context.scope }) as any).sessions.length, 1)

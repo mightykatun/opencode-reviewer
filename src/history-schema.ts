@@ -1,6 +1,8 @@
 import { add, empty, validate } from "./lifetime.js"
 import type { LifetimeTotals } from "./lifetime.js"
-import { count, decodeEvent, entryID, HISTORY_RECORD_BYTES as bytes, HISTORY_TEXT_BYTES, HistoryInvalid, opaque, reviewID, rootID, sessionID, validateEvent, validatePayload, validateQuery, validateReview, validateScope } from "./history-records.js"
+import { count, decodeEvent, entryID, HISTORY_RECORD_BYTES as bytes, HISTORY_TEXT_BYTES, HistoryInvalid, opaque, reviewID, rootID, sessionID, validatePayload, validateQuery, validateReview, validateScope } from "./history-records.js"
+import { bootstrap, migrationSchema } from "./history-migration.js"
+import { browsingSchema, HistoryBrowsing } from "./history-browsing.js"
 import { historyDelta } from "./history-statistics.js"
 import type { HistoryEvent, HistoryOutcome, HistoryPayload, HistoryQuery, HistoryReview, HistoryScope, HistoryOrder } from "./history-records.js"
 
@@ -25,6 +27,7 @@ export interface HistorySessions { sessions: { scope: string; root: string; sess
 export interface HistoryResolution { outcome?: HistoryOutcome; uncertain: boolean; conflict: boolean; deleted: boolean }
 export interface HistorySession { context?: HistoryScope }
 export type HistoryResult = HistorySelection | HistoryTotals | HistoryConversationTotals | HistorySessions | HistoryResolution | HistorySession
+export interface HistoryPending { pending: string }
 
 const schema = `
 CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, revision INTEGER NOT NULL, totals TEXT NOT NULL);
@@ -52,6 +55,7 @@ CREATE TABLE payloads (id TEXT PRIMARY KEY REFERENCES history(id) ON DELETE CASC
 /** All mutation and its replay cursor share one durable transaction. */
 export class HistorySQL {
   private statements = new Map<string, ReturnType<HistoryDatabase["prepare"]>>()
+  private browsing = new HistoryBrowsing()
   constructor(readonly db: HistoryDatabase) {
     db.exec("PRAGMA busy_timeout=250; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=256")
     this.transaction(() => {
@@ -73,7 +77,10 @@ export class HistorySQL {
       db.exec(`CREATE TABLE IF NOT EXISTS conversation_totals (id TEXT PRIMARY KEY, totals TEXT NOT NULL, partial INTEGER NOT NULL CHECK(partial IN (0,1)));
         CREATE INDEX IF NOT EXISTS reviews_root_id ON reviews(root,id);
         CREATE INDEX IF NOT EXISTS attempts_review_id ON attempts(review,id);
-        CREATE INDEX IF NOT EXISTS approvals_review_id ON approvals(review,id);`)
+        CREATE INDEX IF NOT EXISTS approvals_review_id ON approvals(review,id);
+        CREATE INDEX IF NOT EXISTS history_visible_order ON history(scope,root,completed,tie,id) WHERE outcome IS NOT NULL;`)
+      db.exec(migrationSchema)
+      db.exec(browsingSchema)
     })
   }
   private statement(sql: string) {
@@ -99,79 +106,50 @@ export class HistorySQL {
     this.run("INSERT INTO roots VALUES (?,1) ON CONFLICT(id) DO UPDATE SET revision=revision+1", root)
   }
   apply(writer: string, sequence: number, serialized: string, beforeCommit?: () => void): { replay: boolean } {
+    for (;;) {
+      const result = this.applyReady(writer, sequence, serialized, beforeCommit)
+      if (!("pending" in result)) return result
+      this.bootstrap(result.pending)
+    }
+  }
+  /** Worker entrypoint: never performs bootstrap inside an ordinary event. */
+  applyReady(writer: string, sequence: number, serialized: string, beforeCommit?: () => void): { replay: boolean } | HistoryPending {
     if (!/^[a-zA-Z0-9-]{1,128}$/.test(writer) || !count(sequence) || !sequence) throw new HistoryInvalid("Invalid writer sequence")
     const event = decodeEvent(serialized)
     return this.transaction(() => {
       const previous = this.get("SELECT sequence FROM writers WHERE id=?", writer)?.sequence ?? 0
       if (sequence <= previous) return { replay: true }
       if (sequence !== previous + 1) throw new HistoryInvalid("History sequence gap")
+      const root = rootID(event.context)
+      if (!this.ready(root)) return { pending: root }
       this.event(event)
       this.run("INSERT INTO writers VALUES (?,?) ON CONFLICT(id) DO UPDATE SET sequence=excluded.sequence", writer, sequence)
       beforeCommit?.()
       return { replay: false }
     })
   }
-  /** Indexed, bounded-memory baseline of attributable v1 facts. Never reads
-   * report payloads or legacy aggregate snapshots, and never rebuilds lifetime.
-   * Deletions before this feature may have removed facts, hence partial coverage.
-   * Reads are pure; the next actual event materializes the baseline transactionally.
-   */
+  bootstrap(root: string, beforeCommit?: () => void) {
+    return this.transaction(() => { const result = bootstrap(this.db, root); beforeCommit?.(); return result })
+  }
+  private ready(root: string) {
+    if (this.get("SELECT id FROM conversation_totals WHERE id=?", root)) return true
+    if (this.get("SELECT id FROM conversation_bootstrap WHERE id=?", root)) return false
+    // Fresh roots take constant work, preserving the synchronous ordinary-event API.
+    if (!this.get("SELECT id FROM reviews WHERE root=? LIMIT 1", root)) {
+      this.run("INSERT INTO conversation_totals VALUES (?,?,?)", root, JSON.stringify(empty()), Number(!!this.get("SELECT id FROM roots WHERE id=?", root)))
+      return true
+    }
+    return false
+  }
   private conversation(root: string): { totals: LifetimeTotals; partialHistory: boolean } {
     const saved = this.get(`SELECT CASE WHEN length(CAST(totals AS BLOB))<=${bytes.totals} THEN totals END AS totals,partial FROM conversation_totals WHERE id=?`, root)
     if (saved) {
       if (saved.partial !== 0 && saved.partial !== 1) throw new HistoryInvalid("Invalid conversation coverage")
       return { totals: this.parseTotals(saved.totals), partialHistory: saved.partial === 1 }
     }
-    let totals = empty(), after = "", partialHistory = !!this.get("SELECT id FROM roots WHERE id=?", root)
-    const include = (event: HistoryEvent) => { validateEvent(event); totals = add(totals, historyDelta(event)) }
-    for (;;) {
-      const reviews = this.all(`SELECT id,CASE WHEN length(CAST(context AS BLOB))<=${bytes.context} THEN context END AS context,
-        CASE WHEN length(CAST(accepted AS BLOB))<=${bytes.accepted} THEN accepted END AS accepted,accepted IS NOT NULL AS hasAccepted
-        FROM reviews WHERE root=? AND id>? ORDER BY id LIMIT 100`, root, after)
-      if (!reviews.length) break
-      partialHistory = true
-      for (const row of reviews) {
-        const context = JSON.parse(row.context); validateReview(context)
-        if (rootID(context) !== root || reviewID(context) !== row.id) throw new HistoryInvalid("Invalid conversation ownership")
-        if (row.hasAccepted) {
-          const accepted = JSON.parse(row.accepted)
-          include({ type: "reviewAccepted", context, at: accepted?.completedAt, accepted })
-        }
-        for (const table of ["attempts", "approvals"] as const) {
-          let cursor = ""
-          for (;;) {
-            const rows = table === "attempts" ? this.all(`SELECT id,
-              CASE WHEN length(CAST(dispatched AS BLOB))<=${bytes.dispatched} THEN dispatched END AS dispatched,
-              CASE WHEN length(CAST(finalized AS BLOB))<=${bytes.finalized} THEN finalized END AS finalized,
-              dispatched IS NOT NULL AS hasDispatched,finalized IS NOT NULL AS hasFinalized
-              FROM attempts WHERE review=? AND id>? ORDER BY id LIMIT 100`, row.id, cursor)
-              : this.all("SELECT id,root,session,at,state,automatic FROM approvals WHERE review=? AND id>? ORDER BY id LIMIT 100", row.id, cursor)
-            if (!rows.length) break
-            for (const fact of rows) {
-              if (table === "attempts") {
-                if (fact.hasDispatched) include({ ...JSON.parse(fact.dispatched), type: "attemptDispatched", context, attempt: fact.id })
-                if (fact.hasFinalized) include({ ...JSON.parse(fact.finalized), type: "attemptFinalized", context, attempt: fact.id })
-              } else {
-                if (fact.root !== root || fact.session !== sessionID(context) || ![-1, 0, 1].includes(fact.automatic)
-                  || !["pending", "uncertain", "not-sent", "confirmed"].includes(fact.state)) throw new HistoryInvalid("Invalid conversation approval")
-                if (fact.state === "confirmed") {
-                  if (fact.automatic === -1) throw new HistoryInvalid("Invalid conversation approval")
-                  include({ type: "approvalConfirmed", context, at: fact.at, approval: fact.id, automatic: fact.automatic === 1 })
-                }
-              }
-            }
-            cursor = rows.at(-1)!.id
-          }
-        }
-      }
-      after = reviews.at(-1)!.id
-    }
-    return { totals, partialHistory }
-  }
-  private ensureConversation(root: string) {
-    if (this.get("SELECT id FROM conversation_totals WHERE id=?", root)) return
-    const baseline = this.conversation(root)
-    this.run("INSERT INTO conversation_totals VALUES (?,?,?)", root, JSON.stringify(baseline.totals), Number(baseline.partialHistory))
+    if (!this.get("SELECT id FROM reviews WHERE root=? LIMIT 1", root))
+      return { totals: empty(), partialHistory: !!this.get("SELECT id FROM roots WHERE id=?", root) }
+    throw new HistoryInvalid("Conversation bootstrap required")
   }
   private contribute(key: string, delta: LifetimeTotals, root: string) {
     if (this.get("SELECT id FROM contributions WHERE id=?", key)) return
@@ -185,9 +163,7 @@ export class HistorySQL {
   }
   private event(e: HistoryEvent) {
     const c = e.context, root = rootID(c), session = sessionID(c)
-    // Capture retained old facts before mutations/deletion. Shared deduplication
-    // and one transaction keep future root/lifetime contributions exactly aligned.
-    this.ensureConversation(root)
+    // applyReady gates every root mutation, including deletion, on a committed baseline.
     if (e.type === "sessionDeleted") {
       const owner = this.get("SELECT root FROM sessions WHERE id=?", session)
       if (owner && owner.root !== c.root) throw new HistoryInvalid("Conflicting session ownership")
@@ -278,8 +254,22 @@ export class HistorySQL {
     this.run("UPDATE history SET outcome=?,approving=? WHERE id=?", outcome, auto?.review ?? manual?.review ?? null, entry)
   }
   query(q: HistoryQuery): HistoryResult {
+    for (;;) {
+      const result = this.queryReady(q)
+      if (!("pending" in result)) return result
+      this.bootstrap(result.pending)
+    }
+  }
+  queryReady(q: HistoryQuery): HistoryResult | HistoryPending {
     validateQuery(q)
     return this.transaction(() => {
+      const conversation = q.type === "conversationTotals" ? q : q.type === "totals" ? q.conversation : undefined
+      if (conversation) {
+        const root = rootID(conversation)
+        if (!this.get("SELECT id FROM conversation_totals WHERE id=?", root)
+          && (this.get("SELECT id FROM conversation_bootstrap WHERE id=?", root)
+            || this.get("SELECT id FROM reviews WHERE root=? LIMIT 1", root))) return { pending: root }
+      }
       if (q.type === "totals") {
         const row = this.get(`SELECT revision,CASE WHEN length(CAST(totals AS BLOB))<=${bytes.totals} THEN totals END AS totals FROM meta WHERE id=1`)!
         if (!count(row.revision)) throw new HistoryInvalid("Invalid aggregate revision")
@@ -335,19 +325,26 @@ export class HistorySQL {
       const root = rootID(q), revision = this.get("SELECT revision FROM roots WHERE id=?", root)?.revision ?? 0
       if (this.get("SELECT id FROM tombstones WHERE id=?", root)) return { revision, total: 0, rank: 0, deleted: true }
       const base = "scope=? AND root=? AND outcome IS NOT NULL"
-      // Validate indexed scalar types without loading report bodies or all index rows into JS.
-      const invalid = this.get(`SELECT id FROM history WHERE scope=? AND root=? AND
-        (typeof(completed)!='integer' OR completed<0 OR completed>8640000000000000 OR length(id)!=64 OR length(session)!=64
-        OR length(review)!=64 OR typeof(permission)!='text' OR length(CAST(permission AS BLOB))>${HISTORY_TEXT_BYTES}
-        OR typeof(tie)!='text' OR length(tie)=0 OR length(CAST(tie AS BLOB))>${HISTORY_TEXT_BYTES}
-        OR length(CAST(resolution AS BLOB))>16 OR length(approving)>64
-        OR outcome NOT IN ('auto','manual','rejected','cancelled')) LIMIT 1`, q.scope, root)
-      const invalidOwner = this.get(`SELECT h.id FROM history h LEFT JOIN reviews r ON r.id=h.review
-        LEFT JOIN sessions s ON s.id=h.session WHERE h.scope=? AND h.root=? AND
-        (r.id IS NULL OR r.entry!=h.id OR r.root!=h.root OR r.session!=h.session OR s.id IS NULL OR s.scope!=h.scope OR s.root!=?) LIMIT 1`, q.scope, root, q.root)
-      if (invalid || invalidOwner || !count(revision)) throw new HistoryInvalid("Invalid history index")
-      const total = this.get(`SELECT count(*) AS n FROM history WHERE ${base}`, q.scope, root)!.n
-      if (!count(total)) throw new HistoryInvalid("History count overflow")
+      const generation = this.get("SELECT generation FROM history_generations WHERE id=?", root)?.generation ?? 0
+      if (!count(generation) || !count(revision)) throw new HistoryInvalid("Invalid history index")
+      let index = this.browsing.get(root, generation)
+      if (!index) {
+        // Validate once per structural generation, never caching selected text.
+        const invalid = this.get(`SELECT id FROM history WHERE scope=? AND root=? AND
+          (typeof(completed)!='integer' OR completed<0 OR completed>8640000000000000 OR length(id)!=64 OR length(session)!=64
+          OR length(review)!=64 OR typeof(permission)!='text' OR length(CAST(permission AS BLOB))>${HISTORY_TEXT_BYTES}
+          OR typeof(tie)!='text' OR length(tie)=0 OR length(CAST(tie AS BLOB))>${HISTORY_TEXT_BYTES}
+          OR length(CAST(resolution AS BLOB))>16 OR length(approving)>64
+          OR outcome NOT IN ('auto','manual','rejected','cancelled')) LIMIT 1`, q.scope, root)
+        const invalidOwner = this.get(`SELECT h.id FROM history h LEFT JOIN reviews r ON r.id=h.review
+          LEFT JOIN sessions s ON s.id=h.session WHERE h.scope=? AND h.root=? AND
+          (r.id IS NULL OR r.entry!=h.id OR r.root!=h.root OR r.session!=h.session OR s.id IS NULL OR s.scope!=h.scope OR s.root!=?) LIMIT 1`, q.scope, root, q.root)
+        if (invalid || invalidOwner) throw new HistoryInvalid("Invalid history index")
+        const total = this.get(`SELECT count(*) AS n FROM history WHERE ${base}`, q.scope, root)!.n
+        if (!count(total)) throw new HistoryInvalid("History count overflow")
+        index = this.browsing.save(root, generation, total)
+      }
+      const total = index.total
       let selected = q.entry ? this.get(`SELECT * FROM history WHERE ${base} AND id=?`, q.scope, root, q.entry)
         : this.get(`SELECT * FROM history WHERE ${base} ORDER BY completed DESC,tie DESC,id DESC LIMIT 1`, q.scope, root)
       const adjacent = (row: Row, newer: boolean) => this.get(`SELECT * FROM history WHERE ${base} AND (completed,tie,id) ${newer ? ">" : "<"} (?,?,?)
@@ -357,8 +354,9 @@ export class HistorySQL {
       if (!selected) return { revision, total, rank: 0 }
       const s = selected
       if (s.id !== opaque(q.scope, s.permission) || s.review !== opaque(q.scope, s.tie)) throw new HistoryInvalid("Invalid history ownership")
-      const rank = this.get(`SELECT count(*) AS n FROM history WHERE ${base} AND (completed,tie,id)<=(?,?,?)`, q.scope, root, s.completed, s.tie, s.id)!.n
+      const rank = index.ranks.get(s.id) ?? this.get(`SELECT count(*) AS n FROM history WHERE ${base} AND (completed,tie,id)<=(?,?,?)`, q.scope, root, s.completed, s.tie, s.id)!.n
       if (!count(rank) || rank < 1 || rank > total) throw new HistoryInvalid("Invalid history rank")
+      this.browsing.rank(index, s.id, rank)
       const result: HistorySelection = { revision, total, rank, entry: s.id, order: { completed: s.completed, tie: s.tie, id: s.id }, older: adjacent(s, false)?.id, newer: adjacent(s, true)?.id }
       const contextRow = this.get(`SELECT CASE WHEN length(CAST(context AS BLOB))<=${bytes.context} THEN context END AS context FROM reviews WHERE id=? AND root=? AND session=?`, s.review, root, s.session)
       if (typeof contextRow?.context !== "string") throw new HistoryInvalid("Invalid history ownership")
