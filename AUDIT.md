@@ -16,8 +16,9 @@
 - **User-requested presentation change:** keep the reviewer side panel visible only
   in the top-level conversation. Navigating into its subagents should hide the
   panel while normal review countdowns and automatic approvals continue (F34).
-- **Implementation status:** F01-F04 and F12-F13 have post-fix dispositions below;
-  F33 was dropped by the user; remaining findings are open. Historical audit
+- **Implementation status:** F01-F04, F06-F09, F12-F15, F23 and F25 have post-fix
+  dispositions below. F05 is partial; F32 has a measured compatibility disposition.
+  F33 was dropped and F34 deferred by the user; remaining findings are open. Historical audit
   reproductions assert the original failure; only implementation-disposition
   results describe verification of fixes.
 - **Repository changes by this review:** this document only. `AUDIT.md` was already
@@ -1408,16 +1409,17 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [x] Validate mouse-disabled readiness and real coverage controls.
   - F33 cancelled by user direction; native stacking is out of scope.
   - [x] Verify exact resize/handoff/preemption cases and commit supported changes (`b4da5a4`).
-- [ ] Phase 5: persistence progress (F06-F09).
+- [x] Phase 5: persistence progress (F06-F09).
   - [x] Design resumable bounded legacy baseline transactions and replay ownership.
   - [x] Batch dirty recovery with complete healthy-pass and deletion commit fences.
   - [x] Separate refresh invalidation from coalesced freshness requests.
   - [x] Bound steady-state browsing work while retaining selected-row repair checks.
-  - [ ] Verify slow/large/shared-worker cases and relevant host fixtures; commit.
+  - [x] Verify slow/large/shared-worker cases and relevant host fixtures; commit (`7fe0a6b`).
 - [ ] Phase 6: storage privacy (F05,F23,F25).
-  - [ ] Define secure deletion and owned cleanup on both SQLite adapters.
-  - [ ] Protect pathname opening and sidecars against replaceable ancestors.
-  - [ ] Release report-bearing close/delete/dispose state.
+  - [x] Define secure deletion and owned cleanup on both SQLite adapters for current-policy deletion.
+  - [ ] Resolve complete erasure of pre-policy fragments in still-live SQLite pages (measured blocker).
+  - [x] Protect pathname opening and sidecars against replaceable ancestors.
+  - [x] Release report-bearing close/delete/dispose state.
   - [ ] Verify active-file markers, ownership controls, aggregate retention and host behavior; commit.
 - [ ] Phase 7: review admission and mode idempotency (F10-F11).
   - [ ] Bound evaluator admission with native-front priority and cancellation-aware fairness.
@@ -1675,3 +1677,61 @@ contract. F33 remains dropped. Neither disposition claims an implemented fix.
 
 - Actual packed Bun adapter and shared host behavior passed. Large slow-worker
   measurements use Node SQLite; no equivalent Bun scale timing is claimed.
+
+### Phase 6 disposition: F23/F25 fixed; F05 partially implemented, legacy erasure open
+
+- **F23:** `history-private-path.ts` validates a nonreplaceable cross-UID namespace,
+  including every ancestor and database/sidecar ownership, mode, link count and
+  no-follow opening. Root-owned sticky temporary directories are supported. Existing
+  objects are never chmodded. Privileged and same-effective-UID namespace mutation
+  remain outside this boundary. Controlled unsafe-ancestor constructor tests reject
+  before SQLite opens or writes the replacement.
+- **F25:** terminal browser close/dispose/root deletion releases selected payload and
+  scroll state. Selected-child deletion retains only payload-free navigation metadata;
+  transient read/loading recovery preserves intended scroll behavior. Eight new
+  regressions failed before the fix; focused browser/controller tests: **38 passed**.
+- **F05 implemented portion:** verified `secure_delete=ON`, durable cleanup generations,
+  owned non-waiting WAL checkpoint/retries, and crash-resumable deletion slices of
+  at most 128 steps/40 ms cooperative work. Busy readers retain cleanup obligations.
+  Current-policy deletion removes marker bytes from active DB/WAL/SHM files on both
+  Node and packed Bun adapters while preserving totals/tombstones/replay.
+- Cross-client history, rank, neighbor and resolution queries hide tombstoned child
+  detail from the first committed slice, before final physical deletion. Large hidden
+  gaps are skipped through per-live-session indexed seeks and bounded neighbor caches.
+- Automatic legacy freelist cleanup uses SQLite-owned zero-filled reservations,
+  at most eight 64 KiB records/40 ms cooperative work per slice, retained until the
+  freelist is exhausted and then securely released. Rollback, restart and two-worker
+  ownership tests passed. A focused 6,949-free-page case completed in 108 slices,
+  maximum direct slice 22.42 ms, with 8 KiB file growth; interrupted-store recovery
+  took 6.72 s including watchdog/retry and retained exact live data.
+- **Remaining F05 issue:** pre-policy fragments in still-live b-tree pages survive
+  freelist cleanup, no-op updates and incremental vacuum. The durable legacy flag
+  deliberately stays set. Explicit offline `compactLegacy()` removes the test marker,
+  but is an embedding/fixture operation, not automatic production compatibility.
+  No automatic unbounded VACUUM or UI migration warning was added. Full legacy
+  erasure needs an owned exclusive compaction policy or a resumable rebuild with
+  cross-client publication. Phase 6 remains unchecked pending that decision.
+- A first packed Bun run correctly rejected host-created 0775 state ancestors under
+  inherited umask 0002. `smoke-runtime.mjs` now creates newly owned isolated state
+  roots as 0700; existing public/symlinked state is rejected without modification.
+  **8 runtime-cleanup tests passed**, including the actual umask and unchanged-object
+  controls. This is fixture initialization, not a production privacy bypass.
+- `npm run check`: **1,148 source checks**, **111 helper tests**, typecheck and build
+  passed before the final fixture-only initialization change.
+- Actual pinned-host commands, each prefixed with `node scripts/test-runtime.mjs`:
+
+  | Arguments | Result under `.runtime/` |
+  | --- | --- |
+  | `smoke-history-storage.mjs` | `runtime-run-aaGBIp/results.json` |
+  | `smoke-history-maintenance.mjs` | `runtime-run-v9wW8J/results.json` |
+  | `smoke-history.mjs shared` | `runtime-run-B9uLc6/results.json` |
+  | `smoke-history.mjs delete` | `runtime-run-RWPwqu/results.json` |
+
+- Packed Bun proof includes busy-reader cleanup, automatic freelist scrub, the
+  residual legacy marker, explicit compaction, two clients, retained totals,
+  tombstones, reopen and disposal. No whole-disk/backups erasure is claimed.
+- Final fixture-only changes: `npm run test:helpers` **111 passed**;
+  `npm run check:package` reproduced SHA-256
+  `6c8334c4315f830857df0afc12b5b5fae240b456388ed7f856bd3ae39b6f04a7`
+  and exactly five package files; `node --test test/release-artifact-smoke.test.mjs
+  test/npm-cli-smoke.test.mjs` **9 passed** with offline boundaries.

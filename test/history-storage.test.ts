@@ -269,12 +269,30 @@ test("two real worker clients concurrently initialize schema and share committed
   const workers = [new HistoryWorker(bundle.outputFiles[0]!.text), new HistoryWorker(bundle.outputFiles[0]!.text)]
   t.after(async () => { await Promise.all(workers.map(w => w.terminate())); rmSync(directory, { recursive: true, force: true }) })
   const ready = await Promise.all(workers.map(w => w.call({ type: "open", file, adapter: "node" })))
-  assert.deepEqual(ready, [{ environmentKeys: 0 }, { environmentKeys: 0 }])
+  assert.deepEqual(ready, [{ environmentKeys: 0, cleanup: true }, { environmentKeys: 0, cleanup: true }])
   await Promise.all(workers.map((w, i) => w.call({ type: "apply", writer: `worker${i}`, sequence: 1, event: encodeEvent({
     type: "attemptFinalized", context: { ...context, review: `worker${i}` }, attempt: "1", at: 1, usage: { cost: 1 },
   }) })))
   const totals = await workers[0]!.call({ type: "query", query: { type: "totals" } })
   assert.equal(totals.totals.requests, 2); assert.equal(totals.totals.cost, 2)
+  const marker = "PRIVATE_WORKER_REPORT_TO_ERASE_8b183f"
+  await workers[0]!.call({ type: "apply", writer: "worker0", sequence: 2, event: encodeEvent(resolve(context, { ...payload, desc: marker.repeat(1000) })) })
+  const reader = new DatabaseSync(file)
+  try {
+    reader.exec("BEGIN"); reader.prepare("SELECT body FROM payloads").get()
+    await workers[0]!.call({ type: "apply", writer: "worker0", sequence: 3,
+      event: encodeEvent({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.root }, at: 300 }) })
+    assert.deepEqual(await workers[0]!.call({ type: "cleanup" }), { pending: true, legacy: false })
+    assert.ok(readFileSync(file + "-wal").includes(Buffer.from(marker)))
+    reader.exec("ROLLBACK")
+    assert.deepEqual(await workers[1]!.call({ type: "cleanup" }), { pending: false, legacy: false })
+    for (const suffix of ["", "-wal", "-shm"]) {
+      assert.equal(readFileSync(file + suffix).includes(Buffer.from(marker)), false)
+    }
+    assert.equal(reader.prepare("SELECT count(*) n FROM payloads").get()!.n, 0)
+    assert.equal(reader.prepare("SELECT count(*) n FROM tombstones").get()!.n, 1)
+    assert.deepEqual(await workers[1]!.call({ type: "query", query: { type: "totals" } }), totals)
+  } finally { reader.close() }
 })
 
 test("deletion rejects conflicting root ownership without deleting another root's details", t => {

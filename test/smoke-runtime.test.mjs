@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawn, execFileSync } from "node:child_process"
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -22,12 +22,15 @@ async function until(condition) {
   assert.fail("Fixture cleanup did not complete within five seconds")
 }
 
-async function owner(t, duringStart = false) {
+async function owner(t, duringStart = false, umask) {
   const directory = await mkdtemp(path.join(tmpdir(), "review-runtime-test-"))
   const marker = path.join(directory, "pane-started.json")
   const child = spawn(process.execPath, ["--input-type=module", "-e", `
     import { smokeRuntime } from ${JSON.stringify(helper)};
+    import { statSync } from "node:fs";
+    ${umask === undefined ? "" : `process.umask(${umask});`}
     const runtime = await smokeRuntime(${JSON.stringify(directory)});
+    const stateModes = [${JSON.stringify(path.join(directory, "state"))},${JSON.stringify(path.join(directory, "state/opencode"))}].map(name=>statSync(name).mode&0o777);
     let acknowledged = false;
     process.on("message", async (message) => {
       if (message === "stop") { await runtime.dispose(); process.disconnect(); }
@@ -37,7 +40,7 @@ async function owner(t, duringStart = false) {
     await runtime.start("-d", "-s", "fixture", process.execPath, "-e", ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({pid: process.pid})); setInterval(() => {}, 1000)`)},
       ${duringStart ? '";", "wait-for", "startup-barrier"' : ''});
     acknowledged = true;
-    ${duringStart ? '' : 'process.send({socket: runtime.socket, supervisor: runtime.supervisorPID, pane: Number(runtime.tmux("display-message", "-p", "-t", "fixture", "#{pane_pid}"))});'}
+    ${duringStart ? '' : 'process.send({socket: runtime.socket, supervisor: runtime.supervisorPID, pane: Number(runtime.tmux("display-message", "-p", "-t", "fixture", "#{pane_pid}")), umask:process.umask(), stateModes});'}
   `], { stdio: ["ignore", "ignore", "pipe", "ipc"] })
   let diagnostic = ""
   child.stderr.on("data", (chunk) => { diagnostic += chunk })
@@ -162,4 +165,41 @@ test("startup environment excludes inherited tmux identities, shell hooks and cr
   assert.equal(env.SHELL, "/bin/sh")
   assert.equal(env.COLORTERM, "truecolor", "RGB capability must be deterministic, not inherited from the parent")
   for (const key of ["TMUX", "TMUX_PANE", "BASH_ENV", "ENV", "NODE_OPTIONS", "PRIVATE_TOKEN", "OPENCODE_CONFIG"]) assert.equal(env[key], undefined)
+})
+
+test("umask 0002 fixtures have private XDG state before launching a pane and safely reuse it", { timeout: 10000 }, async t => {
+  const fixture = await owner(t, false, 0o002)
+  assert.equal(fixture.umask, 0o002, "runtime must not change the process-wide umask")
+  assert.deepEqual(fixture.stateModes, [0o700, 0o700], "observed in the owner before runtime.start")
+  const state = smokeEnvironment(fixture.directory).XDG_STATE_HOME
+  const targets = [state, path.join(state, "opencode")]
+  const before = await Promise.all(targets.map(target => stat(target)))
+  for (const info of before) { assert.equal(info.mode & 0o777, 0o700); assert.equal(info.uid, process.geteuid()) }
+  fixture.child.send("stop")
+  await fixture.exited
+  await until(() => stopped(fixture.socket) && !alive(fixture.pane) && !alive(fixture.supervisor))
+  const reused = await smokeRuntime(fixture.directory)
+  try {
+    const after = await Promise.all(targets.map(target => stat(target)))
+    assert.deepEqual(after.map(info => [info.ino, info.mode, info.ctimeMs]), before.map(info => [info.ino, info.mode, info.ctimeMs]),
+      "existing private state directories are reused without chmod or replacement")
+  } finally { await reused.dispose() }
+})
+
+test("state setup rejects existing public or symlinked paths without chmod or target creation", async t => {
+  for (const leaf of ["state", "state/opencode"]) for (const alias of [false, true]) {
+    const directory = await mkdtemp(path.join(tmpdir(), "review-runtime-state-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    if (leaf.includes("/")) await mkdir(path.join(directory, "state"), { mode: 0o700 })
+    const target = path.join(directory, "external-target"), candidate = path.join(directory, leaf)
+    await mkdir(target, { mode: 0o700 })
+    if (alias) await symlink(target, candidate)
+    else { await mkdir(candidate); await chmod(candidate, 0o775) }
+    const before = await stat(candidate)
+    await assert.rejects(smokeRuntime(directory), /private owned directories/)
+    const after = await stat(candidate)
+    assert.deepEqual([after.ino, after.mode, after.ctimeMs], [before.ino, before.mode, before.ctimeMs])
+    await assert.rejects(stat(path.join(target, "opencode")), { code: "ENOENT" })
+    assert.equal(stopped(path.join(directory, "tmux.sock")), true)
+  }
 })

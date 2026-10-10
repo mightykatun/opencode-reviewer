@@ -42,7 +42,7 @@ test("durable bounded per-review cursor serializes two writers, rollback, replay
   assert.ok(sawAttempts); assert.ok(interruptedAttempts); assert.ok(slices > 200); assert.ok(maximum <= HISTORY_BOOTSTRAP_STEPS)
   assert.deepEqual(first.applyReady("a", 1, encodeEvent(event)), { replay: false })
   assert.deepEqual(second.applyReady("a", 1, encodeEvent(event)), { replay: true })
-  assert.deepEqual(second.applyReady("b", 1, deletion), { replay: false })
+  assert.deepEqual(second.apply("b", 1, deletion), { replay: false })
   const totals = first.query({ type: "conversationTotals", scope: c.scope, root: c.root }) as HistoryConversationTotals
   assert.equal(totals.totals.safe, 2000); assert.equal(totals.totals.input, 20007)
   assert.equal(totals.totals.activity.retries, 20000); assert.equal(totals.partialHistory, true)

@@ -119,7 +119,9 @@ export class HistoryController {
     const selected = this.state.selection
     if (selected?.entry && (selected.session ?? selected.record?.context.session) === id) {
       this.deletedEntries.add(selected.entry)
-      this.update({ status: "loading" })
+      // Keep the cursor for adjacent-entry recovery, never known-deleted plaintext.
+      this.update({ status: "loading", selection: { revision: selected.revision, total: selected.total, rank: selected.rank,
+        entry: selected.entry, order: selected.order, session: id } })
     }
     this.refresh?.refresh()
   }
@@ -129,7 +131,8 @@ export class HistoryController {
     clearTimeout(this.retry); this.root = undefined; this.session = undefined
     clearTimeout(this.targetTimeout); this.target = undefined
     this.deletedEntries.clear()
-    this.update({ open: false })
+    this.scroll = 0
+    this.update({ open: false, status: "loading", selection: undefined })
   }
   dispose() { this.stopped = true; this.unsubscribeMaintenance?.(); this.close() }
 }

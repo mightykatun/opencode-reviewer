@@ -4,6 +4,10 @@ import { count, decodeEvent, entryID, HISTORY_RECORD_BYTES as bytes, HISTORY_TEX
 import { bootstrap, migrationSchema } from "./history-migration.js"
 import { browsingSchema, HistoryBrowsing } from "./history-browsing.js"
 import { historyDelta } from "./history-statistics.js"
+import { cleanupHistory, compactLegacyHistory, privacySchema } from "./history-privacy.js"
+import type { HistoryCleanup } from "./history-privacy.js"
+import { deleteHistory } from "./history-deletion.js"
+import { scrubLegacyFreelist } from "./history-legacy-scrub.js"
 import type { HistoryEvent, HistoryOutcome, HistoryPayload, HistoryQuery, HistoryReview, HistoryScope, HistoryOrder } from "./history-records.js"
 
 type Row = Record<string, any>
@@ -28,6 +32,7 @@ export interface HistoryResolution { outcome?: HistoryOutcome; uncertain: boolea
 export interface HistorySession { context?: HistoryScope }
 export type HistoryResult = HistorySelection | HistoryTotals | HistoryConversationTotals | HistorySessions | HistoryResolution | HistorySession
 export interface HistoryPending { pending: string }
+export interface HistoryDeleting { deleting: true }
 
 const schema = `
 CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, revision INTEGER NOT NULL, totals TEXT NOT NULL);
@@ -52,12 +57,13 @@ CREATE INDEX history_session ON history(session);
 CREATE TABLE payloads (id TEXT PRIMARY KEY REFERENCES history(id) ON DELETE CASCADE, body TEXT NOT NULL);
 `
 
-/** All mutation and its replay cursor share one durable transaction. */
+/** Accounting and replay commit atomically; detail deletion stages are tombstoned and resumable. */
 export class HistorySQL {
   private statements = new Map<string, ReturnType<HistoryDatabase["prepare"]>>()
   private browsing = new HistoryBrowsing()
   constructor(readonly db: HistoryDatabase) {
-    db.exec("PRAGMA busy_timeout=250; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=256")
+    db.exec("PRAGMA busy_timeout=250; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=256")
+    if (db.prepare("PRAGMA secure_delete").get()?.secure_delete !== 1) throw new HistoryInvalid("Secure history deletion unavailable")
     this.transaction(() => {
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()
       if (!tables.length) {
@@ -81,6 +87,7 @@ export class HistorySQL {
         CREATE INDEX IF NOT EXISTS history_visible_order ON history(scope,root,completed,tie,id) WHERE outcome IS NOT NULL;`)
       db.exec(migrationSchema)
       db.exec(browsingSchema)
+      privacySchema(db, tables.length > 0)
     })
   }
   private statement(sql: string) {
@@ -108,12 +115,13 @@ export class HistorySQL {
   apply(writer: string, sequence: number, serialized: string, beforeCommit?: () => void): { replay: boolean } {
     for (;;) {
       const result = this.applyReady(writer, sequence, serialized, beforeCommit)
+      if ("deleting" in result) continue
       if (!("pending" in result)) return result
       this.bootstrap(result.pending)
     }
   }
-  /** Worker entrypoint: never performs bootstrap inside an ordinary event. */
-  applyReady(writer: string, sequence: number, serialized: string, beforeCommit?: () => void): { replay: boolean } | HistoryPending {
+  /** Worker entrypoint: bootstrap is separate; deletion advances at most one bounded slice. */
+  applyReady(writer: string, sequence: number, serialized: string, beforeCommit?: () => void): { replay: boolean } | HistoryPending | HistoryDeleting {
     if (!/^[a-zA-Z0-9-]{1,128}$/.test(writer) || !count(sequence) || !sequence) throw new HistoryInvalid("Invalid writer sequence")
     const event = decodeEvent(serialized)
     return this.transaction(() => {
@@ -122,7 +130,10 @@ export class HistorySQL {
       if (sequence !== previous + 1) throw new HistoryInvalid("History sequence gap")
       const root = rootID(event.context)
       if (!this.ready(root)) return { pending: root }
-      this.event(event)
+      if (event.type === "sessionDeleted") {
+        if (!deleteHistory(this.db, event.context)) { beforeCommit?.(); return { deleting: true } }
+        this.revision(root)
+      } else this.event(event)
       this.run("INSERT INTO writers VALUES (?,?) ON CONFLICT(id) DO UPDATE SET sequence=excluded.sequence", writer, sequence)
       beforeCommit?.()
       return { replay: false }
@@ -161,22 +172,8 @@ export class HistorySQL {
     if (JSON.stringify(totals) !== meta.totals) this.run("UPDATE meta SET totals=?,revision=revision+1 WHERE id=1", JSON.stringify(totals))
     this.run("UPDATE conversation_totals SET totals=? WHERE id=?", JSON.stringify(conversation), root)
   }
-  private event(e: HistoryEvent) {
+  private event(e: Exclude<HistoryEvent, { type: "sessionDeleted" }>) {
     const c = e.context, root = rootID(c), session = sessionID(c)
-    // applyReady gates every root mutation, including deletion, on a committed baseline.
-    if (e.type === "sessionDeleted") {
-      const owner = this.get("SELECT root FROM sessions WHERE id=?", session)
-      if (owner && owner.root !== c.root) throw new HistoryInvalid("Conflicting session ownership")
-      const isRoot = c.root === c.session
-      this.run("INSERT OR IGNORE INTO tombstones VALUES (?)", isRoot ? root : session)
-      // Root and session identities are opaque; details and bodies disappear, totals never do.
-      for (const table of ["history", "approvals", "reviews"])
-        this.run(`DELETE FROM ${table} WHERE ${isRoot ? "root" : "session"}=?`, isRoot ? root : session)
-      if (isRoot) this.run("DELETE FROM sessions WHERE scope=? AND root=?", c.scope, c.root)
-      else this.run("DELETE FROM sessions WHERE id=?", session)
-      this.revision(root)
-      return
-    }
     const context = e.context, review = reviewID(context), entry = entryID(context)
     const deleted = this.get("SELECT id FROM tombstones WHERE id IN (?,?) LIMIT 1", root, session)
     if (!deleted) {
@@ -282,6 +279,8 @@ export class HistorySQL {
         return { revision, ...this.conversation(rootID(q)) }
       }
       if (q.type === "sessions") {
+        // Physical maintenance inventory, not report visibility. Keep bounded raw
+        // pages/cursors through pending deletion so reconciliation can finish it.
         const rows = this.all(`SELECT CASE WHEN length(id)=64 THEN id END AS id,scope,
           CASE WHEN length(CAST(root AS BLOB))<=${HISTORY_TEXT_BYTES} THEN root END AS root,
           CASE WHEN length(CAST(session AS BLOB))<=${HISTORY_TEXT_BYTES} THEN session END AS session
@@ -293,6 +292,7 @@ export class HistorySQL {
         }), after: rows.at(-1)?.id }
       }
       if (q.type === "session") {
+        if (this.get("SELECT id FROM tombstones WHERE id=?", opaque(q.scope, q.session))) return {}
         const row = this.get(`SELECT CASE WHEN length(CAST(scope AS BLOB))<=${HISTORY_TEXT_BYTES} THEN scope END AS scope,
           CASE WHEN length(CAST(session AS BLOB))<=${HISTORY_TEXT_BYTES} THEN session END AS session,
           CASE WHEN length(CAST(root AS BLOB))<=${HISTORY_TEXT_BYTES} THEN root END AS root
@@ -300,11 +300,13 @@ export class HistorySQL {
         if (!row) return {}
         validateScope(row as HistoryScope)
         if (row.scope !== q.scope || row.session !== q.session) throw new HistoryInvalid("Invalid session ownership")
+        if (this.get("SELECT id FROM tombstones WHERE id=?", rootID(row as HistoryScope))) return {}
         return { context: { scope: row.scope, root: row.root, session: row.session } }
       }
       if (q.type === "resolution") {
         const entry = opaque(q.scope, q.permission), root = rootID(q), session = sessionID(q)
         const deleted = !!this.get("SELECT id FROM tombstones WHERE id IN (?,?) LIMIT 1", root, session)
+        if (deleted) return { outcome: undefined, uncertain: false, conflict: false, deleted: true }
         const invalid = this.get(`SELECT 1 AS invalid FROM approvals WHERE entry=? AND
           (root!=? OR session!=? OR state NOT IN ('pending','confirmed','uncertain','not-sent') OR automatic NOT IN (-1,0,1)
           OR (state='confirmed' AND automatic=-1)) LIMIT 1`, entry, root, session)
@@ -324,20 +326,22 @@ export class HistorySQL {
       }
       const root = rootID(q), revision = this.get("SELECT revision FROM roots WHERE id=?", root)?.revision ?? 0
       if (this.get("SELECT id FROM tombstones WHERE id=?", root)) return { revision, total: 0, rank: 0, deleted: true }
-      const base = "scope=? AND root=? AND outcome IS NOT NULL"
+      const visible = "NOT EXISTS (SELECT 1 FROM tombstones WHERE id=history.session)"
+      const base = `scope=? AND root=? AND outcome IS NOT NULL AND ${visible}`
       const generation = this.get("SELECT generation FROM history_generations WHERE id=?", root)?.generation ?? 0
       if (!count(generation) || !count(revision)) throw new HistoryInvalid("Invalid history index")
       let index = this.browsing.get(root, generation)
       if (!index) {
         // Validate once per structural generation, never caching selected text.
-        const invalid = this.get(`SELECT id FROM history WHERE scope=? AND root=? AND
+        const invalid = this.get(`SELECT id FROM history WHERE scope=? AND root=? AND ${visible} AND
           (typeof(completed)!='integer' OR completed<0 OR completed>8640000000000000 OR length(id)!=64 OR length(session)!=64
           OR length(review)!=64 OR typeof(permission)!='text' OR length(CAST(permission AS BLOB))>${HISTORY_TEXT_BYTES}
           OR typeof(tie)!='text' OR length(tie)=0 OR length(CAST(tie AS BLOB))>${HISTORY_TEXT_BYTES}
           OR length(CAST(resolution AS BLOB))>16 OR length(approving)>64
           OR outcome NOT IN ('auto','manual','rejected','cancelled')) LIMIT 1`, q.scope, root)
         const invalidOwner = this.get(`SELECT h.id FROM history h LEFT JOIN reviews r ON r.id=h.review
-          LEFT JOIN sessions s ON s.id=h.session WHERE h.scope=? AND h.root=? AND
+          LEFT JOIN sessions s ON s.id=h.session WHERE h.scope=? AND h.root=?
+          AND NOT EXISTS (SELECT 1 FROM tombstones WHERE id=h.session) AND
           (r.id IS NULL OR r.entry!=h.id OR r.root!=h.root OR r.session!=h.session OR s.id IS NULL OR s.scope!=h.scope OR s.root!=?) LIMIT 1`, q.scope, root, q.root)
         if (invalid || invalidOwner) throw new HistoryInvalid("Invalid history index")
         const total = this.get(`SELECT count(*) AS n FROM history WHERE ${base}`, q.scope, root)!.n
@@ -345,10 +349,31 @@ export class HistorySQL {
         index = this.browsing.save(root, generation, total)
       }
       const total = index.total
-      let selected = q.entry ? this.get(`SELECT * FROM history WHERE ${base} AND id=?`, q.scope, root, q.entry)
-        : this.get(`SELECT * FROM history WHERE ${base} ORDER BY completed DESC,tie DESC,id DESC LIMIT 1`, q.scope, root)
-      const adjacent = (row: Row, newer: boolean) => this.get(`SELECT * FROM history WHERE ${base} AND (completed,tie,id) ${newer ? ">" : "<"} (?,?,?)
-        ORDER BY completed ${newer ? "ASC" : "DESC"},tie ${newer ? "ASC" : "DESC"},id ${newer ? "ASC" : "DESC"} LIMIT 1`, q.scope, root, row.completed, row.tie, row.id)
+      const byID = (id: string | null) => id === null ? undefined : this.get(`SELECT * FROM history WHERE ${base} AND id=?`, q.scope, root, id)
+      // Seek one candidate per live session. Filtering the root's chronological
+      // index would walk arbitrarily many tombstoned rows to find a neighbor.
+      // Cache only candidate IDs per generation, never context or report text.
+      const seek = (row?: Row, newer = false) => {
+        const order = newer ? "ASC" : "DESC"
+        return this.get(`SELECT h.* FROM sessions s JOIN history h ON h.id=(
+          SELECT id FROM history WHERE scope=? AND root=? AND session=s.id AND outcome IS NOT NULL
+          ${row ? `AND (completed,tie,id) ${newer ? ">" : "<"} (?,?,?)` : ""}
+          ORDER BY completed ${order},tie ${order},id ${order} LIMIT 1)
+          WHERE s.scope=? AND s.root=? AND NOT EXISTS (SELECT 1 FROM tombstones WHERE id=s.id)
+          ORDER BY h.completed ${order},h.tie ${order},h.id ${order} LIMIT 1`,
+        q.scope, root, ...(row ? [row.completed, row.tie, row.id] : []), q.scope, q.root)
+      }
+      let selected: Row | undefined
+      if (q.entry) selected = byID(q.entry)
+      else if (index.latest !== undefined) selected = byID(index.latest)
+      else { selected = seek(); index.latest = selected?.id ?? null }
+      const adjacent = (row: Row, newer: boolean) => {
+        const key = opaque(String(row.completed), row.tie, row.id, String(newer))
+        if (index.neighbors.has(key)) return byID(index.neighbors.get(key)!)
+        const candidate = seek(row, newer)
+        this.browsing.neighbor(index, key, candidate?.id ?? null)
+        return candidate
+      }
       if (selected && q.direction) selected = adjacent(selected, q.direction === "newer") ?? selected
       if (!selected && q.order) selected = adjacent(q.order, true) ?? adjacent(q.order, false)
       if (!selected) return { revision, total, rank: 0 }
@@ -373,5 +398,31 @@ export class HistorySQL {
       return result
     }, false)
   }
+  cleanup(beforeCommit?: () => void): HistoryCleanup {
+    // Resume a committed partial deletion even if its original host/FIFO exited.
+    // One slice per call; checkpoint is a separate owned turn after detail work.
+    const work = this.transaction(() => {
+      const row = this.get(`SELECT id,
+        CASE WHEN length(CAST(scope AS BLOB))<=${HISTORY_TEXT_BYTES} THEN scope END AS scope,
+        CASE WHEN length(CAST(root AS BLOB))<=${HISTORY_TEXT_BYTES} THEN root END AS root,
+        CASE WHEN length(CAST(session AS BLOB))<=${HISTORY_TEXT_BYTES} THEN session END AS session
+        FROM history_deletions ORDER BY id LIMIT 1`)
+      if (!row) {
+        if (!scrubLegacyFreelist(this.db)) return undefined
+        beforeCommit?.()
+        return "scrubbing" as const
+      }
+      validateScope(row as HistoryScope)
+      if (row.id !== sessionID(row as HistoryScope) || !this.get("SELECT id FROM tombstones WHERE id=?", row.id)
+        || !this.get("SELECT id FROM conversation_totals WHERE id=?", rootID(row as HistoryScope))) throw new HistoryInvalid("Invalid history deletion")
+      if (deleteHistory(this.db, row as HistoryScope)) this.revision(rootID(row as HistoryScope))
+      beforeCommit?.()
+      return "deleting" as const
+    })
+    if (work) return { pending: true, legacy: !!this.get("SELECT legacy FROM history_privacy WHERE id=1")!.legacy, [work]: true as const }
+    return cleanupHistory(this.db)
+  }
+  /** Explicit unbounded offline maintenance, not called by HistoryStore. */
+  compactLegacy() { compactLegacyHistory(this.db) }
   close() { this.db.close() }
 }

@@ -71,6 +71,10 @@ export class HistoryStore {
   private preferRead = false
   private bootstraps = new Set<string>()
   private preferBootstrap = true
+  private cleanupEnabled = false
+  private cleanupDue = 0
+  private cleanupNeeded = false
+  private legacyCleanup?: boolean
   private failures = new Set<() => unknown>()
   private commits = new Set<() => unknown>()
   private disposal?: Promise<void>
@@ -87,6 +91,9 @@ export class HistoryStore {
   }
   get retainedBytes() { return this.bytes }
   get pendingOperations() { return this.queue.length }
+  /** Local observation only; another client may have committed newer cleanup work. */
+  get cleanupPending() { return this.cleanupNeeded }
+  get legacyCleanupRequired() { return this.legacyCleanup }
   /** Saturated deletion admission leaves one bounded reconciliation signal, never an ID side queue. */
   get maintenanceDirty() { return this.dirty }
   get maintenanceRevision() { return this.dirtyRevision }
@@ -151,12 +158,22 @@ export class HistoryStore {
   private pump() {
     if (this.active || this.stopped) return
     if (this.timer) { this.cancel(this.timer); this.timer = undefined }
+    // One owned cleanup slot. Checkpoints retry after two seconds; interrupted
+    // detail deletion and legacy freelist scrub yield ten milliseconds between
+    // bounded slices. Poll even while idle to recover work left by an exited client.
+    const cleanup = this.cleanupEnabled && this.now() >= this.cleanupDue && (!this.closing || this.cleanupNeeded)
+    if (cleanup) { this.active = true; void this.run(undefined, undefined, true); return }
     const write = !this.blocked && this.queue.length > 0 && this.now() >= this.retryAt
     const bootstrap = !this.blocked && this.now() >= this.retryAt && (this.preferBootstrap || (!write && !this.reads.length))
       ? this.bootstraps.values().next().value : undefined
     const read = !bootstrap && this.reads.length && (!write || this.preferRead) ? this.reads.shift() : undefined
     if (!read && !write && !bootstrap) {
-      if ((this.queue.length || this.bootstraps.size) && !this.blocked) this.timer = this.schedule(() => { this.timer = undefined; this.pump() }, Math.max(0, this.retryAt - this.now()))
+      const next = Math.min((this.queue.length || this.bootstraps.size) && !this.blocked ? this.retryAt : Infinity,
+        this.cleanupEnabled && (!this.closing || this.cleanupNeeded) ? this.cleanupDue : Infinity)
+      if (Number.isFinite(next)) {
+        this.timer = this.schedule(() => { this.timer = undefined; this.pump() }, Math.max(0, next - this.now()))
+        this.timer.unref?.()
+      }
       return
     }
     this.active = true
@@ -169,23 +186,31 @@ export class HistoryStore {
     if (!this.bootstraps.has(root) && this.bootstraps.size >= 9) this.bootstraps.delete(this.bootstraps.values().next().value!)
     this.bootstraps.add(root); this.preferBootstrap = true
   }
-  private async run(read?: Read, bootstrap?: string) {
+  private async run(read?: Read, bootstrap?: string, cleanup = false) {
     // Termination is a deadline action; never create a replacement until exit is observed.
     const bootstrapReaders = bootstrap ? this.reads.filter(reader => reader.bootstrap === bootstrap) : []
     for (const reader of bootstrapReaders) reader.started = true
     let watchdog: ReturnType<typeof setTimeout> | undefined
     let terminating: Promise<void> | undefined
+    let cleanupDelay = HISTORY_RETRY_MS
     try {
       this.worker ??= this.options.transport?.() ?? new HistoryWorker(this.options.source)
       const worker = this.worker
       watchdog = setTimeout(() => { terminating = worker.terminate(); void terminating.catch(() => {}) }, 3000)
       if (!this.opened) {
-        await worker.call({ type: "open", file: path.join(this.stateDirectory, "opencode-reviewer/history-v1.sqlite"), adapter: this.options.adapter ?? "bun" })
+        const opened = await worker.call({ type: "open", file: path.join(this.stateDirectory, "opencode-reviewer/history-v1.sqlite"), adapter: this.options.adapter ?? "bun" })
         if (terminating) throw new Error("History worker terminating")
         this.opened = true
+        this.cleanupEnabled = opened?.cleanup === true
+        this.cleanupNeeded = this.cleanupEnabled
+        this.cleanupDue = 0
       }
       if (this.stopped) return
-      if (bootstrap) {
+      if (cleanup) {
+        const result = await worker.call({ type: "cleanup" })
+        this.cleanupNeeded = result.pending; this.legacyCleanup = result.legacy
+        if (result.deleting || result.scrubbing) cleanupDelay = 10 // Yield between bounded durable cleanup slices.
+      } else if (bootstrap) {
         const result = await worker.call({ type: "bootstrap", root: bootstrap })
         this.bootstraps.delete(bootstrap)
         if (!result.done) this.bootstraps.add(bootstrap)
@@ -207,11 +232,14 @@ export class HistoryStore {
         const item = this.queue[0]!
         const result = await worker.call({ type: "apply", writer: this.writer, sequence: item.sequence, event: item.event })
         if (result?.pending) { this.rememberBootstrap(result.pending); this.preferRead = true; return }
+        if (result?.deleting) { this.cleanupNeeded = this.cleanupEnabled; this.preferRead = true; this.retryAt = 0; return }
         if (this.stopped) return
+        if (this.cleanupEnabled) this.cleanupNeeded = true
         this.queue.shift(); this.bytes -= item.bytes; this.retryAt = 0; this.writeFailed = false; this.preferRead = true; this.notify(this.commits)
       }
     } catch (error) {
-      if (read) read.reject(error as Error)
+      if (cleanup) this.cleanupNeeded = true // Cleanup failure cannot poison event replay/accounting.
+      else if (read) read.reject(error as Error)
       else if (bootstrap && this.queue[0]?.root !== bootstrap) {
         this.bootstraps.delete(bootstrap)
         for (const reader of [...this.reads]) if (reader.bootstrap === bootstrap) reader.reject(error as Error)
@@ -232,6 +260,7 @@ export class HistoryStore {
         await terminating
         this.worker = undefined; this.opened = false
       }
+      if (cleanup) this.cleanupDue = this.now() + cleanupDelay
       if (read) { read.started = false; if (read.finished) read.settled() }
       for (const reader of bootstrapReaders) {
         reader.started = false
@@ -248,7 +277,7 @@ export class HistoryStore {
     this.closing = true; this.commits.clear(); this.failures.clear(); this.maintenanceListeners.clear()
     for (const read of this.reads.splice(0)) read.reject(new Error("History disposed"))
     const end = abortAt + 3500
-    while ((this.queue.length || this.active) && performance.now() < end - 300 && !this.blocked) {
+    while ((this.queue.length || this.active || this.cleanupNeeded) && performance.now() < end - 300 && !this.blocked) {
       this.pump(); await new Promise(resolve => setTimeout(resolve, 10))
     }
     this.stopped = true

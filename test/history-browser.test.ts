@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { setImmediate as settle } from "node:timers/promises"
-import { HistoryController } from "../src/history-controller.js"
+import { HistoryController, type HistoryViewState } from "../src/history-controller.js"
 import type { HistorySelection } from "../src/history-schema.js"
 import type { HistoryQuery } from "../src/history-records.js"
 import { opaque } from "../src/history-records.js"
@@ -19,13 +19,16 @@ const selection: HistorySelection = { revision: 1, total: 1, rank: 1, entry,
     payload: { safe: true, completedAt: 1, desc: "report" } } }
 function fixture(t: any, ancestry: (id: string, signal: AbortSignal) => Promise<string> = async () => "root") {
   const pending: { query: HistoryQuery; resolve: (s: HistorySelection) => void; reject: () => void }[] = []
-  let commit = () => {}
+  let commit = () => {}, onMaintenance = () => {}, dirty = false
+  let published: HistoryViewState | undefined
   const controller = new HistoryController("/project", {
     query: query => new Promise((resolve, reject) => pending.push({ query, resolve, reject: () => reject(Error()) })),
     onCommit: cb => { commit = cb; return () => {} }, onWriteFailure: () => () => {},
-  }, ancestry, () => {})
+    get maintenanceDirty() { return dirty }, onMaintenance: cb => { onMaintenance = cb; return () => {} },
+  }, ancestry, state => { published = state })
   t.after(() => controller.dispose())
-  return { controller, pending, commit: () => commit() }
+  return { controller, pending, commit: () => commit(), get published() { return published },
+    maintenance: (value: boolean) => { dirty = value; onMaintenance() } }
 }
 test("history has independent exact copy and extreme footer layouts", () => {
   assert.deepEqual(uiText.history.outcomes, { auto: "Auto approved", manual: "Manually approved", cancelled: "Cancelled", rejected: "Rejected" })
@@ -121,6 +124,30 @@ test("close, route change, deletion and disposal invalidate pending snapshots", 
   }
 })
 
+for (const action of ["close", "route", "root-deleted", "session-deleted", "durable-deleted", "dispose"] as const)
+  test(`${action} releases a loaded report from current and published state despite late reads`, async t => {
+    const f = fixture(t), c = f.controller
+    c.open("child"); await tick(); f.pending.shift()!.resolve(selection); await tick()
+    assert.equal(c.state.selection?.record?.payload.desc, "report")
+    assert.equal(f.published?.selection?.record?.payload.desc, "report")
+    c.recordScroll(17)
+    f.commit(); const late = f.pending.shift()!
+    if (action === "route") c.route("other")
+    else if (action === "root-deleted") c.deleted("root")
+    else if (action === "session-deleted") c.deleted("child")
+    else if (action === "durable-deleted") { late.resolve({ revision: 2, total: 0, rank: 0, deleted: true }); await tick() }
+    else c[action]()
+    const released = () => {
+      assert.equal(c.state.open, false)
+      assert.equal(c.state.selection, undefined, "the controller must release the selected report, not merely hide it")
+      assert.equal(f.published?.selection, undefined, "the latest publication must also release the report")
+      assert.equal(Reflect.get(c, "target"), undefined, "no pending notification target may remain")
+      assert.equal(Reflect.get(c, "refresh"), undefined, "the terminal controller must detach its refresh owner")
+    }
+    released()
+    if (action !== "durable-deleted") { late.resolve(selection); await tick(); released() }
+  })
+
 test("temporary read failure preserves scroll and requests layout restoration for the same report", async t => {
   const f = fixture(t), c = f.controller
   c.open("root"); await tick(); f.pending.shift()!.resolve(selection); await tick()
@@ -128,12 +155,27 @@ test("temporary read failure preserves scroll and requests layout restoration fo
   const reset = c.state.reset
   f.commit(); f.pending.shift()!.reject(); await tick()
   assert.equal(c.state.status, "error")
+  assert.equal(c.state.selection?.record?.payload, selection.record!.payload)
   c.recordScroll(0) // The temporary message's measured scroll extent collapses.
   assert.equal(c.scroll, 17)
   f.commit(); f.pending.shift()!.resolve(selection); await tick()
   assert.equal(c.scroll, 17)
   assert.ok(c.state.reset > reset, "the remounted Markdown must restore its saved offset after layout")
   c.recordScroll(23); assert.equal(c.scroll, 23)
+})
+test("temporary maintenance loading retains the same report and restores its scroll after layout", async t => {
+  const f = fixture(t), c = f.controller
+  c.open("root"); await tick(); f.pending.shift()!.resolve(selection); await tick()
+  c.recordScroll(17); const reset = c.state.reset
+  f.maintenance(true)
+  assert.equal(c.state.status, "loading")
+  assert.equal(f.published?.selection?.record?.payload, selection.record!.payload)
+  c.recordScroll(0); assert.equal(c.scroll, 17)
+  f.pending.shift()!.resolve(selection); await tick()
+  assert.equal(c.state.status, "loading")
+  f.maintenance(false); f.pending.shift()!.resolve(selection); await tick()
+  assert.equal(c.state.status, "ready"); assert.equal(c.scroll, 17)
+  assert.ok(c.state.reset > reset)
 })
 test("late ancestry cannot reopen, invalid roots show error and never query a guessed scope", async t => {
   let resolve!: (root: string) => void
@@ -160,13 +202,48 @@ test("live deletion suppresses precommit snapshots and durable root deletion clo
   const child = { ...selection, record: { ...selection.record!, context: { ...selection.record!.context, session: "child" } } }
   f.pending.shift()!.resolve(child); await tick()
   c.deleted("child"); assert.equal(c.state.status, "loading")
+  assert.equal(c.state.selection?.record, undefined)
+  assert.equal(f.published?.selection?.record, undefined)
   f.pending.shift()!.resolve(child); await tick(); assert.equal(c.state.status, "loading")
+  assert.equal(c.state.selection?.record, undefined)
   f.commit(); f.pending.shift()!.resolve({ ...child, record: undefined, unreadable: true }); await tick()
   assert.equal(c.state.status, "loading", "a corrupt precommit payload cannot resurrect a deleted selection")
   f.commit(); f.pending.shift()!.resolve({ revision: 2, rank: 0, total: 0 }); await tick()
   assert.equal(c.state.status, "ready"); assert.equal(c.state.selection?.entry, undefined)
   f.commit(); f.pending.shift()!.resolve({ revision: 3, rank: 0, total: 0, deleted: true }); await tick()
   assert.equal(c.state.open, false)
+})
+
+for (const indexedSession of [false, true]) test(`selected-child deletion releases plaintext and retains adjacent navigation (indexed session: ${indexedSession})`, async t => {
+  const f = fixture(t), c = f.controller
+  const child: HistorySelection = { ...selection, ...(indexedSession ? { session: "child" } : {}), older: "b".repeat(64), newer: "c".repeat(64),
+    record: { ...selection.record!, context: { ...selection.record!.context, session: "child" },
+      payload: { ...selection.record!.payload, desc: "deleted child plaintext" } } }
+  c.open("root"); await tick(); f.pending.shift()!.resolve(child); await tick()
+  assert.equal(f.published?.selection?.record?.payload.desc, "deleted child plaintext")
+  c.recordScroll(23); const reset = c.state.reset
+  f.commit(); const stale = f.pending.shift()!
+  c.deleted("child")
+  const released = () => {
+    assert.equal(c.state.open, true)
+    assert.equal(c.state.selection?.record, undefined)
+    assert.equal(f.published?.selection?.record, undefined)
+    assert.equal(c.state.selection?.entry, child.entry)
+    assert.deepEqual(c.state.selection?.order, child.order)
+    assert.equal(Reflect.get(c, "target"), undefined)
+  }
+  released()
+  stale.resolve(child); await tick(); released()
+  assert.deepEqual(f.pending[0]!.query, { type: "history", scope: "/project", root: "root", entry: child.entry, order: child.order })
+  f.pending.shift()!.reject(); await tick(); released()
+  assert.equal(c.state.status, "error", "failed deletion refresh cannot restore known-deleted plaintext")
+  f.commit(); f.pending.shift()!.resolve(child); await tick(); released()
+  const adjacent: HistorySelection = { ...selection, entry: child.newer, order: { completed: 2, tie: "next", id: child.newer! }, older: child.older }
+  f.commit(); f.pending.shift()!.resolve(adjacent); await tick()
+  assert.equal(c.state.selection, adjacent); assert.equal(c.state.status, "ready")
+  assert.equal(c.scroll, 0); assert.ok(c.state.reset > reset)
+  c.navigate("older")
+  assert.deepEqual(f.pending[0]!.query, { type: "history", scope: "/project", root: "root", entry: adjacent.entry, order: adjacent.order, direction: "older" })
 })
 
 const target = { session: "root", permission: "p" }
@@ -208,16 +285,25 @@ test("missing, unreadable, wrong-scope or wrong-permission targets never show an
 })
 
 test("targeted open cancellation defeats late reads and never overrides a newer history command", async t => {
-  for (const action of ["close", "route", "deleted", "dispose", "open", "cancelPendingPermission"] as const) {
+  for (const action of ["close", "route", "root-deleted", "target-deleted", "dispose", "open", "cancelPendingPermission"] as const) {
     const f = fixture(t); let ready = 0
-    f.controller.openPermission("root", target, () => ready++); await tick()
+    f.controller.open("root"); await tick(); f.pending.shift()!.resolve(selection); await tick()
+    assert.equal(f.published?.selection?.record?.payload.desc, "report")
+    const childTarget = { ...target, session: "child" }
+    f.controller.openPermission("root", childTarget, () => ready++); await tick()
+    assert.equal(f.published?.selection, undefined)
+    assert.equal(Reflect.get(f.controller, "target")?.session, "child")
     const read = f.pending.shift()!
     if (action === "route") f.controller.route("other")
-    else if (action === "deleted") f.controller.deleted("root")
+    else if (action === "root-deleted") f.controller.deleted("root")
+    else if (action === "target-deleted") f.controller.deleted("child")
     else if (action === "open") f.controller.open("root")
     else f.controller[action]()
-    await tick(); read.resolve(targeted); await tick()
+    assert.equal(Reflect.get(f.controller, "target"), undefined, "cancellation releases the target and its ready callback")
+    assert.equal(f.published?.selection, undefined)
+    await tick(); read.resolve({ ...targeted, record: { ...targeted.record!, context: { ...targeted.record!.context, session: "child" } } }); await tick()
     assert.equal(ready, 0); assert.equal(f.controller.state.selection, undefined)
+    assert.equal(f.published?.selection, undefined)
     assert.equal(f.controller.state.open, action === "open")
   }
 })

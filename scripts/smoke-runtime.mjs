@@ -1,4 +1,5 @@
 import { execFileSync, fork } from "node:child_process"
+import { lstat, mkdir } from "node:fs/promises"
 import path from "node:path"
 
 /** Fixture-server observations only. Never retain URLs, headers, bodies or native IDs. */
@@ -129,6 +130,20 @@ if (process.argv[2] === "--guard") {
 /** Each fixture supplies its own mkdtemp directory, never a shared/default socket. */
 export async function smokeRuntime(directory) {
   if (!path.isAbsolute(directory)) throw new Error("Fixture directory must be absolute")
+  // Only the caller's owned mkdtemp namespace. Host mkdir inherits umask (often
+  // 0002), so create private XDG state ancestors before ANY pane/probe can start.
+  // Reused private fixtures are allowed; never chmod or follow an existing path.
+  const privateDirectory = async target => {
+    const stat = await lstat(target)
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.geteuid?.() || (stat.mode & 0o077))
+      throw new Error("Fixture state requires private owned directories")
+  }
+  await privateDirectory(directory)
+  for (const target of [path.join(directory, "state"), path.join(directory, "state/opencode")]) {
+    try { await mkdir(target, { mode: 0o700 }) }
+    catch (error) { if (error.code !== "EEXIST") throw error }
+    await privateDirectory(target)
+  }
   const socket = path.join(directory, "tmux.sock")
   const guard = fork(new URL(import.meta.url), ["--guard", socket], {
     detached: true, stdio: ["ignore", "ignore", "inherit", "ipc"], execArgv: [], env: smokeEnvironment(directory),
