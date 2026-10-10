@@ -17,8 +17,9 @@
   in the top-level conversation. Navigating into its subagents should hide the
   panel while normal review countdowns and automatic approvals continue (F34).
 - **Implementation status:** F01-F04 and F12-F13 have post-fix dispositions below;
-  remaining findings are open. Historical audit reproductions assert the original
-  failure; only implementation-disposition results describe verification of fixes.
+  F33 was dropped by the user; remaining findings are open. Historical audit
+  reproductions assert the original failure; only implementation-disposition
+  results describe verification of fixes.
 - **Repository changes by this review:** this document only. `AUDIT.md` was already
   empty when this handoff was requested. No production fixes have been applied.
 
@@ -639,8 +640,11 @@ Do not claim synthetic process fixtures prove audible output or desktop focus.
 
 ### F33. Covered pending permission emits a second initial notification
 
-**Priority:** P2. **Status:** reported by the user and reproduced through the current
-Controller, NotificationHost and NotificationPolicy with injected native state and
+**Disposition:** dropped from implementation scope by the user after Phase 2.
+The historical diagnosis below is retained as evidence, not an active work item.
+
+**Priority:** P2. **Historical status:** reported by the user and reproduced through
+the audited Controller, NotificationHost and NotificationPolicy with injected native state and
 transport. Pinned native ordering/rendering was separately source-traced. No new
 real-TUI or actual desktop playback run is claimed for this finding.
 
@@ -1164,7 +1168,7 @@ into one large patch. Resolve validation-first items with evidence before coding
 | 1 | Evidence identity and supported syntax | F01-F04 | Reproduce wrong-file cases; differential controls; evidence/skill real-host cases |
 | 2 | Pre-dispatch approval recovery | F12-F13 | Separate temporary ineligibility from durable tombstones; all no-input controls |
 | 3 | Root-only presentation and continuing hidden normal automation | F34 | Reconcile the requested normal-mode contract; decouple same-root route suppression from timers/approval |
-| 4 | Painted proof, observer handoff and host-supported permission stack | F14-F15,F33; validate F32 | Follow F34's explicit exception; F33 native stack requires upstream/public-hook support |
+| 4 | Painted proof and observer handoff | F14-F15; validate F32 | Follow the reconciled presentation contract; F33 dropped from scope |
 | 5 | Persistence progress and refresh availability | F06-F09 | Migration/replay and dirty-generation design before optimizing read queries |
 | 6 | Storage privacy and payload release | F05,F23,F25 | Node/Bun deletion/open verification; preserve aggregates and tombstones |
 | 7 | Review admission and mode idempotency | F10-F11 | Queue fairness and unchanged-mode controls; no new model calls from commands |
@@ -1176,7 +1180,8 @@ into one large patch. Resolve validation-first items with evidence before coding
 F20-F22 can be fixed earlier independently to restore useful verification. Do not
 change production notification behavior to make those obsolete expectations pass.
 
-F33 follows the user's requested presentation-first approach. The pinned public
+F33 is no longer an implementation requirement. Its historical requested
+presentation-first approach had the following dependency: the pinned public
 surface does not expose a native permission stack; establish supported upstream
 presentation/selection changes before implementing it. A notification-only replay
 or deduplication change is not the requested fix and must not be substituted without
@@ -1397,11 +1402,11 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [ ] Reconcile hidden-normal-approval request with governing physical-visibility contract.
   - [ ] Define descendant route readiness, original deadline and negative controls.
   - [ ] Implement only after that contract gate is resolved; verify source and real TUI.
-- [ ] Phase 4: painted proof and host presentation (F14-F15,F33,F32).
+- [ ] Phase 4: painted proof and host presentation (F14-F15,F32).
   - [ ] Separate pending renewed paint from proven physical loss.
   - [ ] Preserve a stable live owner across same-session sidebar handoff.
   - [ ] Validate mouse-disabled readiness and real coverage controls.
-  - [ ] Resolve F33 supported native-stack/selection API dependency before implementing stacking.
+  - F33 cancelled by user direction; native stacking is out of scope.
   - [ ] Verify exact resize/handoff/preemption cases and commit supported changes.
 - [ ] Phase 5: persistence progress (F06-F09).
   - [ ] Design resumable bounded legacy baseline transactions and replay ownership.
@@ -1565,3 +1570,16 @@ explicit request.
   selection control. F33 additionally requires supported upstream host work, not
   a report-only stack or notification-suppression substitute. No host changes or
   compatibility claims were made.
+
+### Scope update after Phase 2
+
+- **F33: dropped by user direction.** No implementation or upstream host work is
+  required. Historical findings and probes remain documented; dropping scope is
+  not a claim that notification replay or native stacking was fixed.
+- **F34: user approval confirmed; active instruction conflict remains.** The user
+  explicitly authorized the hidden-normal-approval exception and requested that
+  only the conflicting instruction be replaced. That establishes product intent,
+  but cannot supersede the higher-priority instructions already active in this
+  session. Resume implementation after the governing session instructions are
+  updated to include F34, or obtain direction to continue independent packages
+  while F34 stays blocked. Existing verified commits are unchanged.
