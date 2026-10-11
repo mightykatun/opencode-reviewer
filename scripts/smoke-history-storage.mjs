@@ -60,7 +60,7 @@ const marker = 'PRIVATE_BUN_REPORT_47a9e9c4_DELETION_PROOF'
 const contains = file => ['', '-wal', '-shm', '-journal'].filter(suffix => existsSync(file+suffix)).some(suffix => readFileSync(file+suffix).includes(Buffer.from(marker)))
 export default { id: 'history-storage-proof', tui: async api => {
   const result = { packed: true, adapter: 'bun' }
-  const stores = [new HistoryStore(api.state.path.state), new HistoryStore(api.state.path.state)]
+  const stores = [new HistoryStore(api.state.path.state), new HistoryStore(api.state.path.state)], legacyStores = []
   const workers = [], databases = []
   let messageID = 0
   const request = (worker, message) => new Promise((resolve,reject) => {
@@ -76,7 +76,7 @@ export default { id: 'history-storage-proof', tui: async api => {
     const fail = store.onWriteFailure(() => { result.writeFailure = true })
     if (!store.admit(event)) { clearTimeout(timer); off(); fail(); reject(Error('admission failed')) }
   })
-  api.lifecycle.onDispose(() => Promise.all(stores.map(s => s.dispose())))
+  api.lifecycle.onDispose(() => Promise.all([...stores,...legacyStores].map(s => s.dispose())))
   try {
     // The exact embedded production source receives no process environment.
     const probe = worker(), probeFile = api.state.path.state+'/probe/history-v1.sqlite'
@@ -91,8 +91,7 @@ export default { id: 'history-storage-proof', tui: async api => {
     const probeEvent = {type:'permissionResolved',context,at:1,outcome:'manual',payload:{safe:true,completedAt:1,desc:marker.repeat(1000)}}
     await request(probe, {type:'apply',writer:'legacy',sequence:1,event:JSON.stringify(probeEvent)})
     await request(probe, {type:'close'})
-    // Emulate a pre-policy deleted payload on the actual Bun adapter. Ordinary
-    // cleanup must identify, not claim to erase, old freelist plaintext.
+    // Emulate a pre-policy deleted overflow payload on the actual Bun adapter.
     const legacy = new Database(probeFile)
     try { legacy.exec('PRAGMA foreign_keys=ON; DROP TRIGGER history_privacy_delete; DROP TRIGGER history_privacy_replace; DROP TABLE history_privacy; PRAGMA secure_delete=OFF; DELETE FROM history; PRAGMA wal_checkpoint(TRUNCATE)') }
     finally { legacy.close() }
@@ -101,11 +100,54 @@ export default { id: 'history-storage-proof', tui: async api => {
     result.legacyFreelistScrubSlices = 0
     do {
       result.legacyOrdinary = await request(probe, {type:'cleanup'})
-      if (++result.legacyFreelistScrubSlices>30) throw Error('legacy scrub did not settle')
+      if (++result.legacyFreelistScrubSlices>150) throw Error('legacy scrub did not settle')
     } while(result.legacyOrdinary.pending)
-    result.legacyStillPresent = contains(probeFile)
-    result.legacyCompacted = await request(probe, {type:'compactLegacy'})
     result.legacyAfter = contains(probeFile)
+    // Separate zero-freelist case: the marker is in linked freeblocks on LIVE
+    // table and UNIQUE-index root pages. Only production store scheduling drives
+    // cleanup; two current clients share its durable cursor and atomic cutovers.
+    const liveState=api.state.path.state+'/legacy-live', liveFile=liveState+'/opencode-reviewer/history-v1.sqlite', live=worker()
+    await request(live,{type:'open',file:liveFile,adapter:'bun'})
+    for(let i=0;i<8;i++) {
+      const c={...context,permission:i===4?marker:'permission-'+i,review:'review-'+i,session:'child-'+i}
+      await request(live,{type:'apply',writer:'seed',sequence:i*2+1,event:JSON.stringify({type:'reviewAccepted',context:c,at:1,accepted:{safe:true,completedAt:1}})})
+      await request(live,{type:'apply',writer:'seed',sequence:i*2+2,event:JSON.stringify({...probeEvent,context:c,payload:{safe:true,completedAt:1,desc:i===4?marker.repeat(3):'live-'+i}})})
+    }
+    await request(live,{type:'close'})
+    const liveDB=new Database(liveFile);databases.push(liveDB)
+    liveDB.exec('PRAGMA foreign_keys=ON; PRAGMA secure_delete=OFF')
+    liveDB.query('DELETE FROM history WHERE permission=?').run(marker)
+    liveDB.query('DELETE FROM reviews WHERE context LIKE ?').run('%'+marker+'%')
+    liveDB.exec('UPDATE history_privacy SET legacy=1,generation=generation+1; PRAGMA wal_checkpoint(TRUNCATE)')
+    result.liveFreelist=liveDB.query('PRAGMA freelist_count').get().freelist_count
+    const markedBlock=name=>{
+      const bytes=readFileSync(liveFile), size=bytes.readUInt16BE(16), page=liveDB.query('SELECT rootpage FROM sqlite_schema WHERE name=?').get(name).rootpage, offset=(page-1)*size
+      let block=bytes.readUInt16BE(offset+1)
+      while(block){const length=bytes.readUInt16BE(offset+block+2);if(bytes.subarray(offset+block,offset+block+length).includes(Buffer.from(marker)))return true;block=bytes.readUInt16BE(offset+block)}
+      return false
+    }
+    result.liveTableFreeblock=markedBlock('payloads');result.liveIndexFreeblock=markedBlock('sqlite_autoindex_history_2')
+    liveDB.exec('PRAGMA secure_delete=ON; BEGIN');liveDB.query('SELECT count(*) n FROM payloads').get()
+    legacyStores.push(new HistoryStore(liveState),new HistoryStore(liveState))
+    result.liveTotalsBefore=await legacyStores[0].query({type:'totals'})
+    await legacyStores[1].query({type:'totals'})
+    const liveEnd=Date.now()+10000
+    // The raw reader owns an old snapshot. Inspect progress through a separate
+    // connection so its durable legacy flag can advance while cleanup stays busy.
+    const progress=new Database(liveFile);databases.push(progress)
+    while(progress.query('SELECT legacy FROM history_privacy').get().legacy && Date.now()<liveEnd)await new Promise(resolve=>setTimeout(resolve,20))
+    result.liveRebuilt=!progress.query('SELECT legacy FROM history_privacy').get().legacy
+    result.liveSnapshotRows=liveDB.query('SELECT count(*) n FROM payloads').get().n
+    result.liveBusyMarker=contains(liveFile)
+    liveDB.exec('ROLLBACK')
+    const liveCleanupEnd=Date.now()+10000
+    while((contains(liveFile)||progress.query('SELECT generation>cleaned dirty FROM history_privacy').get().dirty)&&Date.now()<liveCleanupEnd)await new Promise(resolve=>setTimeout(resolve,20))
+    result.liveAfter=contains(liveFile)
+    result.liveHistory=await legacyStores[1].query({type:'history',scope:context.scope,root:context.root})
+    result.liveTotalsAfter=await legacyStores[0].query({type:'totals'})
+    result.liveIntegrity=progress.query('PRAGMA integrity_check').get().integrity_check
+    result.liveForeignKeys=progress.query('PRAGMA foreign_key_check').all()
+    await Promise.all(legacyStores.map(s=>s.dispose()))
     await Promise.all(stores.map((s,i) => enqueue(s, { type:'attemptFinalized', context:{...context,review:'review'+i}, at:1, attempt:'1', usage:{input:2,output:1,cost:0.1} })))
     await enqueue(stores[0], { type:'reviewAccepted', context, at:2, accepted:{safe:true,completedAt:2} })
     const later = {...context,review:'later'}
@@ -141,7 +183,7 @@ export default { id: 'history-storage-proof', tui: async api => {
     const reopened = new HistoryStore(api.state.path.state)
     try { result.reopened = await reopened.query({type:'totals'}) } finally { await reopened.dispose() }
   } catch(error) { result.error = String(error) }
-  finally { for(const db of databases) { try { db.close() } catch {} }; await Promise.all(stores.map(s => s.dispose())); await Promise.all(workers.map(w=>w.terminate())) }
+  finally { for(const db of databases) { try { db.close() } catch {} }; await Promise.all([...stores,...legacyStores].map(s => s.dispose())); await Promise.all(workers.map(w=>w.terminate())) }
   await publishObservation(${JSON.stringify(record)}, result)
 } }
 `)
@@ -182,13 +224,24 @@ try {
   assert.equal(proof.payloadRows, 0)
   assert.equal(proof.tombstones, 1)
   assert.equal(proof.legacyBefore, true)
-  assert.deepEqual(proof.legacyOrdinary, {pending:false,legacy:true})
+  assert.deepEqual(proof.legacyOrdinary, {pending:false,legacy:false})
   assert.ok(proof.legacyFreelistScrubSlices>1)
-  assert.equal(proof.legacyStillPresent, true)
-  assert.deepEqual(proof.legacyCompacted, {pending:false,legacy:false})
   assert.equal(proof.legacyAfter, false)
+  assert.equal(proof.liveFreelist, 0)
+  assert.equal(proof.liveTableFreeblock, true)
+  assert.equal(proof.liveIndexFreeblock, true)
+  assert.equal(proof.liveRebuilt, true)
+  assert.equal(proof.liveSnapshotRows, 7)
+  assert.equal(proof.liveBusyMarker, true)
+  assert.equal(proof.liveAfter, false)
+  assert.equal(proof.liveHistory.total, 7)
+  assert.equal(proof.liveHistory.record.payload.desc, 'live-7')
+  assert.deepEqual(proof.liveTotalsAfter, proof.liveTotalsBefore)
+  assert.equal(proof.liveTotalsAfter.totals.safe, 8)
+  assert.equal(proof.liveIntegrity, 'ok')
+  assert.deepEqual(proof.liveForeignKeys, [])
   assert.deepEqual(proof.retainedTotals.totals, proof.totals.totals)
   assert.deepEqual(proof.reopened.totals, proof.totals.totals)
   assert.ok(proof.disposalMs < 4000)
-  console.log("PASS packed production Bun SQLite adapter, busy-reader cleanup, legacy freelist scrub and residual compaction, two clients, totals, tombstones, reopen and disposal: " + artifacts)
+  console.log("PASS packed production Bun SQLite adapter, automatic legacy free-page and zero-freelist live-page/index erasure, shared snapshots, totals, tombstones, reopen and disposal: " + artifacts)
 } finally { await runtime.dispose() }

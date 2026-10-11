@@ -1,7 +1,8 @@
 import type { HistoryDatabase } from "./history-schema.js"
 import { legacyScrubSchema } from "./history-legacy-scrub.js"
+import { legacyRebuildSchema } from "./history-legacy-rebuild.js"
 
-/** legacy=true means complete legacy erasure is still unproven, even after freelist cleanup. */
+/** legacy=true until both legacy freelist and live b-tree cleanup have committed. */
 export interface HistoryCleanup { pending: boolean; legacy: boolean; deleting?: true; scrubbing?: true }
 
 /** Called inside schema initialization's transaction, after secure_delete=ON. */
@@ -16,6 +17,7 @@ export function privacySchema(db: HistoryDatabase, existing: boolean) {
     CREATE TRIGGER IF NOT EXISTS history_privacy_replace AFTER UPDATE OF body ON payloads BEGIN
       UPDATE history_privacy SET generation=generation+1 WHERE id=1; END;`)
   db.exec(legacyScrubSchema)
+  db.exec(legacyRebuildSchema)
 }
 
 /**
@@ -36,21 +38,4 @@ export function cleanupHistory(db: HistoryDatabase): HistoryCleanup {
     const after = db.prepare("SELECT generation,cleaned,legacy FROM history_privacy WHERE id=1").get()
     return { pending: after.generation !== after.cleaned, legacy: !!after.legacy }
   } finally { db.exec("PRAGMA busy_timeout=250") }
-}
-
-/**
- * Explicit offline/embedding maintenance only, NEVER ordinary store/watchdog work.
- * Automatic cleanup scrubs the freelist, but old freeblocks inside live b-tree
- * pages can still contain plaintext. VACUUM rewrites those pages as well, with
- * database-size-dependent time/space and no claimed
- * three-second bound. Stop other clients first. An interrupted/failed run retains
- * the legacy flag; a later checkpoint must still remove old WAL frames. Backups,
- * filesystem snapshots and unallocated disk blocks are outside this policy.
- */
-export function compactLegacyHistory(db: HistoryDatabase): void {
-  db.exec("VACUUM")
-  db.exec("UPDATE history_privacy SET legacy=0,generation=generation+1 WHERE id=1")
-  // Explicit compaction can run between automatic reservation slices. Release any
-  // zero-filled scratch records afterward rather than leaving them permanently.
-  db.exec("UPDATE history_legacy_scrub SET phase=1 WHERE id=1 AND phase=0")
 }

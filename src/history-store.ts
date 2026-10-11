@@ -159,7 +159,7 @@ export class HistoryStore {
     if (this.active || this.stopped) return
     if (this.timer) { this.cancel(this.timer); this.timer = undefined }
     // One owned cleanup slot. Checkpoints retry after two seconds; interrupted
-    // detail deletion and legacy freelist scrub yield ten milliseconds between
+    // detail deletion and legacy page scrub yield ten milliseconds between
     // bounded slices. Poll even while idle to recover work left by an exited client.
     const cleanup = this.cleanupEnabled && this.now() >= this.cleanupDue && (!this.closing || this.cleanupNeeded)
     if (cleanup) { this.active = true; void this.run(undefined, undefined, true); return }

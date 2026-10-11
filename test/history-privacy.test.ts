@@ -86,7 +86,7 @@ test("payload replacement also schedules physical removal of superseded text", t
   assert.equal((sql.query({ type: "history", ...conversation }) as any).record.payload.desc, "Replacement")
 })
 
-test("automatic legacy freelist scrub does not falsely claim erasure of live-page fragments", t => {
+test("automatic legacy cleanup erases free pages and live-page fragments without offline compaction", t => {
   const { file, sql, db } = fixture(t)
   db.exec(`DROP TRIGGER history_privacy_delete; DROP TRIGGER history_privacy_replace; DROP TABLE history_privacy;
     PRAGMA secure_delete=OFF; DELETE FROM history; PRAGMA wal_checkpoint(TRUNCATE)`)
@@ -95,12 +95,9 @@ test("automatic legacy freelist scrub does not falsely claim erasure of live-pag
   try {
     const totals = migrated.query({ type: "totals", conversation })
     let steps = 0, cleanup
-    do { cleanup = migrated.cleanup(); assert.ok(++steps < 20) } while (cleanup.pending)
-    assert.deepEqual(cleanup, { pending: false, legacy: true })
+    do { cleanup = migrated.cleanup(); assert.ok(++steps < 100) } while (cleanup.pending)
+    assert.deepEqual(cleanup, { pending: false, legacy: false })
     assert.equal(migrated.db.prepare("SELECT phase FROM history_legacy_scrub").get().phase, 2)
-    assert.equal(contains(file), true, "freelist reuse cannot erase old freeblocks in a still-live b-tree page")
-    migrated.compactLegacy()
-    assert.deepEqual(migrated.cleanup(), { pending: false, legacy: false })
     assert.equal(contains(file), false)
     assert.deepEqual(migrated.query({ type: "totals", conversation }), totals)
   } finally { migrated.close() }

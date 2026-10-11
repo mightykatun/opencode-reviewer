@@ -17,7 +17,7 @@
   in the top-level conversation. Navigating into its subagents should hide the
   panel while normal review countdowns and automatic approvals continue (F34).
 - **Implementation status:** F01-F04, F06-F09, F12-F15, F23 and F25 have post-fix
-  dispositions below. F05 is partial; F32 has a measured compatibility disposition.
+  dispositions below. F05 is now complete; F32 has a measured compatibility disposition.
   F33 was dropped and F34 deferred by the user; remaining findings are open. Historical audit
   reproductions assert the original failure; only implementation-disposition
   results describe verification of fixes.
@@ -1415,12 +1415,12 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [x] Separate refresh invalidation from coalesced freshness requests.
   - [x] Bound steady-state browsing work while retaining selected-row repair checks.
   - [x] Verify slow/large/shared-worker cases and relevant host fixtures; commit (`7fe0a6b`).
-- [ ] Phase 6: storage privacy (F05,F23,F25).
+- [x] Phase 6: storage privacy (F05,F23,F25).
   - [x] Define secure deletion and owned cleanup on both SQLite adapters for current-policy deletion.
-  - [ ] Resolve complete erasure of pre-policy fragments in still-live SQLite pages (measured blocker).
+  - [x] Resolve complete erasure of pre-policy fragments in still-live SQLite pages (automatic bounded rebuild).
   - [x] Protect pathname opening and sidecars against replaceable ancestors.
   - [x] Release report-bearing close/delete/dispose state.
-  - [ ] Verify active-file markers, ownership controls, aggregate retention and host behavior; commit.
+  - [x] Verify active-file markers, ownership controls, aggregate retention and host behavior; commit.
 - [ ] Phase 7: review admission and mode idempotency (F10-F11).
   - [ ] Bound evaluator admission with native-front priority and cancellation-aware fairness.
   - [ ] Make unchanged Enable non-destructive, including persistence retry.
@@ -1678,7 +1678,7 @@ contract. F33 remains dropped. Neither disposition claims an implemented fix.
 - Actual packed Bun adapter and shared host behavior passed. Large slow-worker
   measurements use Node SQLite; no equivalent Bun scale timing is claimed.
 
-### Phase 6 disposition: F23/F25 fixed; F05 partially implemented, legacy erasure open
+### Phase 6 initial disposition: F23/F25 fixed; F05 initially partial
 
 - **F23:** `history-private-path.ts` validates a nonreplaceable cross-UID namespace,
   including every ancestor and database/sidecar ownership, mode, link count and
@@ -1710,7 +1710,7 @@ contract. F33 remains dropped. Neither disposition claims an implemented fix.
   but is an embedding/fixture operation, not automatic production compatibility.
   No automatic unbounded VACUUM or UI migration warning was added. Full legacy
   erasure needs an owned exclusive compaction policy or a resumable rebuild with
-  cross-client publication. Phase 6 remains unchecked pending that decision.
+  cross-client publication. This initial blocker is resolved by the continuation below.
 - A first packed Bun run correctly rejected host-created 0775 state ancestors under
   inherited umask 0002. `smoke-runtime.mjs` now creates newly owned isolated state
   roots as 0700; existing public/symlinked state is rejected without modification.
@@ -1735,3 +1735,24 @@ contract. F33 remains dropped. Neither disposition claims an implemented fix.
   `6c8334c4315f830857df0afc12b5b5fae240b456388ed7f856bd3ae39b6f04a7`
   and exactly five package files; `node --test test/release-artifact-smoke.test.mjs
   test/npm-cli-smoke.test.mjs` **9 passed** with offline boundaries.
+
+### Phase 6 completion: automatic legacy live-page erasure
+
+- `history-legacy-rebuild.ts` incrementally rebuilds plugin tables and indexes,
+  mirrors concurrent mutations with transactional triggers, atomically switches
+  the live table, then securely retires its old rows and empty b-trees. Durable
+  cursors and finite copy ceilings survive interruption without blocking appends.
+  No raw page writes or automatic unbounded VACUUM are used.
+- Each slice handles at most eight rows with a 40 ms cooperative budget. Individual
+  SQLite operations remain indivisible and owned by the existing worker watchdog.
+  Total work scales with database size; space can grow by the largest table and
+  indexes. Pinned readers delay WAL erasure until they release their snapshots.
+- Tests cover zero-freelist live-page/index markers, concurrent update/delete,
+  rollback/reopen, bounded slow slices and watchdog interruption during cutover.
+  `npm run check`: **1,152 source checks**, **111 helper tests**, typecheck and build.
+- Pinned-host commands through `scripts/test-runtime.mjs` passed:
+  `smoke-history-storage.mjs` (`.runtime/runtime-run-tj26Nu/results.json`) and
+  `smoke-history.mjs shared` (`.runtime/runtime-run-rqXqa1/results.json`). Packed
+  Bun now automatically erases both old free-page and live-page/index markers.
+- PATH now supplies OpenCode V2. Verification explicitly used isolated npm
+  `opencode-linux-x64@1.18.35` via `OPENCODE_BIN`; no V2 compatibility is claimed.

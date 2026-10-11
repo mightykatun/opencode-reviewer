@@ -19,13 +19,8 @@ export const legacyScrubSchema = `
  * Committed phase/rows survive process death, and multiple current writers share
  * the same progress. A checkpoint is still required after releasing reservations.
  *
- * This is deliberately only FREELIST sanitization. Pre-policy freeblocks and
- * unused bytes in still-live b-tree pages can also contain deleted report text.
- * Neither this algorithm nor no-op row updates erase those regions. Accordingly
- * this helper NEVER clears history_privacy.legacy. A complete online rebuild needs
- * a separate schema/index cutover protocol; the public adapters have no bounded
- * page-scrub primitive. incremental_vacuum cannot fix existing auto_vacuum=NONE
- * databases without an initial full VACUUM, nor erase live-page freeblocks.
+ * This is only FREELIST sanitization. history-legacy-rebuild follows it to erase
+ * old freeblocks in still-live pages and indexes before clearing the legacy flag.
  */
 export function scrubLegacyFreelist(db: HistoryDatabase): boolean {
   const state = db.prepare("SELECT phase FROM history_legacy_scrub WHERE id=1").get()

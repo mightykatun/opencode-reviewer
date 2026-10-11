@@ -30,8 +30,6 @@ if (parentPort) {
         else if (message.type === "query") value = sql.queryReady(message.query)
         else if (message.type === "bootstrap") value = sql.bootstrap(message.root)
         else if (message.type === "cleanup") value = sql.cleanup()
-        // Explicit fixture/embedding operation, never dispatched by HistoryStore.
-        else if (message.type === "compactLegacy") { sql.compactLegacy(); value = sql.cleanup() }
         else throw new HistoryInvalid("Invalid history worker operation")
       }
       parentPort!.postMessage({ id: message.id, value })

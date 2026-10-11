@@ -4,10 +4,11 @@ import { count, decodeEvent, entryID, HISTORY_RECORD_BYTES as bytes, HISTORY_TEX
 import { bootstrap, migrationSchema } from "./history-migration.js"
 import { browsingSchema, HistoryBrowsing } from "./history-browsing.js"
 import { historyDelta } from "./history-statistics.js"
-import { cleanupHistory, compactLegacyHistory, privacySchema } from "./history-privacy.js"
+import { cleanupHistory, privacySchema } from "./history-privacy.js"
 import type { HistoryCleanup } from "./history-privacy.js"
 import { deleteHistory } from "./history-deletion.js"
 import { scrubLegacyFreelist } from "./history-legacy-scrub.js"
+import { historySchema, rebuildLegacyPages } from "./history-legacy-rebuild.js"
 import type { HistoryEvent, HistoryOutcome, HistoryPayload, HistoryQuery, HistoryReview, HistoryScope, HistoryOrder } from "./history-records.js"
 
 type Row = Record<string, any>
@@ -75,18 +76,18 @@ export class HistorySQL {
       this.parseTotals(meta.totals)
       // Additive v1 indexes, serialized with initialization on both adapters.
       // Cascading maintenance must not scan all unrelated sessions/attempts.
-      db.exec(`CREATE INDEX IF NOT EXISTS sessions_root ON sessions(scope,root);
+      historySchema(db, `CREATE INDEX IF NOT EXISTS sessions_root ON sessions(scope,root);
         CREATE INDEX IF NOT EXISTS attempts_review ON attempts(review);
         CREATE INDEX IF NOT EXISTS approvals_root ON approvals(root);
         CREATE INDEX IF NOT EXISTS approvals_session ON approvals(session);
         CREATE INDEX IF NOT EXISTS history_root ON history(root);`)
-      db.exec(`CREATE TABLE IF NOT EXISTS conversation_totals (id TEXT PRIMARY KEY, totals TEXT NOT NULL, partial INTEGER NOT NULL CHECK(partial IN (0,1)));
+      historySchema(db, `CREATE TABLE IF NOT EXISTS conversation_totals (id TEXT PRIMARY KEY, totals TEXT NOT NULL, partial INTEGER NOT NULL CHECK(partial IN (0,1)));
         CREATE INDEX IF NOT EXISTS reviews_root_id ON reviews(root,id);
         CREATE INDEX IF NOT EXISTS attempts_review_id ON attempts(review,id);
         CREATE INDEX IF NOT EXISTS approvals_review_id ON approvals(review,id);
         CREATE INDEX IF NOT EXISTS history_visible_order ON history(scope,root,completed,tie,id) WHERE outcome IS NOT NULL;`)
       db.exec(migrationSchema)
-      db.exec(browsingSchema)
+      historySchema(db, browsingSchema)
       privacySchema(db, tables.length > 0)
     })
   }
@@ -401,17 +402,13 @@ export class HistorySQL {
   cleanup(beforeCommit?: () => void): HistoryCleanup {
     // Resume a committed partial deletion even if its original host/FIFO exited.
     // One slice per call; checkpoint is a separate owned turn after detail work.
-    const work = this.transaction(() => {
+    let work: "scrubbing" | "deleting" | undefined = this.transaction(() => {
       const row = this.get(`SELECT id,
         CASE WHEN length(CAST(scope AS BLOB))<=${HISTORY_TEXT_BYTES} THEN scope END AS scope,
         CASE WHEN length(CAST(root AS BLOB))<=${HISTORY_TEXT_BYTES} THEN root END AS root,
         CASE WHEN length(CAST(session AS BLOB))<=${HISTORY_TEXT_BYTES} THEN session END AS session
         FROM history_deletions ORDER BY id LIMIT 1`)
-      if (!row) {
-        if (!scrubLegacyFreelist(this.db)) return undefined
-        beforeCommit?.()
-        return "scrubbing" as const
-      }
+      if (!row) return undefined
       validateScope(row as HistoryScope)
       if (row.id !== sessionID(row as HistoryScope) || !this.get("SELECT id FROM tombstones WHERE id=?", row.id)
         || !this.get("SELECT id FROM conversation_totals WHERE id=?", rootID(row as HistoryScope))) throw new HistoryInvalid("Invalid history deletion")
@@ -419,10 +416,18 @@ export class HistorySQL {
       beforeCommit?.()
       return "deleting" as const
     })
+    if (!work) {
+      // Only this single-flight connection disables FK enforcement, only around
+      // physical maintenance. Legacy rename semantics preserve live references.
+      this.db.exec("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON")
+      try { work = this.transaction(() => {
+        if (!scrubLegacyFreelist(this.db) && !rebuildLegacyPages(this.db)) return undefined
+        beforeCommit?.()
+        return "scrubbing" as const
+      }) } finally { this.db.exec("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON") }
+    }
     if (work) return { pending: true, legacy: !!this.get("SELECT legacy FROM history_privacy WHERE id=1")!.legacy, [work]: true as const }
     return cleanupHistory(this.db)
   }
-  /** Explicit unbounded offline maintenance, not called by HistoryStore. */
-  compactLegacy() { compactLegacyHistory(this.db) }
   close() { this.db.close() }
 }
