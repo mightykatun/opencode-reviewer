@@ -1,6 +1,7 @@
 # OpenCode Reviewer
 
 > ⚠️ **NOT v2 COMPATIBLE YET**
+> 
 > I recommend not upgrading opencode to v2 yet as many things are still unstable
 
 Reviews pending permissions in the OpenCode sidebar using a separate LLM. Covers
