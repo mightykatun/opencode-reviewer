@@ -4,7 +4,7 @@
 > 
 > I recommend not upgrading opencode to v2 yet as many things are still unstable
 
-Reviews pending permissions in the OpenCode sidebar using a separate LLM. Covers
+Reviews pending permissions in the [OpenCode](https://github.com/anomalyco/opencode) sidebar using a separate LLM. Covers
 shell commands, file edits, skill loading, MCP calls, custom tools, and external-directory access.
 Supports streaming explanations, saved report history, auto-approval, and Linux
 desktop notifications with distinct sounds.
