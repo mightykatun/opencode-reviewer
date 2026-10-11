@@ -28,9 +28,13 @@ export function sessionModeCommands(api: TuiPluginApi, modes: SessionModes, chan
         if (enabled) await modes.load(root, api.lifecycle.signal)
         api.lifecycle.signal.throwIfAborted()
         if (latest.get(root) !== order) return
+        // Re-saving an enabled root may retry failed persistence, but must not
+        // invalidate its reviews or approval countdown. Disable still suspends
+        // unread mode state and any in-flight initial load.
+        const invalidate = !enabled || !modes.enabled(root)
         const persisted = modes.set(root, enabled)
         applied = true
-        changed(root)
+        if (invalidate) changed(root)
         await persisted
         if (!api.lifecycle.signal.aborted && latest.get(root) === order) api.ui.toast({ variant: "success",
           message: uiText.sessionMode.saved(enabled) })

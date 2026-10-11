@@ -1421,10 +1421,10 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [x] Protect pathname opening and sidecars against replaceable ancestors.
   - [x] Release report-bearing close/delete/dispose state.
   - [x] Verify active-file markers, ownership controls, aggregate retention and host behavior; commit.
-- [ ] Phase 7: review admission and mode idempotency (F10-F11).
-  - [ ] Bound evaluator admission with native-front priority and cancellation-aware fairness.
-  - [ ] Make unchanged Enable non-destructive, including persistence retry.
-  - [ ] Verify fanout, handoff, mode commands and relevant host cases; commit.
+- [x] Phase 7: review admission and mode idempotency (F10-F11).
+  - [x] Bound evaluator admission with native-front priority and cancellation-aware fairness.
+  - [x] Make unchanged Enable non-destructive, including persistence retry.
+  - [x] Verify fanout, handoff, mode commands and relevant host cases; commit.
 - [ ] Phase 8: transport and time (F16,F24,F26).
   - [ ] Drain valid terminal-rejection usage without retrying rejected assessments.
   - [ ] Inherit absolute deadline ends and control actual backoff sleep in tests.
@@ -1756,3 +1756,23 @@ contract. F33 remains dropped. Neither disposition claims an implemented fix.
   Bun now automatically erases both old free-page and live-page/index markers.
 - PATH now supplies OpenCode V2. Verification explicitly used isolated npm
   `opencode-linux-x64@1.18.35` via `OPENCODE_BIN`; no V2 compatibility is claimed.
+
+### Phase 7 disposition: F10/F11 fixed
+
+- Four evaluators per controller cover evidence collection and model transport;
+  queued work uses native-front priority and round-robin root service. Abort and
+  deadline-visible completion retain leases through actual evaluator settlement.
+  Waiting work is removed on disable/deletion/disposal; retained fast reports keep
+  their existing lifecycle. Tests cover 64-way fanout and noncooperative settlement.
+- Unchanged Enable retries persistence without invalidating the controller. Actual
+  registered command tests preserve reports, original countdown deadlines and
+  cancelled/uncertain tombstones, including failed persistence and competing commands.
+- `npm run check`: **1,177 source checks**, **111 helper tests**, typecheck and build.
+- Pinned-host `scripts/test-runtime.mjs` runs passed: `smoke-review-admission.mjs
+  fanout64` (`runtime-run-SlS34e`), `smoke-fast-mode.mjs complete`
+  (`runtime-run-gQohKp`), `smoke-session-mode.mjs` (`runtime-run-tuUt4i`), each with
+  `results.json` under `.runtime/`. Fanout observed at most four concurrent reviewer
+  HTTP requests, one-slot handoff, disable/re-enable and zero command executions.
+- Initial fixture failures exposed startup observation absence and a native update
+  dialog. Startup absence is optional only until first publication; these fixtures
+  now explicitly disable host auto-update. No approval assertion was weakened.

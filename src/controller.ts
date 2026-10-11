@@ -12,6 +12,7 @@ import { remainingTime, reviewStage } from "./deadline.js"
 import { uiText } from "./ui-text.js"
 import type { HistoryTarget } from "./history-records.js"
 import type { PresentationCheck, PresentationState, ReviewPresentation } from "./review-presentation.js"
+import { ReviewAdmission, type ReviewEvaluation } from "./review-admission.js"
 
 export type AutoApproval = { status: "countdown"; seconds: number } | { status: "checking" | "allowing" | "cancelled" | "failed" | "approved" }
 
@@ -29,7 +30,7 @@ export interface View {
 }
 
 type Evaluate = (request: PermissionRequest, signal: AbortSignal, onIdentified: () => void, onProgress: (progress: ReviewProgress) => void,
-  execution?: { review: string; root?: string }) => Promise<ReviewResult | null>
+  execution?: { review: string; root?: string }) => ReviewEvaluation<ReviewResult | null>
 interface Entry {
   view: View; abort: AbortController; root?: string; gateRevision: number
   suspension?: "mode" | "unavailable"
@@ -79,6 +80,8 @@ export interface ControllerOptions {
   approval?: Approval
   clock?: ApprovalClock
   modes?: SessionModeGate
+  /** Public host metadata distinguishes native root/direct-child priority from deeper descendants. */
+  session?: (id: string) => { id: string; parentID?: string } | undefined
   onApproval?: ApprovalObserver
   onRating?: (safe: boolean, timing: ReviewTiming) => unknown
   onLifecycle?: ReviewLifecycleObserver
@@ -93,6 +96,7 @@ export class Controller {
   private modeChanges = new Map<string, number>()
   private manual = new Map<string, "cancelled" | "failed">()
   private workers = new Set<Promise<unknown>>()
+  private admission = new ReviewAdmission(root => this.nativeFront(root))
   private acknowledgements = new Map<AbortController, { request: PermissionRequest; root?: string }>()
   private approvalWorkers = new Set<Promise<unknown>>()
   private approvalRead?: Promise<PermissionRequest[]>
@@ -102,16 +106,18 @@ export class Controller {
   private approval?: Approval
   private time: ApprovalClock
   private modes?: SessionModeGate
+  private session?: ControllerOptions["session"]
   private approvalObserver?: ApprovalObserver
   private ratingObserver?: ControllerOptions["onRating"]
   private lifecycleObserver?: ReviewLifecycleObserver
   constructor(private evaluate: Evaluate, private changed: (views: View[]) => void,
     { reviewOptions = { reviewBash: true, reviewEdits: true }, approval, clock: time = clock, modes,
-      onApproval, onRating, onLifecycle }: ControllerOptions = {}) {
+      onApproval, onRating, onLifecycle, session }: ControllerOptions = {}) {
     this.options = reviewOptions
     this.approval = approval
     this.time = time
     this.modes = modes
+    this.session = session
     this.approvalObserver = onApproval
     this.ratingObserver = onRating
     this.lifecycleObserver = onLifecycle
@@ -137,6 +143,17 @@ export class Controller {
   }
   private lifecycleFact(fact: ReviewLifecycleFact) {
     try { void Promise.resolve(this.lifecycleObserver?.(fact)).catch(() => {}) } catch {}
+  }
+
+  private nativeFront(root: string) {
+    let first: PermissionRequest | undefined
+    for (const entry of this.entries.values()) {
+      const request = entry.view.request
+      if (entry.view.resolved || (request.sessionID !== root && (this.session
+        ? this.session(request.sessionID)?.parentID !== root : entry.root !== root))) continue
+      if (!first || request.sessionID < first.sessionID || (request.sessionID === first.sessionID && request.id < first.id)) first = request
+    }
+    return first?.id
   }
 
   /** Local state is already switched; invalidate snapshots before any publication. */
@@ -603,13 +620,19 @@ export class Controller {
           return null
         }
       }
-      entry.startedAt = this.time.now()
-      return this.evaluate(request, entry.abort.signal, () => {
-        // A timed-out evaluator may still call back after its review has settled.
-        if (active() && (entry.view.status === "identifying" || entry.view.status === "analyzing")) {
-          entry.view = { ...entry.view, status: "analyzing" }; this.publish()
+      return this.admission.run(request, entry.root ?? request.sessionID, entry.abort.signal, () => {
+        if (!active()) return Promise.resolve(null)
+        if (this.modes && (!this.modes.enabled(entry.root!) || (this.modeChanges.get(entry.root!) ?? 0) > entry.gateRevision)) {
+          this.suspend(entry); this.publish(); return Promise.resolve(null)
         }
-      }, (progress) => this.progress(entry, progress), { review: entry.review, root: entry.root })
+        entry.startedAt = this.time.now()
+        return this.evaluate(request, entry.abort.signal, () => {
+          // A timed-out evaluator may still call back after its review has settled.
+          if (active() && (entry.view.status === "identifying" || entry.view.status === "analyzing")) {
+            entry.view = { ...entry.view, status: "analyzing" }; this.publish()
+          }
+        }, (progress) => this.progress(entry, progress), { review: entry.review, root: entry.root })
+      })
     }).then((assessment) => {
       this.clearProgress(entry)
       if (active()) {
@@ -731,6 +754,7 @@ export class Controller {
     }
     this.entries.clear()
     await Promise.allSettled([...this.workers])
+    await this.admission.settled()
     await Promise.allSettled([...this.approvalWorkers])
     this.manual.clear()
   }

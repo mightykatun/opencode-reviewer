@@ -76,6 +76,7 @@ jobs:
             /scripts/smoke-observations.mjs
             /scripts/smoke-ui.mjs
             /scripts/smoke-approval-geometry.mjs
+            /scripts/smoke-review-admission.mjs
             /scripts/smoke-mouse-proof.mjs
             /scripts/smoke-approval-recovery.mjs
             /scripts/smoke-evidence.mjs

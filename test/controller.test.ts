@@ -621,7 +621,7 @@ test("disabled root and all descendants skip enrichment while independent roots 
   await tick()
   controller.reconcile(fresh, controller.revision)
   await tick()
-  assert.deepEqual(calls, ["other", "root", "child", "grandchild"])
+  assert.deepEqual(calls, ["other", "child", "grandchild", "root"])
   await controller.dispose()
 })
 

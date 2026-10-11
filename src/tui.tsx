@@ -4,6 +4,7 @@ import type { TuiPlugin, TuiPluginModule, TuiPluginApi } from "@opencode-ai/plug
 import { parseConfig, type Config } from "./config.js"
 import { loadRootMessages, type ContextReader } from "./context.js"
 import { Controller, visibleReview, type View } from "./controller.js"
+import { ownedReview } from "./review-admission.js"
 import { evaluateEvidence } from "./evaluate.js"
 import { FileAccess, type FileIO } from "./file-access.js"
 import { review, withDeadline } from "./reviewer.js"
@@ -150,26 +151,18 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
   const files = new FileAccess(fileIO)
   const approval = approvalTransport(api.client, api.state.path.directory)
   let visibleApproval: (check?: PresentationCheck) => ReviewPresentation = () => ({ state: "lost" })
-  const controller: Controller = new Controller(async (request, parent, onIdentified, onProgress, execution = { review: randomUUID() }) => {
+  const controller: Controller = new Controller((request, parent, onIdentified, onProgress, execution = { review: randomUUID() }) => {
     const trace = observer ? new DiagnosticTrace(observer, ++reviewSequence) : undefined
     if (trace) traces!.set(request, trace)
     const reviewReader = trace ? contextReader(api, trace) : reader
-    let worker: Promise<unknown> | undefined
-    try {
-      return await withDeadline(parent, config?.timeoutMs ?? 30000, async (signal) => {
-        const evidence = await evaluateEvidence(request, reviewReader, reviewOptions ?? { reviewBash: true, reviewEdits: true }, config, configError, signal, onIdentified, files)
-        if (!evidence) return null
-        signal.throwIfAborted()
-        const result = review(evidence, config!, signal, { prompts,
-          pricing: (model) => modelPricing(api.state.provider, config!.baseURL, model), onProgress, onDiagnostics: trace?.forward,
-          observation: history.observation(request, evidence.kind, config!, execution) })
-        worker = result
-        return result
-      })
-    } finally {
-      // The deadline races its callback. Drain the actual review's usage finalizer too.
-      await worker?.catch(() => {})
-    }
+    return ownedReview(parent, config?.timeoutMs ?? 30000, async (signal) => {
+      const evidence = await evaluateEvidence(request, reviewReader, reviewOptions ?? { reviewBash: true, reviewEdits: true }, config, configError, signal, onIdentified, files)
+      if (!evidence) return null
+      signal.throwIfAborted()
+      return review(evidence, config!, signal, { prompts,
+        pricing: (model) => modelPricing(api.state.provider, config!.baseURL, model), onProgress, onDiagnostics: trace?.forward,
+        observation: history.observation(request, evidence.kind, config!, execution) })
+    })
   }, (views) => {
     setViews(views)
     // Solid cleanup can synchronously cancel an older countdown during this
@@ -187,7 +180,7 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
     },
     once: (request, signal) => measured(traces?.get(request), "approval-reply", () => approval.once(request, signal)),
   } : approval), visibleID: () => { const proof = visibleApproval(); return proof.state === "visible" ? proof.id : undefined },
-    presentation: check => visibleApproval(check) }, modes, onApproval: fact => {
+    presentation: check => visibleApproval(check) }, modes, session: id => api.state.session.get(id), onApproval: fact => {
     history.approval(fact)
     notifications?.fact(fact)
   }, onLifecycle: history.lifecycle })

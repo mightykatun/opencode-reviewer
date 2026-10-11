@@ -123,7 +123,7 @@ try {
   await writeFile(tui, JSON.stringify({ plugin: [[plugin, { baseURL: base + "/review", model: "fixture", autoApprove: true,
     fastMode: true, stream: streaming, autoApproveDelaySeconds: 45, timeoutMs: 120000, staleReminderSeconds: 0 }]] }))
   const env = { OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_CONFIG: "", OPENCODE_CONFIG_DIR: path.join(temp, "config"), OPENCODE_TUI_CONFIG: tui,
-    OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_DEFAULT_PLUGINS: "1", OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_EXTERNAL_SKILLS: "1", OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1" }
+    OPENCODE_DISABLE_AUTOUPDATE: "1", OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_DEFAULT_PLUGINS: "1", OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_EXTERNAL_SKILLS: "1", OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1" }
   await runtime.start("-d", "-s", "fast", "-x", "160", "-y", "40", "-c", project, "env",
     ...Object.entries(env).map(([k, v]) => k + "=" + v), host, project, "--prompt", "Run both isolated fast-mode fixture steps.")
   await until(s => first && s.includes("Permission analysis") && s.includes("Permission required"), 90000)

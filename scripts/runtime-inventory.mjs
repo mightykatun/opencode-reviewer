@@ -30,6 +30,7 @@ export const runtimeInventory = {
   "smoke-skills.mjs": host(["root", "subagent", "subagent-view", "disabled", "unsafe", "fast"], [], { requires: ["linux", "git", "python3", "tmux", "bundle", "node-sqlite"] }),
   "smoke-evidence.mjs": host(["capture", "prompt-symlink"], [], { requires: ["linux", "git", "python3", "bash", "tmux", "bundle"] }),
   "smoke-approval-geometry.mjs": host(["resize", "initially-short", "history-short", "benign-width", "sidebar-handoff-live", "sidebar-handoff-history"], [], { requires: ["linux", "git", "python3", "tmux", "bundle"] }),
+  "smoke-review-admission.mjs": host(["fanout64"], [], { requires: ["linux", "git", "python3", "tmux", "bundle"] }),
   "smoke-mouse-proof.mjs": host(["normal", "fast"], [], { requires: ["linux", "git", "python3", "tmux", "bundle"] }),
   "smoke-approval-recovery.mjs": host(["read-error", "read-timeout", "correction-after", "correction-before", "transport-after", "transport-before"], [], {
     requires: ["linux", "git", "python3", "tmux", "bundle"] }),

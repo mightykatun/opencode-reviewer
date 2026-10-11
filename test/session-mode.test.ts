@@ -488,6 +488,26 @@ test("newer root command defeats an older descendant lookup and pending persiste
   await disable
 })
 
+test("unchanged Enable still supersedes an older descendant Disable awaiting ancestry", async () => {
+  const lookup = deferred<{ id: string; parentID: string }>()
+  const writes: boolean[] = [], changes: string[] = []
+  const modes = new SessionModes({ ...memory(), write: async (_, enabled) => { writes.push(enabled) } },
+    async id => id === "child" ? lookup.promise : { id })
+  let sessionID = "child"
+  let commands!: { run: () => Promise<void> }[]
+  const api = { route: { get current() { return { name: "session", params: { sessionID } } } }, lifecycle: { signal: signal() },
+    ui: { toast: () => {} }, keymap: { registerLayer: (layer: { commands: typeof commands }) => { commands = layer.commands; return () => {} } } } as unknown as TuiPluginApi
+  sessionModeCommands(api, modes, root => changes.push(root))
+  const disable = commands[1]!.run()
+  sessionID = "root"
+  await commands[0]!.run()
+  lookup.resolve({ id: "child", parentID: "root" })
+  await disable
+  assert.equal(modes.enabled("root"), true)
+  assert.deepEqual(writes, [true])
+  assert.deepEqual(changes, [], "ordering metadata changes without invalidating enabled reviews")
+})
+
 function ancestryFixture(t: import("node:test").TestContext) {
   const calls: { id: string; signal: AbortSignal; value: ReturnType<typeof deferred<{ id: string; parentID?: string }>>;
     cleanup: ReturnType<typeof deferred<void>> }[] = []
