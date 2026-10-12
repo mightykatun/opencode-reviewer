@@ -27,6 +27,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci --ignore-scripts
+      - run: mkdir -p /tmp/opencode
       - run: npm run check
       - run: npm run check:package
       - run: node --test test/release-artifact-smoke.test.mjs

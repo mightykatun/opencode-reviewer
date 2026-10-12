@@ -164,6 +164,7 @@ jobs:
           node release-policy/scripts/release-version.mjs
 
       - run: npm ci --ignore-scripts
+      - run: mkdir -p /tmp/opencode
       - run: npm run typecheck && npm test
       - run: node release-policy/scripts/test-helpers.mjs
       - run: npm run check:package

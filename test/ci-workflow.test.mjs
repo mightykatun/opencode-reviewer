@@ -24,7 +24,7 @@ test("PR CI is read-only, pinned, and checks the supported development Node floo
   for (const [, name, sha] of actions) assert.equal(sha, pins[name])
   const check = workflow.split("\n  runtime:\n")[0]
   const commands = [...check.matchAll(/^      - run: (.+)$/gm)].map((match) => match[1])
-  assert.deepEqual(commands, ["npm ci --ignore-scripts", "npm run check", "npm run check:package",
+  assert.deepEqual(commands, ["npm ci --ignore-scripts", "mkdir -p /tmp/opencode", "npm run check", "npm run check:package",
     "node --test test/release-artifact-smoke.test.mjs", "npm install --global npm@12.2.0 --ignore-scripts", "node --test test/npm-cli-smoke.test.mjs",
     "sudo apt-get update && sudo apt-get install --yes tmux", "npm run test:runtime-cleanup"])
   const runtime = workflow.split("\n  runtime:\n")[1]

@@ -16,6 +16,14 @@ test("release concurrency retains pending versions within GitHub's bounded queue
   assert.match(workflow, /\nconcurrency:\n  group: release-opencode-reviewer\n  cancel-in-progress: false\n  queue: max\n/)
 })
 
+test("read-only validation prepares the source-test temporary parent before tests", () => {
+  const prepare = "      - run: mkdir -p /tmp/opencode\n"
+  const tests = "      - run: npm run typecheck && npm test\n"
+  assert.ok(validate.includes(prepare))
+  assert.ok(validate.indexOf(prepare) < validate.indexOf(tests))
+  assert.doesNotMatch(publish, /\/tmp\/opencode/)
+})
+
 test("workflow separates read-only validation from artifact-only privileged publication", () => {
   assert.ok(validate && publish)
   assert.match(workflow, /\nconcurrency:\n  group: release-opencode-reviewer\n  cancel-in-progress: false\n/)
