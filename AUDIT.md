@@ -20,8 +20,10 @@
   **F16 (Phase 8)** are now fixed and verified in the follow-up below. Phases 1-2
   and 4-11 are complete within their recorded scopes. F31 has measured retirement
   improvements; F32 retains a
-  measured mouse-disabled compatibility limitation. F33 was dropped and F34
-  deferred by the user. Historical audit
+  measured mouse-disabled compatibility limitation. F33 was reopened as a small
+  notification-only fix and is now verified; native stacking remains out of scope.
+  F34 was requested again with an exception, but remains blocked by the governing
+  physical-visibility/child-panel contract in this session. Historical audit
   reproductions assert the original failure; only implementation-disposition
   results describe verification of fixes.
 - **Original audit changes:** this document only. Subsequent implementation commits
@@ -1184,12 +1186,13 @@ into one large patch. Resolve validation-first items with evidence before coding
 F20-F22 can be fixed earlier independently to restore useful verification. Do not
 change production notification behavior to make those obsolete expectations pass.
 
-F33 is no longer an implementation requirement. Its historical requested
+F33's native-stacking approach is no longer an implementation requirement. Its historical requested
 presentation-first approach had the following dependency: the pinned public
 surface does not expose a native permission stack; establish supported upstream
 presentation/selection changes before implementing it. A notification-only replay
-or deduplication change is not the requested fix and must not be substituted without
-further direction. A report-only stack does not close this finding by itself.
+or deduplication change was not the originally requested fix. The user subsequently
+gave that further direction explicitly: fix the behavior without stacking, in small
+scope. The notification-only implementation is recorded in the final disposition.
 
 ### Cross-cutting implementation constraints
 
@@ -1402,7 +1405,7 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [x] Verify all four no-input recovery triggers and both replacement-Safe orders.
   - [x] Preserve Cancel, real hide, changed identity and single-shot write controls.
   - [x] Run source/host verification, record results and commit (`ac5505c`).
-- Phase 3: root-only presentation (F34), **deferred by user direction**.
+- Phase 3: root-only presentation (F34), **requested again; blocked by governing contract**.
   - [ ] Reconcile hidden-normal-approval request with governing physical-visibility contract.
   - [ ] Define descendant route readiness, original deadline and negative controls.
   - [ ] Implement only after that contract gate is resolved; verify source and real TUI.
@@ -1410,7 +1413,8 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [x] Separate pending renewed paint from proven physical loss.
   - [x] Preserve a stable live owner across same-session sidebar handoff.
   - [x] Validate mouse-disabled readiness and real coverage controls.
-  - F33 cancelled by user direction; native stacking is out of scope.
+  - F33 native stacking remains out of scope; the subsequently requested small
+    notification-only fix is verified in the final disposition.
   - [x] Verify exact resize/handoff/preemption cases and commit supported changes (`b4da5a4`).
 - [x] Phase 5: persistence progress (F06-F09).
   - [x] Design resumable bounded legacy baseline transactions and replay ownership.
@@ -2020,3 +2024,45 @@ are alongside the scripts. No production code changed during this review.
   current guide example's `reply` field. No package/API pins or production approval
   behavior were changed by this investigation; no complete V2 plugin compatibility
   is claimed. **F34 remains user-deferred; F33 remains user-dropped.**
+
+### F33 reopened: small-scope notification behavior fixed
+
+The user explicitly replaced the stacking proposal with a narrow notification fix.
+`src/notification-policy.ts` now remembers which initial permission outcome has
+already reached dispatch/terminal attempt completion. Queue loss still cancels
+pending delivery, withdraws the banner and stops reminders, but no longer erases
+that request's initial-attempt memory. Returning to the front does not replay the
+same initial banner/sound. Requests preempted before dispatch retain their initial
+alert; a newly observed Unsafe outcome can still alert once. Configured reminders
+restart from a full interval on queue return. Question behavior is unchanged.
+
+- Production change: one optional per-permission outcome set and the initial-alert
+  branch in notification policy; no native ordering, stacking or approval changes.
+- Source controls cover manual/automatic covering approval, banner+sound/sound-only,
+  no reminders, full-interval reminders, new Unsafe outcomes, resolution and held
+  backend dispatch. `npm run check`: **1,264 source tests**, **118 helpers**,
+  typecheck and build passed (`/tmp/opencode/f33-check.log`).
+- Actual pinned-host root A -> newer direct-child B -> A cases passed with reminders
+  disabled and a 4.5-second no-replay window. Only B resolves; A is not re-reviewed:
+  - `smoke-notification-queue.mjs reentry-manual`: `.runtime/runtime-run-AKytJn/results.json`.
+  - `smoke-notification-queue.mjs reentry-auto`: `.runtime/runtime-run-AoxEB8/results.json`.
+  - `smoke-notification-queue.mjs reentry-predispatch`: `.runtime/runtime-run-GpIG4N/results.json`.
+  Each was run through `scripts/test-runtime.mjs` on OpenCode 1.18.35. The first two
+  use isolated production notification-process recording; pre-dispatch cancellation
+  uses an explicitly controlled backend. No human-audible playback claim is made.
+
+### F34 renewed request: governing exception still required
+
+The user requested F34 after F33 and clarified: **"make an exception for this"**.
+This supersedes the previous user deferral, but the instructions governing this
+session still expressly require physical proof before approval and a visible wide
+direct-child panel. No F34 behavior was implemented or described as complete.
+
+For a follow-up session, the governing presentation contract must explicitly allow
+root-only panel display and normal automatic approval during known same-root
+descendant navigation, including reports completing while hidden. Keep the original
+deadline, exact pending identity, Safe validation, native priority, mode gates,
+once-only writes and durable cancellation outside that route-only exception.
+Pre-dispatch fast mode retains physical visibility. Unknown/unrelated ancestry,
+native dialogs/fullscreen, explicit hiding and user Cancel remain distinct negative
+controls. The original F34 acceptance matrix above remains the implementation plan.

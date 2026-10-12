@@ -1,5 +1,7 @@
 // Real native parallel tool calls, final reviews and queued automatic approvals.
-// Desktop effects are isolated process I/O; no live model or desktop delivery.
+// Reentry gates a newer child's model response until root A is actionable.
+// Desktop effects are isolated process I/O, except the explicit pre-dispatch
+// backend control. No live model or desktop delivery.
 import assert from "node:assert/strict"
 import { createServer } from "node:http"
 import { mkdtemp, mkdir, copyFile, writeFile } from "node:fs/promises"
@@ -12,11 +14,14 @@ import { notificationRecorder } from "./smoke-notification-recorder.mjs"
 import { runtimeArguments } from "./runtime-inventory.mjs"
 
 const { scenario } = runtimeArguments("smoke-notification-queue.mjs")
+const reentry = scenario.startsWith("reentry-")
+const predispatch = scenario === "reentry-predispatch"
+const automaticReentry = scenario === "reentry-auto"
 const streaming = process.argv.includes("--stream")
 const label = `${scenario}${streaming ? "-stream" : ""}`
 // Exceed the bounded two-second cold audio preparation so a reminder cannot
 // replace the initial banner before this fixture observes its exact event text.
-const reminderSeconds = 3
+const reminderSeconds = reentry ? 0 : 3
 const root = path.resolve(import.meta.dirname, "..")
 const host = process.env.OPENCODE_BIN ?? "opencode"
 assert.equal(execFileSync(host, ["--version"], { encoding: "utf8", timeout: 10000 }).trim(), "1.18.35")
@@ -25,9 +30,11 @@ const project = path.join(temp, "project"), plugin = path.join(temp, "reviewer.m
 await mkdir(project); await mkdir(path.join(temp, "config"))
 execFileSync("git", ["init", "--quiet", project])
 await copyFile(path.join(root, "dist/tui.js"), plugin)
-const records = await notificationRecorder(plugin, temp)
-const count = ["children", "advisory", "disabled"].includes(scenario) ? 2 : 3
+const records = await notificationRecorder(plugin, temp, { holdFirstActionable: predispatch })
+const count = reentry || ["children", "advisory", "disabled"].includes(scenario) ? 2 : 3
 const sent = new Set(), reviews = [], errors = [], captures = []
+let releaseChild
+const childGate = new Promise(resolve => { releaseChild = resolve })
 let screen = ""
 const server = createServer(async (req, res) => {
   try {
@@ -62,6 +69,11 @@ const server = createServer(async (req, res) => {
         }
       } }
       reviews.push(entry)
+      if (reentry) {
+        entry.safe = reviews.length !== 1
+        entry.start(); entry.release()
+        return
+      }
       // Both/all reports complete while native requests still overlap. The
       // queue, not a slow model, keeps later Safe requests from starting auto.
       if (reviews.length === count) {
@@ -78,12 +90,19 @@ const server = createServer(async (req, res) => {
     const user = JSON.stringify(body.messages?.findLast(message => message.role === "user")?.content)
     const child = /NOTIFICATION_CHILD_([12])/.exec(user)?.[1]
     const actor = child ? `child-${child}` : "root"
+    if (reentry && child) await childGate
     const call = main && !sent.has(actor)
     let delta
     if (call) {
       sent.add(actor)
       const tasks = scenario === "children" && !child
-      const tools = Array.from({ length: tasks ? 2 : child ? 1 : count }, (_, index) => ({
+      const tools = reentry ? child ? [{ index: 0, id: "fixture-B", type: "function", function: { name: "bash",
+        arguments: JSON.stringify({ command: "printf 'notification-reentry-B\\n'", description: "Reentry permission B" }) } }]
+        : [{ index: 0, id: "fixture-A", type: "function", function: { name: "bash",
+          arguments: JSON.stringify({ command: "printf 'notification-reentry-A\\n'", description: "Reentry permission A" }) } },
+        { index: 1, id: "fixture-child", type: "function", function: { name: "task", arguments: JSON.stringify({
+          subagent_type: "general", description: "Notification reentry child", prompt: "NOTIFICATION_CHILD_1: perform the isolated notification fixture." }) } }]
+        : Array.from({ length: tasks ? 2 : child ? 1 : count }, (_, index) => ({
         index, id: `fixture_${actor}_${index}`, type: "function", function: tasks ? {
           name: "task", arguments: JSON.stringify({ subagent_type: "general", description: `Notification child ${index + 1}`,
             prompt: `NOTIFICATION_CHILD_${index + 1}: perform the isolated notification fixture.` }),
@@ -119,7 +138,8 @@ const until = async (check, timeout = 90000) => {
 const save = async outcome => {
   await mkdir(path.join(root, ".runtime"), { recursive: true })
   await writeFile(path.join(root, `.runtime/notification-queue-${label}.json`), JSON.stringify({
-    outcome, temp, reviews, records: await records(), captures, screen, errors,
+    outcome, temp, reviews, records: await records(), captures, screen, errors, reminderSeconds,
+    notificationTransport: predispatch ? "controlled-backend" : "isolated-desktop-processes",
   }, null, 2))
 }
 try {
@@ -131,7 +151,7 @@ try {
       models: { fixture: { name: "Fixture", limit: { context: 32000, output: 2000 } } } } } }
   const tui = path.join(temp, "tui.json")
   await writeFile(tui, JSON.stringify({ plugin: [[plugin, { baseURL: `http://127.0.0.1:${port}/review`, model: "fixture",
-    notify: true, staleReminderSeconds: reminderSeconds, autoApprove: scenario !== "advisory", reviewBash: scenario !== "disabled",
+    notify: true, staleReminderSeconds: reminderSeconds, autoApprove: reentry ? automaticReentry : scenario !== "advisory", reviewBash: scenario !== "disabled",
     stream: streaming, autoApproveDelaySeconds: 3, timeoutMs: 60000 }]] }))
   const env = { HOME: temp, XDG_CONFIG_HOME: path.join(temp, "config"), XDG_DATA_HOME: path.join(temp, "data"),
     XDG_STATE_HOME: path.join(temp, "state"), XDG_CACHE_HOME: path.join(temp, "cache"), OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
@@ -140,6 +160,53 @@ try {
     OPENCODE_DISABLE_EXTERNAL_SKILLS: "1", OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1" }
   await runtime.start("-d", "-s", "smoke", "-x", "160", "-y", "40", "-c", project,
     "env", ...Object.entries(env).map(([key, value]) => `${key}=${value}`), host, project, "--prompt", "Perform the notification queue fixture.")
+  if (reentry) {
+    const unsafe = rows => rows.filter(r => r.event === "notification" && r.title === "Unsafe permission needs human approval")
+    const unsafeSounds = rows => rows.filter(r => r.event === "sound" && r.kind === "unsafe")
+    await until(async () => reviews.length === 1 && screen.includes("✗ Unsafe") && (predispatch
+      ? (await records()).some(r => r.event === "backend-held")
+      : unsafe(await records()).length === 1 && unsafeSounds(await records()).length === 1))
+    const first = await records(), a = first.find(r => r.event === "permission.asked")
+    assert.ok(a); assert.equal(first.filter(r => r.event === "permission.replied").length, 0)
+    assert.equal(unsafe(first).length, predispatch ? 0 : 1)
+    captures.push({ at: Date.now(), phase: predispatch ? "A-before-backend-dispatch" : "A-notified", screen })
+    releaseChild()
+    await until(async () => reviews.length === 2 && (await records()).filter(r => r.event === "permission.asked").length === 2 && screen.includes("✓ Safe"))
+    const overlap = await records(), b = overlap.find(r => r.event === "permission.asked" && r.request !== a.request)
+    assert.ok(b); assert.ok(b.session < a.session, "newer child session precedes root in pinned native ordering")
+    assert.ok(a.request < b.request, "B arrives later despite taking native front position")
+    assert.equal(overlap.filter(r => r.event === "permission.replied").length, 0, "A and B must overlap")
+    captures.push({ at: Date.now(), phase: "B-native-front", screen })
+    if (predispatch) await until(async () => (await records()).some(r => r.event === "backend-cancelled"))
+    if (!automaticReentry) {
+      await until(async () => (await records()).some(r => r.event === "notification" && r.title === "Session needs attention"))
+      if (predispatch) {
+        assert.equal(unsafe(await records()).length, 0, "cancelled A cannot dispatch behind B")
+        assert.equal(unsafeSounds(await records()).length, 0)
+      }
+      runtime.tmux("send-keys", "-t", "smoke", "Enter")
+    }
+    await until(async () => (await records()).some(r => r.event === "permission.replied" && r.request === b.request)
+      && screen.includes("✗ Unsafe") && screen.includes("notification-reentry-A"))
+    if (automaticReentry) await until(async () => (await records()).some(r => r.event === "notification" && r.title === "Reviewer approved a permission"))
+    if (predispatch) await until(async () => unsafe(await records()).length === 1 && unsafeSounds(await records()).length === 1)
+    captures.push({ at: Date.now(), phase: "A-native-front-again", screen })
+    // Cross multiple healthy host polls and cold audio preparation. A remains
+    // unresolved, with reminders disabled, throughout this negative window.
+    await sleep(4500)
+    const observed = await records(), replied = observed.filter(r => r.event === "permission.replied")
+    assert.deepEqual(replied.map(r => [r.request, r.reply]), [[b.request, "once"]])
+    assert.equal(observed.filter(r => r.event === "permission.asked").length, 2)
+    assert.equal(reviews.length, 2, "A must not be reviewed again on return")
+    assert.equal(unsafe(observed).length, 1, "A gets exactly one initial banner across native preemption")
+    assert.equal(unsafeSounds(observed).length, 1, "A gets exactly one initial sound across native preemption")
+    if (predispatch) assert.ok(unsafe(observed)[0].at >= replied[0].at, "A's undelivered initial waits for B's resolution")
+    assert.equal(observed.filter(r => r.event === "notification" && r.title.endsWith(" (Reminder)")).length, 0)
+    assert.equal(observed.filter(r => r.event === "notification" && r.title === "Session needs attention").length, automaticReentry ? 0 : 1)
+    assert.equal(observed.filter(r => r.event === "notification" && r.title === "Reviewer approved a permission").length, automaticReentry ? 1 : 0)
+    await save("passed")
+    console.log(`PASS notification queue ${label}: native root A -> newer child B -> A; ${automaticReentry ? "automatic" : "manual"} B reply; ${predispatch ? "controlled backend cancellation before dispatch, then one initial A delivery" : "one initial A banner/audio process across preemption"}; ${temp}`)
+  } else {
   if (streaming && scenario !== "disabled") {
     await until(() => reviews.length === count && reviews.every(review => typeof review.safe === "boolean"))
     await until(() => screen.includes("✓ Safe") && !screen.includes("Allowed in"))
@@ -192,8 +259,10 @@ try {
   }
   await save("passed")
   console.log(`PASS notification queue ${label}: ${count} overlapping permissions, ${automatic} auto-approved, ${count - automatic} manual, current-outcome notifications and resolution cleanup; ${temp}`)
+  }
 } catch (error) { await save(String(error)); throw error }
 finally {
+  releaseChild()
   await runtime.dispose(); server.closeAllConnections()
   await new Promise(resolve => server.close(resolve))
 }

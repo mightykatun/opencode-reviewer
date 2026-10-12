@@ -459,6 +459,80 @@ test("queue preemption cancels initial delivery before dispatch, not only remind
   await f.policy.dispose()
 })
 
+for (const automatic of [false, true]) for (const soundOnly of [false, true]) {
+  test(`F33 returning notified permission stays silent after ${automatic ? "automatic" : "manual"} covering approval, ${soundOnly ? "sound-only" : "banner and sound"}`, async () => {
+    const f = fixture(automatic, true, true, { staleReminderSeconds: 0,
+      notifications: { attention: { banner: !soundOnly, sound: true } } })
+    const a = view("a", "unavailable"), b = view("b", "complete", automatic)
+    f.add(a); await settle()
+    assert.equal(f.messages.length, 1)
+    assert.equal(f.messages[0]?.kind, "attention")
+    f.policy.snapshot([a, b], new Map([["root", { kind: "permission", id: "b" }]]))
+    f.policy.permission(b.request, target, true)
+    await settle()
+    if (automatic) f.policy.approved(b.request)
+    f.policy.resolved("permission", "b")
+    f.policy.snapshot([a], new Map([["root", { kind: "permission", id: "a" }]]))
+    await f.advance(120000)
+    assert.deepEqual(f.messages.map(message => message.kind), ["attention", automatic ? "approved" : "unsafe"])
+    assert.equal(f.messages[0]?.banner, !soundOnly)
+    assert.equal(f.messages[0]?.sound, true)
+    assert.ok(f.closed.includes("Session needs attention"), "coverage still withdraws A's banner")
+    await f.policy.dispose()
+  })
+}
+
+test("F33 re-entry restarts a full reminder interval without an initial replay; a new Unsafe outcome still alerts once", async () => {
+  const f = fixture(false, true, true, { staleReminderSeconds: 1 })
+  f.add(view("a", "unavailable")); await settle()
+  await f.advance(900)
+  f.policy.pending(new Map([["root", { kind: "permission", id: "b" }]]))
+  await f.advance(5000)
+  f.policy.pending(new Map([["root", { kind: "permission", id: "a" }]]))
+  await f.advance(999)
+  assert.deepEqual(f.messages.map(message => message.title), ["Session needs attention"])
+  await f.advance(1)
+  assert.equal(f.messages[1]?.title, "Session needs attention (Reminder)")
+  f.policy.snapshot([view("a", "complete", false)]); await settle()
+  assert.equal(f.messages[2]?.title, "Unsafe permission needs human approval")
+  f.policy.pending(new Map([["root", { kind: "permission", id: "b" }]]))
+  f.policy.pending(new Map([["root", { kind: "permission", id: "a" }]]))
+  await settle()
+  assert.equal(f.messages.length, 3, "the newly delivered Unsafe outcome is remembered on later handoffs too")
+  f.policy.resolved("permission", "a")
+  await f.advance(5000)
+  assert.equal(f.messages.length, 3)
+  await f.policy.dispose()
+})
+
+test("F33 permission preempted before backend dispatch retains its initial alert", async () => {
+  const pending: { signal: AbortSignal; dispatch(): void }[] = []
+  const messages: NotificationMessage[] = []
+  const policy = new NotificationPolicy(parseNotificationConfig({ staleReminderSeconds: 0 }), false, {
+    async show(message, signal) {
+      let finish!: () => void
+      const dispatched = new Promise<void>(resolve => { finish = resolve })
+      pending.push({ signal, dispatch() { if (!signal.aborted) messages.push(message); finish() } })
+      return { close() { finish() }, dispatched }
+    }, dispose() {},
+  })
+  const a = view("a", "unavailable")
+  const front = (id: string) => policy.pending(new Map([["root", { kind: "permission", id }]]))
+  front("a"); policy.snapshot([a]); policy.permission(a.request, target, true)
+  await settle()
+  front("b"); await settle()
+  assert.equal(pending[0]?.signal.aborted, true)
+  pending[0]!.dispatch(); await settle()
+  front("a"); await settle()
+  assert.equal(pending.length, 2)
+  pending[1]!.dispatch(); await settle()
+  assert.equal(messages.length, 1)
+  front("b"); front("a"); await settle()
+  assert.equal(pending.length, 2, "only genuinely dispatched initial outcomes suppress re-entry")
+  policy.resolved("permission", "a")
+  await policy.dispose()
+})
+
 test("uncertain failed approval does not notify even after becoming actionable until pending is confirmed", async () => {
   const f = fixture(true)
   const failed: View = { ...view("b", "complete"), autoApproval: { status: "failed" } }

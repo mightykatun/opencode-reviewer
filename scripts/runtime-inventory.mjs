@@ -51,7 +51,9 @@ export const runtimeInventory = {
     optionalArgument: "existing-state-directory", delegates: "smoke.mjs", requires: ["linux", "git", "python3", "tmux", "bundle", "source-sqlite"] }),
   "smoke-history-maintenance.mjs": host(["default"], [], { hosts: 2, requires: ["linux", "git", "tmux", "bundle", "npm-pack", "tar", "source-sqlite"] }),
   "smoke-statistics.mjs": host(["default"], [], { requires: ["linux", "git", "tmux", "bundle", "source-sqlite"] }),
-  "smoke-notification-queue.mjs": host(["main", "children", "mixed", "advisory", "disabled"], ["stream"]),
+  "smoke-notification-queue.mjs": host(["main", "children", "mixed", "advisory", "disabled", "reentry-manual", "reentry-auto", "reentry-predispatch"], ["stream"], {
+    rules: [rule("stream", { scenarios: ["main", "children", "mixed", "advisory", "disabled"] })],
+  }),
   "smoke-notification-events.mjs": host(["question", "error", "ended", "cancel", "click"], ["reminders", "queue", "banner-only", "sound-only", "dismiss"], {
     rules: [rule("queue", { requires: ["reminders"] }), rule("banner-only", { excludes: ["sound-only"] }),
       ...["reminders", "queue", "banner-only", "sound-only", "dismiss"].map(flag => rule(flag, { scenarios: ["question"] }))],
