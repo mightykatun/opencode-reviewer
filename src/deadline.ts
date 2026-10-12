@@ -25,9 +25,13 @@ export async function withDeadline<T>(parent: AbortSignal, ms: number, run: (sig
   parent.throwIfAborted()
   const controller = new AbortController()
   const signal = AbortSignal.any([parent, controller.signal])
-  const duration = Math.max(0, Math.min(ms, remainingTime(parent)))
+  const now = performance.now()
+  // Inherit the absolute end directly. Reconstructing it from a remaining
+  // duration and a later clock reading can extend it across a scheduling pause.
+  const end = Math.min(now + ms, states.get(parent)?.end ?? Infinity)
+  const duration = Math.max(0, end - now)
   if (duration <= 0) throw new DeadlineError(stage)
-  const state = { end: performance.now() + duration, stage }
+  const state = { end, stage }
   states.set(signal, state)
   const timer = setTimeout(() => controller.abort(new DeadlineError(state.stage)), Math.ceil(duration))
   let abort = () => {}

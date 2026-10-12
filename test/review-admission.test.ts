@@ -246,6 +246,10 @@ test("retained fast report owns one of four slots across resolution, disable/re-
 })
 
 for (const stage of ["evidence", "model"] as const) test(`fanout64 ${stage} deadline publishes failure but retains physical slots and disposal ownership`, async t => {
+  // Deadline arithmetic and timer delivery share one clock, independent of
+  // real scheduling delays and fractional performance.now() rounding.
+  let now = 0
+  t.mock.method(performance, "now", () => now)
   t.mock.timers.enable({ apis: ["setTimeout"] })
   let evidence = 0, models = 0, actual = 0, maximum = 0, accepted = 0
   const physical: ReturnType<typeof deferred<void>>[] = []
@@ -271,7 +275,7 @@ for (const stage of ["evidence", "model"] as const) test(`fanout64 ${stage} dead
   assert.equal(evidence, 4)
   assert.equal(models, stage === "model" ? 4 : 0)
   for (let cycle = 0; cycle < 10; cycle++) {
-    t.mock.timers.tick(100); await settle()
+    now += 100; t.mock.timers.tick(100); await settle()
     controller.reconcile(requests, controller.revision); await settle()
     assert.equal(evidence, 4)
     assert.equal(actual, 4)

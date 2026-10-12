@@ -1425,10 +1425,10 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [x] Bound evaluator admission with native-front priority and cancellation-aware fairness.
   - [x] Make unchanged Enable non-destructive, including persistence retry.
   - [x] Verify fanout, handoff, mode commands and relevant host cases; commit.
-- [ ] Phase 8: transport and time (F16,F24,F26).
-  - [ ] Drain valid terminal-rejection usage without retrying rejected assessments.
-  - [ ] Inherit absolute deadline ends and control actual backoff sleep in tests.
-  - [ ] Verify framing/abort/resource limits and both supported Node floors; commit.
+- [x] Phase 8: transport and time (F16,F24,F26).
+  - [x] Drain valid terminal-rejection usage without retrying rejected assessments.
+  - [x] Inherit absolute deadline ends and control actual backoff sleep in tests.
+  - [x] Verify framing/abort/resource limits and both supported Node floors; commit.
 - [ ] Phase 9: notification reconciliation (F17-F18).
   - [ ] Require authoritative permission ordering before fresh attention.
   - [ ] Recheck completed turns after healthy blocker removal.
@@ -1776,3 +1776,23 @@ contract. F33 remains dropped. Neither disposition claims an implemented fix.
 - Initial fixture failures exposed startup observation absence and a native update
   dialog. Startup absence is optional only until first publication; these fixtures
   now explicitly disable host auto-update. No approval assertion was weakened.
+
+### Phase 8 disposition: F16/F24/F26 fixed
+
+- Terminal SSE refusal/filter/tool-call clears previews, drains well-framed usage,
+  finalizes once and remains non-retriable. Framing/UTF-8/resource errors, abort and
+  the original deadline stop draining. Fourteen source integration cases include
+  byte splits, real HTTP and malformed tails.
+- Nested stages inherit the exact parent deadline end. Tests control production
+  sleep plus monotonic time, asserting precise jitter/Retry-After boundaries and
+  zero extra POSTs after cancellation or exhausted budgets. Mutation checks rejected
+  the old deadline calculation and a one-millisecond-shortened backoff.
+- `npm run check`: **1,208 source checks**, **111 helper tests**, typecheck and build.
+  The deadline/retry/admission/file-access/reviewer subset passed **233 tests on each
+  development floor**, Node **22.22.2** and **24.15.0**, with child executable checks.
+  A first full run exposed uncontrolled monotonic time in an admission timer test;
+  it now advances performance time and timers together without changing assertions.
+- Pinned-host `smoke-streaming.mjs complete --stats` passed in
+  `.runtime/runtime-run-U8MXhy/results.json`; `truncated --static --stats` passed in
+  `.runtime/runtime-run-Xu4zKa/results.json`. The fixture now disables auto-update
+  after an initial run correctly failed on a covering native update dialog.

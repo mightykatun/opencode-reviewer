@@ -1,4 +1,4 @@
-import { setTimeout as sleep } from "node:timers/promises"
+import timers from "node:timers/promises"
 import { remainingTime, reviewStage } from "./deadline.js"
 
 const statuses = new Set([408, 429, 500, 502, 503, 504])
@@ -59,7 +59,8 @@ export class TransportRetries {
     if (delay + 250 >= remainingTime(signal)) return false
     this.used++
     try { void Promise.resolve(beforeWait?.()).catch(() => {}) } catch {}
-    try { await sleep(Math.ceil(delay), undefined, { signal }) }
+    // Resolve sleep at the call site so timer mocks control the production wait.
+    try { await timers.setTimeout(Math.ceil(delay), undefined, { signal }) }
     catch { signal.throwIfAborted(); throw error }
     reviewStage(signal, "Reviewer response")
     return remainingTime(signal) > 250

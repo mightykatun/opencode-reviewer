@@ -249,7 +249,7 @@ try {
     XDG_STATE_HOME: path.join(temp, "state"), XDG_CACHE_HOME: path.join(temp, "cache"),
     OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_CONFIG: "", OPENCODE_CONFIG_DIR: path.join(temp, "config"),
     OPENCODE_TUI_CONFIG: tuiFile, OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-    OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_EXTERNAL_SKILLS: "1", OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1" }
+    OPENCODE_DISABLE_AUTOUPDATE: "1", OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_EXTERNAL_SKILLS: "1", OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1" }
   await mkdir(path.join(root, ".runtime"), { recursive: true })
   await runtime.start("-d", "-s", "stream", "-x", "160", "-y", "40", "-c", project,
     "env", ...Object.entries(env).map(([key, value]) => `${key}=${value}`), host, project, "--prompt", "Run the isolated streaming fixture.")

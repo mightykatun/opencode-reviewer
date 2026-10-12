@@ -90,6 +90,13 @@ const textMetadata = (message: Record<string, unknown>) => (message.role === und
   && (message.tool_calls == null || (Array.isArray(message.tool_calls) && message.tool_calls.length === 0))
   && (message.refusal == null || message.refusal === "")
 const nonTextFinish = (value: unknown) => value === "content_filter" || value === "tool_calls" || value === "function_call"
+// A valid non-text completion is terminal for review, but not for accounting.
+// Invalid metadata retains its immediate, non-retryable failure policy.
+const validMetadata = (delta: Record<string, unknown>) => (delta.role === undefined || delta.role === "assistant")
+  && (delta.function_call == null || object(delta.function_call))
+  && (delta.tool_calls == null || (Array.isArray(delta.tool_calls) && delta.tool_calls.every(object)))
+  && (delta.refusal == null || typeof delta.refusal === "string")
+class TerminalAssessmentRejection extends Error {}
 
 async function streamedAssessment(response: Response, signal: AbortSignal, accounting: ReturnType<typeof usageAttempt>,
   progress: (preview?: Partial<Assessment>) => void, firstContent?: () => void): Promise<StreamingAssessment> {
@@ -101,16 +108,22 @@ async function streamedAssessment(response: Response, signal: AbortSignal, accou
   let stopped = false, done = false
   let id: string | undefined, model: string | undefined
   let last: Partial<Assessment> | undefined
-  let failure: AssessmentStreamError | undefined
+  let failure: AssessmentStreamError | TerminalAssessmentRejection | undefined
   function invalid(retryable = true): never {
     const message = "Reviewer API did not return a text assessment stream"
-    throw retryable ? new AssessmentStreamError(message) : new Error(message)
+    throw retryable && !(failure instanceof TerminalAssessmentRejection) ? new AssessmentStreamError(message) : new Error(message)
+  }
+  function rejected(): void {
+    if (failure instanceof TerminalAssessmentRejection) return
+    failure = new TerminalAssessmentRejection("Reviewer API did not return a text assessment stream")
+    progress()
   }
   const sse = new SSEParser(({ data, event }) => {
     try {
+      reviewStage(signal, "Reviewer response body")
       if (data.trim() === "[DONE]") {
-        if (failure) return
-        if (done || !stopped || event !== "message") invalid()
+        if (failure instanceof AssessmentStreamError) return
+        if (done || (!stopped && !failure) || event !== "message") invalid()
         done = true
         return
       }
@@ -124,12 +137,15 @@ async function streamedAssessment(response: Response, signal: AbortSignal, accou
       if (event === "error" || (object(body) && body.error != null)) invalid(false)
       // Once rejected, consume only usage until EOF under the original bounds.
       // No more provisional text can be published or merged into a later attempt.
-      if (failure) {
-        if (object(body) && Array.isArray(body.choices) && body.choices.some(choice => object(choice)
+      if (failure instanceof AssessmentStreamError) {
+        const terminal = object(body) && Array.isArray(body.choices) && body.choices.some(choice => object(choice)
           && (choice.error != null || nonTextFinish(choice.finish_reason)
             || (object(choice.delta) && !textMetadata(choice.delta))
-            || (object(choice.message) && !textMetadata(choice.message))))) invalid(false)
-        return
+            || (object(choice.message) && !textMetadata(choice.message))))
+        if (!terminal) return
+        // This was already terminal under the invalid-metadata policy. Validate
+        // the frame below before allowing any further accounting drain.
+        rejected()
       }
       if (done || event !== "message" || !object(body)) invalid()
       if (body.object !== undefined && body.object !== "chat.completion.chunk") invalid()
@@ -151,13 +167,21 @@ async function streamedAssessment(response: Response, signal: AbortSignal, accou
       if (!object(choice) || choice.index !== 0 || choice.message != null || choice.text != null) invalid()
       if (choice.error != null) invalid(false)
       const finish = choice.finish_reason
-      if (nonTextFinish(finish)) invalid(false)
-      const delta = choice.delta === undefined && (finish === "stop" || finish === "length") ? {} : choice.delta
-      if (!object(delta)) invalid()
-      if (!textMetadata(delta)) invalid(false)
+      const delta = choice.delta === undefined && (finish === "stop" || finish === "length" || nonTextFinish(finish)) ? {} : choice.delta
+      if (!object(delta)) invalid(!nonTextFinish(finish))
+      if (!validMetadata(delta)) invalid(false)
+      const nonText = nonTextFinish(finish) || !textMetadata(delta)
+      if (delta.content != null && typeof delta.content !== "string") invalid(!nonText)
+      if (finish != null && finish !== "stop" && finish !== "length" && !nonTextFinish(finish)) invalid(!nonText)
+      if (nonText) { rejected(); return }
+      // Keep validating framing/identity/metadata, but never parse or publish more
+      // assessment text after a terminal rejection, including plausible Safe JSON.
+      if (failure instanceof TerminalAssessmentRejection) {
+        if (finish != null && finish !== "stop") invalid()
+        return
+      }
       if (finish === "length") throw new AssessmentStreamError("Reviewer output token limit reached; increase maxOutputTokens")
       if ((finish != null && finish !== "stop") || (stopped && finish !== "stop")) invalid()
-      if (delta.content != null && typeof delta.content !== "string") invalid()
       if (stopped && [delta.content, delta.reasoning, delta.reasoning_content, delta.reasoning_details]
         .some((value) => value != null && value !== "" && !(Array.isArray(value) && value.length === 0))) invalid()
       if (typeof delta.content === "string" && delta.content) {
@@ -175,7 +199,13 @@ async function streamedAssessment(response: Response, signal: AbortSignal, accou
       if (!failure) { failure = error; progress() }
     }
   })
-  await readBody(response, signal, (bytes) => sse.push(bytes))
+  try { await readBody(response, signal, (bytes) => sse.push(bytes)) }
+  catch (error) {
+    signal.throwIfAborted()
+    // Even a transient socket failure during accounting cannot retry a refusal.
+    if (failure instanceof TerminalAssessmentRejection) throw new Error(error instanceof Error ? error.message : failure.message)
+    throw error
+  }
   sse.finish()
   if (failure) throw failure
   if (!done || !stopped) throw new AssessmentStreamError("Reviewer stream ended without stop and DONE")
