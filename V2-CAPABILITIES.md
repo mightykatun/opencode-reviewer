@@ -156,8 +156,10 @@ snapshot: the fixture server deliberately accepts old inputs after catalog refre
 Plugin unload/reload is distinct from registration disposal. No installed reviewer
 archive, complete capability matrix or live-provider behavior is claimed.
 
-W1's local host probes are verified. Its representative provider/catalog acceptance
-and adoption of direct presentation remain open dispositions. The user's subsequent
+W1's local host probes are verified. Representative provider/catalog acceptance is
+an explicit blocking release gate if direct presentation is adopted, as specified
+in plan section 3A.3. It is not a passed test. Adoption remains an open decision.
+The user's subsequent
 direction is goal-first V2 adaptation, recorded in the migration plan; it is not
 recorded as acceptance of particular installation restrictions.
 

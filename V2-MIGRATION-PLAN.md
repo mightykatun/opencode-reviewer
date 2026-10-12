@@ -16,12 +16,12 @@ Current execution tasks (resumed 2026-10-12; completed reading gates retained):
 - [x] Read the complete revised plan and locate the first unchecked increment.
 - [x] Preserve the existing plan edits and audit deletion as pre-existing work.
 - [x] Derive the following ordered work and verification gates.
-- [ ] W1: direct-tool compatibility on unmodified 2.0.26.
+- [x] W1: direct-tool compatibility on unmodified 2.0.26, with live-provider acceptance deferred to the explicit release gate below.
   - [x] Register supervised synthetic fixtures and their active-policy inputs.
   - [x] Prove parallel reverse-order permission identity and independent stages.
   - [x] Verify error/cancellation, MCP refresh/disposal and retained old snapshots.
   - [x] Measure stock direct catalog size and injected provider-limit behavior.
-  - [ ] Establish representative provider/catalog acceptance or an explicit release gate.
+  - [x] Establish representative provider/catalog acceptance or an explicit release gate.
   - [x] Run fixture and helper checks and record exact artifacts.
   - [x] Commit the verified W1 fixture increment (`test: verify stock V2 direct-tool compatibility probes`).
 - [ ] W2: establish controlled-profile restrictions and obtain trust-model decision.
@@ -344,6 +344,17 @@ returns on disposal. Real provider/schema acceptance and user catalog cost remai
 unverified. Details and earlier contrary observations are in `V2-CAPABILITIES.md`.
 `npm run test:helpers`: 118 passed after the final fixture updates; both new scripts
 pass `node --check`, and `git diff --check` is clean.
+
+**W1 release gate:** if W7 adopts direct-tool presentation, V2 publication remains
+blocked until an explicitly selected representative provider/model and real catalog
+accept the full outgoing schemas and tool count in streaming and nonstreaming runs.
+Record the exact model/provider, catalog composition, definition bytes, available
+usage/cost and errors, plus native discovery and separate reviewer transport results.
+The injected local limit is not provider acceptance. No live provider was selected
+or authorized for these synthetic probes. This explicit deferred release gate closes
+the W1 investigation increment only; the unchecked live-provider test above and the
+direct-profile adoption decision remain open. If W7 chooses native presentation,
+record that disposition instead of treating untested direct presentation as supported.
 
 **Decision:** accept direct-tool presentation as the V1-like compatibility route,
 or retain native Code Mode and explicitly restrict review of ambiguously linked
