@@ -72,7 +72,12 @@ export function inspectPackageArchive(bytes) {
   assert.equal(pkg.type, "module")
   assert.equal(pkg.exports?.["./tui"], "./dist/tui.js")
   assert.equal(pkg.license, "MIT")
-  assert.equal(pkg.engines?.opencode, "1.18.35")
+  // Historical V1 archives remain verifiable. V2 uses the same five-file layout
+  // with all supported entrypoints bound to its one shared executable member.
+  assert.ok(["1.18.35", "2.0.26"].includes(pkg.engines?.opencode), "Unverified OpenCode host target")
+  if (pkg.engines.opencode === "2.0.26") {
+    assert.deepEqual(pkg.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })
+  }
   assert.ok(!pkg.dependencies && !pkg.optionalDependencies, "Release package must not install project dependencies")
   return { pkg, files }
 }

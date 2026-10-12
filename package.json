@@ -24,6 +24,8 @@
     "auto-approval"
   ],
   "exports": {
+    ".": "./dist/tui.js",
+    "./server": "./dist/tui.js",
     "./tui": "./dist/tui.js"
   },
   "files": [
@@ -33,7 +35,7 @@
   ],
   "engines": {
     "node": ">=22",
-    "opencode": "1.18.35"
+    "opencode": "2.0.26"
   },
   "devEngines": {
     "runtime": {
@@ -58,20 +60,29 @@
     "@babel/core": "7.29.7",
     "@babel/preset-typescript": "7.28.5",
     "@opencode-ai/plugin": "1.18.35",
-    "@opentui/core": "0.4.5",
-    "@opentui/keymap": "0.4.5",
-    "@opentui/solid": "0.4.5",
+    "@opencode/plugin": "2.0.26",
+    "@opencode/client": "2.0.26",
+    "@opencode/theme": "2.0.26",
+    "@opentui/core": "0.5.17",
+    "@opentui/keymap": "0.5.17",
+    "@opentui/solid": "0.5.17",
     "@types/node": "24.12.2",
     "babel-preset-solid": "1.9.10",
     "esbuild": "0.28.2",
     "mpg123-decoder": "1.0.3",
     "shell-quote": "1.12.0",
-    "solid-js": "1.9.12",
+    "solid-js": "1.9.15",
     "tsx": "4.23.15",
     "typescript": "5.9.3"
   },
   "overrides": {
     "@babel/core": "$@babel/core",
+    "@opentui/solid": {
+      "solid-js": "$solid-js"
+    },
+    "@opentui/keymap": {
+      "solid-js": "$solid-js"
+    },
     "solid-js": {
       "seroval": "1.6.3"
     }

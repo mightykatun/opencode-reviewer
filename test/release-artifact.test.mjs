@@ -164,6 +164,18 @@ test("package metadata is inspected as data and cannot request project dependenc
   assert.deepEqual(inspectPackageArchive(archiveFixture({ pkg })).pkg, pkg, "lifecycle text is never executed by archive inspection")
 })
 
+test("V2 archives retain five files and require the shared entrypoint while historical V1 archives remain valid", () => {
+  const old = fixturePackage()
+  assert.equal(inspectPackageArchive(archiveFixture({ pkg: old })).pkg.engines.opencode, "1.18.35")
+  const pkg = { ...old, engines: { ...old.engines, opencode: "2.0.26" },
+    exports: { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" } }
+  assert.equal(inspectPackageArchive(archiveFixture({ pkg })).files.size, 5)
+  for (const exports of [{ "./tui": "./dist/tui.js" }, { ...pkg.exports, "./server": "./dist/server.js" },
+    { ...pkg.exports, "./extra": "./dist/tui.js" }])
+    assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, exports } })))
+  assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, engines: { opencode: "2.0.27" } } })), /Unverified/)
+})
+
 test("archives reject top-level tags, arbitrary publication config and normalized npm versions", () => {
   for (const [change, expected] of [
     [(pkg) => { pkg.tag = "latest" }, /top-level tag/], [(pkg) => { pkg.tag = false }, /top-level tag/],

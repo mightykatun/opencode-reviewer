@@ -86,15 +86,20 @@
 
 ## Host and build boundaries
 
-- Verified target: local Linux OpenCode **1.18.35**, pinned in the manifest and SDK.
-  Newer host versions require separate compatibility verification.
-  Use public `@opencode-ai/plugin/tui` APIs/slots, never private UI imports or native
-  approval-dialog patches.
+- Migration in progress: the shared V2 lifecycle entrypoint targets local Linux
+  OpenCode **2.0.26** using pinned `@opencode/plugin`, `@opencode/client` and
+  `@opencode/theme`. OpenTUI is 0.5.17 and Solid is 1.9.15, matching the host.
+  The V1 implementation and fixtures remain migration inputs, targeting 1.18.35;
+  do not count their source-test successes as V2 runtime verification. Check
+  `V2-MIGRATION-PLAN.md` for the active phase and exact completed host checks.
+  Use public APIs/slots, never private UI imports or native approval-dialog patches.
 - Package and plugin ID are `opencode-reviewer`. `src/tui.tsx` exports the default
-  `{ id, tui }` module; package `exports["./tui"]` points to `dist/tui.js`.
-  Install/configure the npm package in `tui.json`; permission rules go in
-  `opencode.json`. Source/built-in prompt changes require build plus host restart;
-  config/custom prompt changes require restart.
+  legacy `{ id, tui }` module. The build now starts at `src/plugin.ts`; its shared
+  V2 setup selects companion/CLI lifecycle without eager terminal runtime imports.
+  Package exports `.`, `./server` and `./tui` all point to `dist/tui.js`.
+  V2 setup uses server `opencode.json` plus global `cli.json`, with permission rules
+  only in `opencode.json`. Source/built-in prompt changes require build plus host
+  restart; config/custom prompt changes require restart.
 - `scripts/build.mjs` uses Solid's **universal OpenTUI** JSX transform, not React or
   Solid DOM. TypeScript only checks types. The ESM bundle leaves Solid/OpenTUI/OpenCode
   external and embeds prompts, sounds, the MP3 decoder and a CJS history worker.

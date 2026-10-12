@@ -1,10 +1,45 @@
 # V2 capability verification
 
-Status: scoped architecture approved, with production entrypoint/lifecycle work next.
+Status: scoped architecture approved; Phase 1 production lifecycle shell verified.
 Native Code Mode, trusted native-tool installation, visible-root automation, shared
 companion setup, optional delegation omissions and uncertain-history retention are
 selected. See the plan's W7 contract. Remaining production acceptance gates are open;
 synthetic probes do not establish a completed migration.
+
+## Phase 1 installed production archive
+
+The actual repository archive now exports its shared `src/plugin.ts` entry through
+`.`, `./server` and `./tui`, all targeting `dist/tui.js`. Server setup registers a
+location-scoped protocol-1 handshake with a fresh ephemeral epoch; CLI setup parses
+options/custom prompts, resolves its local state root and validates the connected
+companion response. Missing or mismatched responses provide no evidence authority.
+`PluginLifecycle` owns abort-first, idempotent reverse cleanup, partial failures,
+the 3.5-second wait budget and actual settlement after caller timeout.
+
+```sh
+OPENCODE_BIN=/tmp/opencode/reviewer-host-2.0.26/node_modules/@opencode/cli-linux-x64/bin/opencode node scripts/test-runtime.mjs smoke-v2-lifecycle.mjs
+```
+
+Final pass: `.runtime/runtime-run-ompWQz/results.json`, observations/captures:
+`.runtime/v2-lifecycle-yggsog/`. The fixture packs the current build with scripts
+disabled, installs it without source symlinks and serves identical bytes through a
+loopback registry for real stock-host package loading. It verifies exact five-file
+contents, default companion RPC, three CLI unload/reload cycles with actual slot/
+listener/timer quiescence, server epoch replacement, CLI/server partial setup
+failure, custom prompt loading and schema/location/workspace/version controls.
+Model/reviewer POSTs and permission writes remain zero.
+
+Dependencies are exact 2.0.26 plugin/client/theme, OpenTUI 0.5.17 and host Solid
+1.9.15. Scoped peer overrides reconcile OpenTUI's published 1.9.12 peer; `npm ls`
+shows one Solid version. Node 24.21.0 build/source tests pass despite OpenTUI's
+published >=26.4.0 Node engine; actual terminal execution uses the host Bun runtime.
+The prior lifecycle pass `runtime-run-3ZZUZA` predates custom-prompt setup.
+
+This is the lifecycle shell, not a functioning V2 reviewer yet. Worker/storage,
+injected dependency consumers, permission admission, review/approval, multi-terminal
+and shared-service behavior retain their later-phase gates. Default CLI setup has
+no public completion observer; wrapper observations use the actual archived setup.
+Response faults are explicit fixture injections, not production host errors.
 
 ## Selected research target
 

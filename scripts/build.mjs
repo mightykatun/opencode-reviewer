@@ -22,7 +22,7 @@ const historyWorker = await build({
 
 await build({
   stdin: {
-    contents: 'export { default } from "./src/tui.tsx"; export * from "./src/tui.tsx"; export { historyWorkerProbeSource } from "./src/history-worker-probe.ts"; export { HistoryStore, historyWorkerSource } from "./src/history-store.ts"; export { HistoryRefresh } from "./src/history-refresh.ts"',
+    contents: 'export { default } from "./src/plugin.ts"; export * from "./src/plugin.ts"; export { historyWorkerProbeSource } from "./src/history-worker-probe.ts"; export { HistoryStore, historyWorkerSource } from "./src/history-store.ts"; export { HistoryRefresh } from "./src/history-refresh.ts"',
     resolveDir: process.cwd(),
     sourcefile: "reviewer-entry.ts",
     loader: "ts",
@@ -34,7 +34,7 @@ await build({
   target: "es2023",
   banner: { js: soundBanner(sounds) },
   define: { __REVIEW_PROMPTS__: JSON.stringify(prompts), __REVIEW_SOUNDS__: "__REVIEWER_BUNDLED_SOUNDS__", __HISTORY_WORKER__: JSON.stringify(historyWorker.outputFiles[0].text) },
-  external: ["solid-js", "solid-js/*", "@opentui/*", "@opencode-ai/*"],
+  external: ["solid-js", "solid-js/*", "@opentui/*", "@opencode/*", "@opencode-ai/*"],
   plugins: [{
     name: "notification-decoder-only",
     setup(builder) {

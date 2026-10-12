@@ -1,6 +1,6 @@
 # OpenCode V2 migration plan
 
-Status: scoped V2 architecture selected; Phase 1 entrypoint/lifecycle work next. Unverified production acceptance gates remain open.
+Status: Phase 1 lifecycle shell verified on installed V2 archive; Phase 2 typed evidence adapter next. Review/approval/UI acceptance gates remain open.
 Prepared: 2026-10-12.
 Revised: 2026-10-12, following the user's requirement that upstream changes are unavailable.
 Baseline: `v1.0.2` (`7cd1e561aea594ab9c7a99a32f30568579098747`), the final
@@ -134,18 +134,18 @@ coverage. Implement the following selected scope:
 - [x] 2. Read referenced implementation, fixture, package and workflow files.
 - [x] 3. Derive ordered implementation tasks and acceptance gates.
 - [ ] 4. Implement sequentially and commit verified increments.
-  - [ ] Phase 0: pin and probe public host capabilities; resolve architecture.
+  - [x] Phase 0: pin and probe public host capabilities; resolve the W7 scoped architecture.
     - [x] Inspect exact installed host and released package contracts.
     - [x] Verify direct native request reads/reply, options and unload cleanup.
     - [x] Reproduce custom replacement behind native-looking tool/catalog data.
     - [x] Reproduce descendant auto/hide ambiguity and test disk/env alternatives.
     - [x] Plan stock-host workarounds for each blocker, without an upstream dependency.
-    - [ ] Execute the stock-host probes in section 3A in order.
-    - [ ] Resolve the explicit architecture/behavior decisions in section 3A.8.
-    - [ ] Probe invocation/delegation, catalog provenance and pending evidence.
-    - [ ] Probe lifecycle, queue, coverage, scope and reply/error events.
-    - [ ] Record findings and resolve mandatory capability gaps.
-  - [ ] Phase 1: V2 entrypoint, package, lifecycle and storage scope.
+    - [x] Execute the selected stock-host probes and record remaining cases independently.
+    - [x] Resolve the explicit architecture/behavior decisions through W7.
+    - [x] Probe invocation/delegation, catalog provenance and pending evidence.
+    - [x] Probe minimal lifecycle, native queue, physical coverage, scoped RPC and reply/error contracts.
+    - [x] Record findings and scope unresolved mandatory evidence to manual handling.
+  - [x] Phase 1: V2 entrypoint, package, lifecycle shell and local state/connection scope.
   - [ ] Phase 2: typed host boundary and all evidence categories.
   - [ ] Phase 3: controller, physical presentation and normal/fast visible-root approval.
   - [ ] Phase 4: persistence, accounting, modes and notifications.
@@ -162,8 +162,9 @@ and terminal sidebar-state observation. Real-host direct/replacement and sidebar
 reproductions pass, and all 118 helper tests pass. See the capability document's
 escalation and exact artifact paths. Its upstream recommendation is historical:
 section 3A below replaces that recommendation with a stock-host investigation and
-decision sequence. The recorded negative observations remain valid. Phase 0 remains
-incomplete; proposed workarounds are not verified capabilities.
+decision sequence. The recorded negative observations remain valid. W7 closes the
+scoped architecture disposition; unchecked production and expanded lifecycle cases
+remain gates in their implementation phases, not verified capabilities.
 
 Port `opencode-reviewer` to the public OpenCode V2 plugin and client APIs while
 preserving its existing review, approval, history, statistics and notification
@@ -747,6 +748,51 @@ Files: `package.json`, `package-lock.json`, `tsconfig.json`, `scripts/build.mjs`
 - Implement companion/profile setup, version handshake, location-scoped RPC,
   evidence epochs and idempotent cleanup as approved in W7. Missing or mismatched
   companion state must never be silently replaced with terminal-local evidence.
+
+Phase 1 implementation tracker:
+
+- [x] Shared server/CLI entrypoint with the stable `opencode-reviewer` ID and one-file exports.
+- [x] Pin released V2 plugin/client/theme 2.0.26, OpenTUI 0.5.17 and host Solid 1.9.15.
+- [x] Preserve universal JSX build, embed prompts/audio/SQLite worker and externalize host runtimes.
+- [x] Add abort-first, idempotent partial-setup cleanup with a 3.5-second caller drain and actual-settlement ownership.
+- [x] Add scoped protocol/version/location handshake and terminal-local state-root resolution.
+- [x] Rework fixture factories into V2 definitions, carrying explicit injected dependencies.
+- [x] Verify reproducible five-file archive and V1/V2 archive validation policy.
+- [x] Verify the actual installed archive on pinned V2: default package loading, scoped RPC, repeated reload and partial failure.
+- [x] Verify custom prompt startup snapshot and built-in per-file fallback in the installed archive.
+- [ ] Verify worker cleanup and injected dependency behavior when those consumers are connected in Phases 2-4.
+- [x] Finish Phase 1 shell verification before Phase 2. Commit this verified increment.
+
+Implementation currently uses `src/plugin.ts`, `src/cli-plugin.ts`,
+`src/companion.ts`, `src/companion-protocol.ts` and `src/plugin-lifecycle.ts`.
+`src/tui.tsx` and its V1 source tests remain migration inputs while the replacement
+entrypoint is only a lifecycle shell. The shell does not yet dispatch reviews or
+approval writes. Existing V1 controller test successes do not prove V2 behavior.
+
+OpenTUI 0.5.17 publishes exact Solid 1.9.12 peers while the pinned host uses 1.9.15;
+scoped npm overrides select the host's single Solid runtime. Its published Node
+engine is >=26.4.0, while this host uses Bun 1.4.2. Build/type/source/helper checks
+pass on Node 24.21.0, with npm's engine warning retained. Node-floor CI and actual
+Bun runtime verification remain distinct checks; no broader runtime range is claimed.
+
+Verification: 1,305 source tests and 119 pure helper tests pass. The helper run
+initially detected the concurrently added lifecycle fixture before registration;
+after inventory/sparse-checkout registration all 119 pass. Typecheck/build pass.
+`check:package` proves deterministic builds and five real archive members; nine
+built-artifact/npm CLI smoke tests pass without publication. After adding custom
+prompt setup, the 34 focused lifecycle/protocol/prompt tests and rebuilt real-host
+fixture pass. `smoke-v2-lifecycle.mjs` results are
+`.runtime/runtime-run-ompWQz/results.json`, with installed-archive observations in
+`.runtime/v2-lifecycle-yggsog/`. The earlier lifecycle-only pass remains at
+`runtime-run-3ZZUZA` / `v2-lifecycle-4GU3Ge`.
+
+The host fixture exercises three CLI cycles, real slot/listener/timer cleanup,
+server epoch replacement, partial failure, unavailable companion and response
+scope/version controls. It records zero model/reviewer POSTs and permission writes.
+Default CLI activation is configured but has no public completion observer;
+instrumented setup uses the exact archive through the explicit embedding seam.
+No worker is acquired in this shell, and no storage/approval/multi-terminal success
+is claimed. Dependency helper consumers are tested as their features are wired.
 
 **Exit:** installed archive loads with the intended ID/options; disable/reload and
 failed setup leave no duplicate slots, listeners, workers or model calls.
