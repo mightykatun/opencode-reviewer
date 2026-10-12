@@ -36,6 +36,7 @@ export const runtimeInventory = {
   "smoke-review-admission.mjs": host(["fanout64"], [], { requires: ["linux", "git", "python3", "tmux", "bundle"] }),
   "smoke-mouse-proof.mjs": host(["normal", "fast"], [], { requires: ["linux", "git", "python3", "tmux", "bundle"] }),
   "smoke-v2-mouse-proof.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux", "babel"] }),
+  "smoke-v2-contracts.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux"] }),
   "smoke-style-retirement.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux", "bundle", "babel"] }),
   "smoke-approval-recovery.mjs": host(["read-error", "read-timeout", "correction-after", "correction-before", "transport-after", "transport-before"], [], {
     requires: ["linux", "git", "python3", "tmux", "bundle"] }),
