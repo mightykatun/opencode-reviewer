@@ -1232,6 +1232,8 @@ Code Mode calls stay manual; optional unproven delegation is omitted factually;
 uncertain history is retained; connection replacement closes the old controller.
 
 - Prior verified production-controller increment: `152ffbd`.
+- Final history/statistics/notifications, registered acceptance, documentation and
+  local `2.0.0` preparation committed as `df7e193`.
 - Final source aggregate: `npm test`, **1,511 passed**, two concurrent files;
   `npm run typecheck` passes. No production deadline or timing assertion was relaxed.
 - `npm run test:helpers`: **121 passed**, including the active-policy sparse checkout
