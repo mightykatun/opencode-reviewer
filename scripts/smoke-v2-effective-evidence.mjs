@@ -3,7 +3,7 @@
 // Pinned source: core/src/{tool.ts,shell.ts,skill.ts,permission.ts},
 // core/src/tool/plugin/{shell.ts,skill.ts}, core/src/session/move.ts,
 // plugin/src/effect/{tool.ts,shell.ts,skill.ts,permission.ts} and client types.
-// Inventory owner registers shell-rewrite (default), skill-reload, moved-location.
+// Inventory owner registers shell-rewrite (default), skill-reload, moved-location, edit-preview.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { createServer } from "node:http"
@@ -232,7 +232,7 @@ function cliSetup(ctx) {
 }
 
 const { scenario } = runtimeArguments("smoke-v2-effective-evidence.mjs")
-assert.ok(["shell-rewrite", "skill-reload", "moved-location"].includes(scenario))
+assert.ok(["shell-rewrite", "skill-reload", "moved-location", "edit-preview"].includes(scenario))
 const host = process.env.OPENCODE_BIN ?? "opencode"
 const version = execFileSync(host, ["--version"], { encoding: "utf8", timeout: 10000 }).trim()
 assert.equal(version, "opencode v2.0.26")
@@ -244,6 +244,7 @@ const project = path.join(temp, "project"), initial = path.join(project, "A"), m
 const plugin = path.join(temp, "probe"), inputDirectory = path.join(initial, "inputs")
 const finalDirectories = [path.join(initial, "final-1"), path.join(initial, "final-2")]
 const skillPath = path.join(initial, "skill/SKILL.md")
+const editTargets = [path.join(initial, "target.txt"), path.join(temp, "external/target.txt")]
 const sentinelDirectories = [inputDirectory, ...finalDirectories, path.join(moved, "inputs")]
 await Promise.all([...sentinelDirectories, path.dirname(skillPath), plugin, path.join(temp, "config/opencode")]
   .map(directory => mkdir(directory, { recursive: true })))
@@ -251,6 +252,10 @@ execFileSync("git", ["init", "--quiet", project])
 for (const directory of sentinelDirectories) await writeFile(path.join(directory, "fixture.py"),
   'with open("executed", "a") as output:\n    output.write("W3 UNEXPECTED EXECUTION\\n")\n')
 await writeFile(skillPath, "W3_DISK_CONTENT_IS_NOT_THE_TRANSFORMED_CATALOG\n")
+if (scenario === "edit-preview") {
+  await mkdir(path.dirname(editTargets[1]))
+  for (const file of editTargets) await writeFile(file, "W3_BEFORE\n")
+}
 const files = Object.fromEntries(["A", "B", "cli", "A-control", "B-control", "cli-control"].map(name => [name, path.join(artifacts, `${name}.json`)]))
 const publisherImport = JSON.stringify(new URL("./smoke-observations.mjs", import.meta.url).href)
 const imports = `import assert from 'node:assert/strict'\nimport { setTimeout as sleep } from 'node:timers/promises'\nimport { observationPublisher, readObservation } from ${publisherImport}\n`
@@ -349,6 +354,7 @@ const negativeWindow = async (sessionID, expectedIDs, label) => {
     const pending = await control("cli", { type: "pending", sessionID })
     assert.deepEqual(pending.map(item => item.id).sort(), [...expectedIDs].sort())
     for (const directory of sentinelDirectories) await assert.rejects(readFile(path.join(directory, "executed")), { code: "ENOENT" })
+    if (scenario === "edit-preview") for (const file of editTargets) assert.equal(await readFile(file, "utf8"), "W3_BEFORE\n")
     samples++
     await sleep(75)
   } while (Date.now() < end)
@@ -375,6 +381,7 @@ try {
     plugins: [{ package: plugin, options: { scenario, initial, moved, inputDirectory, finalDirectories, skillPath,
       observations: { A: files.A, B: files.B }, controls: { A: files["A-control"], B: files["B-control"] } } }],
     permissions: [{ action: "shell", resource: "*", effect: "ask" }, { action: "skill", resource: "*", effect: "ask" },
+      { action: "edit", resource: "*", effect: "ask" },
       { action: "external_directory", resource: "*", effect: "ask" }],
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: `${baseURL}/v1`, apiKey: "synthetic-only" },
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } }
@@ -464,6 +471,38 @@ try {
     evidence.skill = { link, evaluation, currentMessage,
       selectedContentProof: "Pinned native source selects before permission.evaluate; A is the sole controlled catalog at that barrier. Public output/snapshot of the selected object is unavailable before approval." }
     await negativeWindow(sessionID, [link.request.id], "skill selected under A remains pending with catalog B")
+  } else if (scenario === "edit-preview") {
+    const expected = [
+      { id: "w3-write-local", name: "write", input: { path: "target.txt", content: "W3_AFTER\n" } },
+      { id: "w3-write-external", name: "write", input: { path: editTargets[1], content: "W3_EXTERNAL_AFTER\n" } },
+    ]
+    respond(0, expected)
+    const held = await until("independent native edit and external-directory stages", value => value.cli?.linked.length === 2)
+    const links = held.cli.linked
+    assert.equal(new Set(links.map(link => link.request.id)).size, 2)
+    for (const link of links) {
+      const item = sourceItem(link), call = expected.find(call => call.id === item.id)
+      assert.ok(call)
+      assert.equal(item.name, "write")
+      assert.deepEqual(item.state.input, call.input)
+      assert.equal(link.request.sessionID, sessionID)
+    }
+    const local = links.find(link => link.request.source.id === "w3-write-local")
+    const external = links.find(link => link.request.source.id === "w3-write-external")
+    assert.equal(local.request.action, "edit")
+    assert.equal(external.request.action, "external_directory")
+    const previews = local.request.metadata.files
+    assert.equal(previews.length, 1)
+    assert.equal(previews[0].status, "modified")
+    assert.equal(previews[0].additions, 1)
+    assert.equal(previews[0].deletions, 1)
+    assert.match(previews[0].patch, /-W3_BEFORE\n\+W3_AFTER/)
+    assert.equal(local.request.resources[0], previews[0].file)
+    assert.equal(external.request.resources.length, 1)
+    assert.ok(external.request.resources[0].startsWith(path.dirname(editTargets[1])))
+    assert.equal(external.request.metadata?.files, undefined, "external approval precedes native preview construction")
+    evidence.edits = { links, conclusion: "Native write exposes the pending edit preview; external-directory authorization is a separate earlier stage with exact source arguments and no constructed edit preview yet." }
+    await negativeWindow(sessionID, links.map(link => link.request.id), "edit preview and separate external stage, unchanged targets")
   } else {
     const input = { command: "python3 fixture.py # W3 location", workdir: "inputs" }
     respond(0, [{ id: "w3-location-A", name: "shell", input }])

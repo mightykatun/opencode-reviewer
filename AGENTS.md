@@ -122,6 +122,10 @@
 - V2 normal and fast automatic replies require the root conversation route and
   actual physical presentation proof. Descendant browsing permits no automatic
   write. Root route identity alone, mounted state or remembered paint is insufficient.
+- Stock V2's root native queue includes the full descendant family, root first and
+  then public family order. Use actual native ownership, not V1's direct-child
+  limitation or event-arrival order. Reconcile native permission caches after
+  interruption; fresh server reads alone do not refresh a stale native prompt.
 - Leaving root presentation after a normal countdown starts permanently makes
   that request manual. Root return/remount/re-enable cannot erase cancellation or
   uncertain-write tombstones. Never-armed reports completed while hidden may first
@@ -144,6 +148,10 @@
   host provenance or an enforceable registry seal. Preserve exact scope, source,
   native-priority, visible-root and once-only write checks. Additional skill/MCP
   snapshot/mapping assumptions require their own disposition in the migration plan.
+- When asked about extra skill-catalog mutation assumptions, the user said "keep
+  it simple". Keep requests manual when exact mandatory skill instructions are
+  unavailable; do not add a speculative catalog revision-guard subsystem or assume
+  catalog immutability. Ordinary optional-context omissions remain a separate policy.
 
 ### Current V1 implementation
 

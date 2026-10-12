@@ -16,7 +16,7 @@ Current execution tasks (resumed 2026-10-12; completed reading gates retained):
 - [x] Read the complete revised plan and locate the first unchecked increment.
 - [x] Preserve the existing plan edits and audit deletion as pre-existing work.
 - [x] Derive the following ordered work and verification gates.
-- [x] W1: direct-tool compatibility on unmodified 2.0.26, with live-provider acceptance deferred to the explicit release gate below.
+- [x] W1: direct-tool compatibility investigation on unmodified 2.0.26; user selected native Code Mode instead of shipping the profile.
   - [x] Register supervised synthetic fixtures and their active-policy inputs.
   - [x] Prove parallel reverse-order permission identity and independent stages.
   - [x] Verify error/cancellation, MCP refresh/disposal and retained old snapshots.
@@ -31,16 +31,26 @@ Current execution tasks (resumed 2026-10-12; completed reading gates retained):
   - [ ] Resolve any additional MCP mapping/skill snapshot restrictions separately.
 - [ ] W3: prove location/effective evidence and obtain per-kind scope decisions.
   - [x] Probe concurrent late shell rewrites, skill catalog reload and continuously observed moved-session location.
+  - [x] Probe exact pending edit preview and the earlier external-directory stage.
+  - [x] Apply the user's "keep it simple" direction to skills: no extra catalog-mutation assumption or revision-guard subsystem; missing exact main instructions remains manual.
   - [ ] Resolve immutable final evidence, reconnect/reload recovery and category scope.
 - [ ] W4: prove delegation subset and obtain remaining representation decisions.
+  - [x] Verify native initial/resumed/nested delegation, tool-only continuation and coalesced steer/synthetic inputs excluding queued follow-up.
+  - [ ] Resolve unproven exact-delegation handling and remaining lifecycle cases.
 - [ ] W5: prove presentation/coverage and obtain descendant-route decision.
   - [x] User selected visible-root presentation for V2 automatic approval.
   - [x] Verify synthetic root Markdown/frame/hit proof and descendant, hide, modal, fullscreen, narrow and mouse-disabled controls.
+  - [x] Verify native root queue includes deep descendants and uses root-first/public-family order.
   - [ ] Verify root physical proof and descendant cancellation/return behavior.
 - [ ] W6: prove lineage/absence and packed companion lifecycle/configuration.
+  - [x] Verify five-file packed shared entrypoint, lazy CLI rendering, scoped RPC and location/CLI lifecycle.
+  - [x] Verify typed direct-server absence and read/set initialization-race negative controls.
+  - [ ] Resolve durable lineage and remaining service/connection lifecycle gates.
 - [ ] W7: reconcile approved contracts before any dependent production port.
 - [ ] Implement and verify Phases 1-6 sequentially against their existing exits.
 - [ ] Keep evidence/checkmarks current and commit verified increments.
+  - [x] Commit the mapping/effective-evidence/root-proof increment (`f847799`).
+  - [x] Verify native queue, edit previews, delegation subsets and packed companion; 118 helper tests, fixture syntax and diff checks pass.
 - [ ] Escalate unresolved gates with Expected/Found/Impact/Options.
 
 The task-list and Edit tools are not exposed in this session. This hierarchical
@@ -77,6 +87,12 @@ direct-tool transform or remove Code Mode search as part of the selected design.
 Additional restrictions, such as skill-catalog immutability, have not been approved
 merely by this narrower question.
 
+When subsequently asked about additional skill-catalog immutability assumptions,
+the user answered **"keep it simple"**. Do not add that assumption or a speculative
+revision-guard subsystem. Apply the existing mandatory-evidence rule: skill requests
+whose exact main instructions cannot be established remain manual. No new source
+of immutable skill evidence is claimed.
+
 - [x] 1. Read the complete plan and existing completion state.
 - [x] 2. Read referenced implementation, fixture, package and workflow files.
 - [x] 3. Derive ordered implementation tasks and acceptance gates.
@@ -94,7 +110,7 @@ merely by this narrower question.
     - [ ] Record findings and resolve mandatory capability gaps.
   - [ ] Phase 1: V2 entrypoint, package, lifecycle and storage scope.
   - [ ] Phase 2: typed host boundary and all evidence categories.
-  - [ ] Phase 3: controller, physical presentation and normal/fast/F34 approval.
+  - [ ] Phase 3: controller, physical presentation and normal/fast visible-root approval.
   - [ ] Phase 4: persistence, accounting, modes and notifications.
   - [ ] Phase 5: fixtures/inventory/CI updated alongside their features.
   - [ ] Phase 6: documentation and installed-archive verification.
@@ -129,9 +145,10 @@ combined V1/V2 export is unnecessary for this release policy.
 The starting architecture of this repository is **CLI-only**:
 `src/tui.tsx` exports `{ id, tui }`, and `package.json` exposes `./tui`. It does not
 return a V1 server-hook map. Keep reviewer policy, transport, UI and replies in the
-V2 CLI entrypoint. Evaluate a public server companion and an opt-in direct-tool
-compatibility profile as described in section 3A. They are additions requiring
-verification, not a mechanical rewrite to server hooks. In particular, the server guide's
+V2 CLI entrypoint. Evaluate a public server companion as described in section 3A.
+The direct-tool profile was investigated and not selected; retain native Code Mode.
+The companion requires verification, not a mechanical rewrite to server hooks.
+In particular, the server guide's
 `permission.hook("evaluate")` example executes before a pending prompt exists and
 can alter allow/ask decisions. It is not a replacement for this plugin's pending
 request review and one-time reply lifecycle.
@@ -401,6 +418,8 @@ admission or temporal proximity alone does not prove consumption by a step.
 
 - [ ] Probe initial child delegation, tool-only continuation, resumed child,
   nested child, sibling child, queued follow-up and multiple coalesced steers.
+  - [x] Initial/resumed/nested child, tool-only continuation, coalesced steers and excluded queued follow-up.
+  - [ ] Sibling child and subsequent queued execution.
 - [ ] Probe retry, compaction, duplicate/concurrent admission and observer reload.
 - [ ] Distinguish delivered genuine user input from synthetic user-role messages.
 - [ ] Only populate exact delegation when ownership is demonstrated. Preserve root
@@ -416,6 +435,13 @@ message metadata, force delivery mode, or serialize subagents to create a link.
 **Parity disposition:** simple proven associations may be recoverable; exact
 resumed/coalesced linkage remains an experiment. Explicitly accepting omission is
 a feature change, not full delegation parity or a blanket ban on subagent review.
+
+W4's `initial-resume` and `coalesced` probes pass in `runtime-run-mZizSw` and
+`runtime-run-x3A2FL`. Exact source IDs and continuous durable sequences establish
+controlled ordered input subsets, not a host-designated unique parent delegation.
+Native child identity is read from public `session.tool.progress`, which is
+ephemeral. Four held native shell permissions receive zero replies. See the
+capability document for exact artifacts, remaining cases and contrary evidence.
 
 ### 3A.5 Blocker 4: invocation location and immutable effective evidence
 
@@ -452,6 +478,8 @@ Treat the evidence kinds separately:
 - [ ] Never replace the native skill executor or pin a different skill selection
   silently. If exact mandatory main instructions remain unavailable, leave that
   review unsupported pending an explicit category-scope decision.
+  - [x] Record the user's simplifying direction above; preserve manual handling
+    where mandatory skill instructions are unavailable.
 - [ ] Subscribe before reconciliation, use a bounded sequence/revision protocol,
   and recheck the pending request after evidence lookup. Filter RPC by location.
 - [ ] Retain observed records through CLI reconnect and all pending permission
@@ -510,6 +538,11 @@ The approved V2 contract is:
   nested descendant routes. Source-session ancestry and native queue priority
   remain independent: a descendant request may be approved when it belongs to the
   root's native queue and is physically presented on the root route.
+  The stock V2 root queue includes all descendants, unlike V1's direct-child-only
+  queue. `smoke-v2-native-queue.mjs` verifies a deep-only request, family ordering
+  independent of arrival order and later root priority (`runtime-run-zdw5CN`).
+  Follow that actual V2 queue; re-synchronize stale native cache/presentation after
+  interruption before changing approval ownership.
 - Normal mode still requires the completed validated Safe report, final Markdown
   highlighting, matching paint and configured countdown. Losing root presentation
   after the countdown starts permanently makes that request manual. Returning to
@@ -571,6 +604,7 @@ These are adapter tasks with concrete stock-host candidates:
   exports, without eager CLI-only imports on the server. Do not assume it works.
   If separate `dist/server.js` is required, obtain an explicit six-file-package
   exception and update artifact/release checks together during implementation.
+  - [x] Packed shared-file server/TUI loading and lazy CLI dependencies pass on 2.0.26 (`runtime-run-0BmuYK`).
 - [ ] Specify server-plugin plus global CLI-plugin configuration and ownership.
   Test standalone/shared service, multiple locations and multiple terminals, with
   no duplicated collection, RPC registrations, usage or approval writes.
@@ -637,9 +671,9 @@ phase's exit criteria are met.
 | What is the connection/location/storage scope? | Explicit separation of terminal-local resources, server session identity and invocation filesystem. Reconnection or server switching cannot reuse another server's pending IDs or deletion authority. |
 | What are exact reply/error/event contracts? | A `once` round trip, resolved-request behavior, missing-session envelope, event ownership and client cancellation behavior. |
 
-4. Execute W1-W6 in section 3A using public APIs. Evaluate the companion and
-   compatibility profile separately: collection stays observational; direct-tool
-   transforms change model-facing tools only under the approved profile. Keep
+4. Execute W1-W6 in section 3A using public APIs. The compatibility profile remains
+   synthetic research only under the user's native-Code-Mode choice. Companion
+   collection stays observational and preserves model-facing tools. Keep
    permission decisions and once replies in the CLI. Design location filtering,
    cancellation, retained records and startup reconciliation before production use.
 5. A companion changes configuration, exports and potentially packaging. Resolve
@@ -820,9 +854,9 @@ Files: `scripts/smoke-*.mjs`, `runtime-inventory.mjs`, `runtime-runner.mjs`,
   `plugins: [{ package: "opencode-reviewer@<V2 release>", options: { ... } }]`.
   Preserve all existing option semantics and state the exact verified host.
   Keep permission rules in `opencode.json`, using V2 `shell` action examples.
-- Include the approved companion's server configuration and explicit compatibility
-  profile setup when required. Describe direct-tool presentation, supported plugin
-  restrictions and any approved route/evidence differences as user behavior, without
+- Include the approved companion's server configuration. Describe native Code Mode,
+  manual handling of ambiguous nested calls, the approved trusted-installation
+  contract and any approved route/evidence differences as user behavior, without
   adding migration warnings to the UI or claiming unrestricted V1 parity.
 - Explain that V1 users should stay pinned to `opencode-reviewer@1.0.2`; global V1
   terminal config may auto-migrate, but that does not port the plugin implementation,

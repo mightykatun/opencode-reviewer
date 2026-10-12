@@ -210,8 +210,9 @@ Invoke each scenario with the same pinned host prefix above and
 | `shell-rewrite` | `.runtime/runtime-run-1LYaH4/results.json` | `.runtime/v2-effective-evidence-shell-rewrite-sWDYKS/` |
 | `skill-reload` | `.runtime/runtime-run-iQzsxp/results.json` | `.runtime/v2-effective-evidence-skill-reload-fqrRQW/` |
 | `moved-location` | `.runtime/runtime-run-13RyMC/results.json` | `.runtime/v2-effective-evidence-moved-location-hQaUpi/` |
+| `edit-preview` | `.runtime/runtime-run-zIznuY/results.json` | `.runtime/v2-effective-evidence-edit-preview-HpMili/` |
 
-All three pass with pending-window checks, zero replies and zero shell execution.
+All four pass with pending-window checks, zero replies and zero shell execution.
 Interruption removes the requests; CLI cleanup stops publications.
 
 - Two concurrent direct shells have distinct exact source IDs and identical parsed
@@ -230,10 +231,74 @@ Interruption removes the requests; CLI cleanup stops publications.
   workdir. Captured A remains A after the public session moves to B. This case
   interrupts before moving; active-step moves, observer restart/reconnect and
   workspace/remote filesystem ownership remain unverified.
+- Native in-project write permission contains one exact `metadata.files` preview
+  with the expected changed lines and counts. A concurrent external write stops at
+  its independent `external_directory` stage, with source arguments but no edit
+  preview yet. Both target files remain unchanged throughout the pending and
+  interruption windows. Initial `runtime-run-NzXyg9` incorrectly assumed external
+  metadata was always an object; the passing probe handles its actual absence.
 
 Initial `runtime-run-nHfNBF` disabled the fixture transform because it incorrectly
 required options-object reference identity. The corrected probe requires options
 value equality while preserving executor/schema identity; all final scenarios pass.
+
+#### Skill-generation workaround investigation
+
+Further pinned-source inspection evaluated a read-only `skill.transform` generation
+observer, with an exact direct-source capture in `execute.before`. Ordinary registry
+reloads, registration and disposal synchronously replay transforms, and public
+`skill.list` and native `skill.get` share that cache (`core/src/state.ts:172-193`,
+`core/src/skill.ts:119-124`). Native filesystem watchers rebuild their inventory and
+call reload. This could conservatively reject intervening catalog changes.
+
+It is not sufficient under the currently approved native-executor assumption:
+public skill editors/readers expose mutable cached entries without cloning/freezing
+(`core/src/skill.ts:98-107`, `core/src/plugin/host.ts:40,93-94,452-462`). A transform
+can retain an entry or install a dynamic content property, then change content
+without another replay. Native skill selection precedes permission evaluation, but
+content preparation reads that selected object after approval (`tool/plugin/skill.ts:
+48-59`). Neither unchanged generation nor a last pre-reply content comparison
+protects against an in-place change after comparison.
+
+No successful snapshot fixture is claimed for this source-only investigation.
+A generation-guard design would additionally require approved catalog-data rules:
+no retained-entry mutations/dynamic fields, and changes through invalidation with
+fresh replay-owned values. Normal skill reloads could remain supported. That extra
+assumption was not selected. The user replied **"keep it simple"**: retain manual
+handling when exact main instructions cannot be established, with no additional
+revision-guard subsystem or mutation assumption.
+
+### W4 executed delegation boundaries
+
+Both `smoke-v2-delegation.mjs` scenarios passed through the pinned runner:
+
+| Scenario | Runner result | Observations/captures |
+| --- | --- | --- |
+| `initial-resume` | `.runtime/runtime-run-mZizSw/results.json` | `.runtime/v2-delegation-initial-resume-W6c0J6/` |
+| `coalesced` | `.runtime/runtime-run-x3A2FL/results.json` | `.runtime/v2-delegation-coalesced-xPkQ3x/` |
+
+The first case exercises actual native initial/resumed/nested subagents and a
+tool-only continuation. The second admits two genuine steers and a synthetic input
+while the child model response is held, then proves their coalesced delivery while
+an earlier queued follow-up remains pending and absent from model context.
+Genuine and synthetic durable message types remain distinguishable even though
+both become model-facing user-role messages. Root intent stays a separate root
+user message. Four shell permissions remain pending through negative windows and
+are interrupted, with zero replies and shell completions.
+
+Public `session.tool.progress` identifies the native child via explicit parent
+session/assistant/call IDs; that progress is ephemeral, not durable tool metadata.
+The initial attempt (`runtime-run-w1nBeH`) assumed durable metadata and timed out.
+The passing fixture captures the public progress event and accepts the host's
+explicit default model variant.
+
+Per-session durable sequence continuity, exact IDs/types, controlled model barriers
+and pinned runner causal ordering establish ordered consumed-input subsets in
+these cases. They do not create a public unique assistant-to-delegation field.
+Session-local context-hook ordinals are fixture controls, not deployable identity
+joins. Siblings, retries, compaction, duplicate/concurrent admission, reconnect/
+reload and attachment-only root intent remain outside this fixture. An optional
+omission or ordered-input representation still needs its production disposition.
 
 ### W5 executed synthetic visible-root proof
 
@@ -264,7 +329,32 @@ Countdown cancellation/non-rearm, normal/fast verification races, retained repor
 production history cover and tabs still require their implementation acceptance
 cases. W5's production presentation gate remains open.
 
-### W6 preparation: storage initialization boundary
+### W5 native family queue
+
+`smoke-v2-native-queue.mjs` passed through the pinned runner in
+`.runtime/runtime-run-zdw5CN/results.json`; observations/captures are in
+`.runtime/v2-native-queue-hkMwa9/`.
+
+A deep-only grandchild shell permission appears in the native root prompt.
+After child/sibling requests arrive in reverse order, the prompt follows the
+public family order, not permission-arrival order. A later root permission takes
+priority over all descendants. No request is replied to or executed. Root-request
+interruption followed by public permission-cache invalidation/synchronization
+restores the front descendant request; each remaining session is then interrupted.
+
+This differs from V1's direct-child-only native queue. Pinned
+`packages/tui/src/routes/session/index.tsx:198-215,1494-1513` uses root followed by
+the full public `data.session.family` order. Permissions precede forms in that
+source, but the fixture does not yet test forms, autoaccept or notifications.
+
+The first run, `runtime-run-6XOXho`, timed out because the native prompt still
+displayed the interrupted root request. Public cache invalidation plus sync fixes
+that probe; fresh server pending reads alone do not refresh native UI ownership.
+Production must reconcile native cache/presentation after interruption rather than
+granting a different request ownership solely because a server read no longer
+contains the old request.
+
+### W6 storage source findings
 
 Pinned source inspection, not a completed lifecycle probe:
 
@@ -281,8 +371,43 @@ Pinned source inspection, not a completed lifecycle probe:
 - `packages/plugin/src/host.ts:17-43` resolves server and TUI entries separately,
   preferring `server` then the package root for the server and `tui` for the CLI.
   A single archive file can be targeted by both exports at resolution time, but
-  this does not establish that one default module loads in both runtimes. A real
-  packed lifecycle test is still required before adopting that package shape.
+  this alone does not establish that one default module loads in both runtimes.
+  The subsequent packed probe below verifies the minimal shared-module shape.
+
+### W6 executed packed companion and absence controls
+
+`smoke-v2-companion-package.mjs` passed through the pinned runner in
+`.runtime/runtime-run-0BmuYK/results.json`; detailed artifacts are in
+`.runtime/v2-companion-package-sAfQLC/`.
+
+- The installed npm archive contains exactly five files. Server and CLI exports
+  resolve the identical `dist/tui.js` bytes. Its shared default setup chooses the
+  context branch; OpenTUI/Solid imports occur lazily only in the CLI branch.
+  A real sidebar contribution paints from the installed package. No repository
+  helper imports survive in the archive.
+- A fixture-owned loopback npm registry exercises actual package-export loading,
+  with pack/install scripts disabled. Connected-client RPC reaches two real
+  location-scoped companion instances, without service rediscovery or credentials.
+- Storage for the same plugin ID is shared across locations. A deterministic
+  two-reader/two-writer initialization interleaving disproves naive read-then-set
+  namespace initialization: one initializer's proposed token is lost.
+- Exact direct-server missing-session errors use `_tag: "Session.NotFoundError"`
+  with the requested `sessionID`, distinct from the HTTP error spelling. Scoped
+  RPC preserves that fact; wrong location, wrong candidate, wrong ID, injected
+  401 and bare 404 controls cannot become absence authority.
+- CLI disable/reload disposes and restores the contribution; both server instances
+  report cleanup. Shared storage survives CLI reload. No model/permission work runs.
+
+Failed attempts remain at `runtime-run-loU2X9`, `runtime-run-Bgbf3m` and
+`runtime-run-AUBOjs`: npm's object-shaped pack result, local-directory versus npm
+package export resolution, and the required explicit empty RPC input schema were
+fixed before the passing run. This is a synthetic archive, not the reviewer release.
+
+The fixture's candidate is deliberately not authoritative lineage. Restart/copy/
+database replacement, shared-service/multiple-terminal behavior, disconnect and
+stale-response controls remain open. No six-file packaging exception is needed
+for this verified minimal architecture; production worker/build integration and
+the companion setup decision still have their own gates.
 
 ### W2 preparation: public enforcement boundaries
 
