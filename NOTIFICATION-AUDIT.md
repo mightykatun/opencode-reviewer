@@ -39,9 +39,9 @@ The following source/test comparison was verified on 2026-10-12:
   normalized desktop playback cases and player exits, with human perception,
   click/focus and live desktop banners still untested there. No host or desktop
   session was run for this archive update.
-- Other current limitations, including mouse-disabled presentation (F32) and the
-  user-deferred root-only presentation scope (F34), retain their dispositions in
-  [AUDIT.md](AUDIT.md); this archive does not close them.
+- Current dispositions for mouse-disabled presentation (F32) and root-only
+  presentation with continuing subagent-browsing automation (F34) are tracked in
+  [AUDIT.md](AUDIT.md); this archive does not establish their verification.
 
 ## Historical handoff summary
 

@@ -143,7 +143,7 @@ try {
   if (scenario === "subagent-view") {
     await until(async () => reviews.length === 1 && (await records()).route === (await records()).children[0]?.id, 90000)
     await sleep(500)
-    assert.equal((await records()).replies.length, 0, "narrow child layout must not approve unseen reports")
+    assert.equal((await records()).replies.length, 0, "the configured countdown still applies while route-hidden")
     assert.doesNotMatch(capture(), /Allowed in|Permission analysis/)
     runtime.tmux("resize-window", "-t", "skills", "-x", "160", "-y", "40")
   }
@@ -173,9 +173,10 @@ try {
       if (scenario === "subagent-view") {
         const observed = await records(), child = observed.children[0].id
         assert.equal(observed.route, child, "approval must finish without returning to the root")
-        assert.ok(observed.renders.some(r => r.route === child && r.physical && r.eligible && r.painted && r.seconds === 2),
-          "subagent view must paint the report and start its countdown")
+        assert.ok(observed.renders.some(r => r.route === child && !r.physical && r.seconds === 2),
+          "hidden subagent review must start its configured countdown without report paint")
         assert.ok(observed.renders.some(r => r.route === child && r.seconds === 1), "countdown must advance in the child view")
+        assert.doesNotMatch(capture(), /Permission analysis|Allowed in/)
       }
     }
   }

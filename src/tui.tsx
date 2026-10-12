@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from "solid-js"
 import { CliRenderEvents } from "@opentui/core"
 import type { TuiPlugin, TuiPluginModule, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { parseConfig, type Config } from "./config.js"
@@ -36,6 +36,7 @@ import type { HistoryTarget } from "./history-records.js"
 import { historyCommands } from "./history-commands.js"
 import { LiveReviewPanel, type HistoryRenderProbe } from "./live-review-panel.js"
 import { observePresentationOwnership, SidebarPresentation, type PresentationCheck, type ReviewPresentation, type PresentationState } from "./review-presentation.js"
+import { conversationRoot, RouteHandoff, RouteSessions, routeCovered, type ApprovalPresentation } from "./route-approval.js"
 export type { HistoryRenderProbe, HistoryRenderProbeEvent } from "./live-review-panel.js"
 export type { DiagnosticEvent, DiagnosticObserver } from "./diagnostics.js"
 
@@ -103,12 +104,18 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
   const [views, setViews] = createSignal<View[]>([])
   const [sidebar, setSidebar] = createSignal<{ sessionID: string; token: symbol }>()
   const sidebarProof = new SidebarPresentation()
+  const routeSessions = new RouteSessions(id => api.state.session.get(id))
+  const [sessionRevision, setSessionRevision] = createSignal(0)
+  const session = (id: string) => { sessionRevision(); return routeSessions.get(id) }
+  for (const type of ["session.created", "session.updated"] as const) api.event.on(type, event => {
+    if (routeSessions.remember(event.properties.info)) setSessionRevision(value => value + 1)
+  })
   const hostTrace = observer ? new DiagnosticTrace(observer, 0) : undefined
   const traces = observer ? new WeakMap<object, DiagnosticTrace>() : undefined
   let reviewSequence = 0
   const reader = contextReader(api, hostTrace)
   const modes = new SessionModes(new SessionModeStore(path.join(api.state.path.state, "opencode-reviewer", "session-mode-v1"),
-    api.state.path.directory), async (id, signal) => api.state.session.get(id) ?? reader.session(id, signal))
+    api.state.path.directory), async (id, signal) => session(id) ?? reader.session(id, signal))
   const history = new HistoryCoordinator(api.state.path.directory, historyStore, (id, signal) => modes.root(id, signal))
   const lifetime = lifetimeTracker(api, historyStore, (id, signal) => history.root(id, signal))
   const [historyState, setHistoryState] = createSignal<HistoryViewState>({ open: false, status: "loading", reset: 0 })
@@ -151,6 +158,7 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
   const files = new FileAccess(fileIO)
   const approval = approvalTransport(api.client, api.state.path.directory)
   let visibleApproval: (check?: PresentationCheck) => ReviewPresentation = () => ({ state: "lost" })
+  let approvalPresentation: (check?: PresentationCheck) => ApprovalPresentation = () => ({ state: "lost" })
   const controller: Controller = new Controller((request, parent, onIdentified, onProgress, execution = { review: randomUUID() }) => {
     const trace = observer ? new DiagnosticTrace(observer, ++reviewSequence) : undefined
     if (trace) traces!.set(request, trace)
@@ -180,7 +188,7 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
     },
     once: (request, signal) => measured(traces?.get(request), "approval-reply", () => approval.once(request, signal)),
   } : approval), visibleID: () => { const proof = visibleApproval(); return proof.state === "visible" ? proof.id : undefined },
-    presentation: check => visibleApproval(check) }, modes, session: id => api.state.session.get(id), onApproval: fact => {
+    presentation: check => approvalPresentation(check) }, modes, session, onApproval: fact => {
     history.approval(fact)
     notifications?.fact(fact)
   }, onLifecycle: history.lifecycle })
@@ -193,6 +201,8 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
   api.event.on("message.updated", (event) => history.message(event.properties.info))
   api.event.on("session.deleted", (event) => {
     const info = event.properties.info
+    routeSessions.deleted(info.id)
+    setSessionRevision(value => value + 1)
     browser.deleted(info.id)
     // Roots are explicit in the event; unknown children use bounded stored ownership.
     const deletion = history.sessionDeleted(info)
@@ -253,15 +263,7 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
         return null
       },
       app: () => {
-        const [width, setWidth] = createSignal(api.renderer.width)
-        const resized = () => setWidth(api.renderer.width)
-        api.renderer.on(CliRenderEvents.RESIZE, resized)
-        const sidebarFrame = () => sidebarProof.frame()
-        api.renderer.on(CliRenderEvents.FRAME, sidebarFrame)
-        onCleanup(() => {
-          api.renderer.off(CliRenderEvents.RESIZE, resized)
-          api.renderer.off(CliRenderEvents.FRAME, sidebarFrame)
-        })
+        const handoff = new RouteHandoff()
         createEffect(() => {
           const route = api.route.current
           notifications?.routeChanged()
@@ -298,29 +300,72 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
           const id = route.params?.sessionID
           return typeof id === "string" ? id : undefined
         }
-        const sidebarState = (): PresentationState => {
+        const rootSession = () => {
           const id = routeSession()
+          return id && conversationRoot(id, session) === id ? id : undefined
+        }
+        const sidebarState = (): PresentationState => {
+          const id = rootSession()
           if (!id) return "lost"
           sidebar() // reactive ownership; the synchronous getter reads fresh proof too
-          const state = sidebarProof.state(id)
-          if (state !== "lost") return state
-          // The native host omits its sidebar on subagent routes. Provide the
-          // same review panel there when the viewport has room for 42 columns.
-          if (api.state.session.get(id)?.parentID && width() >= 120 && api.renderer.width >= 120) return "visible"
-          return "lost"
+          return sidebarProof.state(id)
         }
         const presentationSession = () => sidebarState() === "visible" ? routeSession() : undefined
         const select = () => {
           const route = api.route.current
           if (api.ui.dialog.open || route.name !== "session") return
           const id = route.params?.sessionID
-          return visibleReview(controller.views, typeof id === "string" ? id : undefined, (id) => api.state.session.get(id))
+          return visibleReview(controller.views, typeof id === "string" ? id : undefined, session)
         }
+        const presentation = (check?: PresentationCheck, painted?: ReviewPresentation): ApprovalPresentation => {
+          const route = routeSession()
+          const root = conversationRoot(route, session)
+          handoff.observe(route, root)
+          if (!route || !root || api.kv.get("sidebar") === "hide") return { state: "lost" }
+          const selected = select()
+          if (!selected) return { state: "lost" }
+          if (route !== root) return routeCovered(api.renderer.root, api.renderer.width, api.renderer.height)
+            ? { state: "lost" } : { state: "route-hidden", id: selected.request.id, root }
+          const proof = painted ?? visibleApproval(check)
+          // A report first completed while hidden has no measured root layout,
+          // even if the new native sidebar owner mounted earlier in this turn.
+          // Wait for its first real frame without canceling the original timer.
+          if (proof.state === "lost" && handoff.pending(root))
+            return { state: "pending", id: selected.request.id }
+          return proof
+        }
+        approvalPresentation = presentation
+        const sidebarFrame = () => {
+          sidebarProof.frame()
+          handoff.frame()
+          // Route suppression owns no report FRAME. Observe it from the stable
+          // app lifetime, including native fullscreen while the panel is absent.
+          const route = routeSession()
+          if (!route || conversationRoot(route, session) !== route || !select())
+            controller.presented(presentation())
+        }
+        api.renderer.on(CliRenderEvents.FRAME, sidebarFrame)
+        onCleanup(() => {
+          api.renderer.off(CliRenderEvents.FRAME, sidebarFrame)
+          if (approvalPresentation === presentation) approvalPresentation = () => ({ state: "lost" })
+          controller.presented()
+        })
         // Native sidebar owners are observers, not owners of either report tree.
         // A synchronous wide/overlay slot gap must not dispose Markdown/scroll.
         const current = createMemo(() => { views(); return select() })
-        observePresentationOwnership(() => ({ session: routeSession(), owner: sidebar()?.token, state: sidebarState() }),
-          () => visibleApproval(), proof => controller.presented(proof))
+        observePresentationOwnership(() => {
+          const route = routeSession(), root = conversationRoot(route, session)
+          return { session: route, root, owner: sidebar()?.token, state: sidebarState(),
+            suppressed: !!root && root !== route && api.kv.get("sidebar") !== "hide" }
+        }, () => presentation(), proof => controller.presented(proof))
+        createEffect(() => {
+          const route = routeSession(), root = conversationRoot(route, session)
+          if (!root || root === route) return
+          views()
+          // Only route-hidden work can start from a publication without a report
+          // frame. Root publications must not become physical-loss observations.
+          untrack(() => controller.presented(presentation()))
+        })
         // A stable slot root keeps the host's array normalization from replacing
         // the live sibling when the optional history sibling appears/disappears.
         return (<box position="absolute" top={0} right={0} bottom={0} width={42} zIndex={1}
@@ -335,13 +380,13 @@ async function reviewTui(api: TuiPluginApi, options: Parameters<TuiPlugin>[1], f
                 historyState={historyState} historyCover={historyCover} historyProbe={historyProbe}
                 traceFor={traces ? view => traces.get(view.request) : undefined} lifetimeText={lifetime.text}
                 onApprove={id => controller.approveNow(id)} onCancel={id => controller.cancelAutoApproval(id)}
-                onPresented={id => controller.presented(id)} registerPresentation={visible => {
+                onPresented={proof => controller.presented(presentation(undefined, proof))} registerPresentation={visible => {
                   visibleApproval = visible
                   return () => { if (visibleApproval === visible) visibleApproval = () => ({ state: "lost" }) }
                 }} />
             }}
           </Show>
-          <Show when={historyState().open && routeSession()} keyed>
+          <Show when={historyState().open && rootSession()} keyed>
             {session => <HistoryView api={api} controller={browser} state={historyState()} input={historyInput} cover={historyCover} session={session} />}
           </Show>
         </box>)

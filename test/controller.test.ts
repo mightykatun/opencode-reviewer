@@ -393,10 +393,10 @@ test("mixed-case session IDs take precedence over request IDs within root/direct
     }
     assert.equal(visibleReview(pending, "ses_a", get), undefined)
   }
-  for (const route of ["ses_A", "ses_B"]) {
+  for (const route of ["ses_A", "ses_B", "ses_1"]) {
     assert.equal(visibleReview(views, route, get)?.request.id, "per_z", "sibling routes retain root queue priority")
   }
-  for (const route of ["ses_1", "missing", undefined]) {
+  for (const route of ["missing", undefined]) {
     assert.equal(visibleReview(views, route, get), undefined)
   }
 })

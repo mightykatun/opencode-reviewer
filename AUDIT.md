@@ -15,15 +15,18 @@
   newest at the bottom, rather than a direct notification-suppression patch.
 - **User-requested presentation change:** keep the reviewer side panel visible only
   in the top-level conversation. Navigating into its subagents should hide the
-  panel while normal review countdowns and automatic approvals continue (F34).
+  entire panel while normal countdowns and both normal and fast automatic approvals
+  continue (F34, expanded by the 2026-10-12 clarification below).
 - **Implementation status:** The completeness-review gaps in **F10 (Phase 7)** and
   **F16 (Phase 8)** are now fixed and verified in the follow-up below. Phases 1-2
-  and 4-11 are complete within their recorded scopes. F31 has measured retirement
+  and 4-11 are complete within their recorded scopes. Phase 3 (F34) is now also
+  implemented and verified under the 2026-10-12 replacement contract. F31 has measured retirement
   improvements; F32 retains a
   measured mouse-disabled compatibility limitation. F33 was reopened as a small
   notification-only fix and is now verified; native stacking remains out of scope.
-  F34 was requested again with an exception, but remains blocked by the governing
-  physical-visibility/child-panel contract in this session. Historical audit
+  F34 includes hidden normal and fast approval during same-root descendant browsing.
+  The harness reloaded the revised `AGENTS.md` during clarification, permitting
+  focused implementation; final verification is recorded below. Historical audit
   reproductions assert the original failure; only implementation-disposition
   results describe verification of fixes.
 - **Original audit changes:** this document only. Subsequent implementation commits
@@ -55,11 +58,13 @@ guards, physical operation ownership, strict assessment parsing, transactional
 accounting replay, literal notification argv, and verified artifact publication.
 Fix the defects without weakening those boundaries.
 
-F34 is an explicitly requested change to the current normal-mode presentation
+F34 is an explicitly requested change to the current presentation
 contract, not a claim that general hidden approval is already supported. References
 elsewhere to physical visibility describe the audited baseline and controls outside
-this proposed same-conversation subagent-navigation exception. Specify that exception
-before implementing related presentation changes; do not silently bypass guards.
+this same-conversation subagent-navigation exception. The
+[confirmed replacement contract](#f34-confirmed-replacement-contract) supersedes the
+original normal-only proposal and defines the implementation; do not silently
+bypass guards or treat the written contract as completed runtime work.
 
 ## Severity and evidence conventions
 
@@ -100,7 +105,7 @@ before implementing related presentation changes; do not silently bypass guards.
 | F21 | P2 | Cancelled scroll fixture expects successful approval | Actual pinned-host fixture failure |
 | F22 | P2 | Desktop fixture confuses playback attempts with cases | Source-confirmed; desktop execution not performed |
 | F33 | P2 | Covered pending permission re-notifies when covering request resolves | Controller/host-bridge reproduced; pinned native ordering/rendering traced; stack needs host support |
-| F34 | P2 | Subagent routes should hide the reviewer panel without stopping normal automation | Requested behavior change; current opposite behavior and related history fixes verified |
+| F34 | P2 | Subagent routes should hide the reviewer panel without stopping normal or fast automation | Implemented; 14 exact pinned-host cases and source/package checks passed |
 | F32 | P2 | Mouse-disabled host cannot satisfy hit-grid readiness | Validation-first compatibility concern |
 | F23 | P3 | SQLite pathname open is not anchored to private checks | Conditional ancestor-swap reproduction |
 | F24 | P3 | Nested deadlines reconstruct an extended absolute end | Controlled monotonic-clock reproduction |
@@ -822,6 +827,11 @@ command/session and actual reply identity during preemption; stale native conten
 is a source-supported concern, not a newly confirmed wrong-approval finding here.
 
 ### F34. Root-only side panel with continuing hidden normal countdowns
+
+**Historical scope:** this section records the original normal-only proposal and
+baseline evidence. The [2026-10-12 replacement contract](#f34-confirmed-replacement-contract)
+also includes fast mode and the entire reviewer side panel, and supersedes contrary
+scope statements and acceptance expectations below.
 
 **Priority:** P2. **Status:** explicit user-requested behavior change. Current
 presentation and hidden-cancellation behavior are source-confirmed and covered by
@@ -2066,3 +2076,141 @@ once-only writes and durable cancellation outside that route-only exception.
 Pre-dispatch fast mode retains physical visibility. Unknown/unrelated ancestry,
 native dialogs/fullscreen, explicit hiding and user Cancel remain distinct negative
 controls. The original F34 acceptance matrix above remains the implementation plan.
+
+### F34 confirmed replacement contract
+
+**Clarified 2026-10-12.** The user
+defined "Class A work only" as focused F34 implementation with necessary tests and
+documentation. They selected the entire reviewer panel, included fast mode, retained
+the route-only exception boundaries, and requested an explicit replacement contract.
+Their timing requirement is: **"don't change behavior depending on where i am in the
+subagent/agent, and work should continue"**.
+
+#### Agreed behavior
+
+- Show the entire reviewer side panel only on the root conversation route. Hide live
+  reviews, retained fast reports and reviewer history on all direct and nested
+  descendant routes, at every terminal width.
+- Browsing within a known root conversation changes presentation only. Evaluation,
+  transport/retries, review identity and approval ownership continue independently
+  of the panel. This applies to work already eligible and work becoming eligible
+  while the user is on a descendant route.
+- Normal mode still requires a completed, validated Safe report. Preserve an active
+  countdown's original monotonic deadline and one-time grace. A newly completed Safe
+  report starts the configured countdown while route-hidden, without requiring a
+  root-panel paint. Keep positive and zero-delay behavior; returning to root neither
+  adds grace nor restarts the countdown.
+- Fast mode also works while route-hidden. With streaming, the existing parsed Safe
+  preview can trigger approval; without streaming, the full validated Safe response
+  is required. Keep the absence of a countdown. Do not switch to normal mode or wait
+  for root presentation because of descendant navigation. Retained-report completion,
+  usage, history persistence and confirmed-approval notifications keep their existing
+  lifecycle semantics.
+- Independently establish route ancestry, exact pending identity/scope, enabled mode
+  and native queue priority, including silent/disabled blockers. Browsing a nested
+  route does not make a deep-only permission part of the root's native actionable
+  queue. Keep single-flight once-only writes, fresh dispatch checks and actual I/O
+  ownership through settlement.
+- This exception concerns intentional same-root route suppression only. Unknown or
+  unrelated ancestry, explicit sidebar hiding, native dialogs/fullscreen coverage,
+  native-priority loss, mode disable, explicit Cancel, deletion/disposal and uncertain
+  writes retain their existing blocking/cancellation semantics. Navigation cannot
+  revive canceled requests. Existing root-route paint and history-cover rules apply
+  outside this exception; fast mode gains no history-cover exception.
+- Returning to root shows the current pending report/time or retained fast report,
+  when applicable. Completed work must not reappear as pending. History and approval
+  notification selection preserve exact identities and root-only panel presentation.
+
+#### Superseded instructions
+
+The repository's `AGENTS.md` now records this target contract. Specifically:
+
+| Previous requirement | Confirmed replacement |
+| --- | --- |
+| Render a live reviewer panel on wide direct-child routes | Render the entire reviewer side panel only at the root |
+| Every normal approval requires final highlighting and matching paint | Keep that requirement outside intentional same-root descendant-route suppression |
+| Every pre-dispatch fast approval requires physical visibility | Permit the same explicit route exception for fast mode |
+| Panel loss cancels an armed countdown; history is the sole exception | Route-only suppression does not cancel or reset automation; genuine loss and the separate normal-mode history exception retain their semantics |
+| Original F34 excludes hidden fast previews | The user's clarification explicitly includes them |
+
+The initial clarification was documentation-only because the old instructions were
+still loaded. The harness subsequently supplied the `AGENTS.md` revision as a new
+governing instruction, resolving that conflict in this session. Focused implementation
+then proceeded under this contract. The old normal-only exclusions and blocked/deferred
+dispositions above are historical, rather than the current implementation gate.
+
+#### Focused acceptance checks
+
+Extend the original F34 acceptance matrix with these confirmed expectations:
+
+- Root -> child -> sibling -> nested descendant -> root preserves normal countdown
+  deadlines, performs exactly one `once()` when eligible, and never displays a
+  descendant reviewer panel. Test returning both before and after completion.
+- A review becoming eligible while already route-hidden approves in normal mode
+  with positive/zero delay and streaming/nonstreaming, and in fast mode with
+  streaming/nonstreaming under the same mode-specific response requirements.
+- Exercise navigation during fresh verification and dispatch, rejected/replaced
+  fast previews, retained fast completion, history selection and notification clicks.
+  No fake presentation proof, duplicate writes/reviews or route-only attention.
+- Preserve negative controls for every other blocker above, including an existing
+  cancellation followed by same-root navigation and deep-only pending permissions.
+- Replace the visible-child fixture expectation in `scripts/smoke-skills.mjs` and
+  register relevant real-TUI coverage in `scripts/runtime-inventory.mjs`. Run
+  `npm run check`, then the relevant built real-TUI cases against OpenCode 1.18.35.
+  Record exact runs and results before marking F34 implemented.
+
+### F34 implementation disposition
+
+**Implemented and verified 2026-10-12, focused F34 scope.**
+
+- Root-only presentation is separate from an explicit `route-hidden` approval proof.
+  Both normal and fast mode accept that proof only for the selected root's native
+  front request, with the same mode-specific Safe readiness and once-only transport
+  checks. Normal deadlines and grace survive descendant navigation. The app owns
+  hidden eligibility publications independently of report-frame readiness.
+- Fresh ancestry uses bounded public metadata and exact session-event edges during
+  native-cache gaps. Conflicting metadata and deletion remain unavailable. Real-TUI
+  navigation exposed those gaps on freshly created sibling/nested routes; the fix
+  covers them without guessing roots or waiting for a visible child panel.
+- Returning to root revokes dispatch until actual root paint. A real-TUI case also
+  caught premature cancellation when a report first completed while hidden had no
+  measured root layout. The same-turn return handoff now covers that layout gap,
+  preserves its original countdown, and expires at the next real frame.
+- Live, retained and history panels are root-only. Root sidebar replacement retains
+  live/history ownership. Notification clicks retain exact permission selection and
+  return to the root. README and maintainer guidance describe the agreed behavior.
+- Focused checks include normal positive/zero delay, streaming/nonstreaming, both
+  fast transports, repeated root/child/sibling/nested navigation, hidden completion
+  followed by root return, native blockers, argument changes, uncertain writes and
+  canceled-request non-rearm. The new registered `f34` runtime profile also exercises
+  explicit hiding, unrelated navigation, native dialogs/fullscreen, native skill
+  review, fast hidden-sidebar controls, sidebar handoffs and production history cover.
+  The pinned host's fullscreen/sidebar commands are root-only, so those negative
+  fixtures perform the real root action before testing descendant non-rearm.
+
+**Final verification:**
+
+- `npm run check`: typecheck, **1,295 source tests**, **118 helper tests** and build
+  passed. Log: `/tmp/opencode/f34-check-final.log`.
+- `node scripts/test-runtime.mjs --profile f34`: **14 exact cases passed** using
+  `OPENCODE_BIN=/tmp/opencode/reviewer-host-1.18.35/node_modules/opencode-linux-x64/bin/opencode`
+  and `TMPDIR=/tmp`, on Node **24.21.0**, npm **12.2.0**, OpenCode **1.18.35**:
+  - `smoke-subagent-approval.mjs`: `normal`, `zero`, `nonstream`, `fast`,
+    `fast-nonstream`, `dialog`, `fullscreen`, `hide`, `unrelated`.
+  - `smoke-skills.mjs subagent-view`.
+  - `smoke-fast-mode.mjs hidden`.
+  - `smoke-approval-geometry.mjs`: `sidebar-handoff-live`, `sidebar-handoff-history`.
+  - `smoke-history-auto.mjs covered`, canonicalized to
+    `smoke-history-render.mjs covered --production-history`.
+  - Results and exact child invocations: `.runtime/runtime-run-78xCN6/results.json`.
+    Combined log: `/tmp/opencode/f34-runtime-verified.log`.
+- `npm run check:package`: reproducible bundle and exact five-file archive passed,
+  bundle SHA-256 `74252123d9ab647bb98595ec0211700c810fb931b2fbf3d2e6ce3c5b99ed1f9d`.
+  Log: `/tmp/opencode/f34-package-final.log`.
+- `node --test test/release-artifact-smoke.test.mjs test/npm-cli-smoke.test.mjs`:
+  **9 passed**, offline boundaries. Log: `/tmp/opencode/f34-package-smoke.log`.
+- Initial fixture runs also corrected root-only native-control activation and waiting
+  for Escape to close the palette before navigation. History fixtures used private
+  directories beneath sticky `/tmp`: group-writable `/tmp/opencode` and checkout
+  ancestors correctly failed the existing private-history-path policy. No existing
+  directory permissions or history guards were changed.

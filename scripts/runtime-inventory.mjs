@@ -29,6 +29,8 @@ export const runtimeInventory = {
   "smoke-fast-mode.mjs": host(["complete", "retry", "error", "nonstream", "hidden", "dialog"], [], { requires: ["linux", "git", "python3", "tmux", "bundle", "node-sqlite"] }),
   "smoke-session-mode.mjs": host(["default"], ["notifications"], { requires: ["linux", "git", "python3", "tmux", "bundle"] }),
   "smoke-skills.mjs": host(["root", "subagent", "subagent-view", "disabled", "unsafe", "fast"], [], { requires: ["linux", "git", "python3", "tmux", "bundle", "node-sqlite"] }),
+  "smoke-subagent-approval.mjs": host(["normal", "zero", "nonstream", "fast", "fast-nonstream", "dialog", "fullscreen", "hide", "unrelated"], [], {
+    requires: ["linux", "git", "python3", "tmux", "bundle", "node-sqlite"] }),
   "smoke-evidence.mjs": host(["capture", "prompt-symlink"], [], { requires: ["linux", "git", "python3", "bash", "tmux", "bundle"] }),
   "smoke-approval-geometry.mjs": host(["resize", "initially-short", "history-short", "benign-width", "sidebar-handoff-live", "sidebar-handoff-history"], [], { requires: ["linux", "git", "python3", "tmux", "bundle"] }),
   "smoke-review-admission.mjs": host(["fanout64"], [], { requires: ["linux", "git", "python3", "tmux", "bundle"] }),
@@ -99,6 +101,13 @@ export function runtimePlan(entrypoint, args = []) {
 export function runtimeArguments(entrypoint, args = process.argv.slice(2)) { return runtimePlan(entrypoint, args) }
 
 export const runtimeProfiles = {
+  f34: [
+    ...["normal", "zero", "nonstream", "fast", "fast-nonstream", "dialog", "fullscreen", "hide", "unrelated"]
+      .map(scenario => ["smoke-subagent-approval.mjs", scenario]),
+    ["smoke-skills.mjs", "subagent-view"], ["smoke-fast-mode.mjs", "hidden"],
+    ["smoke-approval-geometry.mjs", "sidebar-handoff-live"], ["smoke-approval-geometry.mjs", "sidebar-handoff-history"],
+    ["smoke-history-auto.mjs", "covered"],
+  ],
   ci: [
     ["smoke-history-lifecycle.mjs", "auto-shell"],
     ["smoke-approval-geometry.mjs", "resize"],

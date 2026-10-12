@@ -11,7 +11,8 @@ import { SCANNER_INTERVAL_MS } from "./appearance.js"
 import { remainingTime, reviewStage } from "./deadline.js"
 import { uiText } from "./ui-text.js"
 import type { HistoryTarget } from "./history-records.js"
-import type { PresentationCheck, PresentationState, ReviewPresentation } from "./review-presentation.js"
+import type { PresentationCheck } from "./review-presentation.js"
+import { conversationRoot, type ApprovalPresentation, type ApprovalPresentationState } from "./route-approval.js"
 import { ReviewAdmission, type ReviewEvaluation } from "./review-admission.js"
 
 export type AutoApproval = { status: "countdown"; seconds: number } | { status: "checking" | "allowing" | "cancelled" | "failed" | "approved" }
@@ -63,7 +64,7 @@ export interface Approval extends ApprovalTransport {
   /** Recompute actual presentation/order, rather than trusting a stale UI effect. */
   visibleID(): string | undefined
   /** Distinguish revoked paint from established physical/native-priority loss. */
-  presentation?(check?: PresentationCheck): ReviewPresentation
+  presentation?(check?: PresentationCheck): ApprovalPresentation
 }
 
 export type ApprovalFact = { type: "dispatched" | "confirmed" | "settled"; request: PermissionRequest; automatic: boolean;
@@ -92,7 +93,7 @@ export class Controller {
   private entries = new Map<string, Entry>()
   private stopped = false
   private version = 0
-  private visibleID: string | undefined
+  private selectedID: string | undefined
   private modeChanges = new Map<string, number>()
   private manual = new Map<string, "cancelled" | "failed">()
   private workers = new Set<Promise<unknown>>()
@@ -188,19 +189,19 @@ export class Controller {
     }
   }
 
-  /** Normal mode requires final rendering; fast mode requires physical panel visibility. */
-  presented(value?: string | ReviewPresentation) {
+  /** Physical presentation and intentional same-root suppression are distinct proofs. */
+  presented(value?: string | ApprovalPresentation) {
     if (this.stopped) return
     const proof = typeof value === "string" ? { state: "visible" as const, id: value } : value ?? { state: "lost" as const }
     const id = proof.state === "lost" ? undefined : proof.id
-    if (id !== this.visibleID) {
-      const old = this.visibleID
-      this.visibleID = id
+    if (id !== this.selectedID) {
+      const old = this.selectedID
+      this.selectedID = id
       if (old) this.cancelAutoApproval(old, "visibility")
     }
     const entry = id ? this.entries.get(id) : undefined
-    if (entry?.approvalArmed && this.physicalState(entry) === "lost") this.cancelAutoApproval(entry.view.request.id, "visibility")
-    if (entry && proof.state === "visible") {
+    if (entry?.approvalArmed && this.presentationState(entry) === "lost") this.cancelAutoApproval(entry.view.request.id, "visibility")
+    if (entry && (proof.state === "visible" || proof.state === "route-hidden")) {
       this.startApproval(entry)
       if (entry.view.autoApproval?.status === "countdown" && !entry.cancelTimer && !entry.approvalAbort) this.schedule(entry)
     }
@@ -307,17 +308,21 @@ export class Controller {
       : this.options.fastMode === true && entry.view.status === "analyzing" && entry.view.progress?.preview?.safe === true
   }
 
-  private physicalState(entry: Entry, check: PresentationCheck = "eligibility"): PresentationState {
+  private presentationState(entry: Entry, check: PresentationCheck = "eligibility"): ApprovalPresentationState {
     if (!this.active(entry) || entry.view.resolved || entry.fastApproval || this.options.autoApprove !== true
       || (this.modes && (entry.root === undefined || !this.modes.enabled(entry.root)))
-      || this.visibleID !== entry.view.request.id) return "lost"
+      || this.selectedID !== entry.view.request.id) return "lost"
     const proof = this.approval?.presentation?.(check)
+    if (proof?.state === "route-hidden") return entry.root === proof.root && proof.id === entry.view.request.id
+      && this.nativeFront(proof.root) === proof.id ? "route-hidden" : "lost"
     if (proof) return proof.state !== "lost" && proof.id === entry.view.request.id ? proof.state : "lost"
     return this.approval?.visibleID() === entry.view.request.id ? "visible" : "lost"
   }
 
   private eligible(entry: Entry) {
-    return !this.manual.has(entry.view.request.id) && !entry.approvalPaused && this.safe(entry) && this.physicalState(entry) === "visible"
+    if (this.manual.has(entry.view.request.id) || entry.approvalPaused || !this.safe(entry)) return false
+    const state = this.presentationState(entry)
+    return state === "visible" || state === "route-hidden"
   }
 
   /** Rating rejection revokes the reservation, even if Safe returns before its GET.
@@ -344,7 +349,7 @@ export class Controller {
   }
 
   private approvalEligible(entry: Entry, check: "timer" | "verification" = "verification") {
-    const state = this.physicalState(entry, check)
+    const state = this.presentationState(entry, check)
     if (state === "lost") this.cancelAutoApproval(entry.view.request.id, "visibility")
     else if (state === "pending") entry.approvalPaintPending = true
     else if (!this.safe(entry)) this.pauseRating(entry)
@@ -373,7 +378,7 @@ export class Controller {
       try {
         // A later rating clear may already have revoked this recovery, too.
         abort.signal.throwIfAborted()
-        if (this.physicalState(entry) === "lost") { this.cancelAutoApproval(entry.view.request.id, "visibility"); return }
+        if (this.presentationState(entry) === "lost") { this.cancelAutoApproval(entry.view.request.id, "visibility"); return }
         const pending = await withDeadline(AbortSignal.any([entry.abort.signal, abort.signal]), 5000,
           signal => this.approvalList(signal))
         if (!this.active(entry) || this.manual.has(entry.view.request.id)) return
@@ -761,20 +766,14 @@ export class Controller {
 }
 
 /** Select the conversation queue independently of its physical presentation.
- * Root and direct-child routes share the root's native permission order. */
+ * Any known descendant route shares the root's native root/direct-child order. */
 export function visibleReview(
   views: readonly View[],
   sessionID: string | undefined,
   getSession: (id: string) => { id: string; parentID?: string } | undefined,
 ): View | undefined {
+  sessionID = conversationRoot(sessionID, getSession)
   if (!sessionID) return
-  const session = getSession(sessionID)
-  if (!session) return
-  if (session.parentID) {
-    const root = getSession(session.parentID)
-    if (!root || root.parentID) return
-    sessionID = root.id
-  }
   let first: View | undefined
   let retained: View | undefined
   for (const view of views) {

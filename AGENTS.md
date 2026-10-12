@@ -69,6 +69,7 @@
 | Approval behind production history | `node scripts/smoke-history-auto.mjs covered` |
 | Approval-notification history selection | `node scripts/smoke-history-auto.mjs notification` |
 | Fast approval, retained streams and live/history clicks | `node scripts/smoke-fast-mode.mjs complete` |
+| Root-only display and normal/fast approval during subagent browsing | `node scripts/test-runtime.mjs --profile f34` |
 | Native skills / resumed subagent context | `node scripts/smoke-skills.mjs root` / `node scripts/smoke-skills.mjs subagent` |
 | Offline deletion reconciliation | `node scripts/smoke-history-maintenance.mjs` |
 | Conversation/lifetime statistics | `node scripts/smoke-statistics.mjs` |
@@ -130,15 +131,21 @@
   Unknown ancestry/unreadable saved mode suspends work. Local enable/disable commands
   must not create messages or model calls. Re-enable uses a fresh pending snapshot
   and must preserve canceled/uncertain-approval tombstones until native resolution.
-- Normal auto-approval needs a completed, validated Safe assessment, final Markdown
-  highlighting and a matching painted frame. Only opt-in `fastMode` with `autoApprove`
-  may approve a parsed Safe preview; it requires physical visibility and native queue
-  priority, with no history-cover exception or countdown. It respects `stream: false`.
-  Recheck fresh permission identity/scope and visibility before the single-flight
-  write. Never retry approval writes; uncertain outcomes remain manual.
-- Cancel or visibility loss after countdown start permanently makes that request
-  manual for the running controller, including across remounts/re-enable. Scrolling
-  must not cancel it. Native resolution removes ordinary views immediately. Dispatched
+- F34's root-only presentation and same-root route exception below govern both
+  normal and fast mode. See `AUDIT.md`'s "F34 confirmed replacement contract" and
+  implementation disposition for scope, acceptance checks and verification.
+- Normal auto-approval needs a completed, validated Safe assessment. Final Markdown
+  highlighting and a matching painted frame are required outside the F34 same-root
+  descendant-route exception. Only opt-in `fastMode` with `autoApprove` may approve
+  a parsed Safe preview; physical visibility is required outside that same exception.
+  Fast mode retains native queue priority, no countdown and no history-cover exception,
+  and respects `stream: false`. Recheck fresh permission identity/scope, native priority
+  and presentation or the explicit route exception before the single-flight write.
+  Never retry approval writes; uncertain outcomes remain manual.
+- Cancel or genuine visibility loss outside the F34 route exception after countdown
+  start permanently makes that request manual for the running controller, including
+  across remounts/re-enable. Scrolling and same-root descendant navigation must not
+  cancel it. Native resolution removes ordinary views immediately. Dispatched
   fast reviews retain the response through confirmation, then continue despite mode
   disable or navigation until completion/failure; deletion/disposal still aborts them.
   Use `pendingViews` for notifications/order so retained reports are not native blockers.
@@ -147,15 +154,32 @@
   live/history siblings; key the live panel by request ID. Changing fragments/view-object
   keys can remount Markdown and reset scrolling/countdowns. Reveal a hidden sidebar
   only for an explicit approval-notification click, using the public native command.
-  Direct-child routes share the root queue and render a live panel at widths >=120
-  without requiring a native sidebar mount. Keep physical presentation and queue
-  selection separate; narrow/covered child panels cannot approve unseen reports.
+  Render the entire reviewer side panel, including live, retained and history views,
+  only on the top-level conversation route. Direct and nested descendant routes must
+  show no reviewer side panel at any terminal width. Keep physical presentation and
+  native queue selection separate; descendant navigation does not grant approval
+  ownership to deep-only requests absent from the root's native queue.
   Sanitize report text and streamed prefixes through `displayText`.
-- Production history is the only normal-plugin physical-cover exception for
-  countdowns. Preserve `history-cover.ts`'s actual heading/footer hit-test proof;
-  logical open state is insufficient. Native palette/dialog coverage still cancels
-  countdowns, and opening history afterward cannot revive them. Native Always/reject
-  forms are not public dialogs, so users must explicitly Cancel before using them.
+- F34 intentionally hides the panel on known same-root descendant routes while both
+  normal and fast automation continue, including newly eligible reviews. Normal
+  countdowns preserve their monotonic deadline and one-time grace; reports completing
+  while route-hidden start the configured delay without waiting for a panel paint.
+  Fast mode retains its configured preview/full-response behavior without a countdown
+  or fallback to normal mode. Returning to root must not re-review, restart timers,
+  rearm canceled requests or resurrect completed reports. Verify route ancestry and
+  native priority independently of panel mounting; never fabricate visible IDs, FRAME
+  events, hit-test proof or history cover to implement the exception.
+- The F34 exception applies only to intentional same-root route suppression. Unknown
+  or unrelated ancestry, explicit sidebar hiding, native dialogs/fullscreen covers,
+  native-priority loss, mode gates, Cancel, deletion and disposal retain their existing
+  blocking/cancellation semantics. Route changes cannot erase an earlier cancellation
+  or uncertain-write tombstone.
+- Production history remains the normal-mode physical-cover exception, separate from
+  F34 route suppression. Preserve `history-cover.ts`'s actual heading/footer hit-test
+  proof; logical open state is insufficient. Native palette/dialog coverage still
+  cancels countdowns, and opening history afterward cannot revive them. Fast mode
+  gains no history-cover exception. Native Always/reject forms are not public dialogs,
+  so users must explicitly Cancel before using them.
 
 ## Evidence and transport traps
 

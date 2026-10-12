@@ -96,17 +96,17 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `apiKey` | string | Unset | Nonempty Bearer token. Takes precedence over `apiKeyEnv`. |
 | `apiKeyEnv` | string | Unset | Environment-variable name matching `[A-Za-z_][A-Za-z_0-9]*`. Without an inline key, its value must be set and nonblank when a review runs. Omit both key options for no Authorization header. |
 | `instructions` | string | Unset (built-ins) | Absolute, NUL-free directory path containing overrides for the [prompt templates](https://github.com/mightykatun/opencode-reviewer/tree/main/prompts), not inline instructions. Missing named files use built-ins; supplied files must be readable, regular, non-symlink, nonempty UTF-8 text up to 64 KiB. Fixed contracts cannot be overridden. |
-| `stream` | boolean | `false` | Request SSE and show provisional rating/text updates. Normal automatic approval waits for a completed, validated and rendered report; fast mode can approve on an early Safe rating. |
+| `stream` | boolean | `false` | Request SSE and show provisional rating/text updates. Normal automatic approval waits for a completed, validated report; fast mode can approve on an early Safe rating. Presentation rules are described below. |
 | `reviewBash` | boolean | `true` | Review native shell-command permissions. |
 | `reviewEdits` | boolean | `true` | Review native `edit`, `write` and `apply_patch` permissions. |
 | `reviewSkills` | boolean | `true` | Review native skill-load permissions for dangerous guidance and relevance to the current task. Supplies the host's skill instructions and bounded, directly referenced supporting files within the skill directory. |
 | `reviewMcp` | boolean | `false` | Review identifiable MCP tool and resource permissions. |
 | `reviewCustomTools` | boolean | `false` | Review permissions requested by registered custom tools. |
 | `reviewExternalDirectories` | boolean | `false` | Review directory access independently of operation-review switches. Directory approval can resume the operation without another prompt. |
-| `autoApprove` | boolean | `false` | Allow Safe reviews once automatically. Normally waits for completion, validation, rendering and the countdown, including behind this plugin's report history. |
-| `fastMode` | boolean | `false` | Requires `autoApprove: true`. Approve a visible, front-of-queue request as soon as a Safe rating is parsed, bypassing the countdown. Respects `stream`; with `stream: false`, waits for the complete validated response. Finish the report and save it in the background after approval. |
+| `autoApprove` | boolean | `false` | Allow Safe reviews once automatically. Normally waits for completion, validation and the countdown. Root-view rendering is required, including behind report history; same-conversation subagent browsing permits hidden approval. |
+| `fastMode` | boolean | `false` | Requires `autoApprove: true`. Approve an eligible, front-of-queue request as soon as a Safe rating is parsed, bypassing the countdown. Respects `stream`; with `stream: false`, waits for the complete validated response. Finish the report and save it in the background after approval. |
 | `extraCareful` | boolean | `true` | Include extra-careful guidance when `autoApprove` is enabled. Setting `false` omits that guidance without disabling automatic approval. |
-| `autoApproveDelaySeconds` | integer | `15` | `0`–`3600` seconds. Positive values include an extra 200 ms initial grace; `0` skips the wait but retains rendering and eligibility checks. Ignored in fast mode. |
+| `autoApproveDelaySeconds` | integer | `15` | `0`–`3600` seconds. Positive values include an extra 200 ms initial grace; `0` skips the wait but keeps the other approval checks. Ignored in fast mode. |
 | `notify` | boolean | `true` | Master switch for desktop banners, sounds and reminders. `false` overrides all per-type controls. |
 | `notifySound` | boolean | `true` | Master switch for notification audio. `false` silences every type and reminder without disabling enabled banners. |
 | `staleReminderSeconds` | integer | `60` | `0` through the maximum safe integer, in seconds. `0` disables reminders; otherwise eligible pending human interactions repeat at this interval, limited to the native front-of-queue blocker per conversation. |
@@ -131,12 +131,15 @@ The sidebar shows Safe, Unsafe, or Analysis unavailable. Explanations support
 Markdown and scrolling. If the sidebar is hidden, use OpenCode's Show sidebar
 command.
 
-When browsing a direct subagent, the same front-of-queue review appears in a
-right-hand panel at terminal widths of at least 120 columns. Its auto-approval
-countdown can start there without returning to the parent conversation.
+The reviewer side panel appears only in the top-level conversation. Browsing its
+subagents, including nested subagents, hides the panel while reviews and both normal
+and fast automatic approvals continue. Countdown deadlines stay the same, and new
+Safe reviews can become eligible while hidden. Return to the top-level conversation
+to see the current report or browse saved history.
 
-Automatic approval requires mouse tracking for the host's painted-panel ownership
-checks. With mouse tracking disabled, reports remain available for manual review.
+On the top-level route, automatic approval requires mouse tracking for the host's
+painted-panel ownership checks. With mouse tracking disabled there, reports remain
+available for manual review.
 
 Skill-load review is enabled by default; set `skill` permissions to `ask` in
 `opencode.json` to receive reviews. Its prompt requires both bounded risk and clear
@@ -158,13 +161,16 @@ that can override its review contract.
 With streaming enabled, Evaluating and its spinner disappear when a rating arrives.
 The rating remains provisional until the full response is validated. A retry
 clears the preview and restores the loading indicator. Normal auto-approval
-starts only after the full response is validated and rendered.
+starts only after the full response is validated and rendered, except that rendering
+is not required while the panel is intentionally hidden by same-conversation
+subagent browsing.
 
 With `autoApprove: true` and `fastMode: true`, a parsed Safe rating approves the
-current visible permission immediately, without a countdown or waiting for the
-rest of a streamed report. Hidden panels and covering dialogs or history prevent
-fast approval. Without streaming, fast mode waits for the full validated response
-and then skips the countdown.
+current eligible permission immediately, without a countdown or waiting for the
+rest of a streamed report. Same-conversation subagent browsing also permits fast
+approval while the panel is hidden. Explicit sidebar hiding, covering dialogs and
+report history prevent fast approval. Without streaming, fast mode waits for the
+full validated response and then skips the countdown.
 
 After confirmed fast approval, the live panel shows **Auto-approved; finishing
 report…** and stays ahead of newer requests until its report finishes. Hiding the
@@ -188,7 +194,10 @@ provider charges, and unreported usage remains unknown.
 
 During an auto-approval countdown, click the countdown to allow once immediately,
 or Cancel to leave the request manual. Hiding or covering the panel also cancels
-that request's countdown, except when covered by this plugin's report history.
+that request's countdown, except when covered by this plugin's report history or
+intentionally hidden while browsing the same conversation's subagents. Switching
+to an unrelated conversation still cancels it. Returning cannot revive a canceled
+request.
 Cancel before using native Allow always or rejection
 forms; those forms alone do not stop the countdown.
 Positive countdowns add a 200 ms initial grace and then update on remaining-time

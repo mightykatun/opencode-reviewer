@@ -95,6 +95,7 @@ jobs:
             /scripts/smoke-streaming.mjs
             /scripts/smoke-session-mode.mjs
             /scripts/smoke-skills.mjs
+            /scripts/smoke-subagent-approval.mjs
             /scripts/smoke-notification-queue.mjs
             /scripts/smoke-notification-events.mjs
             /scripts/smoke-notification-w4.mjs

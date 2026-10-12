@@ -1,20 +1,21 @@
 import { createEffect, createMemo, untrack } from "solid-js"
+import type { ApprovalPresentation } from "./route-approval.js"
 
 /** Pending is a revoked paint proof, never permission to dispatch or a new delay. */
 export type PresentationState = "visible" | "pending" | "lost"
 export type ReviewPresentation = { state: "visible" | "pending"; id: string } | { state: "lost" }
 export type PresentationCheck = "eligibility" | "timer" | "verification"
 
-export interface PresentationOwnership { session?: string; owner?: symbol; state: PresentationState }
+export interface PresentationOwnership { session?: string; root?: string; owner?: symbol; state: PresentationState; suppressed?: boolean }
 
 /** Only route/sidebar ownership changes are observations here. Review publications
  * can temporarily replace hit owners before paint, and must never turn into hide
  * observations via either the getter's or the controller's reactive reads. FRAME
  * and the synchronous write boundary independently recheck the current proof. */
-export function observePresentationOwnership(ownership: () => PresentationOwnership,
-  presentation: () => ReviewPresentation, presented: (proof: ReviewPresentation) => void) {
+export function observePresentationOwnership<P extends ApprovalPresentation>(ownership: () => PresentationOwnership,
+  presentation: () => P, presented: (proof: P) => void) {
   const current = createMemo(ownership, undefined, { equals: (a, b) =>
-    a.session === b.session && a.owner === b.owner && a.state === b.state })
+    a.session === b.session && a.root === b.root && a.owner === b.owner && a.state === b.state && a.suppressed === b.suppressed })
   createEffect(() => {
     current()
     untrack(() => presented(presentation()))

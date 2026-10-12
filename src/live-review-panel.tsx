@@ -280,8 +280,8 @@ export function LiveReviewPanel(props: LiveReviewPanelProps) {
   return (
     // The verified host's sidebar is 42 columns, including its padding.
     // The app slot lets this cover its title, sections, and footer while
-    // the original sidebar remains mounted beneath it on root routes. Child
-    // routes have no native sidebar, but use this same physical presentation.
+    // the original sidebar remains mounted beneath it on root routes. Descendant
+    // routes hide the enclosing slot; automation has its own route-only proof.
     <box ref={(value: BoxRenderable) => { panel = value }} renderAfter={() => {
       const assessment = view().assessment
       if (assessment && paintedAssessment !== assessment && description && !description.isDestroyed
