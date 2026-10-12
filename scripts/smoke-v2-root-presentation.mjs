@@ -11,12 +11,12 @@ import { runtimeArguments } from "./runtime-inventory.mjs"
 import { smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
-const { scenario } = runtimeArguments("smoke-v2-root-presentation.mjs")
+const { scenario, hostVersions } = runtimeArguments("smoke-v2-root-presentation.mjs")
 assert.ok(["mouse-on", "mouse-off"].includes(scenario))
 const mouse = scenario === "mouse-on"
 const root = path.resolve(import.meta.dirname, ".."), host = process.env.OPENCODE_BIN ?? "opencode"
 const version = execFileSync(host, ["--version"], { encoding: "utf8", timeout: 10000 }).trim()
-assert.equal(version, "opencode v2.0.26")
+assert.ok(hostVersions.includes(version), "An explicitly selected verification host")
 await mkdir("/tmp/opencode", { recursive: true })
 await mkdir(path.join(root, ".runtime"), { recursive: true })
 const temp = await mkdtemp("/tmp/opencode/reviewer-v2-root-presentation-")

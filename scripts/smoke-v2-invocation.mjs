@@ -283,7 +283,7 @@ async function monitorSetup(ctx, reviewerState) {
   }
 }
 
-const { scenario } = runtimeArguments("smoke-v2-invocation.mjs")
+const { scenario, hostVersions } = runtimeArguments("smoke-v2-invocation.mjs")
 const root = path.resolve(import.meta.dirname, "..")
 await mkdir(path.join(root, ".runtime"), { recursive: true })
 const artifacts = await mkdtemp(path.join(root, ".runtime/v2-invocation-"))
@@ -432,7 +432,7 @@ const limits = [
 ]
 try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
-  assert.equal(version, "opencode v2.0.26")
+  assert.ok(hostVersions.includes(version), "An explicitly selected verification host")
   await Promise.all([inputs, external, observationDirectory, path.dirname(cliPath)].map(directory => mkdir(directory, { recursive: true })))
   execFileSync("git", ["init", "--quiet", project], { env, timeout: 10000 })
   await writeFile(path.join(inputs, "fixture.py"), 'with open("executed", "a") as output:\n    output.write("PHASE2 UNEXPECTED EXECUTION\\n")\n')
@@ -454,7 +454,7 @@ try {
   }
   const manifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"))
   assert.equal(manifest.name, "opencode-reviewer")
-  assert.equal(manifest.engines.opencode, "2.0.26")
+  assert.equal(manifest.engines.opencode, ">=2.0.0 <3")
   assert.deepEqual(manifest.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })
   modelServer = createServer(async (req, res) => {
     try {
@@ -560,7 +560,7 @@ try {
     return state.handshake && state.plugins.data.find(item => item.id === "opencode-reviewer")?.state.status === "active" && state
   })
   assert.equal(status.handshake.protocol, 1)
-  assert.equal(status.handshake.hostVersion, "2.0.26")
+  assert.equal(status.handshake.hostVersion, version.slice("opencode v".length))
   assert.equal(status.handshake.location.directory, initial)
   assert.equal(status.handshake.project.directory, project)
   assert.equal(status.plugins.data.find(item => item.id === "opencode-reviewer")?.state.status, "active")

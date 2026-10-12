@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { parseConfig, type Config } from "./config.js"
-import { companionRpc, readHandshake, supportedHostVersion, type CompanionHandshake } from "./companion-protocol.js"
+import { companionRpc, readHandshake, type CompanionHandshake } from "./companion-protocol.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
 import { uiText } from "./ui-text.js"
 import type { PluginDependencies } from "./plugin-dependencies.js"
@@ -44,7 +44,6 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
       state.configError = error instanceof Error ? error.message : uiText.review.invalidConfiguration
     }
   }
-  if (context.app.version !== supportedHostVersion) return state
   const current = context.location ?? context.data.location.default()
   const location = { directory: current.directory, ...(current.workspaceID ? { workspaceID: current.workspaceID } : {}) }
   // Uses this terminal's connected client. No service discovery, credentials or

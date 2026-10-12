@@ -30,11 +30,14 @@ test("PR CI is read-only, pinned, and checks the supported development Node floo
   const runtime = workflow.split("\n  runtime:\n")[1]
   assert.deepEqual([...runtime.matchAll(/^      - run: (.+)$/gm)].map(m => m[1]), ["npm ci --ignore-scripts",
     "sudo apt-get update && sudo apt-get install --yes tmux git python3",
-    'npm install --prefix "$RUNNER_TEMP/reviewer-host" --ignore-scripts --no-audit --no-fund @opencode/cli-linux-x64@2.0.26',
-    'echo "d9123b9bcdb0a31f7ab9fe9812b58a9dc1768ad6d97e7b276dff1181813218c9  $OPENCODE_BIN" | sha256sum --check',
+    'npm install --prefix "$RUNNER_TEMP/reviewer-host" --ignore-scripts --no-audit --no-fund "@opencode/cli-linux-x64@${{ matrix.host }}"',
+    'echo "${{ matrix.sha256 }}  $OPENCODE_BIN" | sha256sum --check',
     "npm run build", "node scripts/test-runtime.mjs --profile ci"])
   assert.match(runtime, /if: always\(\)/)
   assert.match(runtime, /path: \.runtime\//)
+  assert.match(runtime, /host: "2\.0\.26"\n\s+sha256: "d9123b9bcdb0a31f7ab9fe9812b58a9dc1768ad6d97e7b276dff1181813218c9"/)
+  assert.match(runtime, /host: "2\.0\.27"\n\s+sha256: "e26aa101cfdc40f0e680baa609ff18f131bbc6b91c60fdc11b2b2e2cba7281a4"/)
+  assert.match(runtime, /name: pinned-host-runtime-\$\{\{ matrix\.host \}\}/)
 })
 
 test("normal checks aggregate every pure helper while keeping host and built-package checks separate", async () => {

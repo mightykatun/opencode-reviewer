@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
-import { companionProtocol, companionRpc, sameLocation, supportedHostVersion, type CompanionHandshake } from "./companion-protocol.js"
+import { companionProtocol, companionRpc, sameLocation, type CompanionHandshake } from "./companion-protocol.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
 import { InvocationCapture } from "./invocation-capture.js"
 import { readHostInvocation, sameRequest, serverRequestJSON, snapshotRequest } from "./host-request.js"
@@ -33,7 +33,7 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
   lifecycle.addCleanup(() => after.dispose())
   lifecycle.signal.throwIfAborted()
   const read = async (query: Query, call: Call, collection?: { options: unknown; timeoutMs: number }) => {
-    if (handshake.hostVersion !== supportedHostVersion || lifecycle.signal.aborted || call.signal.aborted || activeReads >= 2) return null
+    if (lifecycle.signal.aborted || call.signal.aborted || activeReads >= 2) return null
     const collectOptions = collection && readHostEvidenceOptions(collection.options)
     if (collection && (!collectOptions || !Number.isFinite(collection.timeoutMs) || collection.timeoutMs <= 0 || collection.timeoutMs > 5000)) return null
     activeReads++

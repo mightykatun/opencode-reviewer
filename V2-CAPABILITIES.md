@@ -1,6 +1,6 @@
 # V2 capability verification
 
-Status: W7 scoped V2 migration implemented and verified for stock 2.0.26; version 2.0.0 prepared locally, without publication or push.
+Status: W7 scoped V2 migration verified on stock 2.0.26 and 2.0.27; runtime version-number gating removed by explicit user direction. Version 2.0.0 remains local, without publication or push.
 Native Code Mode, trusted native-tool installation, visible-root automation, shared
 companion setup, optional delegation omissions and uncertain-history retention are
 selected. See the plan's W7 contract. Broader full-parity acceptance remains unclaimed;
@@ -231,6 +231,17 @@ fullscreen/family/multi-terminal, real desktop and competing-newer notification-
 acceptance remain explicitly unverified in the plan.
 
 ## Selected research target
+
+The original 2.0.26 research pin below is a verification target, not a current
+runtime allowlist. On 2026-10-13 all 22 production/foundation CI cases pass on the
+published stock 2.0.27 binary at `.runtime/runtime-run-x6WGSA/results.json`. Its
+SHA-256 is `e26aa101cfdc40f0e680baa609ff18f131bbc6b91c60fdc11b2b2e2cba7281a4`,
+independently matched to the integrity-verified npm archive. Normal automatic
+approval also passes after rebuild on 2.0.26 at `runtime-run-CWyB2N`.
+Host version metadata no longer gates CLI setup, companion evidence or handshake
+acceptance. Protocol, exact scope/evidence and physical once-only approval checks
+remain unchanged; future versions are not claimed verified merely because they
+are not blocked by their version number. See the plan's 2026-10-13 disposition.
 
 | Component | Exact version |
 | --- | --- |

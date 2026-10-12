@@ -170,10 +170,16 @@ test("V2 archives retain five files and require the shared entrypoint while hist
   const pkg = { ...old, engines: { ...old.engines, opencode: "2.0.26" },
     exports: { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" } }
   assert.equal(inspectPackageArchive(archiveFixture({ pkg })).files.size, 5)
+  for (const target of [">=2.0.0 <3"]) {
+    const current = { ...pkg, engines: { ...pkg.engines, opencode: target } }
+    assert.equal(inspectPackageArchive(archiveFixture({ pkg: current })).files.size, 5)
+    assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...current, exports: { "./tui": "./dist/tui.js" } } })))
+  }
   for (const exports of [{ "./tui": "./dist/tui.js" }, { ...pkg.exports, "./server": "./dist/server.js" },
     { ...pkg.exports, "./extra": "./dist/tui.js" }])
     assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, exports } })))
-  assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, engines: { opencode: "2.0.27" } } })), /Unverified/)
+  for (const target of ["2.0.28", ">=2.0.26", "^2.0.26", "2.0.26 || 2.0.28", "2.0.27-beta.1"])
+    assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, engines: { opencode: target } } })), /API generation/)
 })
 
 test("archives reject top-level tags, arbitrary publication config and normalized npm versions", () => {

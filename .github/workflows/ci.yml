@@ -38,6 +38,14 @@ jobs:
   runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: "2.0.26"
+            sha256: "d9123b9bcdb0a31f7ab9fe9812b58a9dc1768ad6d97e7b276dff1181813218c9"
+          - host: "2.0.27"
+            sha256: "e26aa101cfdc40f0e680baa609ff18f131bbc6b91c60fdc11b2b2e2cba7281a4"
     env:
       OPENCODE_BIN: ${{ runner.temp }}/reviewer-host/node_modules/@opencode/cli-linux-x64/bin/opencode
     steps:
@@ -49,14 +57,14 @@ jobs:
           node-version: 24.15.0
       - run: npm ci --ignore-scripts
       - run: sudo apt-get update && sudo apt-get install --yes tmux git python3
-      - run: npm install --prefix "$RUNNER_TEMP/reviewer-host" --ignore-scripts --no-audit --no-fund @opencode/cli-linux-x64@2.0.26
-      - run: echo "d9123b9bcdb0a31f7ab9fe9812b58a9dc1768ad6d97e7b276dff1181813218c9  $OPENCODE_BIN" | sha256sum --check
+      - run: npm install --prefix "$RUNNER_TEMP/reviewer-host" --ignore-scripts --no-audit --no-fund "@opencode/cli-linux-x64@${{ matrix.host }}"
+      - run: echo "${{ matrix.sha256 }}  $OPENCODE_BIN" | sha256sum --check
       - run: npm run build
       - run: node scripts/test-runtime.mjs --profile ci
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: pinned-host-runtime
+          name: pinned-host-runtime-${{ matrix.host }}
           path: .runtime/
           include-hidden-files: true
           if-no-files-found: warn

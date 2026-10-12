@@ -88,20 +88,20 @@ test("evidence abort retains the server file transaction and late descriptor cle
   assert.equal(closed, true)
 })
 
-test("an unverified host version exposes no invocation or file evidence", async () => {
+test("an unfamiliar host version still requires exact readable invocation evidence", async () => {
   const lifecycle = new PluginLifecycle()
   let handlers: any, reads = 0
-  const context = { app: { version: "2.0.27" },
+  const context = { app: { version: "2.0.28" },
     location: { directory: "/project", project: { id: "project", directory: "/project", canonical: "/project" } },
     tool: { hook: async () => ({ dispose() {} }) },
     rpc: { register: async (_definition: unknown, value: unknown) => { handlers = value; return { dispose() {} } } },
-    permission: { get: async () => { reads++; throw Error("Unverified host must not supply evidence") } },
+    permission: { get: async () => { reads++; throw Error("Permission unavailable") } },
   } as unknown as Plugin.Context
   const state = await setupCompanion(context, lifecycle)
   try {
     const query = { epoch: state.epoch, location: state.location, sessionID: "session", requestID: "request" }
     assert.equal(await handlers.invocation(query, { signal: lifecycle.signal }), null)
     assert.equal(await handlers.evidence(query, { signal: lifecycle.signal }), null)
-    assert.equal(reads, 0)
+    assert.equal(reads, 1, "Version does not bypass or disable the actual permission read")
   } finally { await lifecycle.stop() }
 })

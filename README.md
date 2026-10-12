@@ -14,8 +14,9 @@ This plugin is meant to enable you to run sessions with less frequent input in a
 
 ![](./assets/recording.gif)
 
-Verified core advisory, normal and fast approval flows with stock OpenCode 2.0.26
-on Linux.
+Targets OpenCode V2 on Linux. Host version numbers do not gate plugin activation;
+the companion protocol and actual scoped API contracts govern review and approval.
+Verified host checks are recorded in the maintainer migration plan.
 
 ## Install and config
 

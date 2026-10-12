@@ -1,6 +1,6 @@
 # OpenCode V2 migration plan
 
-Status: W7 scoped V2 migration implemented and verified for stock 2.0.26; version 2.0.0 prepared locally. Historical full-parity proposals and explicitly unverified expanded cases below are not completion claims. No publication or push performed.
+Status: W7 scoped V2 migration implemented; stock 2.0.26 and 2.0.27 verification recorded. The user rejected a runtime version allowlist on 2026-10-13; protocol and actual API-contract checks remain, without host-version gating. Version 2.0.0 is prepared locally, without publication or push. Historical full-parity proposals and explicitly unverified expanded cases below are not completion claims.
 Prepared: 2026-10-12.
 Revised: 2026-10-12, following the user's requirement that upstream changes are unavailable.
 Baseline: `v1.0.2` (`7cd1e561aea594ab9c7a99a32f30568579098747`), the final
@@ -1271,3 +1271,42 @@ source tests; the installed notification case injects only the desktop boundary.
 No legacy offline deletion maintenance or guessed reconnect ownership ships.
 Publishing/tagging/pushing remains a separate authorized action. The pre-existing
 `AUDIT.md` deletion is not part of the migration commit.
+
+### 2026-10-13: local testing and removal of version gating
+
+The user explicitly required that plugin activation not be restricted to a
+specific host version. Removed version-number checks from CLI startup, companion
+evidence admission and handshake acceptance. `hostVersion` is retained only as
+bounded descriptive metadata. The companion protocol, connection epoch/location,
+mandatory request/invocation evidence, native ownership, physical presentation and
+once-only write checks are unchanged. Unreadable/incompatible API data still fails
+closed; no broad future-host compatibility verification is claimed.
+
+The distributed engine declares the OpenCode V2 API generation (`>=2.0.0 <3`), not
+a patch allowlist. Development dependencies remain pinned. Runtime fixture pins
+are separately recorded verification targets; production does not import their
+allowlist. CI now verifies both stock 2.0.26 and 2.0.27 using independently verified
+binary SHA-256 values and separate artifact names.
+
+The installed `/home/user/.opencode/bin/opencode` 2.0.27 exactly matches the
+integrity-verified published npm archive. Binary SHA-256:
+`e26aa101cfdc40f0e680baa609ff18f131bbc6b91c60fdc11b2b2e2cba7281a4`.
+All 22 CI cases pass on it at `.runtime/runtime-run-x6WGSA/results.json`, including
+advisory/normal/fast, history/statistics, approval notifications and presentation
+negatives. Source/type checks pass 1,514 tests; pure helpers pass 122. The lifecycle
+malformed-version control now injects empty metadata, rather than treating a valid
+different version number as a scope or protocol failure. The rebuilt archive's
+normal automatic-approval case also passes on 2.0.26 at
+`.runtime/runtime-run-CWyB2N/results.json`.
+
+Package checks reproduce bundle SHA-256
+`a8b9aba657d9694d2fcbd3b055b2eeea811131db5e1ada9c277fb1430865fb7f`:
+five files, 2,244,215 bytes unpacked. Nine built-artifact/npm CLI smoke tests pass.
+The same local test-package path is refreshed without publication.
+
+Local troubleshooting also found two `plugins` properties in the actual global
+CLI config: the earlier reviewer entry was shadowed by a later empty array. Only
+that empty duplicate was removed, after a private local backup. Reviewer settings,
+credentials and unrelated configuration were preserved; no shared service was
+restarted. No configuration contents or credentials are included in repository
+artifacts or this record.

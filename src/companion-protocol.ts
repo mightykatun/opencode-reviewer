@@ -3,7 +3,6 @@ import path from "node:path"
 import { evidenceOptionsSchema } from "./host-evidence-options.js"
 
 export const companionProtocol = 1
-export const supportedHostVersion = "2.0.26"
 const text = { type: "string", minLength: 1, maxLength: 16384 } as const
 const location = {
   type: "object", properties: { directory: text, workspaceID: text }, required: ["directory"], additionalProperties: false,
@@ -65,14 +64,16 @@ export function sameLocation(value: unknown, expected: CompanionHandshake["locat
 export function readHandshake(value: unknown, expected: CompanionHandshake["location"]): CompanionHandshake | undefined {
   if (!value || typeof value !== "object") return
   const record = value as Record<string, unknown>
-  if (record.protocol !== companionProtocol || record.hostVersion !== supportedHostVersion
+  // Host version is descriptive metadata, never evidence or admission authority.
+  // The companion protocol and actual scoped public API contracts govern access.
+  const validText = (item: unknown): item is string => typeof item === "string" && item.length > 0 && Buffer.byteLength(item) <= 16384 && !item.includes("\0")
+  if (record.protocol !== companionProtocol || !validText(record.hostVersion)
     || typeof record.epoch !== "string" || !/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(record.epoch)
     || !sameLocation(record.location, expected) || !record.project || typeof record.project !== "object") return
   const project = record.project as Record<string, unknown>
-  const validText = (item: unknown): item is string => typeof item === "string" && item.length > 0 && Buffer.byteLength(item) <= 16384 && !item.includes("\0")
   if (![expected.directory, project.id, project.directory, project.canonical].every(validText)
     || (expected.workspaceID !== undefined && !validText(expected.workspaceID))
     || ![expected.directory, project.directory, project.canonical].every(item => path.isAbsolute(item as string))) return
-  return { protocol: companionProtocol, hostVersion: supportedHostVersion, epoch: record.epoch,
+  return { protocol: companionProtocol, hostVersion: record.hostVersion, epoch: record.epoch,
     location: { ...expected }, project: { id: project.id as string, directory: project.directory as string, canonical: project.canonical as string } }
 }

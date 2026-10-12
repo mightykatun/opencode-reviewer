@@ -2,7 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { readdir, readFile } from "node:fs/promises"
 import { execFileSync } from "node:child_process"
-import { runtimeInventory, runtimePlan, profilePlan } from "../scripts/runtime-inventory.mjs"
+import { runtimeInventory, runtimePlan, profilePlan, assertRuntimeHostVersion } from "../scripts/runtime-inventory.mjs"
 import { smokeScenario, smokeScenarios, runSmokeFamily } from "../scripts/smoke-scenarios.mjs"
 
 const scripts = new URL("../scripts/", import.meta.url)
@@ -94,6 +94,19 @@ test("V2 acceptance includes each production review case exactly once and retain
     "Current CI contains the exact locally verified acceptance selection")
   for (const id of ["smoke-v2-root-presentation/mouse-on", "smoke-v2-root-presentation/mouse-off", "smoke-v2-native-queue/default"])
     assert.equal(cases.find(value => value.id === id)?.classification, "synthetic-host")
+})
+
+test("fixture verification pins are distinct from plugin activation and require one actual binary for the entire run", () => {
+  const ci = profilePlan("ci")
+  for (const version of ["opencode v2.0.26", "opencode v2.0.27"]) assert.doesNotThrow(() => assertRuntimeHostVersion(ci, version))
+  for (const version of ["opencode v2.0.28", "opencode v2.0.27-beta.1", "2.0.27"])
+    assert.throws(() => assertRuntimeHostVersion(ci, version), /unsupported/)
+  const historical = runtimePlan("smoke-v2-direct-tools.mjs")
+  assert.throws(() => assertRuntimeHostVersion([...ci, historical], "opencode v2.0.27"), /unsupported/)
+  assert.throws(() => assertRuntimeHostVersion([...ci, runtimePlan("smoke.mjs", ["external"])], "opencode v2.0.26"), /unsupported/)
+  const copy = runtimePlan("smoke-v2-review.mjs", ["normal"])
+  copy.hostVersions.push("opencode v9.0.0")
+  assert.deepEqual(runtimePlan("smoke-v2-review.mjs", ["normal"]).hostVersions, ["opencode v2.0.26", "opencode v2.0.27"])
 })
 
 test("listing and all profile planning work with no host, fixture directory, or bundle access", () => {

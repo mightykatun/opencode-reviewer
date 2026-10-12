@@ -282,7 +282,7 @@ async function observedReviewerSetup(ctx) {
   }
 }
 
-const { scenario } = runtimeArguments("smoke-v2-review.mjs")
+const { scenario, hostVersions } = runtimeArguments("smoke-v2-review.mjs")
 const streaming = scenario !== "advisory", automatic = scenario !== "advisory", fast = scenario.startsWith("fast")
 const historyCase = scenario === "normal-history"
 const coverCase = ["normal-history-cover", "fast-history-cover"].includes(scenario)
@@ -729,7 +729,7 @@ const releaseNativeCall = () => {
 }
 const limits = [
   "One installed default archive with separate server companion and global CLI configuration. The independent monitor never imports production code or replies to permissions.",
-  `One standalone Linux OpenCode 2.0.26 host, ${requestCount} direct native shell call(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal, disconnect or tab-switch acceptance.`,
+  `One standalone Linux OpenCode V2 verification host, ${requestCount} direct native shell call(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal, disconnect or tab-switch acceptance.`,
   "Mouse capture is explicitly configured only by the isolated fixture, never forced by production. Countdown-loss cases require real physical FRAME proof before native command/navigation or actual tmux resize; no synthesized paint, modes, hits or geometry. Individual cases do not imply full presentation-matrix acceptance.",
   "Descendant cases navigate a real child while a root request is pending; they do not exercise descendant-owned native queue ordering. No disabled kinds or uncertain writes.",
     dialogCase ? "Stock command.palette.show owns a real native modal. Normal loss after an actual countdown permanently cancels; fast withholds SSE Safe preview until that cover, closes through real Escape and requires fresh physical root paint before once, with final usage verified in SQLite. No permission fullscreen or other modal-family acceptance."
@@ -742,7 +742,7 @@ const limits = [
 ]
 try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
-  assert.equal(version, "opencode v2.0.26")
+  assert.ok(hostVersions.includes(version), "An explicitly selected verification host")
   await Promise.all([inputs, path.dirname(cliPath)].map(directory => mkdir(directory, { recursive: true })))
   execFileSync("git", ["init", "--quiet", project], { env, timeout: 10000 })
   await writeFile(path.join(inputs, "fixture.py"), script)
@@ -763,7 +763,7 @@ try {
   }
   const manifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"))
   assert.equal(manifest.name, "opencode-reviewer")
-  assert.equal(manifest.engines.opencode, "2.0.26")
+  assert.equal(manifest.engines.opencode, ">=2.0.0 <3")
   assert.deepEqual(manifest.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })
   modelServer = createServer(async (req, res) => {
     try {
@@ -887,7 +887,7 @@ try {
   await runtime.start("-d", "-s", "v2-review", "-x", "160", "-y", "40", "-c", initial,
     "env", "XDG_STATE_HOME=" + env.XDG_STATE_HOME, host, "--standalone", initial)
   const ready = await until("independent monitor", record => record?.ready && record)
-  assert.equal(ready.version, "2.0.26")
+  assert.equal(ready.version, version.slice("opencode v".length))
    const status = await until("active production companion", async () => {
      const value = await command({ type: "status" })
      return value.handshake && value.plugins.data.find(item => item.id === "opencode-reviewer")?.state.status === "active" && value
@@ -895,7 +895,7 @@ try {
   assert.equal(status.plugins.data.find(item => item.id === "opencode-reviewer")?.state.status, "active")
   handshake = status.handshake
   assert.equal(handshake.protocol, 1)
-  assert.equal(handshake.hostVersion, "2.0.26")
+  assert.equal(handshake.hostVersion, version.slice("opencode v".length))
   assert.deepEqual(handshake.location, { directory: initial })
   assert.equal(handshake.project.directory, project)
   assert.match(handshake.epoch, /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i)

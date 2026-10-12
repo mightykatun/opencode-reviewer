@@ -6,6 +6,7 @@ const host = (scenarios, flags = [], extra = {}) => ({ classification: "producti
   hostVersion: "1.18.35", requires: ["linux", "git", "tmux", "bundle"], hosts: 1, timeoutMs: 240000, rules: [], ...extra })
 const rule = (flag, options) => ({ flag, ...options })
 const historyCases = ["covered", "countdown", "navigation", "notification", "dialog", "fullscreen", "hide", "narrow", "manual", "mode", "error", "zero"]
+const acceptanceHostVersions = ["opencode v2.0.26", "opencode v2.0.27"]
 
 /** All accepted CLI dimensions. Rules describe supported combinations, not an exhaustive run matrix. */
 export const runtimeInventory = {
@@ -41,14 +42,14 @@ export const runtimeInventory = {
   "smoke-v2-direct-tools.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux"] }),
   "smoke-v2-profile-mapping.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux"] }),
   "smoke-v2-effective-evidence.mjs": host(["shell-rewrite", "skill-reload", "moved-location", "edit-preview"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux"] }),
-  "smoke-v2-root-presentation.mjs": host(["mouse-on", "mouse-off"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux", "babel"] }),
-  "smoke-v2-native-queue.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux"] }),
+  "smoke-v2-root-presentation.mjs": host(["mouse-on", "mouse-off"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux", "babel"] }),
+  "smoke-v2-native-queue.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux"] }),
   "smoke-v2-delegation.mjs": host(["initial-resume", "coalesced"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux"] }),
   "smoke-v2-companion-package.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux", "npm-pack", "tar", "source"] }),
-  "smoke-v2-lifecycle.mjs": host(["default"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
-  "smoke-v2-invocation.mjs": host(["default", "review"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
+  "smoke-v2-lifecycle.mjs": host(["default"], [], { hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
+  "smoke-v2-invocation.mjs": host(["default", "review"], [], { hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-review.mjs": host(["advisory", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant", "normal-history", "normal-history-cover", "fast-history-cover", "fast-notifications",
-    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
+    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete"], [], { hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
   "smoke-v2-sidebar-state.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux"] }),
   "smoke-style-retirement.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux", "bundle", "babel"] }),
   "smoke-approval-recovery.mjs": host(["read-error", "read-timeout", "correction-after", "correction-before", "transport-after", "transport-before"], [], {
@@ -108,11 +109,22 @@ export function runtimePlan(entrypoint, args = []) {
   return { id: [canonicalEntry.replace(/\.(mjs|ts)$/, ""), scenario, ...canonicalFlags].join("/"), entrypoint: `scripts/${canonicalEntry}`,
     args: [...(scenario === "default" ? [] : [scenario]), ...positional.slice(1), ...canonicalFlags.map(f => `--${f}`)], scenario,
     flags: canonicalFlags, classification, requires: planning ? [] : entry.requires, hostVersion: planning ? undefined : entry.hostVersion,
+    ...(!planning && entry.hostVersions ? { hostVersions: [...entry.hostVersions] } : {}),
     hosts: planning || entrypoint === "smoke-history-lifecycle.mjs" && positional[1] ? 0 : entry.hosts, timeoutMs: entry.timeoutMs }
 }
 
 /** Direct fixture execution shares validation; no host, files, or imports with side effects. */
 export function runtimeArguments(entrypoint, args = process.argv.slice(2)) { return runtimePlan(entrypoint, args) }
+
+/** One actual binary version must satisfy every selected host fixture, including legacy pins. */
+export function assertRuntimeHostVersion(selected, actual) {
+  for (const item of selected.filter(item => item.hosts)) {
+    assert.ok(item.hostVersion, "Host fixtures must declare their exact default version")
+    const allowed = item.hostVersions ?? [item.hostVersion]
+    assert.ok(Array.isArray(allowed) && allowed.length && allowed.includes(item.hostVersion), "Host versions must include the exact default version")
+    assert.ok(allowed.includes(actual), `${item.id}: host ${actual} is unsupported; expected ${allowed.join(" or ")}`)
+  }
+}
 
 export const runtimeProfiles = {
   f34: [

@@ -74,8 +74,8 @@ export function inspectPackageArchive(bytes) {
   assert.equal(pkg.license, "MIT")
   // Historical V1 archives remain verifiable. V2 uses the same five-file layout
   // with all supported entrypoints bound to its one shared executable member.
-  assert.ok(["1.18.35", "2.0.26"].includes(pkg.engines?.opencode), "Unverified OpenCode host target")
-  if (pkg.engines.opencode === "2.0.26") {
+  assert.ok(["1.18.35", "2.0.26", ">=2.0.0 <3"].includes(pkg.engines?.opencode), "Unexpected OpenCode API generation")
+  if (pkg.engines.opencode !== "1.18.35") {
     assert.deepEqual(pkg.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })
   }
   assert.ok(!pkg.dependencies && !pkg.optionalDependencies, "Release package must not install project dependencies")

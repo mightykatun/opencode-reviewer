@@ -66,7 +66,8 @@
 
 ### Focused V2 host checks (build first)
 
-Set `OPENCODE_BIN` to the pinned stock 2.0.26 binary, not a newer PATH installation.
+Set `OPENCODE_BIN` to a stock verification binary (2.0.26 or 2.0.27).
+Fixture pins are test targets, not a plugin runtime version allowlist.
 All commands below use the installed five-file archive and production runtime.
 
 | Area | Command |
@@ -116,8 +117,13 @@ not acceptance evidence for the distributed V2 archive.
 
 ## Host and build boundaries
 
-- The shared V2 lifecycle entrypoint targets local Linux
-  OpenCode **2.0.26** using pinned `@opencode/plugin`, `@opencode/client` and
+- The shared V2 lifecycle entrypoint targets local Linux OpenCode V2.
+  On 2026-10-13 the user explicitly rejected a runtime host-version allowlist.
+  Do not gate activation, companion admission or evidence reads on version numbers.
+  Preserve protocol/location/epoch, mandatory evidence and physical approval checks;
+  incompatible public API data stays manual rather than being guessed. Test pins
+  remain separate from runtime activation. Development uses pinned
+  `@opencode/plugin`, `@opencode/client` and
   `@opencode/theme`. OpenTUI is 0.5.17 and Solid is 1.9.15, matching the host.
   The V1 implementation and fixtures remain migration inputs, targeting 1.18.35;
   do not count their source-test successes as V2 runtime verification. Check

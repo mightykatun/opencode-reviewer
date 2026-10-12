@@ -57,10 +57,10 @@ function cliSetup(ctx) {
   return async () => { off(); abort.abort(); await loop; record.cleaned = true; await publish(); await publisher.close() }
 }
 
-runtimeArguments("smoke-v2-native-queue.mjs")
+const { hostVersions } = runtimeArguments("smoke-v2-native-queue.mjs")
 const host = process.env.OPENCODE_BIN ?? "opencode"
 const version = execFileSync(host, ["--version"], { encoding: "utf8", timeout: 10000 }).trim()
-assert.equal(version, "opencode v2.0.26")
+assert.ok(hostVersions.includes(version), "An explicitly selected verification host")
 const root = path.resolve(import.meta.dirname, "..")
 await mkdir(path.join(root, ".runtime"), { recursive: true })
 const artifacts = await mkdtemp(path.join(root, ".runtime/v2-native-queue-"))

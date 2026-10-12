@@ -131,7 +131,7 @@ async function observedSetup(ctx) {
           if (phase === "response-epoch") changed.epoch = "invalid-epoch"
           if (phase === "response-location") changed.location.directory += "-wrong"
           if (phase === "response-workspace") changed.location.workspaceID = "fixture-wrong-workspace"
-          if (phase === "response-version") changed.hostVersion = "2.0.0"
+          if (phase === "response-version") changed.hostVersion = ""
           if (phase === "response-protocol") changed.protocol = 2
           return changed
         } }
@@ -190,7 +190,7 @@ async function observedSetup(ctx) {
       if (phase.startsWith("response-") || phase === "no-companion") assert.equal(ready.state.companion, undefined)
       else {
         assert.equal(ready.state.companion.protocol, 1)
-        assert.equal(ready.state.companion.hostVersion, "2.0.26")
+        assert.equal(ready.state.companion.hostVersion, fixture.hostVersion)
         assert.equal(ready.state.companion.location.directory, fixture.project)
       }
       const { TextRenderable } = await import("@opentui/core")
@@ -207,7 +207,7 @@ async function observedSetup(ctx) {
       }))
     } else {
       assert.equal(ready.state.protocol, 1)
-      assert.equal(ready.state.hostVersion, "2.0.26")
+      assert.equal(ready.state.hostVersion, fixture.hostVersion)
       assert.equal(ready.state.location.directory, fixture.project)
     }
     const timer = setInterval(() => { result.ticks++; void save() }, 100)
@@ -242,7 +242,7 @@ async function observedSetup(ctx) {
   }
 }
 
-runtimeArguments("smoke-v2-lifecycle.mjs")
+const { hostVersions } = runtimeArguments("smoke-v2-lifecycle.mjs")
 const root = path.resolve(import.meta.dirname, "..")
 await mkdir(path.join(root, ".runtime"), { recursive: true })
 await mkdir("/tmp/opencode", { recursive: true })
@@ -308,14 +308,14 @@ const walk = async (directory, prefix = "") => {
 }
 try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
-  assert.equal(version, "opencode v2.0.26")
+  assert.ok(hostVersions.includes(version), "An explicitly selected verification host")
   await mkdir(project)
   await mkdir(observations)
   await mkdir(path.dirname(cliPath), { recursive: true })
   execFileSync("git", ["init", "--quiet", project], { env, timeout: 10000 })
   const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"))
   assert.equal(manifest.name, "opencode-reviewer")
-  assert.equal(manifest.engines.opencode, "2.0.26")
+  assert.equal(manifest.engines.opencode, ">=2.0.0 <3")
   assert.deepEqual(manifest.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })
   const npmOptions = { env: { ...env, npm_config_cache: path.join(temp, "npm-cache"), npm_config_ignore_scripts: "true" },
     encoding: "utf8", timeout: 60000 }
@@ -368,7 +368,7 @@ try {
   await mkdir(promptDirectory)
   await writeFile(path.join(promptDirectory, "PERMISSION-REVIEW-PROMPT.md"), "PHASE1 CUSTOM PROMPT\n")
   await writeFile(path.join(temp, ".npmrc"), `registry=http://127.0.0.1:${registry.address().port}/\nlegacy-peer-deps=true\nignore-scripts=true\naudit=false\nfund=false\n`)
-  const fixture = { project, observations, control: controlPath, monitor: monitorPath, endpoint,
+  const fixture = { project, observations, control: controlPath, monitor: monitorPath, endpoint, hostVersion: version.slice("opencode v".length),
     moduleURL: pathToFileURL(path.join(installed, "dist/tui.js")).href }
   const helpers = await readFile(new URL("./smoke-observations.mjs", import.meta.url), "utf8")
   const prelude = helpers + '\nimport assert from "node:assert/strict"\nconst fixture = ' + JSON.stringify(fixture) + "\n" + handshakeDefinition.toString() + "\n"
@@ -404,7 +404,7 @@ try {
     return status.handshake && status
   })
   assert.equal(initial.handshake.protocol, 1)
-  assert.equal(initial.handshake.hostVersion, "2.0.26")
+  assert.equal(initial.handshake.hostVersion, fixture.hostVersion)
   assert.equal(initial.handshake.location.directory, project)
   assert.match(initial.handshake.epoch, /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i)
   const defaultInfo = initial.plugins.data.find(plugin => plugin.id === "opencode-reviewer")

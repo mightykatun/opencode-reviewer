@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process"
 import { mkdir, mkdtemp, writeFile, rm, access } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { runtimeInventory, runtimeProfiles, runtimePlan, profilePlan } from "./runtime-inventory.mjs"
+import { runtimeInventory, runtimeProfiles, runtimePlan, profilePlan, assertRuntimeHostVersion } from "./runtime-inventory.mjs"
 import { publishObservation } from "./smoke-observations.mjs"
 import { executeFixture } from "./runtime-runner.mjs"
 
@@ -34,13 +34,9 @@ if (args[0] === "--list") {
     let hostVersion
     if (selected.some(item => item.hosts)) {
       assert.equal(process.platform, "linux")
-      const versions = new Set(selected.filter(item => item.hosts).map(item => item.hostVersion))
-      assert.equal(versions.size, 1, "One runtime run must select a single pinned host version")
-      const expected = [...versions][0]
-      assert.ok(expected, "Host fixtures must declare their exact version")
       const host = process.env.OPENCODE_BIN ?? "opencode"
       hostVersion = execFileSync(host, ["--version"], { encoding: "utf8", timeout: 10000 }).trim()
-      assert.equal(hostVersion, expected)
+      assertRuntimeHostVersion(selected, hostVersion)
     }
     if (prerequisites.has("bundle")) await access(path.join(root, "dist/tui.js"))
     await mkdir(path.join(root, ".runtime"), { recursive: true })
@@ -64,7 +60,8 @@ if (args[0] === "--list") {
         await writeFile(log, Buffer.concat(output))
         const expectedFailure = item.flags.includes("fail-after-listen")
         const cleanupProof = !expectedFailure || /PASS post-listen cleanup/.test(Buffer.concat(output).toString())
-        results.push({ ...item, ...result, durationMs: Date.now() - start, log,
+        results.push({ ...item, defaultHostVersion: item.hostVersion, hostVersion: item.hosts ? hostVersion : item.hostVersion,
+          ...result, durationMs: Date.now() - start, log,
           invocation: [process.execPath, item.entrypoint, ...item.args],
           status: result.code === (expectedFailure ? 1 : 0) && cleanupProof && !result.timedOut && !result.interrupted ? "passed" : "failed" })
         await publishObservation(path.join(directory, "results.json"), { profile: args[0] === "--profile" ? args[1] : undefined,
