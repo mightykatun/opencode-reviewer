@@ -113,6 +113,27 @@
 
 ## Execution flow and invariants
 
+### Approved V2 migration presentation contract
+
+- For the V2 port, the user selected **visible-root presentation** on 2026-10-12.
+  See `V2-MIGRATION-PLAN.md` section 3A.6 for the exact replacement and acceptance
+  cases. This supersedes the F34 hidden-route approval exception for V2 only; the
+  V1 implementation and historical F34 verification below remain the baseline.
+- V2 normal and fast automatic replies require the root conversation route and
+  actual physical presentation proof. Descendant browsing permits no automatic
+  write. Root route identity alone, mounted state or remembered paint is insufficient.
+- Leaving root presentation after a normal countdown starts permanently makes
+  that request manual. Root return/remount/re-enable cannot erase cancellation or
+  uncertain-write tombstones. Never-armed reports completed while hidden may first
+  become eligible after real root presentation, with a fresh normal countdown.
+- Preserve fast preview/full-response behavior, no countdown, fresh identity/native
+  priority checks and once-only writes. Retained responses may finish while hidden.
+  Normal production-history cover remains a separate root-scoped physical-proof
+  exception; fast mode gains no history-cover exception. Do not force mouse/sidebar
+  visibility. The V2 presentation test gate remains open until actually verified.
+
+### Current V1 implementation
+
 - Start at `src/tui.tsx`: `controller.ts` owns lifecycle/visibility, `session-mode.ts`
   gates work before enrichment, `evaluate.ts` dispatches through `classification.ts`
   and `context.ts` to evidence collectors, and `reviewer.ts` owns model transport.

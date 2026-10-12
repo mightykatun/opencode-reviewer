@@ -1,8 +1,8 @@
 # V2 capability verification
 
-Status: Phase 0 stock-host investigation resumed at W1. Production migration has
-not started. Section 3A of the migration plan supersedes the historical upstream
-recommendation below; behavior decisions still require explicit approval.
+Status: W1 local-host probes verified; visible-root V2 automation approved.
+Production migration has not started. Section 3A of the migration plan supersedes
+the historical upstream recommendation below; remaining phase 0 gates are open.
 
 ## Selected research target
 
@@ -336,6 +336,21 @@ validation must remain independent from native cached queue selection.
 
 ### Presentation
 
+**Approved V2 disposition (2026-10-12):** the user selected "require visible-root
+presentation". Both normal and fast automatic replies will require physical proof
+on the root conversation route; descendants permit no automatic write. This closes
+the sidebar-state behavior decision without claiming a new observation capability.
+Leaving root presentation after a countdown starts makes that request manual;
+returning to root cannot revive it. Never-armed hidden completions may become
+eligible after root presentation, with the normal countdown starting then.
+Retained fast responses can continue after an already-dispatched approval.
+
+The precise contract and acceptance cases are in `V2-MIGRATION-PLAN.md` section
+3A.6 and `AGENTS.md`'s V2 migration section. Root paint/highlighting, queue ownership,
+coverage, history cover, fast-mode boundaries and cancellation still need production
+V2 verification. No new host test is claimed merely for recording this decision.
+The source findings below explain the V1 F34 difference and remain valid.
+
 Released public OpenTUI retains frame events, hit tests, numeric renderable
 ownership, geometry, Markdown highlighting and scroll APIs. Mouse-enabled root
 paint can use these mechanisms. The prior F32 mouse-disabled limitation remains.
@@ -430,14 +445,20 @@ separate from the executed direct-shell contract probe above.
 - Immutable invocation location and exact resumed/nested delegation linkage.
 - Authoritative native/custom/MCP origin and captured effective definitions.
 - Pending edit and skill evidence.
-- Native root queue and hidden-route coverage/explicit-sidebar-state observation.
+- Native root queue and physical root presentation/coverage under the approved
+  visible-root contract; hidden-route approval authority is no longer required.
 - Storage lineage, startup reconciliation and viable public companion architecture.
 - Failed-setup/reload ownership and production worker compatibility.
 
 Phase 0 stays open until these requirements have evidence or an explicit blocking
 disposition. The successful synthetic probe does not establish production parity.
 
-## Escalation
+## Historical escalation (superseded by the stock-host plan)
+
+The sidebar/F34 portion was disposed by the user's visible-root choice above.
+Upstream work is outside the migration scope. Other capability gaps still require
+stock-host evidence or an explicitly reconciled production contract; the original
+negative observations below are retained as history.
 
 **Issue in Phase 0**
 

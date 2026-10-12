@@ -1,6 +1,6 @@
 # OpenCode V2 migration plan
 
-Status: W1 local-host probes verified; phase 0 production-contract decisions remain open.
+Status: W1 local-host probes verified; visible-root V2 automation approved; remaining phase 0 gates open.
 Prepared: 2026-10-12.
 Revised: 2026-10-12, following the user's requirement that upstream changes are unavailable.
 Baseline: `v1.0.2` (`7cd1e561aea594ab9c7a99a32f30568579098747`), the final
@@ -28,6 +28,8 @@ Current execution tasks (resumed 2026-10-12; completed reading gates retained):
 - [ ] W3: prove location/effective evidence and obtain per-kind scope decisions.
 - [ ] W4: prove delegation subset and obtain remaining representation decisions.
 - [ ] W5: prove presentation/coverage and obtain descendant-route decision.
+  - [x] User selected visible-root presentation for V2 automatic approval.
+  - [ ] Verify root physical proof and descendant cancellation/return behavior.
 - [ ] W6: prove lineage/absence and packed companion lifecycle/configuration.
 - [ ] W7: reconcile approved contracts before any dependent production port.
 - [ ] Implement and verify Phases 1-6 sequentially against their existing exits.
@@ -53,6 +55,10 @@ request ownership, validated Safe results and once-only replies. If a V1-specifi
 contract prevents that design, state the concrete replacement contract before
 dependent production work. The probes below remain evidence, not a requirement
 to ship every investigated workaround.
+
+On 2026-10-12 the user explicitly selected **"require visible-root presentation"**.
+Section 3A.6 records the approved V2 replacement for F34's hidden-route approval
+exception. This closes the route-choice decision, not the presentation test gate.
 
 - [x] 1. Read the complete plan and existing completion state.
 - [x] 2. Read referenced implementation, fixture, package and workflow files.
@@ -145,8 +151,8 @@ Read the current `AGENTS.md` and the final dispositions in the
 [V1 release audit](https://github.com/mightykatun/opencode-reviewer/blob/v1.0.2/AUDIT.md)
 before implementation. The archived audit is also available with
 `git show v1.0.2:AUDIT.md`, even if absent from the working tree. Historical audit
-findings are not all outstanding defects. In particular, keep the completed F34
-replacement contract, not its superseded earlier proposal.
+findings are not all outstanding defects. F34's completed contract remains the V1
+baseline; the approved V2 route behavior is specified in section 3A.6.
 
 - Advisory by default; only `autoApprove` enables automatic `once` replies.
   Never write permission rules, send `always`/`reject`, execute commands or apply
@@ -157,12 +163,12 @@ replacement contract, not its superseded earlier proposal.
   monotonic countdown. Fast mode keeps its preview/full-response distinction,
   no countdown, exact request recheck, retained response and once-only write.
 - Show live, retained and history panels only on the root conversation route.
-  Known same-root descendant browsing deliberately hides the panel while normal
-  and fast automation continue. It does not grant queue ownership to deep-only
-  requests that are absent from the native root queue.
-- Preserve actual painted ownership and normal-mode history-cover proof outside
-  the F34 route exception. Cancel, genuine coverage/hiding, unrelated navigation,
-  unknown ancestry and uncertain writes retain their blocking/tombstone behavior.
+  In V2, both normal and fast automatic replies require visible-root presentation;
+  descendant browsing grants neither presentation nor native queue ownership.
+- Preserve actual painted ownership and normal-mode history-cover proof at the
+  root. V2 has no F34 hidden-route exception. Cancel, genuine coverage/hiding,
+  descendant or unrelated navigation, unknown ancestry and uncertain writes retain
+  their blocking/tombstone behavior under section 3A.6.
 - Keep genuine root-user intent distinct from the exact immediate delegation.
   Preserve invocation-time location, exact mandatory evidence, literal file
   discovery, bounded optional evidence and cancellation ownership.
@@ -422,7 +428,9 @@ observations and effective sidebar preference. Disk/env polling, remembered root
 visibility, command titles and intercepting one toggle do not restore that fact.
 Do not repeat those as a new solution without identifying a new observable.
 
-**Stock-host choices, requiring an explicit decision if no new API is found:**
+**Decision: option 1 approved on 2026-10-12.** The user selected
+"require visible-root presentation". The alternatives below retain the decision
+context; option 2 is not the selected V2 contract.
 
 1. **Physical-visibility-only automation:** keep root-only rendering and automatic
    approval on a proven root panel, but stop automatic approval during descendant
@@ -438,13 +446,44 @@ Do not repeat those as a new solution without identifying a new observable.
 Option 2 still needs independently proven dialog/fullscreen coverage. A new
 preference cannot manufacture that proof; if coverage cannot be distinguished,
 background continuation remains unavailable. Neither option is full F34 parity.
-Prefer option 1 if the user chooses reliability of the existing hide guard over
-background browsing continuity. Do not select either implicitly.
+The approved V2 contract is:
 
-- [ ] Recheck the pinned public APIs for a genuinely new supported observation.
+- The current route must be the proven root conversation, with actual reviewer
+  presentation ownership. Merely being on a root route does not prove visibility.
+  Native dialogs/fullscreen, sidebar hiding, unowned frames and unknown ancestry
+  still block a write. Do not force mouse tracking or sidebar visibility.
+- Both normal and fast mode make zero automatic replies on direct, sibling or
+  nested descendant routes. Source-session ancestry and native queue priority
+  remain independent: a descendant request may be approved when it belongs to the
+  root's native queue and is physically presented on the root route.
+- Normal mode still requires the completed validated Safe report, final Markdown
+  highlighting, matching paint and configured countdown. Losing root presentation
+  after the countdown starts permanently makes that request manual. Returning to
+  root, remounting or re-enabling must not restart or rearm it.
+- An assessment may finish while browsing descendants. If automation was never
+  armed and no cancellation/uncertain-write tombstone exists, it may first become
+  eligible after returning to a proven root presentation. Normal mode starts its
+  countdown then; elapsed hidden time does not satisfy the delay.
+- Fast mode retains its configured preview/full-response requirement and no
+  countdown, but its fresh verification and write boundaries require actual root
+  visibility. All existing cancellation and uncertain-write guards still apply.
+- Evaluation and already-dispatched retained fast responses can continue while
+  route-hidden; this does not permit a new automatic approval write. Preserve their
+  usage/history finalization and existing abort conditions.
+- The separate normal-mode production-history-cover exception remains root-scoped
+  and requires actual hit-test proof. Fast mode still has no history-cover exception.
+
+Acceptance must cover root -> child/sibling/nested -> root during countdown and
+fresh verification, newly completed reports while hidden, normal positive/zero
+delay and fast stream/nonstream behavior, no writes on descendant routes, genuine
+root covers/hiding, canceled-request non-rearm and retained response completion.
+V1 F34 hidden-approval successes become explicit V2 behavior differences, not
+passing parity tests. Root frame/coverage verification is still pending.
+
+- [x] Dispose the hidden-route sidebar-state gap through the approved visible-root contract.
 - [ ] Test root frames/highlighting, modal/native fullscreen, tabs, narrow widths,
   history cover and mouse-disabled controls independently from sidebar state.
-- [ ] Obtain the chosen route contract before porting F34 behavior.
+- [x] Obtain the chosen route contract before porting F34 behavior.
 - [ ] Retain root-only live/history display and all cancellation/uncertain-write
   tombstones. Never force sidebar visibility, navigate to root to probe state,
   fabricate frames, or replace native approval dialogs.
@@ -491,17 +530,17 @@ record exact artifacts. Proposed new fixture names are not existing commands.
 | W2 | Provenance/profile fixture and compatibility inventory | State enforceable restrictions and trust assumptions; obtain controlled-profile decision. |
 | W3 | Location/effective-evidence ledger fixture | Per-kind final-input/snapshot ownership and reconnect behavior proven, or explicit category decisions recorded. |
 | W4 | Delegation fixture | Exact subset established; omission or multi-input representation explicitly decided for the remainder. |
-| W5 | Presentation/coverage fixture | Root behavior proven; choose an explicit route contract if full F34 remains unobservable. |
+| W5 | Presentation/coverage fixture | Prove root behavior and the approved visible-root contract in section 3A.6, including descendant no-write and cancellation controls. |
 | W6 | Lineage/absence and packed companion fixture | Durable ownership, deletion proof, lifecycle and package/configuration shape verified. |
 | W7 | Reconciled production contract | All required decisions recorded; capability document and applicable maintainer contracts aligned before Phase 1. |
 
-Decisions not supplied by the user merely asking for this plan:
+Decision record (checked only when explicitly supplied):
 
 - [ ] Accept opt-in direct-tool presentation and its model-context cost.
 - [ ] Accept a controlled-installation provenance/evidence trust model, if needed.
 - [ ] Approve any executor instrumentation, packaging exception or additional setup.
 - [ ] Accept precise delegation omissions/multiple-input representation, if needed.
-- [ ] Choose the descendant-route behavior if native F34 remains impossible.
+- [x] Choose the descendant-route behavior: require visible-root presentation (2026-10-12).
 - [ ] Approve any remaining category or offline-maintenance limitation explicitly.
 
 For a failed gate, report Expected/Found/Impact/Options with the smallest concrete
@@ -635,11 +674,11 @@ Files: `src/controller.ts`, `route-approval.ts`, `review-presentation.ts`,
 - Port theme, selection, Markdown highlighting and frame proof. Revalidate geometry
   on the chosen host instead of assuming V1's sidebar dimensions or overflow
   heuristic in `routeCovered` still identify V2 native fullscreen.
-- Preserve F34 across root, direct child, sibling and nested routes, including
-  hidden report completion and root-return handoff. Visibility and queue ownership
-  stay independent; no fabricated visible IDs, frames or hit-test results.
-  If W5/W7 explicitly adopts a replacement route contract, implement that contract
-  and its negative cases instead; retain the original F34 cases as documented
+- Implement the approved visible-root contract in section 3A.6 across root, direct
+  child, sibling and nested routes. Hidden completion cannot approve or consume a
+  countdown; root return cannot revive canceled work. Preserve retained responses.
+  Visibility and queue ownership stay independent; no fabricated visible IDs,
+  frames or hit-test results. Retain V1 F34 hidden-approval cases as documented V2
   behavior differences rather than labeling them passing parity tests.
 - Port history, statistics and enable/disable commands to reactive keymap layers.
   Confirm dialog coverage, modal ownership and cleanup on tab/route changes.
@@ -654,8 +693,8 @@ Files: `src/controller.ts`, `route-approval.ts`, `review-presentation.ts`,
 
 **Exit:** normal and fast approvals pass real-TUI positive and negative cases;
 countdowns, cancellation tombstones, retained streams and root-only display obey
-F34 or the explicitly approved W7 replacement. Missing root physical proof cannot
-authorize a write; background behavior requires its own proven coverage conditions.
+the approved visible-root contract. Missing root physical proof cannot authorize
+a write; both normal and fast descendant-route approval remain blocked.
 
 ### Phase 4: history, statistics, mode persistence and notifications
 
@@ -775,16 +814,17 @@ commands establish V2 coverage. Required coverage includes:
 | Evidence | Native shell/edit/skill, MCP tool/resource, custom/native-looking tool, external-directory stages, exact workdir, source symlinks, oversized mandatory and optional data, catalog failure. |
 | Intent/scope | Latest root prompt including attachment-only, child/resume/nested delegation, moved session, different location/server, unknown ancestry, native-disabled blockers. |
 | Approval | Normal positive/zero delay, fast stream/nonstream, Safe/Unsafe/errors, exact-request retry, changed arguments, read failure recovery, uncertain write remains manual. |
-| F34/presentation | Root/child/sibling/nested routes at wide/narrow widths, hidden completion, root return, history cover, sidebar handoff, Cancel, explicit hide, palette/dialog/fullscreen, unrelated route/tab, mouse-disabled controls. |
+| Visible-root presentation | Root/child/sibling/nested routes at wide/narrow widths; zero descendant automatic replies; countdown cancellation and non-rearm on root return; first eligibility after hidden completion; retained responses; root history cover, sidebar handoff, Cancel, explicit hide, palette/dialog/fullscreen, unrelated route/tab and mouse-disabled controls. |
 | Transport | Truncation, duplicate keys, EOF/stop/DONE, correction history, rejected previews, retained fast reports, terminal usage, total deadline and no overlapping physical reads. |
 | Persistence | Existing V1 data preserved, V2 new/restarted state, safe namespace separation, confirmed/ambiguous approval attribution, totals surviving deletion, offline deletion with exact error proof, shutdown drain. |
 | Notifications | Snapshot silence, eligible event birth, silent queued/countdown requests, queue loss/handoff/reentry, question/form, success/failure/interruption, click during retained report/save delay/dialog, reconnect. |
 | Release | Reproducible bundle, five-file artifact, actual installed package, complete active-policy checkout, provenance/offline publication checks. |
 | Stock-host profile | W1-W6 fixtures, direct parallel calls, catalog limits/refresh, old snapshots, controlled classification assumptions, companion loss/reconnect, approved route differences, exact approved package inventory. |
 
-The matrix above retains the original parity targets. W7 must explicitly annotate
-any approved changed expectations before implementation. Do not quietly delete a
-negative control or count a manual fallback as equivalent automatic behavior.
+The matrix incorporates the approved visible-root replacement for V1 F34. W7 must
+explicitly annotate any other approved changed expectations before implementation.
+Do not quietly delete a negative control or count manual behavior as equivalent
+automatic behavior.
 
 Use independent behavioral expectations in tests. A mock that merely reproduces
 the adapter's mapping cannot establish native V2 semantics. Report exact fixture
@@ -800,8 +840,8 @@ playback or focus behavior.
 - [ ] CLI-only or documented companion architecture reconciled with package policy.
 - [ ] Production imports and active fixtures no longer rely on V1 API shapes.
 - [ ] Pending-request review remains advisory/once-only with unchanged model transport.
-- [ ] Real V2 normal/fast and physical-coverage cases pass; F34 equivalence or the
-  explicitly approved replacement is accurately documented and tested.
+- [ ] Real V2 normal/fast and physical-coverage cases pass under the approved
+  visible-root contract, accurately documenting the V1 F34 behavior difference.
 - [ ] Existing history/totals and mode semantics survive migration and server changes.
 - [ ] V2 notifications, forms and execution outcomes pass queue/reconnect tests.
 - [ ] Installed-package and CI/release-policy checks pass on the selected host.
