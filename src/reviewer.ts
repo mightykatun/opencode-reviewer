@@ -8,6 +8,7 @@ import { SSEParser } from "./sse.js"
 import { AssessmentFormatError, StreamingAssessment } from "./streaming-assessment.js"
 import { diagnosticAttempt, type DiagnosticObserver } from "./diagnostics.js"
 import { AssessmentStreamError, httpFailure, networkFailure, TransportRetries } from "./transport-retry.js"
+import { TransportOwnership, transportOwnership } from "./transport-ownership.js"
 export { withDeadline } from "./deadline.js"
 
 export function parseAssessment(content: string): Assessment {
@@ -19,7 +20,7 @@ export function parseAssessment(content: string): Assessment {
 /** Each wait removes its listener on settlement; no growing Promise.race listener chain.
  * A fetcher may ignore abort. Own any late response without allowing it back into review.
  */
-function abortable<T>(promise: Promise<T>, signal: AbortSignal, late?: (value: T) => void): Promise<T> {
+function abortable<T>(promise: Promise<T>, signal: AbortSignal, ownership?: TransportOwnership, late?: (value: T) => Promise<void>): Promise<T> {
   return new Promise((resolve, reject) => {
     let settled = false
     const abort = () => {
@@ -29,8 +30,8 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal, late?: (value: T
       reject(signal.reason)
     }
     signal.addEventListener("abort", abort, { once: true })
-    promise.then((value) => {
-      if (settled) { late?.(value); return }
+    const physical = promise.then((value) => {
+      if (settled) return late?.(value)
       settled = true
       signal.removeEventListener("abort", abort)
       resolve(value)
@@ -40,22 +41,25 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal, late?: (value: T
       signal.removeEventListener("abort", abort)
       reject(error)
     })
+    // Track the continuation too: late response cancellation is part of the
+    // fetch transaction, with no capacity gap between headers and disposal.
+    ownership?.track(physical)
     if (signal.aborted) abort()
   })
 }
 
-function cancelBody(response: Response): void {
-  try { void response.body?.cancel().catch(() => {}) } catch { /* Cleanup cannot change the outcome. */ }
+async function cancelBody(response: Response): Promise<void> {
+  try { await response.body?.cancel() } catch { /* Cleanup cannot change the outcome. */ }
 }
 
-async function readBody(response: Response, signal: AbortSignal, consume: (bytes: Uint8Array) => void): Promise<void> {
+async function readBody(response: Response, signal: AbortSignal, ownership: TransportOwnership, consume: (bytes: Uint8Array) => void): Promise<void> {
   if (!response.body) throw new Error("Reviewer returned an empty HTTP response")
   const reader = response.body.getReader()
   try {
     while (true) {
       reviewStage(signal, "Reviewer response body")
       let part: ReadableStreamReadResult<Uint8Array>
-      try { part = await abortable(reader.read(), signal) }
+      try { part = await abortable(reader.read(), signal, ownership) }
       catch (error) {
         signal.throwIfAborted()
         throw networkFailure(error, "Reviewer response read failed")
@@ -65,17 +69,18 @@ async function readBody(response: Response, signal: AbortSignal, consume: (bytes
       consume(part.value)
     }
   } finally {
-    // cancel() synchronously closes pending reads, but its underlying cleanup promise
-    // can hang in injected transports. Do not await it; always release the reader lock.
-    try { void reader.cancel().catch(() => {}) } finally { reader.releaseLock() }
+    // Cancellation can close reads before its underlying cleanup settles. Keep
+    // physical ownership without making the caller wait beyond its deadline.
+    try { ownership.track(reader.cancel()) } catch { /* Cleanup cannot change the outcome. */ }
+    finally { reader.releaseLock() }
   }
 }
 
 const MAX_RESPONSE_BYTES = 65536
-async function responseText(response: Response, signal: AbortSignal): Promise<string> {
+async function responseText(response: Response, signal: AbortSignal, ownership: TransportOwnership): Promise<string> {
   let bytes = 0
   const chunks: Uint8Array[] = []
-  await readBody(response, signal, (value) => {
+  await readBody(response, signal, ownership, (value) => {
     bytes += value.length
     if (bytes > MAX_RESPONSE_BYTES) throw new Error("Reviewer HTTP response exceeds 64 KiB")
     chunks.push(value)
@@ -98,14 +103,15 @@ const validMetadata = (delta: Record<string, unknown>) => (delta.role === undefi
   && (delta.refusal == null || typeof delta.refusal === "string")
 class TerminalAssessmentRejection extends Error {}
 
-async function streamedAssessment(response: Response, signal: AbortSignal, accounting: ReturnType<typeof usageAttempt>,
+async function streamedAssessment(response: Response, signal: AbortSignal, ownership: TransportOwnership, accounting: ReturnType<typeof usageAttempt>,
   progress: (preview?: Partial<Assessment>) => void, firstContent?: () => void): Promise<StreamingAssessment> {
   if (response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "text/event-stream") {
-    cancelBody(response)
+    ownership.track(cancelBody(response))
     throw new Error("Reviewer expected an SSE response")
   }
   const assessment = new StreamingAssessment()
   let stopped = false, done = false
+  let finished: string | undefined
   let id: string | undefined, model: string | undefined
   let last: Partial<Assessment> | undefined
   let failure: AssessmentStreamError | TerminalAssessmentRejection | undefined
@@ -173,17 +179,21 @@ async function streamedAssessment(response: Response, signal: AbortSignal, accou
       const nonText = nonTextFinish(finish) || !textMetadata(delta)
       if (delta.content != null && typeof delta.content !== "string") invalid(!nonText)
       if (finish != null && finish !== "stop" && finish !== "length" && !nonTextFinish(finish)) invalid(!nonText)
+      // A terminal rejection still has completion framing. Once any finish has
+      // been accepted, only an identical empty finish or usage-only frames may
+      // follow. Check before the rejection drain can discard further deltas.
+      if (finished !== undefined && (finish !== finished || !textMetadata(delta)
+        || [delta.content, delta.reasoning, delta.reasoning_content, delta.reasoning_details]
+          .some(value => value != null && value !== "" && !(Array.isArray(value) && value.length === 0)))) invalid(!nonText)
+      if (typeof finish === "string") finished = finish
       if (nonText) { rejected(); return }
       // Keep validating framing/identity/metadata, but never parse or publish more
       // assessment text after a terminal rejection, including plausible Safe JSON.
       if (failure instanceof TerminalAssessmentRejection) {
-        if (finish != null && finish !== "stop") invalid()
         return
       }
       if (finish === "length") throw new AssessmentStreamError("Reviewer output token limit reached; increase maxOutputTokens")
       if ((finish != null && finish !== "stop") || (stopped && finish !== "stop")) invalid()
-      if (stopped && [delta.content, delta.reasoning, delta.reasoning_content, delta.reasoning_details]
-        .some((value) => value != null && value !== "" && !(Array.isArray(value) && value.length === 0))) invalid()
       if (typeof delta.content === "string" && delta.content) {
         firstContent?.()
         assessment.push(delta.content)
@@ -199,7 +209,7 @@ async function streamedAssessment(response: Response, signal: AbortSignal, accou
       if (!failure) { failure = error; progress() }
     }
   })
-  try { await readBody(response, signal, (bytes) => sse.push(bytes)) }
+  try { await readBody(response, signal, ownership, (bytes) => sse.push(bytes)) }
   catch (error) {
     signal.throwIfAborted()
     // Even a transient socket failure during accounting cannot retry a refusal.
@@ -267,6 +277,7 @@ export async function review(
     const attemptID = randomUUID()
     let dispatched = false
     const requestAbort = new AbortController()
+    const ownership = new TransportOwnership(transportOwnership(signal))
     let contentStarted = false
     let failed = false
     let failure: unknown
@@ -293,24 +304,24 @@ export async function review(
           // Count dispatched extra attempts, not proposed or canceled backoff.
           if (attempt > 0) { try { void Promise.resolve(onRetry?.()).catch(() => {}) } catch {} }
         }
-        response = await abortable(pending, signal, cancelBody)
+        response = await abortable(pending, signal, ownership, cancelBody)
         diagnose?.("headers")
       } catch (error) {
         signal.throwIfAborted()
         throw networkFailure(error, "Reviewer network request failed")
       }
       if (!response.ok) {
-        cancelBody(response)
+        ownership.track(cancelBody(response))
         throw httpFailure(response)
       }
       let assessment: StreamingAssessment
-      if (config.stream) assessment = await streamedAssessment(response, signal, accounting, (preview) => {
+      if (config.stream) assessment = await streamedAssessment(response, signal, ownership, accounting, (preview) => {
         if (typeof preview?.safe === "boolean") diagnose?.("first-rating")
         progress("streaming", preview)
       }, () => { contentStarted = true; diagnose?.("first-content") })
       else {
         let envelope: unknown
-        try { envelope = JSON.parse(await responseText(response, signal)) }
+        try { envelope = JSON.parse(await responseText(response, signal, ownership)) }
         catch (error) {
           signal.throwIfAborted()
           if (error instanceof SyntaxError) throw new Error("Reviewer returned invalid API JSON")
@@ -371,6 +382,9 @@ export async function review(
       startedAttempt = attempt + 1
       progress("retrying", undefined, startedAttempt)
     })) throw failure
+    // No transport retry or format correction may amplify an unsettled read or
+    // cancellation. This wait remains bounded by the original visible deadline.
+    await abortable(ownership.settled(), signal)
     retry = failed ? "transport" : "format"
   }
 }

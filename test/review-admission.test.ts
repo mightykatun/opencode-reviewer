@@ -51,7 +51,10 @@ for (const children of [false, true]) test(`fanout64 ${children ? "root/child" :
   f.controller.reconcile(requests.toReversed(), f.controller.revision)
   assert.equal(f.publications(), 65, "native blockers publish synchronously, including reconciliation completion")
   await settle()
-  const order = [...requests].sort((a, b) => a.sessionID < b.sessionID ? -1 : a.sessionID > b.sessionID ? 1 : a.id < b.id ? -1 : 1)
+  const front = [...requests].sort((a, b) => a.sessionID < b.sessionID ? -1 : a.sessionID > b.sessionID ? 1 : a.id < b.id ? -1 : 1)[0]!
+  // Reconciliation supplies reversed arrivals. Once the actual native front is
+  // admitted, it stays pending and background service follows arrival order.
+  const order = [front, ...requests.toReversed().filter(req => req !== front)]
   assert.deepEqual(f.workers.map(w => w.request.id), order.slice(0, 4).map(r => r.id))
   assert.equal(f.actual(), 4)
   assert.equal(f.publications(), 69, "waiting entries neither identify nor stream")
@@ -111,6 +114,29 @@ test("root round-robin bounds other-root latency despite fanout64 and continued 
     f.finish(i); await settle()
   }
   assert.deepEqual(f.workers.slice(4).map(w => w.request.sessionID), ["B", "C", "A", "D"])
+  assert.equal(f.maximum(), 4)
+})
+
+test("completed native front cannot let later child arrivals starve same-root background waiters", async t => {
+  const f = fixture(t, { modes: gate(() => "ses_Z_root"),
+    session: session => ({ id: session, ...(session === "ses_A_child" ? { parentID: "ses_Z_root" } : {}) }) })
+  for (let i = 0; i < 5; i++) f.controller.asked(request(id(i), "ses_A_child"))
+  await settle()
+  f.finish(0); await settle()
+  assert.equal(f.controller.views.find(view => view.request.id === id(0))?.status, "complete")
+  // That permission remains native-first. The following child arrivals have no
+  // foreground claim, even though their session sorts before the root session.
+  f.controller.asked(request("older-root", "ses_Z_root"))
+  f.controller.asked(request("next-root", "ses_Z_root"))
+  await settle()
+  for (let i = 0; i < 30; i++) {
+    f.controller.asked(request(id(i + 5), "ses_A_child"))
+    await settle()
+    f.finish(i + 1); await settle()
+    if (i === 0) assert.equal(f.workers.at(-1)?.request.id, "older-root", "oldest background waiter gets the next slot")
+    if (i === 1) assert.equal(f.workers.at(-1)?.request.id, "next-root", "later child arrivals cannot overtake either root waiter")
+  }
+  assert.ok(f.controller.views.some(view => view.request.id === id(0) && !view.resolved))
   assert.equal(f.maximum(), 4)
 })
 

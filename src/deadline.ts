@@ -1,3 +1,5 @@
+import { bindTransportOwnership, transportOwnership } from "./transport-ownership.js"
+
 type State = { end: number; stage: string }
 const states = new WeakMap<AbortSignal, State>()
 
@@ -33,18 +35,24 @@ export async function withDeadline<T>(parent: AbortSignal, ms: number, run: (sig
   if (duration <= 0) throw new DeadlineError(stage)
   const state = { end, stage }
   states.set(signal, state)
+  const ownership = transportOwnership(parent)
+  if (ownership) bindTransportOwnership(signal, ownership)
   const timer = setTimeout(() => controller.abort(new DeadlineError(state.stage)), Math.ceil(duration))
   let abort = () => {}
   try {
+    const worker = Promise.resolve().then(async () => {
+      signal.throwIfAborted()
+      if (state.end <= performance.now()) throw new DeadlineError(state.stage)
+      const value = await run(signal)
+      signal.throwIfAborted()
+      if (state.end <= performance.now()) throw new DeadlineError(state.stage)
+      return value
+    })
+    // Nested stage expiry only settles the visible race. The inherited review
+    // lease still owns its callback and any transport bound to the child signal.
+    ownership?.track(worker)
     return await Promise.race([
-      Promise.resolve().then(async () => {
-        signal.throwIfAborted()
-        if (state.end <= performance.now()) throw new DeadlineError(state.stage)
-        const value = await run(signal)
-        signal.throwIfAborted()
-        if (state.end <= performance.now()) throw new DeadlineError(state.stage)
-        return value
-      }),
+      worker,
       new Promise<never>((_, reject) => {
         abort = () => reject(signal.reason)
         signal.addEventListener("abort", abort, { once: true })

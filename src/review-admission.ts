@@ -1,5 +1,6 @@
 import type { PermissionRequest } from "@opencode-ai/sdk/v2"
 import { withDeadline } from "./deadline.js"
+import { bindTransportOwnership, TransportOwnership, transportOwnership } from "./transport-ownership.js"
 
 /** Per-controller bound on evidence collection and reviewer transport together. */
 export const MAX_REVIEW_EVALUATORS = 4
@@ -12,8 +13,11 @@ export function ownedReview<T>(parent: AbortSignal, ms: number, run: (signal: Ab
   let worker: Promise<T> | undefined, finish!: () => void
   const settled = new Promise<void>(resolve => { finish = resolve })
   const result = withDeadline(parent, ms, signal => {
+    const ownership = new TransportOwnership(transportOwnership(parent))
+    bindTransportOwnership(signal, ownership)
     worker = Promise.resolve().then(() => { signal.throwIfAborted(); return run(signal) })
-    void worker.then(finish, finish)
+    const finalized = () => { void ownership.settled().then(finish, finish) }
+    void worker.then(finalized, finalized)
     return worker
   })
   const undispatched = () => { if (!worker) finish() }
@@ -26,8 +30,9 @@ interface Waiting {
   start(): void
 }
 
-/** Round-robin roots, native session/request code-unit order within each root.
- * Only waiting work is reordered. An abort never frees a running evaluator's
+/** Round-robin roots, native front priority then FIFO background work per root.
+ * Later background arrivals cannot overtake an older waiter. Only waiting work
+ * is reordered. An abort never frees a running evaluator's
  * slot: its actual promise (including finalizers) must settle first. */
 export class ReviewAdmission {
   private roots = new Map<string, Waiting[]>()
@@ -85,13 +90,7 @@ export class ReviewAdmission {
         const [root, queue] = this.roots.entries().next().value!
         const front = this.front(root)
         let first = queue.findIndex(waiting => waiting.request.id === front)
-        if (first < 0) {
-          first = 0
-          for (let i = 1; i < queue.length; i++) {
-            const a = queue[i]!.request, b = queue[first]!.request
-            if (a.sessionID < b.sessionID || (a.sessionID === b.sessionID && a.id < b.id)) first = i
-          }
-        }
+        if (first < 0) first = 0
         const [waiting] = queue.splice(first, 1)
         this.roots.delete(root)
         // Move the served root behind all other waiting roots, even when one

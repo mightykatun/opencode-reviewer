@@ -3,6 +3,7 @@ import type { AssistantMessage, Message, OpencodeClient, Part, PermissionRequest
 import type { DelegationContext, EditContext, Evidence, ProjectLocation, SessionLocation, SkillDefinition, ToolDefinition } from "./types.js"
 import { fileAccess, type FileScope } from "./file-access.js"
 import { DeadlineError, remainingTime, withDeadline } from "./deadline.js"
+import { transportOwnership } from "./transport-ownership.js"
 
 export interface ContextReader {
   session(id: string, signal: AbortSignal): Promise<Session | undefined>
@@ -218,7 +219,11 @@ export async function loadConversationContext(request: PermissionRequest, reader
       contextSignal.throwIfAborted()
       prompt = latestUserPrompt(messages, root.id)
     }
-    await Promise.all([rootPrompt(), delegated()])
+    const branches = [rootPrompt(), delegated()]
+    // Promise.all may reject while its sibling still owns a host read. Keep both
+    // physical branches in the inherited lease without delaying visible failure.
+    for (const branch of branches) transportOwnership(contextSignal)?.track(branch)
+    await Promise.all(branches)
   }
   try { await withDeadline(signal, contextMs(), ancestry, "Conversation context lookup") }
   catch (error) {

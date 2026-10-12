@@ -621,7 +621,7 @@ test("disabled root and all descendants skip enrichment while independent roots 
   await tick()
   controller.reconcile(fresh, controller.revision)
   await tick()
-  assert.deepEqual(calls, ["other", "child", "grandchild", "root"])
+  assert.deepEqual(calls, ["other", "child", "root", "grandchild"], "native front precedes FIFO background work")
   await controller.dispose()
 })
 

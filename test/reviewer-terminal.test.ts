@@ -61,9 +61,10 @@ function finalized(f: ReturnType<typeof fixture>, value?: Usage) {
 }
 
 for (const [name, rejection] of refusals) test(`terminal ${name} clears previews and drains usage at every byte split`, async () => {
-  // Cumulative usage replaces values; even subsequent valid assessment JSON cannot
-  // restore a rejected preview or become a format-correction request.
-  const wire = Buffer.from(preview + rejection + frame({ content: '{"safe":true,"desc":"Must not return"}' }, "stop")
+  // Cumulative usage replaces values. Before a finish, subsequent assessment JSON
+  // cannot restore a rejected preview or become a format-correction request.
+  const finish = name.endsWith("finish") || name === "filter" ? "" : frame({ content: '{"safe":true,"desc":"Must not return"}' }, "stop")
+  const wire = Buffer.from(preview + rejection + finish
     + event({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.01 } }) + usage + usage + done)
   for (let split = 0; split <= wire.length; split++) {
     const f = fixture([wire.subarray(0, split), wire.subarray(split)])
@@ -109,10 +110,44 @@ test("terminal rejection remains pending through usage, DONE and body EOF with i
 
 test("a terminal rejection encountered during retryable draining retains later accounting and disables retry", async () => {
   for (const [, rejection] of refusals) {
-    const f = fixture([Buffer.from(preview + frame({}, "length") + rejection), Buffer.from(usage + done)])
+    const invalidIndex = event({ choices: [{ index: 1, delta: {} }] })
+    const f = fixture([Buffer.from(preview + invalidIndex + rejection), Buffer.from(usage + done)])
     await assert.rejects(review(evidence, config, new AbortController().signal, f.dependencies), /text assessment stream/)
     finalized(f, expected)
     assert.ok(f.progress.slice(2).every(value => !value.preview))
+  }
+})
+
+test("terminal finishes reject subsequent content, reasoning and contradictory finishes before later usage", async () => {
+  const finishes = ["content_filter", "tool_calls", "function_call", "stop", "length"]
+  for (const finish of finishes) {
+    const prefix = finish === "stop" || finish === "length" ? frame({ refusal: "Cannot assess" }) + frame({}, finish) : frame({}, finish)
+    for (const tail of [
+      frame({ content: "Invalid content after finish" }),
+      frame({ content: "Invalid content after finish" }, finish),
+      frame({ reasoning: "Invalid reasoning" }, finish),
+      frame({ reasoning_content: "Invalid reasoning" }, finish),
+      frame({ reasoning_details: [{ text: "Invalid reasoning" }] }, finish),
+      frame({ refusal: "Another refusal" }, finish),
+      frame({ tool_calls: [{ index: 0 }] }, finish),
+      frame({}, finish === "stop" ? "content_filter" : "stop"),
+    ]) for (const earlierUsage of [false, true]) for (const sameChunk of [false, true]) {
+      const before = preview + prefix + (earlierUsage ? usage : "")
+      const after = tail + event({ choices: [], usage: { cost: 99 } }) + done
+      const f = fixture(sameChunk ? [Buffer.from(before + after)] : [Buffer.from(before), Buffer.from(after)])
+      await assert.rejects(review(evidence, config, new AbortController().signal, f.dependencies), /text assessment stream/)
+      finalized(f, earlierUsage ? expected : undefined)
+      assert.ok(f.progress.slice(2).every(value => !value.preview))
+    }
+  }
+})
+
+test("terminal finishes allow empty repeated finish frames and retain well-framed usage", async () => {
+  for (const finish of ["content_filter", "tool_calls", "function_call", "stop"]) {
+    const rejection = finish === "stop" ? frame({ refusal: "Cannot assess" }, finish) : frame({}, finish)
+    const f = fixture([Buffer.from(preview + rejection + frame({ content: "", reasoning: "", reasoning_details: [] }, finish) + usage + done)])
+    await assert.rejects(review(evidence, config, new AbortController().signal, f.dependencies), /text assessment stream/)
+    finalized(f, expected)
   }
 })
 
