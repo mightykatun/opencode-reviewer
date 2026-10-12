@@ -47,6 +47,7 @@ export const runtimeInventory = {
   "smoke-v2-companion-package.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux", "npm-pack", "tar", "source"] }),
   "smoke-v2-lifecycle.mjs": host(["default"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-invocation.mjs": host(["default", "review"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
+  "smoke-v2-review.mjs": host(["advisory", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-sidebar-state.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux"] }),
   "smoke-style-retirement.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux", "bundle", "babel"] }),
   "smoke-approval-recovery.mjs": host(["read-error", "read-timeout", "correction-after", "correction-before", "transport-after", "transport-before"], [], {
@@ -124,6 +125,10 @@ export const runtimeProfiles = {
     ["smoke-v2-lifecycle.mjs"],
     ["smoke-v2-invocation.mjs"],
     ["smoke-v2-invocation.mjs", "review"],
+    ["smoke-v2-review.mjs", "advisory"],
+    ["smoke-v2-review.mjs", "normal"],
+    ["smoke-v2-review.mjs", "fast"],
+    ["smoke-v2-review.mjs", "normal-descendant"],
     ["smoke-v2-root-presentation.mjs", "mouse-on"],
     ["smoke-v2-root-presentation.mjs", "mouse-off"],
     ["smoke-v2-native-queue.mjs"],

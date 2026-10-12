@@ -1,6 +1,6 @@
 # OpenCode V2 migration plan
 
-Status: Phases 1-2 committed and verified; Phase 3 shared-controller/advisory evaluator preparation verified. Production UI and automatic approval remain unconnected and gated.
+Status: Phases 1-2 committed; Phase 3 production advisory, normal and fast positives verified. Negative presentation gates and history/notification migration remain open.
 Prepared: 2026-10-12.
 Revised: 2026-10-12, following the user's requirement that upstream changes are unavailable.
 Baseline: `v1.0.2` (`7cd1e561aea594ab9c7a99a32f30568579098747`), the final
@@ -917,11 +917,66 @@ Preparation tracker:
 - [x] Feed validated native evidence into the existing reviewer transport with one physical admission lease and total deadline.
 - [x] Port built-in shell/edit/directory guidance to native fields, keeping legacy evidence semantics explicitly separate.
 - [x] Verify the advisory evaluator in the installed archive (`runtime-run-xYACm1`, `v2-invocation-kv2Dqr`): one exact native evidence POST and validated assessment, zero permission replies/execution.
-- [ ] Connect native pending/cache reconciliation, mode gating and the stable production UI.
-- [ ] Add native actual-dispatch/confirmed-resolution semantics, distinct from the legacy `Promise<void>` writer.
+- [x] Connect native pending/cache reconciliation, mode gating and the stable production UI.
+- [x] Add native actual-dispatch/confirmed-resolution semantics, distinct from the legacy `Promise<void>` writer.
 - [ ] Pass the production normal/fast presentation and cancellation/retention acceptance cases below.
 
-The controller remains unactivated for V2. The native once transport cannot satisfy
+Active integration work (not yet a completed host gate): `host-runtime.tsx`
+connects scoped location snapshots, native cache invalidation/sync, conversation
+mode and the existing generic controller. `host-queue.ts` selects root-first public
+family/cache order, retaining disabled and deep-descendant blockers. Event revisions
+discard stale snapshots before admission. Companion replacement fails closed rather
+than adopting old evidence. Production UI and native dispatch/confirmation are being
+connected separately; their source changes are not a runtime pass. Adapter-only
+fixtures use an explicit embedding seam so they continue testing readers without
+activating a second controller.
+
+Production integration positives now pass on pinned 2.0.26:
+
+- Advisory rendered report with exact native evidence and no reply/execution:
+  `.runtime/runtime-run-H9rtjc/results.json` (`v2-review-advisory-RGmTzg`).
+- Normal painted countdown, one native once event and one actual shell execution:
+  `.runtime/runtime-run-FCyFY0/results.json` (`v2-review-normal-rgoLdn`).
+- Fast approval before held SSE completion, retained report and once-only execution:
+  `.runtime/runtime-run-XnVh6r/results.json` (`v2-review-fast-YZULlK`).
+
+These are real installed production controller/UI runs, not the earlier evaluator
+seam. Positive approval fixtures explicitly configure mouse capture in isolated
+CLI settings; production never enables it or forces the sidebar. Negative physical-
+presentation/cancellation/descendant cases remain open. The full source aggregate
+passed 1,436 tests with `--test-concurrency=2`; the earlier default-concurrency run
+hit existing tokenizer/history timing assertions, both passing unchanged in focused
+reruns. No timing assertions or discovery budgets were weakened.
+
+Host integration exposed and fixed two concrete boundaries: terminal imports must
+stay lazy in the five-file shared archive, and native Solid queue caches are not
+wire JSON. The build embeds an opaque terminal CJS payload, resolves only public
+host modules lazily and bundles the pinned theme helper. Queue selection now reads
+only public identities/order; mandatory operation evidence still comes from exact
+scoped server snapshots. The failed startup/presentation runs are not counted as
+passes. Fixed source data is base64-encoded to avoid native import rewriting inside
+the embedded payload, not to load private host modules or arbitrary input.
+
+Production negative passes: `normal-mouse-off` (`runtime-run-DySTbz`), real painted
+Cancel click (`runtime-run-3utHb6`), root departure during normal countdown with
+permanent cancellation after return (`runtime-run-PXH2ks`), and Safe fast response
+completion on a descendant route with zero automatic writes (`runtime-run-bIY0W0`).
+Each preserves real native pending requests across negative observation windows.
+The expanded ten-case CI profile passes at `.runtime/runtime-run-6CGQ8b/results.json`.
+All source tests (including unactivated history/accounting preparation) pass 1,460,
+helpers 120 and built-package/npm CLI checks nine. The five-file bundle reproduces
+as SHA-256 `109dacf743f65ca902b059a7c1ddef6db47c5b509bca8a801df2aedf0375285d`.
+Source tests now use two concurrent files, without changing production time budgets.
+The parent-cancellation evidence fixture now explicitly aborts after actual I/O
+acquisition, avoiding a race with the legitimate optional-file sub-budget timeout.
+
+Normal/fast production history-cover integration, native multi-terminal handling,
+additional resize/modal/family permutations, full history/statistics and notification
+host acceptance remain open. A `server.connected` event closes this running
+controller rather than mixing a captured old client with newly connected native
+caches. No reconnect/deletion authority is inferred from a location or epoch.
+
+At preparation commit `9f7f9ec`, the controller remained unactivated for V2. The native once transport cannot satisfy
 the legacy confirmed-void approval contract, as asserted by a compile-time negative
 test. `allowHiddenRoute: false` source tests cover root departure and never-armed
 hidden completion, but are not real native approval/UI proof. The advisory archive

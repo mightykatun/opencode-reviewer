@@ -91,6 +91,7 @@ jobs:
             /scripts/smoke-v2-companion-package.mjs
             /scripts/smoke-v2-lifecycle.mjs
             /scripts/smoke-v2-invocation.mjs
+            /scripts/smoke-v2-review.mjs
             /scripts/smoke-v2-sidebar-state.mjs
             /scripts/smoke-style-retirement.mjs
             /scripts/smoke-approval-recovery.mjs

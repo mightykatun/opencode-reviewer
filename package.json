@@ -48,7 +48,7 @@
     "build": "node scripts/build.mjs",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts",
+    "test": "tsx --test --test-concurrency=2 test/*.test.ts",
     "test:helpers": "node scripts/test-helpers.mjs",
     "test:runtime-cleanup": "node --test test/smoke-runtime.test.mjs",
     "test:runtime-permissions": "node scripts/smoke-permissions.mjs mcp --auto --correction && node scripts/smoke-permissions.mjs mcp-resource --auto && node scripts/smoke-permissions.mjs mcp-resource --auto --resource-whitespace && node scripts/smoke-permissions.mjs custom-bash --auto && node scripts/smoke-permissions.mjs custom-bash --disabled --native-bash-enabled --auto && node scripts/smoke-permissions.mjs external-read --auto --correction && node scripts/smoke-permissions.mjs external-edit --auto && node scripts/smoke-permissions.mjs external-patch --auto --correction && node scripts/smoke-permissions.mjs mcp --held --no-usage --stats && node scripts/smoke-permissions.mjs mcp --correction --missing-usage --stats && node scripts/smoke-permissions.mjs custom --unpriced --stats && node scripts/smoke.mjs stalled-file",

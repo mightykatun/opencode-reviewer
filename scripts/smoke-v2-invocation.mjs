@@ -536,7 +536,7 @@ try {
   await publish(path.join(monitor, "package.json"), { name: "phase2-reader-monitor", type: "module", exports: { "./tui": "./tui.mjs" } })
   await writeFile(path.join(monitor, "tui.mjs"), prelude + `\nimport * as production from ${JSON.stringify(fixture.moduleURL)}\n`
     + 'import {Rpc} from "@opencode/plugin/rpc"\n' + rpcDefinition + "\n" + monitorSetup
-    + '\nexport default {id:"fixture.invocation.monitor",async setup(ctx){return production.withPluginSetup(async(ready,life)=>{assert.equal(ready.role,"cli");life.addCleanup(await monitorSetup(ctx,ready.state))}).setup(ctx)}}\n')
+    + '\nexport default {id:"fixture.invocation.monitor",async setup(ctx){return production.withAdapterSetup(async(ready,life)=>{assert.equal(ready.role,"cli");life.addCleanup(await monitorSetup(ctx,ready.state))}).setup(ctx)}}\n')
   for (const file of [path.join(companion, "index.mjs"), path.join(observedCompanion, "index.mjs"), path.join(observer, "index.mjs"), path.join(monitor, "tui.mjs")])
     execFileSync(process.execPath, ["--check", file], { env, timeout: 10000 })
   const permissions = [{ action: "*", resource: "*", effect: "allow" },

@@ -137,6 +137,38 @@ npm CLI smoke tests nine. Reproducible bundle SHA-256:
 Synthetic physical-presentation/native-queue cases retain their classifications;
 none establishes a connected production reviewer UI or automatic write path.
 
+## Production controller and review panel integration
+
+The V2 CLI now admits location-scoped pending requests through the real companion,
+reconciles native caches, gates conversation modes and renders the production panel
+through stable public app/sidebar slots. Native queue selection uses public root-
+family order and cache identities, not serialization of Solid's reactive objects.
+Evidence retains independently verified full server snapshots. Physical proof uses
+measured sidebar bounds, genuine FRAME/highlighting and hit ownership; no descendant
+route grants approval eligibility. Production never enables mouse or reveals a
+hidden sidebar to obtain proof.
+
+Installed passes: advisory `runtime-run-H9rtjc`, normal `runtime-run-FCyFY0`, fast
+`runtime-run-XnVh6r`. Normal and fast execute the held native shell exactly once;
+fast completes its retained report after early approval. Negative passes cover
+mouse-off (`runtime-run-DySTbz`), real Cancel (`runtime-run-3utHb6`), normal descendant
+departure and canceled root return (`runtime-run-PXH2ks`), and hidden fast completion
+without a write (`runtime-run-bIY0W0`). The ten-case CI profile passes in
+`.runtime/runtime-run-6CGQ8b/results.json`. Earlier failed packaging/presentation
+attempts are not counted as successful verification.
+
+The shared five-file archive embeds its own fixed terminal payload opaquely and
+resolves public host terminal modules lazily. The pinned theme helper is bundled.
+This prevents server-side terminal imports and host rewriting of embedded source
+data, without private host UI imports. Reconnect closes the old controller; a new
+event stream cannot authorize work through an old captured client.
+
+Aggregate checks pass 1,460 source tests, 120 helpers and nine built-package/npm CLI
+checks. Bundle SHA-256: `109dacf743f65ca902b059a7c1ddef6db47c5b509bca8a801df2aedf0375285d`.
+History/statistics components and accounting adapters have source preparation tests
+only; they are not yet activated in production. History-cover, notifications,
+additional native-family/modal/resize and multi-terminal gates remain open.
+
 ## Selected research target
 
 | Component | Exact version |

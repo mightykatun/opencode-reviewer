@@ -7,6 +7,7 @@ import type { PluginDependencies } from "./plugin-dependencies.js"
 import { localStateRoot } from "./local-state.js"
 import { BUILTIN_PROMPTS, loadPrompts } from "./prompts.js"
 import { withDeadline } from "./deadline.js"
+import { loadHostRuntime } from "./host-runtime-loader.js"
 
 export interface CliPluginState {
   config?: Config
@@ -17,7 +18,7 @@ export interface CliPluginState {
   prompts: typeof BUILTIN_PROMPTS
 }
 
-/** Lifecycle shell. Permission admission is connected by the following adapter phase. */
+/** Configuration and handshake precede scope-pinned production admission. */
 export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecycle, dependencies: PluginDependencies): Promise<CliPluginState> {
   const state: CliPluginState = { dependencies, stateRoot: localStateRoot(), prompts: BUILTIN_PROMPTS }
   try { state.config = parseConfig(context.options) }
@@ -48,5 +49,10 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
     lifecycle.signal.throwIfAborted()
     state.companion = readHandshake(response, location)
   } catch { lifecycle.signal.throwIfAborted() }
+  if (state.companion && state.config && !dependencies.adapterOnly) {
+    const { setupHostRuntime } = await loadHostRuntime()
+    lifecycle.signal.throwIfAborted()
+    setupHostRuntime(context, state, lifecycle)
+  }
   return state
 }

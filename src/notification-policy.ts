@@ -1,6 +1,6 @@
 import type { PermissionRequest } from "@opencode-ai/sdk/v2"
 import { uiText } from "./ui-text.js"
-import type { View } from "./controller.js"
+import type { RequestIdentity, View } from "./controller.js"
 import type { NotificationConfig } from "./notification-config.js"
 import { notificationClock, notificationText, type NotificationBackend, type NotificationClock,
   type NotificationHandle, type NotificationKind, type NotificationMessage, type NotificationInteraction } from "./notification-types.js"
@@ -27,7 +27,7 @@ interface Pending {
 
 /** Absence of a countdown is not evidence of manual-only approval. A completed
  * Safe request can still be waiting for its native queue position or rendering. */
-function permissionAttention(view: View, auto: boolean): "attention" | "unsafe" | undefined {
+function permissionAttention(view: View<RequestIdentity>, auto: boolean): "attention" | "unsafe" | undefined {
   if (view.status === "identifying" || view.status === "analyzing") return
   const state = view.autoApproval?.status
   if (state === "countdown" || state === "checking" || state === "allowing") return
@@ -43,11 +43,11 @@ function permissionAttention(view: View, auto: boolean): "attention" | "unsafe" 
 }
 
 /** Event policy owns no host reads, desktop processes, permission writes or models. */
-export class NotificationPolicy {
+export class NotificationPolicy<R extends RequestIdentity = PermissionRequest> {
   private permissions = new Map<string, Pending>()
   private questions = new Map<string, Pending>()
   private seen = new Set<string>()
-  private views = new Map<string, View>()
+  private views = new Map<string, View<R>>()
   private blockers = new Map<string, NotificationInteraction>()
   private banners = new Set<Banner>()
   private active = new Set<Banner>()
@@ -64,7 +64,7 @@ export class NotificationPolicy {
     this.seen.add(key)
     return true
   }
-  permission(request: PermissionRequest, target: Target, fresh: boolean) {
+  permission(request: R, target: Target, fresh: boolean) {
     if (this.stopped || !this.config.notify || !this.remember(`permission:${request.id}`) || !fresh) return
     if (this.permissions.size >= 1024) return
     const entry: Pending = { identity: { kind: "permission", id: request.id }, target, phase: "waiting" }
@@ -217,7 +217,7 @@ export class NotificationPolicy {
     this.withdraw(entry.banner)
     entry.banner = undefined; entry.message = undefined; entry.phase = "waiting"
   }
-  snapshot(views: readonly View[], blockers: ReadonlyMap<string, NotificationInteraction> = this.blockers, healthy = true) {
+  snapshot(views: readonly View<R>[], blockers: ReadonlyMap<string, NotificationInteraction> = this.blockers, healthy = true) {
     if (this.stopped) return
     // Queue identity and outcomes must change together. Otherwise handing off
     // the queue could briefly notify from an older completed/manual snapshot.
@@ -230,14 +230,14 @@ export class NotificationPolicy {
     }
     for (const entry of this.questions.values()) this.select(entry)
   }
-  private update(view: View) {
+  private update(view: View<R>) {
     const entry = this.permissions.get(view.request.id)
     if (!entry) return
     const kind = entry.blocking ? permissionAttention(view, this.auto) : undefined
     if (kind) this.attention(entry, kind)
     else this.wait(entry)
   }
-  approved(request: PermissionRequest, target?: Target) {
+  approved(request: R, target?: Target) {
     if (!this.remember(`approved:${request.id}`)) return
     const current = this.permissions.get(request.id)
     if (current || target) this.show("approved", uiText.notifications.approved, current?.target ?? target!,

@@ -14,6 +14,7 @@ import type { HistoryTarget } from "./history-records.js"
 import type { PresentationCheck } from "./review-presentation.js"
 import { conversationRoot, type ApprovalPresentation, type ApprovalPresentationState } from "./route-approval.js"
 import { ReviewAdmission, type ReviewEvaluation } from "./review-admission.js"
+import type { NativeApprovalTransport } from "./host-permissions.js"
 
 export type AutoApproval = { status: "countdown"; seconds: number } | { status: "checking" | "allowing" | "cancelled" | "failed" | "approved" }
 
@@ -62,8 +63,7 @@ const clock: ApprovalClock = {
 const permissionResolved = Object.freeze({ reason: "permission resolved" })
 const requestChanged = Object.freeze({ reason: "pending request changed" })
 type Options = ReviewOptions & Partial<Pick<Config, "autoApprove" | "fastMode" | "autoApproveDelaySeconds" | "stream">>
-/** Legacy confirmation contract. Native HTTP responses need their own dispatch
- * and confirmation seam before they can be connected to automatic approval. */
+/** Legacy confirmation contract: the void writer's successful return confirms. */
 export interface ApprovalTransport<R extends RequestIdentity = PermissionRequest> {
   list: (signal: AbortSignal) => Promise<R[]>
   once: (request: R, signal: AbortSignal) => Promise<void>
@@ -73,6 +73,21 @@ export interface Approval<R extends RequestIdentity = PermissionRequest> extends
   visibleID(): string | undefined
   /** Distinguish revoked paint from established physical/native-priority loss. */
   presentation?(check?: PresentationCheck): ApprovalPresentation
+}
+
+/** Host closures own admitted snapshots/location/epoch. The controller sees only
+ * reviewer requests, never snapshot envelopes or synthetic legacy requests. */
+export interface NativeApproval<R extends RequestIdentity> extends NativeApprovalTransport<R> {
+  list(signal: AbortSignal): Promise<R[]>
+  visibleID(): string | undefined
+  presentation?(check?: PresentationCheck): ApprovalPresentation
+}
+export interface NativePermissionReply { sessionID: string; requestID: string; decision: string }
+interface NativeConfirmation<R> {
+  request: R
+  reply?: string
+  resolve: (decision: string) => void
+  event: Promise<string>
 }
 
 export type ApprovalFact<R extends RequestIdentity = PermissionRequest> = { type: "dispatched" | "confirmed" | "settled"; request: R; automatic: boolean;
@@ -96,6 +111,8 @@ function legacyCandidate(request: RequestIdentity, options: ReviewOptions): bool
 export interface ControllerOptions<R extends RequestIdentity = PermissionRequest> {
   reviewOptions?: Options
   approval?: Approval<R>
+  /** Distinct from the legacy void writer; do not supply both interfaces. */
+  nativeApproval?: NativeApproval<R>
   clock?: ApprovalClock
   modes?: SessionModeGate
   /** Public host metadata distinguishes native root/direct-child priority from deeper descendants. */
@@ -128,6 +145,8 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
   private reconciliationPublished = false
   private options: Options
   private approval?: Approval<R>
+  private nativeApproval?: NativeApproval<R>
+  private nativeReplies = new Map<string, NativeConfirmation<R>>()
   private time: ApprovalClock
   private modes?: SessionModeGate
   private session?: ControllerOptions<R>["session"]
@@ -138,16 +157,18 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
   private ratingObserver?: ControllerOptions<R>["onRating"]
   private lifecycleObserver?: ReviewLifecycleObserver<R>
   constructor(private evaluate: Evaluate<R>, private changed: (views: View<R>[]) => void,
-    { reviewOptions = { reviewBash: true, reviewEdits: true }, approval, clock: time = clock, modes,
+    { reviewOptions = { reviewBash: true, reviewEdits: true }, approval, nativeApproval, clock: time = clock, modes,
       onApproval, onRating, onLifecycle, session, candidate = legacyCandidate, nativeFront, allowHiddenRoute = true }: ControllerOptions<R> = {}) {
+    if (approval && nativeApproval) throw Error("Conflicting approval transports")
     this.options = reviewOptions
     this.approval = approval
+    this.nativeApproval = nativeApproval
     this.time = time
     this.modes = modes
     this.session = session
     this.candidate = candidate
     this.priority = nativeFront
-    this.allowHiddenRoute = allowHiddenRoute
+    this.allowHiddenRoute = !nativeApproval && allowHiddenRoute
     this.approvalObserver = onApproval
     this.ratingObserver = onRating
     this.lifecycleObserver = onLifecycle
@@ -346,11 +367,12 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
       const root = entry.root ?? (this.session ? conversationRoot(entry.view.request.sessionID, this.session) : entry.view.request.sessionID)
       if (!root || this.nativeFront(root) !== entry.view.request.id) return "lost"
     }
-    const proof = this.approval?.presentation?.(check)
+    const approval = this.nativeApproval ?? this.approval
+    const proof = approval?.presentation?.(check)
     if (proof?.state === "route-hidden") return this.allowHiddenRoute && entry.root === proof.root && proof.id === entry.view.request.id
       && this.nativeFront(proof.root) === proof.id ? "route-hidden" : "lost"
     if (proof) return proof.state !== "lost" && proof.id === entry.view.request.id ? proof.state : "lost"
-    return this.approval?.visibleID() === entry.view.request.id ? "visible" : "lost"
+    return approval?.visibleID() === entry.view.request.id ? "visible" : "lost"
   }
 
   private eligible(entry: Entry<R>) {
@@ -462,7 +484,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
       reviewStage(signal, "Approval verification")
     }
     reviewStage(signal, "Approval verification")
-    const read = this.approval!.list(signal)
+    const read = (this.nativeApproval ?? this.approval)!.list(signal)
     this.approvalRead = read
     try { return await read }
     finally { if (this.approvalRead === read) this.approvalRead = undefined }
@@ -470,7 +492,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
 
   async approveNow(id: string, automatic = false) {
     const entry = this.entries.get(id)
-    if (!entry || !this.approval || entry.approvalRefresh || !(entry.view.autoApproval?.status === "countdown"
+    if (!entry || (!this.approval && !this.nativeApproval) || entry.approvalRefresh || !(entry.view.autoApproval?.status === "countdown"
       || (this.options.fastMode && automatic && entry.view.autoApproval?.status === "checking" && !entry.approvalAbort))) return
     if (!this.approvalEligible(entry)) return
     entry.cancelTimer?.()
@@ -524,19 +546,59 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
             // No observer, publication or await may separate this guard and once.
             // Mark actual invocation first so synchronous native resolution inside
             // the transport keeps the same bounded acknowledgement/fast response.
-            this.manual.set(id, "failed")
-            dispatched = true
-            entry.approvalDispatched = true
-            if (this.options.fastMode && automatic) {
-              entry.fastApproval = "pending"
-              entry.view = { ...entry.view, retained: true }
+            const dispatch = () => {
+              if (dispatched) return false
+              reviewStage(signal, "Approval verification")
+              reviewStage(bounded, "Approval acknowledgement")
+              if (!this.approvalEligible(entry) || verifiedRevision !== this.version) return false
+              if (!isDeepStrictEqual(verified, entry.view.request)) throw requestChanged
+              this.manual.set(id, "failed")
+              dispatched = true
+              entry.approvalDispatched = true
+              if (this.options.fastMode && automatic) {
+                entry.fastApproval = "pending"
+                entry.view = { ...entry.view, retained: true }
+              }
+              this.acknowledgements.set(acknowledgement, { request: entry.view.request, root: entry.root })
+              return true
             }
-            this.acknowledgements.set(acknowledgement, { request: entry.view.request, root: entry.root })
             try {
-              let response: Promise<void>
-              try { response = this.approval!.once(entry.view.request, bounded) }
-              finally { fact("dispatched") } // Even a synchronous throw is an invoked, uncertain write.
-              await response
+              if (this.nativeApproval) {
+                let confirmation: NativeConfirmation<R> | undefined
+                const result = await this.nativeApproval.once(entry.view.request, bounded, () => {
+                  if (!dispatch()) return false
+                  let resolve!: (decision: string) => void
+                  const event = new Promise<string>(done => {
+                    const abort = () => resolve("unavailable")
+                    resolve = decision => { bounded.removeEventListener("abort", abort); done(decision) }
+                    bounded.addEventListener("abort", abort, { once: true })
+                    if (bounded.aborted) abort()
+                  })
+                  confirmation = { request: entry.view.request, resolve, event }
+                  this.nativeReplies.set(id, confirmation)
+                  // No observer/publication between the admission and native call.
+                  queueMicrotask(() => fact("dispatched"))
+                  return true
+                })
+                if (!dispatched) {
+                  if (this.active(entry) && !this.manual.has(id)) {
+                    entry.approvalRefresh = true
+                    entry.view = { ...entry.view, autoApproval: { status: "checking" } }
+                    this.publish()
+                  }
+                  return
+                }
+                if (result.status !== "submitted" || !confirmation) throw Error("Native approval acknowledgement uncertain")
+                // A matching event can arrive inside reply(), before its HTTP ack.
+                // Neither ack alone nor another client's once event confirms us.
+                if (await confirmation.event !== "once") throw Error("Native approval reply did not match once")
+              } else {
+                if (!dispatch()) return
+                let response: Promise<void>
+                try { response = this.approval!.once(entry.view.request, bounded) }
+                finally { fact("dispatched") } // Even a synchronous throw is an invoked, uncertain write.
+                await response
+              }
               if (!bounded.aborted) {
                 confirmed = true
                 if (entry.fastApproval && this.active(entry)) {
@@ -546,8 +608,9 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
                 fact("confirmed")
                 if (entry.fastApproval && this.active(entry)) { this.publish(); this.finishFast(entry) }
               }
-            } finally { fact("settled") }
+            } finally { if (dispatched) fact("settled") }
           }).finally(() => {
+            if (this.nativeApproval && dispatched) this.nativeReplies.delete(id)
             this.acknowledgements.delete(acknowledgement)
             signal.removeEventListener("abort", abort)
           })
@@ -555,7 +618,8 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
           void write.then(() => this.approvalWorkers.delete(write), () => this.approvalWorkers.delete(write))
           await write
           signal.throwIfAborted()
-          if (dispatched) { this.replied(id); return }
+          if (dispatched) { if (!this.nativeApproval) this.replied(id); return }
+          if (entry.approvalRefresh) return
           if (!this.approvalEligible(entry)) return
           entry.view = { ...entry.view, autoApproval: { status: "checking" } }
           this.publish()
@@ -720,8 +784,29 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     if (entry) this.lifecycleFact({ type: "removed", request: entry.view.request, reason: resolved ? reason : "deleted" })
     if (entry) this.clearProgress(entry)
     this.entries.get(id)?.abort.abort(resolved ? permissionResolved : undefined)
-    this.manual.delete(id)
+    if (!this.nativeApproval || !resolved || reason !== "reconciled") this.manual.delete(id)
     if (this.entries.delete(id)) this.publish()
+  }
+
+  /** Feed only events admitted by the connected host's location/epoch boundary.
+   * Session and request ownership must both match; events carry no client ID. */
+  permissionReplied(event: NativePermissionReply) {
+    if (this.stopped || !this.nativeApproval) return
+    const confirmation = this.nativeReplies.get(event.requestID)
+    const entry = this.entries.get(event.requestID)
+    if ((confirmation && confirmation.request.sessionID !== event.sessionID)
+      || (entry && entry.view.request.sessionID !== event.sessionID)) return
+    if (!entry && !confirmation) {
+      // Unknown events still invalidate pending reads, but cannot clear a
+      // tombstone whose exact session ownership is no longer available here.
+      this.version++
+      return
+    }
+    if (confirmation && confirmation.reply === undefined) {
+      confirmation.reply = event.decision
+      confirmation.resolve(event.decision)
+    }
+    this.replied(event.requestID)
   }
 
   private finishFast(entry: Entry<R>) {
@@ -795,6 +880,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     await Promise.allSettled([...this.workers])
     await this.admission.settled()
     await Promise.allSettled([...this.approvalWorkers])
+    this.nativeReplies.clear()
     this.manual.clear()
   }
 }

@@ -72,3 +72,29 @@ test("a snapshot from another connection cannot write, including metadata-only m
   assert.equal((await f.transport.once(withMetadata, signal(), () => true)).status, "unavailable")
   assert.deepEqual(f.state.calls, [])
 })
+
+test("actual-dispatch guard runs only after preparation and immediately before native invocation", async () => {
+  const f = fixture(), snapshot = snapshotRequest(raw(), scope)!, order: string[] = []
+  const pending = f.transport.once(snapshot, signal(), () => {
+    assert.equal(f.state.calls.length, 0)
+    order.push("dispatch")
+    queueMicrotask(() => { assert.equal(f.state.calls.length, 1); order.push("after invocation") })
+    return true
+  })
+  assert.deepEqual(order, [], "async host preparation is not dispatch")
+  assert.equal((await pending).status, "submitted")
+  assert.deepEqual(order, ["dispatch", "after invocation"])
+})
+
+test("failed epoch/source checks and aborted preparation never invoke the dispatch callback", async () => {
+  for (const change of ["epoch", "source", "abort"] as const) {
+    const f = fixture(), controller = new AbortController()
+    const snapshot = snapshotRequest({ ...raw(), ...(change === "source" ? { source: { type: "tool", messageID: "assistant", id: "call" } } : {}) }, scope)!
+    if (change === "epoch") f.state.epoch = "20000000-1000-4000-8000-100000000000"
+    if (change === "abort") controller.abort()
+    let dispatched = 0
+    assert.equal((await f.transport.once(snapshot, controller.signal, () => { dispatched++; return true })).status, "unavailable")
+    assert.equal(dispatched, 0)
+    assert.deepEqual(f.state.calls, [])
+  }
+})

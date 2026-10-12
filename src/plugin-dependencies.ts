@@ -4,6 +4,8 @@ import type { HistoryRenderProbe, NotificationBackendFactory } from "./tui.js"
 
 /** Explicit embedding dependencies; these are never plugin configuration keys. */
 export interface PluginDependencies {
+  /** Adapter-only fixture seam. Not read from user configuration. */
+  adapterOnly?: true
   fileIO?: FileIO
   observer?: DiagnosticObserver
   historyProbe?: HistoryRenderProbe

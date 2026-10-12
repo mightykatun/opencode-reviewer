@@ -42,6 +42,7 @@ function createPlugin(dependencies: PluginDependencies = {}, observe?: PluginSet
 }
 
 export function withPluginSetup(observe: PluginSetupObserver) { return createPlugin({}, observe) }
+export function withAdapterSetup(observe: PluginSetupObserver) { return createPlugin({ adapterOnly: true }, observe) }
 export function withFileAccess(fileIO: FileIO) { return createPlugin({ fileIO }) }
 export function withDiagnostics(observer: DiagnosticObserver) { return createPlugin({ observer }) }
 export function withHistoryRenderProbe(historyProbe: HistoryRenderProbe, observer?: DiagnosticObserver) { return createPlugin({ historyProbe, observer }) }

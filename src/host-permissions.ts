@@ -5,14 +5,19 @@ import { transportOwnership } from "./transport-ownership.js"
 import type { HostRequestSnapshot, HostScope } from "./host-types.js"
 
 export type OnceSubmission = { status: "submitted" | "unavailable" | "uncertain" }
-export interface HostPermissionTransport {
+/** Preparation may await host reads. Call dispatch exactly once, synchronously
+ * immediately before invoking the native once reply, with no intervening work.
+ * The caller proves root presentation/native priority in that callback.
+ * A false return means no write. submitted is only a successful local ack,
+ * never a permission.replied confirmation event. */
+export interface NativeApprovalTransport<R> {
+  once(request: R, signal: AbortSignal, dispatch: () => boolean): Promise<OnceSubmission>
+}
+export interface HostPermissionTransport extends NativeApprovalTransport<HostRequestSnapshot> {
   /** Complete location snapshot, not one session's native queue. */
   listScope(signal: AbortSignal): Promise<readonly HostRequestSnapshot[]>
   list(sessionID: string, signal: AbortSignal): Promise<readonly HostRequestSnapshot[]>
   get(sessionID: string, requestID: string, signal: AbortSignal): Promise<HostRequestSnapshot | undefined>
-  /** The caller must prove root presentation/native priority immediately before
-   * dispatch. Submission is not a permission.replied confirmation event. */
-  once(snapshot: HostRequestSnapshot, signal: AbortSignal, eligible: () => boolean): Promise<OnceSubmission>
 }
 
 /** No rejection, persistent grants, tool execution or rule-writing surface.
@@ -75,7 +80,7 @@ export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): 
       if (!await currentEpoch(signal)) throw Error("Pending permission connection replaced")
       return requests
     },
-    async once(snapshot, signal, eligible) {
+    async once(snapshot, signal, dispatch) {
       const key = JSON.stringify([snapshot.request.sessionID, snapshot.request.id])
       const bound = snapshotRequest(hostRequestWire(snapshot), scope)
       if (!bound || !sameRequest(bound, snapshot) || writes.has(key)) return { status: "unavailable" }
@@ -86,10 +91,15 @@ export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): 
       try {
         signal.throwIfAborted()
         const current = await get(snapshot.request.sessionID, snapshot.request.id, signal)
-        if (!current || !sameRequest(current, snapshot) || !eligible()) return { status: "unavailable" }
+        if (!current || !sameRequest(current, snapshot)) return { status: "unavailable" }
         signal.throwIfAborted()
+        // The callback admits and records actual invocation. Nothing fallible or
+        // asynchronous may separate it from the fixed native reply call.
+        const input = { sessionID: snapshot.request.sessionID, requestID: snapshot.request.id, decision: "once" as const }
+        const requestOptions = options(signal)
+        if (!dispatch()) return { status: "unavailable" }
         dispatched = true
-        await owned(signal, client.permission.reply({ sessionID: snapshot.request.sessionID, requestID: snapshot.request.id, decision: "once" }, options(signal)))
+        await owned(signal, client.permission.reply(input, requestOptions))
         return { status: "submitted" }
       } catch {
         return { status: dispatched ? "uncertain" : "unavailable" }

@@ -19,8 +19,8 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  foundation cases from PR CI, including explicitly classified synthetic probes;
-  these are not full reviewer/controller acceptance. `--profile ci-v1` retains the
+  foundation and production core cases from PR CI, including explicitly classified
+  synthetic probes; these are not full UI/history/notification acceptance. `--profile ci-v1` retains the
   historical V1 selection and needs its separate host/build. `npm run test:runtime` and
   `npm run test:runtime-permissions` retain their original family subsets.
   All runtime commands require a prior build; none implicitly rebuilds.
@@ -57,6 +57,10 @@
   release workflow's active-policy sparse checkout. Runtime results and exact
   invocation logs are under `.runtime/runtime-run-*/`; fixture captures stay in
   their documented `.runtime/` locations. PR CI uploads those synthetic artifacts.
+
+- Source tests use two concurrent files. Keep this bound: timing-sensitive shell
+  discovery and history-watchdog tests should not compete with dozens of workers.
+  Preserve their actual budgets and assertions rather than increasing time limits.
 
 ### Focused host checks (build first)
 

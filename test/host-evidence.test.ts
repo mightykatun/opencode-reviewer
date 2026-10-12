@@ -322,10 +322,16 @@ test("category switches gate before files and remain independent; unknown source
 })
 
 test("parent cancellation rejects rather than becoming an optional source omission and retains I/O ownership", async () => {
-  let settle!: (value: string) => void
+  let settle!: (value: string) => void, started!: () => void
   const pending = new Promise<string>(resolve => { settle = resolve })
-  const access = new FileAccess({ realpath: async () => pending, open: (async () => { throw Error("must not open") }) as FileIO["open"] })
-  await assert.rejects(withDeadline(signal(), 10, s => collectHostEvidence(shell("cat source.py"), options, s, access)), /timed out/)
+  const acquiring = new Promise<void>(resolve => { started = resolve }), parent = new AbortController()
+  const access = new FileAccess({ realpath: async () => { started(); return pending }, open: (async () => { throw Error("must not open") }) as FileIO["open"] })
+  const work = withDeadline(parent.signal, 1000, s => collectHostEvidence(shell("cat source.py"), options, s, access))
+  await acquiring
+  // Cancel the actual parent while I/O is held. A short wall-clock race could
+  // instead expire the optional file sub-budget first, which legitimately omits it.
+  parent.abort(new Error("parent timed out"))
+  await assert.rejects(work, /parent timed out/)
   assert.equal(access.outstanding, 1)
   settle(location.directory)
   await new Promise(resolve => setImmediate(resolve))
