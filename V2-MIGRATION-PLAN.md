@@ -1,6 +1,6 @@
 # OpenCode V2 migration plan
 
-Status: Phase 1 committed (`070e6ad`); Phase 2 typed evidence adapter in progress. Review/approval/UI acceptance gates remain open.
+Status: Phase 1 committed (`070e6ad`), Phase 2 adapter committed (`5ac7438`) with expanded native-context verification. Controller/UI preparation next; review/approval acceptance gates remain open.
 Prepared: 2026-10-12.
 Revised: 2026-10-12, following the user's requirement that upstream changes are unavailable.
 Baseline: `v1.0.2` (`7cd1e561aea594ab9c7a99a32f30568579098747`), the final
@@ -146,7 +146,7 @@ coverage. Implement the following selected scope:
     - [x] Probe minimal lifecycle, native queue, physical coverage, scoped RPC and reply/error contracts.
     - [x] Record findings and scope unresolved mandatory evidence to manual handling.
   - [x] Phase 1: V2 entrypoint, package, lifecycle shell and local state/connection scope.
-  - [ ] Phase 2: typed host boundary and all evidence categories.
+  - [x] Phase 2: W7 scoped host/evidence adapters; actual write confirmation remains a Phase 3 integration gate.
   - [ ] Phase 3: controller, physical presentation and normal/fast visible-root approval.
   - [ ] Phase 4: persistence, accounting, modes and notifications.
   - [ ] Phase 5: fixtures/inventory/CI updated alongside their features.
@@ -814,7 +814,9 @@ Implementation tracker:
 - [x] Verify the server-side `withFileAccess` consumer, disabled collection and copy-only response rejection controls.
 - [x] Add the pinned permission read/once submission boundary with single-flight/uncertain-write guards in source tests.
 - [x] Verify location-wide pending reconciliation separately from per-session permission lists; retain owned native-wire round trips.
-- [ ] Close the remaining Phase 2 acceptance cases and commit verified increments before production controller activation.
+- [x] Verify genuine root intent on initial, nested and resumed native subagent calls without inventing exact delegation.
+- [x] Verify latest attachment-only root behavior and idle interrupted-session move/new invocation location on the installed archive.
+- [x] Commit the adapter increment as `5ac7438`; keep actual approval dispatch/confirmation integration gated in Phase 3.
 
 Phase 2 evidence increment: `src/host-{types,request,context,invocation,reader,evidence,evidence-options,evidence-reader,permissions}.ts`
 and `src/invocation-capture.ts` retain V2 fields without a fabricated V1 permission.
@@ -848,6 +850,20 @@ presentation and native-family queue cases; the old V1 profile is retained as
 checks its SHA-256. The first local aggregate attempt (`runtime-run-Oo99L2`) exceeded
 the caller's 120-second budget during mouse-off; that interrupted attempt is not a
 completed profile pass.
+
+Expanded Phase 2 context pass: `.runtime/runtime-run-DDgdLc/results.json`, detailed
+installed-archive observations `.runtime/v2-invocation-pIQlR0/results.json`.
+The same default fixture now performs thirteen controlled native model calls,
+including actual initial/nested/resumed subagents. Their exact shell sources bind
+independently while each receives the genuine root intent and factual unavailable
+delegation, not a guessed child brief. A latest attachment-only root returns no
+textual intent and cannot reuse an older prompt. After interruption, the same
+session moves to another invocation location; its new relative workdir captures
+the new server file, while retained earlier evidence keeps its original path and
+the old scope fails. No mid-execution move or remote-host coverage is claimed.
+The first expanded attempt (`runtime-run-nCcltF`) used the attachment projection
+instead of the prompt input shape; the fixture was corrected to the public `uri`
+input with a local data URI. Production code was unchanged.
 
 Final increment checks: `npm run check` passes 1,375 source tests and 119 helpers;
 `check:package` verifies the reproducible five-file archive, SHA-256

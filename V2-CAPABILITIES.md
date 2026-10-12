@@ -90,6 +90,20 @@ aggregate hit the unchanged history-bootstrap timing assertion; it was rerun
 without weakening the watchdog or test. Location-wide pending projections retain
 all session requests; a per-session list is never a complete reconciliation.
 
+Expanded native-context pass: `.runtime/runtime-run-DDgdLc/results.json`, detailed
+responses `.runtime/v2-invocation-pIQlR0/results.json`. The default archived-adapter
+fixture now verifies initial/nested/resumed native subagent shell calls against
+the actual root prompt, with null immediate-delegation linkage and factual omission.
+It also verifies attachment-only latest-root omission and the same interrupted
+session moving before its next invocation. The new relative workdir reads the new
+server snapshot; retained earlier evidence stays at the original location, and
+the old scope cannot adopt the new call. Thirteen controlled native model calls
+produce no reviewer POSTs, permission replies or held shell/MCP execution.
+This closes those specific adapter cases, not mid-execution moves or remote service
+coverage. A failed fixture attempt (`runtime-run-nCcltF`) used the wrong attachment
+input shape; changing it to the declared prompt `uri` input required no production
+change.
+
 ## Selected research target
 
 | Component | Exact version |

@@ -95,7 +95,7 @@ function observedFilePlugin(production, nativeIO) {
 async function monitorSetup(ctx) {
   const rpc = ctx.client.rpc(Rpc.define(rpcDefinition()))
   const publisher = observationPublisher(fixture.monitor), abort = new AbortController()
-  const record = { version: ctx.app.version, ready: true, errors: [], asked: [], replied: [], replies: {} }
+  const record = { version: ctx.app.version, ready: true, errors: [], asked: [], replied: [], progress: [], replies: {} }
   const location = { directory: fixture.initial }
   const signal = () => AbortSignal.any([abort.signal, AbortSignal.timeout(15000)])
   const options = () => ({ location, signal: signal() })
@@ -103,6 +103,7 @@ async function monitorSetup(ctx) {
   const off = ctx.data.listen(({ details }) => {
     if (details.type === "permission.asked") record.asked.push(details.data)
     if (details.type === "permission.replied") record.replied.push(details.data)
+    if (details.type === "session.tool.progress") record.progress.push(details.data)
     void save()
   })
   const read = async (request, scope, client = ctx.client) => {
@@ -227,15 +228,20 @@ async function monitorSetup(ctx) {
         seen = command.sequence
         let value
         if (command.type === "status") {
-          value = { plugins: await ctx.client.plugin.list({ location }, options()) }
-          try { value.handshake = await rpc.handshake(location, options()) }
+          const target = command.directory ? { directory: command.directory } : location
+          const at = { location: target, signal: signal() }
+          value = { plugins: await ctx.client.plugin.list({ location: target }, at) }
+          try { value.handshake = await rpc.handshake(target, at) }
           catch (error) { value.error = { type: error.type, message: String(error) } }
         } else if (command.type === "start") {
           value = await ctx.client.session.create({ location, model: { providerID: "fixture", id: "fixture" } }, options())
           ctx.ui.router.navigate({ type: "session", sessionID: value.id })
           await ctx.client.session.prompt({ sessionID: value.id, text: command.text }, options())
         } else if (command.type === "prompt") {
-          value = await ctx.client.session.prompt({ sessionID: command.sessionID, text: command.text }, options())
+          value = await ctx.client.session.prompt({ sessionID: command.sessionID, text: command.text,
+            ...(command.files ? { files: command.files } : {}) }, options())
+        } else if (command.type === "move") {
+          await ctx.client.session.move({ sessionID: command.sessionID, directory: command.directory }, options())
         } else if (command.type === "interrupt") {
           await ctx.client.session.interrupt({ sessionID: command.sessionID, continue: false }, options())
         } else if (command.type === "pending") {
@@ -273,6 +279,7 @@ const env = smokeEnvironment(temp), runtime = await smokeRuntime(temp)
 const host = process.env.OPENCODE_BIN ?? "opencode"
 const project = path.join(temp, "project"), initial = path.join(project, "invocation"), inputs = path.join(initial, "inputs")
 const external = path.join(temp, "external"), targets = [path.join(initial, "target.txt"), path.join(external, "target.txt")]
+const moved = path.join(project, "moved"), movedInputs = path.join(moved, "inputs")
 const observationDirectory = path.join(artifacts, "observations"), monitorPath = path.join(artifacts, "monitor.json")
 const controlPath = path.join(artifacts, "control.json"), cliPath = path.join(temp, "config/opencode/cli.json")
 const fileIOPath = path.join(artifacts, "server-file-io.json")
@@ -346,6 +353,7 @@ const negativeWindow = async (sessionID, expected, label) => {
     assert.deepEqual(pending.toSorted((a, b) => a.id.localeCompare(b.id)), expected.toSorted((a, b) => a.id.localeCompare(b.id)),
       "The complete raw native requests remain unchanged")
     await assert.rejects(readFile(path.join(inputs, "executed")), { code: "ENOENT" })
+    await assert.rejects(readFile(path.join(movedInputs, "executed")), { code: "ENOENT" })
     for (const target of targets) assert.equal(await readFile(target, "utf8"), "PHASE2_BEFORE\n")
     samples++
     await sleep(75)
@@ -399,10 +407,11 @@ const assertDirect = (row, expected, scope, sessionID, prompt) => {
 }
 const limits = [
   "Uses the archived default server companion and production invocation/evidence readers, followed by server-only observed native FileIO; no reviewer/controller, approval, history or presentation integration.",
-  "One local standalone host. No remote workspace, disconnect, moved-session, native cache reconciliation or multi-terminal proof.",
+  "One local standalone host. No remote workspace, disconnect, native cache reconciliation or multi-terminal proof.",
   "Rejection controls mutate copies only at the reader boundary, never the actual pending requests, captured calls or tool executors.",
   "Native Code Mode ambiguity is exercised using two native MCP-dispatch calls under one execute source; it does not establish MCP category evidence readiness.",
-  "No attachment-only root prompt or immediate subagent delegation runtime case; those remain separate tests.",
+  "Initial/nested/resumed native descendants retain root intent and omit unproven exact delegation; no unique native delegation association is claimed.",
+  "An attachment-only root blocks older textual intent. Moving an idle interrupted session tests new invocation location, not a mid-execution move or retained pending write.",
   "Reload tests a continuously pending call whose capture is lost at companion unload. No missed call is reconstructed from durable inputs.",
   "Server FileIO observations prove the archived server consumer calls native fs for shell evidence. This standalone host does not establish remote-filesystem isolation.",
 ]
@@ -493,8 +502,12 @@ try {
     + '\nexport default {id:"fixture.invocation.monitor",setup:monitorSetup}\n')
   for (const file of [path.join(companion, "index.mjs"), path.join(observedCompanion, "index.mjs"), path.join(observer, "index.mjs"), path.join(monitor, "tui.mjs")])
     execFileSync(process.execPath, ["--check", file], { env, timeout: 10000 })
+  const permissions = [{ action: "*", resource: "*", effect: "allow" },
+    ...["shell", "edit", "external_directory", "invocation_*"].map(action => ({ action, resource: "*", effect: "ask" }))]
   const config = { $schema: "https://opencode.ai/config.json", model: "fixture/fixture", update: "disable",
-    plugins: [companion, observer], permissions: ["shell", "edit", "external_directory", "invocation_*"].map(action => ({ action, resource: "*", effect: "ask" })),
+    experimental: { subagent_depth: 3 },
+    agents: { "phase2-child": { mode: "all", model: "fixture/fixture", description: "Isolated native context probe", permissions } },
+    plugins: [companion, observer], permissions,
     mcp: { servers: { invocation: { type: "remote", url: `http://127.0.0.1:${mcpServer.address().port}/mcp` } } },
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: origin + "/v1", apiKey: "synthetic-only" },
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } }
@@ -700,8 +713,113 @@ try {
   evidence.observedFileIO = observedIO
   await negativeWindow(sessionID, ioPending, "injected server FileIO supplies snapshots without permission writes")
   await interrupt(sessionID)
+  const rootIntent = "PHASE2 ROOT INTENT: examine native descendant shell requests; the delegation is optional context, not replacement intent."
+  await command({ type: "prompt", sessionID, text: rootIntent })
+  const parentModel = await modelRequest(6)
+  const subagent = parentModel.tools.find(tool => tool.function.name === "subagent")
+  assert.ok(subagent, "Use the advertised native subagent executor without catalog transforms")
+  const spawn = (id, prompt) => ({ id, name: subagent.function.name,
+    input: { agent: "phase2-child", description: "Native evidence context probe", prompt, model: "fixture/fixture" } })
+  respond(6, [spawn("phase2-native-child", "PHASE2 CHILD BRIEF: inspect fixture.py without approving it.")])
+  const childID = await until("actual native child progress", state => state.cli?.progress.find(event =>
+    event.sessionID === sessionID && event.id === "phase2-native-child" && typeof event.metadata?.sessionID === "string")?.metadata.sessionID)
+  const childModel = await modelRequest(7)
+  assert.ok(childModel.tools.some(tool => tool.function.name === shell.function.name))
+  const childCall = { id: "phase2-child-shell", name: shell.function.name,
+    input: { command: "python3 fixture.py # PHASE2 child", workdir: "inputs" } }
+  respond(7, [childCall, spawn("phase2-native-nested", "PHASE2 NESTED BRIEF: independently inspect the same fixture.")])
+  const nestedID = await until("actual native nested child progress", state => state.cli?.progress.find(event =>
+    event.sessionID === childID && event.id === "phase2-native-nested" && typeof event.metadata?.sessionID === "string")?.metadata.sessionID)
+  const nestedRequest = await modelRequest(8)
+  assert.ok(nestedRequest.tools.some(tool => tool.function.name === shell.function.name))
+  respond(8, [{ id: "phase2-nested-shell", name: shell.function.name,
+    input: { command: "python3 fixture.py # PHASE2 nested", workdir: "inputs" } }])
+  evidence.nativeDescendants = []
+  for (const [descendant, parent] of [[childID, sessionID], [nestedID, childID]]) {
+    const [request] = await pendingCount(descendant, 1)
+    const row = await readEvidence(request, observedScope), value = row.result.value
+    assert.ok(value, "Native descendant direct-call evidence must retain genuine root intent")
+    assert.equal(value.conversation.current.id, descendant)
+    assert.equal(value.conversation.current.parentID, parent)
+    assert.equal(value.conversation.root.id, sessionID)
+    assert.equal(value.conversation.userPrompt, rootIntent)
+    assert.deepEqual(value.conversation.delegation, { sessionID: descendant, parentSessionID: parent, messageID: null, prompt: null })
+    assert.ok(value.conversation.limitations.some(text => text.includes("Exact immediate subagent delegation is unavailable")))
+    assert.equal(value.result.status, "ready")
+    assert.equal(value.result.evidence.userPrompt, rootIntent)
+    assert.equal(value.result.evidence.files[0].contents, await readFile(path.join(inputs, "fixture.py"), "utf8"))
+    evidence.nativeDescendants.push({ descendant, parent, request, row })
+    await negativeWindow(descendant, [request], "native descendant root intent retained with optional delegation omitted")
+  }
+  await interrupt(sessionID)
+  await interrupt(childID)
+  await interrupt(nestedID)
+  const resumeIntent = "PHASE2 ROOT RESUME INTENT: inspect the resumed child's pending shell without substituting its new delegation brief."
+  await command({ type: "prompt", sessionID, text: resumeIntent })
+  await modelRequest(9)
+  const resume = spawn("phase2-native-resume", "PHASE2 RESUMED BRIEF: continue the isolated inspection.")
+  resume.input.sessionID = childID
+  respond(9, [resume])
+  await modelRequest(10)
+  respond(10, [{ id: "phase2-resumed-shell", name: shell.function.name,
+    input: { command: "python3 fixture.py # PHASE2 resumed", workdir: "inputs" } }])
+  const [resumedPending] = await pendingCount(childID, 1)
+  evidence.resumed = await readEvidence(resumedPending, observedScope)
+  assert.equal(evidence.resumed.result.value?.conversation.current.id, childID)
+  assert.equal(evidence.resumed.result.value.conversation.userPrompt, resumeIntent)
+  assert.equal(evidence.resumed.result.value.conversation.delegation.prompt, null)
+  assert.equal(evidence.resumed.result.value.result.status, "ready")
+  await negativeWindow(childID, [resumedPending], "resumed native child uses new genuine root intent and omitted delegation")
+  await interrupt(sessionID)
+  await interrupt(childID)
+
+  await command({ type: "prompt", sessionID, text: "", files: [{
+    uri: "data:text/plain;base64," + Buffer.from("PHASE2 attachment-only context\n").toString("base64"), name: "fixture-context.txt" }] })
+  await modelRequest(11)
+  respond(11, [{ id: "phase2-attachment-only", name: shell.function.name,
+    input: { command: "python3 fixture.py # PHASE2 attachment only", workdir: "inputs" } }])
+  const [attachmentPending] = await pendingCount(sessionID, 1)
+  evidence.attachmentOnly = await readEvidence(attachmentPending, observedScope)
+  assert.ok(evidence.attachmentOnly.result.value)
+  assert.equal(evidence.attachmentOnly.result.value.conversation.userPrompt, null)
+  assert.equal(evidence.attachmentOnly.result.value.result.evidence.userPrompt, null)
+  assert.ok(evidence.attachmentOnly.result.value.conversation.limitations.some(text => text.includes("no older prompt was substituted")))
+  await negativeWindow(sessionID, [attachmentPending], "latest attachment-only root cannot reuse older textual intent")
+  await interrupt(sessionID)
+
+  // Restore the default archived installation before creating another location,
+  // so no concurrent server FileIO observers share a publication destination.
+  await publish(serverPath, config)
+  await until("default companion restored", async () => {
+    const io = await readObservation(fileIOPath)
+    const status = await command({ type: "status" })
+    return io.cleaned && status.handshake && status.handshake.epoch !== observedScope.epoch
+  })
+  await mkdir(movedInputs, { recursive: true })
+  await writeFile(path.join(movedInputs, "fixture.py"), 'with open("executed", "a") as output:\n    output.write("PHASE2 MOVED UNEXPECTED EXECUTION\\n")\n')
+  await command({ type: "move", sessionID, directory: moved })
+  const relocated = await until("moved location companion", async () => {
+    const status = await command({ type: "status", directory: moved })
+    return status.handshake?.location.directory === moved && status.handshake
+  })
+  const relocatedScope = { location: relocated.location, epoch: relocated.epoch }
+  await command({ type: "prompt", sessionID, text: "PHASE2 MOVED INTENT: inspect the new literal working directory." })
+  await modelRequest(12)
+  respond(12, [{ id: "phase2-moved-shell", name: shell.function.name,
+    input: { command: "python3 fixture.py # PHASE2 moved", workdir: "inputs" } }])
+  const [movedPending] = await pendingCount(sessionID, 1)
+  evidence.moved = await readEvidence(movedPending, relocatedScope)
+  assert.equal(evidence.moved.result.value?.invocation.location.directory, moved)
+  assert.equal(evidence.moved.result.value.result.evidence.cwd, movedInputs)
+  assert.equal(evidence.moved.result.value.result.evidence.files[0].contents, await readFile(path.join(movedInputs, "fixture.py"), "utf8"))
+  assert.notEqual(evidence.moved.result.value.result.evidence.files[0].contents, evidence.shellEvidence[0].result.value.result.evidence.files[0].contents)
+  assert.equal(evidence.shellEvidence[0].result.value.invocation.location.directory, initial)
+  evidence.movedOldScope = await readEvidence(movedPending, observedScope)
+  assert.equal(evidence.movedOldScope.result.error?.type, "scope", "An old location/epoch cannot adopt the moved invocation")
+  await negativeWindow(sessionID, [movedPending], "moved invocation uses new server files without execution")
+  await interrupt(sessionID)
   await negativeWindow(sessionID, [], "all interrupted without replies or execution")
-  assert.equal(calls.length, 6, "Only the six explicitly controlled native model requests were dispatched")
+  assert.equal(calls.length, 13, "Only the thirteen explicitly controlled native model requests were dispatched")
   await publish(cliPath, { ...cli, plugins: ["*", "-fixture.invocation.monitor"] })
   const cleaned = await until("monitor cleanup", state => state.cli?.cleaned && state.cli)
   await sleep(300)
