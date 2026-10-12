@@ -1,6 +1,6 @@
 # V2 capability verification
 
-Status: W1 local-host probes verified; visible-root V2 automation approved.
+Status: native Code Mode, trusted native-tool installation and visible-root V2 automation approved.
 Production migration has not started. Section 3A of the migration plan supersedes
 the historical upstream recommendation below; remaining phase 0 gates are open.
 
@@ -156,12 +156,17 @@ snapshot: the fixture server deliberately accepts old inputs after catalog refre
 Plugin unload/reload is distinct from registration disposal. No installed reviewer
 archive, complete capability matrix or live-provider behavior is claimed.
 
-W1's local host probes are verified. Representative provider/catalog acceptance is
-an explicit blocking release gate if direct presentation is adopted, as specified
-in plan section 3A.3. It is not a passed test. Adoption remains an open decision.
-The user's subsequent
-direction is goal-first V2 adaptation, recorded in the migration plan; it is not
-recorded as acceptance of particular installation restrictions.
+W1's local host probes are verified. The user subsequently selected **native Code
+Mode**, so the investigated direct-tool profile will not ship. Its conditional
+live-provider release gate is not applicable to that selected presentation, and
+no live-provider direct-profile acceptance is claimed. Ambiguous nested calls
+remain manual; Code Mode search and native presentation remain available.
+
+The user also accepted the explicit assumption that installed plugins preserve
+native tool meanings, do not replace/alias native executors and do not rewrite
+commands after evidence capture. This is not host-issued provenance. Additional
+MCP mapping/skill snapshot restrictions and remaining lifecycle gates still need
+their own disposition. See the plan's execution steering and section 3A.8.
 
 ### W2 executed mapping boundaries
 

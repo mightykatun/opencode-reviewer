@@ -132,6 +132,19 @@
   exception; fast mode gains no history-cover exception. Do not force mouse/sidebar
   visibility. The V2 presentation test gate remains open until actually verified.
 
+### Approved V2 migration evidence direction
+
+- The user selected native Code Mode on 2026-10-12. Do not ship the investigated
+  direct-tool transform or remove native Code Mode search. Exact direct-call
+  linkage is usable; ambiguous nested calls stay manual. Never recover their
+  identity by arrival order, JavaScript parsing or forced serialization.
+- The user accepted a trusted native-tool installation: installed plugins preserve
+  native tool meanings, do not replace/alias native executors, and do not rewrite
+  commands after evidence capture. This is an installation assumption, not public
+  host provenance or an enforceable registry seal. Preserve exact scope, source,
+  native-priority, visible-root and once-only write checks. Additional skill/MCP
+  snapshot/mapping assumptions require their own disposition in the migration plan.
+
 ### Current V1 implementation
 
 - Start at `src/tui.tsx`: `controller.ts` owns lifecycle/visibility, `session-mode.ts`

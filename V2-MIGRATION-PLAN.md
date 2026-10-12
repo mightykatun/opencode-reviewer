@@ -1,6 +1,6 @@
 # OpenCode V2 migration plan
 
-Status: W1 local-host probes verified; visible-root V2 automation approved; remaining phase 0 gates open.
+Status: visible-root automation, trusted native-tool installation and native Code Mode selected; remaining phase 0 evidence/lifecycle gates open.
 Prepared: 2026-10-12.
 Revised: 2026-10-12, following the user's requirement that upstream changes are unavailable.
 Baseline: `v1.0.2` (`7cd1e561aea594ab9c7a99a32f30568579098747`), the final
@@ -27,7 +27,8 @@ Current execution tasks (resumed 2026-10-12; completed reading gates retained):
 - [ ] W2: establish controlled-profile restrictions and obtain trust-model decision.
   - [x] Verify MCP normalization collision, metadata-identical replacement and native-looking alias execution.
   - [x] Verify retained mappings across public registration reload/disposal; reuse the recorded shadow-shell negative control.
-  - [ ] Reconcile the remaining installation trust assumptions with the user.
+  - [x] User accepted the native-tool installation trust assumption.
+  - [ ] Resolve any additional MCP mapping/skill snapshot restrictions separately.
 - [ ] W3: prove location/effective evidence and obtain per-kind scope decisions.
   - [x] Probe concurrent late shell rewrites, skill catalog reload and continuously observed moved-session location.
   - [ ] Resolve immutable final evidence, reconnect/reload recovery and category scope.
@@ -65,6 +66,16 @@ to ship every investigated workaround.
 On 2026-10-12 the user explicitly selected **"require visible-root presentation"**.
 Section 3A.6 records the approved V2 replacement for F34's hidden-route approval
 exception. This closes the route-choice decision, not the presentation test gate.
+
+The user subsequently selected **"Accept trusted installation"** and **"Keep native
+Code Mode"** on 2026-10-12. V2 may assume installed plugins preserve native tool
+meanings and do not replace native executors, alias them to different executors,
+or rewrite commands after evidence capture. This is an explicit installation
+contract, not a host-enforced guarantee. Exact linkage and visible-root checks remain
+mandatory; ambiguously linked nested calls remain manual. Do not ship the investigated
+direct-tool transform or remove Code Mode search as part of the selected design.
+Additional restrictions, such as skill-catalog immutability, have not been approved
+merely by this narrower question.
 
 - [x] 1. Read the complete plan and existing completion state.
 - [x] 2. Read referenced implementation, fixture, package and workflow files.
@@ -306,7 +317,7 @@ unsupported transform or silently classify an unknown request as native.
 - [x] Reuse `shadow-shell` as a negative control. It must either be excluded by a
   genuinely enforced profile boundary or demonstrate the profile's documented
   reliance on audited configuration. A name/schema comparison is not a passing fix.
-- [ ] Decide whether the user accepts the controlled-profile trust model.
+- [x] Decide whether the user accepts the native-tool controlled-installation trust model.
 - [ ] If not, retain this as an unresolved mandatory gap for affected categories;
   propose an explicit reduced category contract rather than inventing provenance.
 
@@ -319,8 +330,9 @@ effective entry; replacing its executor leaves all public descriptive fields
 identical. A same-object `read` alias executes a custom target while the durable
 tool name remains `read`. Retained requests execute their old mappings after
 registration reload/disposal. The existing `shadow-shell` observation remains a
-negative control, not excluded by any newly enforced boundary. The trust decision
-and plugin-unload coverage remain open; no pending permissions were used by W2.
+negative control, not excluded by any newly enforced boundary. The native-tool
+trust decision is now approved; additional mapping assumptions and plugin-unload
+coverage remain open. No pending permissions were used by W2.
 
 ### 3A.3 Blocker 2: Code Mode nested-call identity
 
@@ -371,10 +383,13 @@ the W1 investigation increment only; the unchecked live-provider test above and 
 direct-profile adoption decision remain open. If W7 chooses native presentation,
 record that disposition instead of treating untested direct presentation as supported.
 
-**Decision:** accept direct-tool presentation as the V1-like compatibility route,
-or retain native Code Mode and explicitly restrict review of ambiguously linked
-calls. Do not parse outer JavaScript, match by arrival order, or serialize tools
-as an implicit workaround. Any batching facility must receive the same analysis.
+**Decision (2026-10-12): keep native Code Mode.** Do not ship the investigated
+direct-tool profile. Direct native calls retain exact source correlation; ambiguous
+nested calls remain manual. Preserve Code Mode search and tool presentation.
+Do not parse outer JavaScript, match by arrival order, or serialize tools as an
+implicit workaround. Any batching facility must receive the same analysis. The
+direct-profile live-provider gate above is not applicable to the selected native
+presentation; its synthetic fixture results remain research, not a shipping claim.
 
 ### 3A.4 Blocker 3: exact immediate delegation
 
@@ -577,8 +592,8 @@ record exact artifacts. Proposed new fixture names are not existing commands.
 
 Decision record (checked only when explicitly supplied):
 
-- [ ] Accept opt-in direct-tool presentation and its model-context cost.
-- [ ] Accept a controlled-installation provenance/evidence trust model, if needed.
+- [x] Resolve tool presentation: keep native Code Mode; ambiguous nested calls remain manual (2026-10-12).
+- [x] Accept native-tool installation trust: no replacements/aliases or post-capture command rewrites (2026-10-12).
 - [ ] Approve any executor instrumentation, packaging exception or additional setup.
 - [ ] Accept precise delegation omissions/multiple-input representation, if needed.
 - [x] Choose the descendant-route behavior: require visible-root presentation (2026-10-12).
