@@ -1,8 +1,8 @@
 # V2 capability verification
 
-Status: Phase 0 blocked on public-API gaps, with real-host reproductions.
-Production migration has not started. Guidance is required before changing scope
-or beginning upstream host work.
+Status: Phase 0 stock-host investigation resumed at W1. Production migration has
+not started. Section 3A of the migration plan supersedes the historical upstream
+recommendation below; behavior decisions still require explicit approval.
 
 ## Selected research target
 
@@ -31,6 +31,175 @@ Released plugin declarations are under
 `/tmp/opencode/f32-v2-2.0.26/plugin/package/dist`.
 
 ## Executed public-contract probe
+
+### Reproducible host selection for the resumed probes
+
+PATH changed to `opencode v2.0.27` before this continuation. New probes explicitly
+use the published, unmodified 2.0.26 binary installed separately:
+
+```sh
+npm install --prefix /tmp/opencode/reviewer-host-2.0.26 --ignore-scripts --no-audit --no-fund --save-exact @opencode/cli-linux-x64@2.0.26
+```
+
+- Binary: `/tmp/opencode/reviewer-host-2.0.26/node_modules/@opencode/cli-linux-x64/bin/opencode`.
+- Version output: `opencode v2.0.26`.
+- SHA-256: `d9123b9bcdb0a31f7ab9fe9812b58a9dc1768ad6d97e7b276dff1181813218c9`,
+  identical to the earlier research binary.
+- Published platform package integrity:
+  `sha512-UIA2/1Ik8HaN54C4xp7H+OHgRfq995XUixrX+kLmFs8EPn1fAcmn3OoiN+3c3Vc3jEV/LHmj0Cy1SL6nW4wdGw==`.
+
+### W1 catalog-size and synthetic provider-limit probe
+
+```sh
+OPENCODE_BIN=/tmp/opencode/reviewer-host-2.0.26/node_modules/@opencode/cli-linux-x64/bin/opencode node scripts/test-runtime.mjs smoke-v2-catalog.mjs
+```
+
+Final run: `.runtime/runtime-run-LiZ15e/results.json`.
+Captures, actual model requests and metrics: `.runtime/v2-catalog-Ohn1XO/`.
+The preceding catalog-only run also passed at `runtime-run-wHkNkT`.
+
+| Outgoing presentation | Tools | Tool-definition bytes | System-message bytes | Result |
+| --- | ---: | ---: | ---: | --- |
+| Stock native catalog | 12 | 13,169 | 7,774 | Local model response accepted |
+| Direct profile | 16 | 15,358 | 7,774 | Local model response accepted |
+| Direct plus 129 synthetic shell-schema tools | 145 | 150,827 | 7,774 | Injected HTTP 400, execution failed, no retry |
+
+The stock-catalog direct presentation adds 2,189 tool-definition bytes (16.6%).
+These are measured UTF-8 JSON bytes, not token counts or billing estimates. The
+cardinality additions reuse the actual native shell input schema but are synthetic;
+they do not represent a user's MCP inventory. The endpoint's 128-tool maximum is
+an injected provider contract. No live provider schema/count acceptance, model
+quality, pricing or user-specific catalog limit has been established.
+
+The fixture asserts unchanged schemas/descriptions/compatible options, removes
+`pinned` and generated `execute`, receives the actual outgoing requests, observes
+the terminal failure, and holds a 2.5-second no-tool/no-permission/no-retry window.
+It verifies CLI cleanup stops publications. It also bundles the actual production
+`review()` and `parseConfig()` into the isolated CLI and exercises streaming and
+nonstreaming HTTP against a separate local reviewer endpoint while the profile is
+active. Both reports validate; the two reviewer requests have no main-model tools
+and do not enter the host's context hooks. This is transport integration, not a
+production V2 permission adapter or UI. Executor/error equivalence is tested by
+the separate Effect profile below; the catalog-size fixture uses a Promise
+transform only for presentation measurements and executes no transformed tool.
+
+Failures retained as evidence:
+
+- `runtime-run-l5BNOD`: startup `--prompt` selected the default Zen model despite
+  the fixture model config. New fixtures explicitly create sessions with the public
+  client's `{ providerID: "fixture", id: "fixture" }` model reference and reject
+  non-loopback model HTTP requests. No real provider credentials were supplied.
+- `runtime-run-2D3Xwt`: V2's root CLI rejects `--model`; the explicit client model
+  selection above replaces that invalid attempted fixture fix.
+- `runtime-run-ZJ7nIv`: a setup-time catalog read precedes bundled browser-tool
+  registration. The comparison now snapshots the catalog at activation.
+- `runtime-run-goHt5i`: a setup-time profile transform precedes those later browser
+  registrations, leaving their Code Mode options intact. Activating after initial
+  model dispatch places this fixture transform after initialized registrations.
+  This is not an installation-wide final-registration guarantee. Later registrations
+  remain part of the W2 audited-profile gate.
+
+### W1 direct identity, snapshots, refresh and error equivalence
+
+```sh
+OPENCODE_BIN=/tmp/opencode/reviewer-host-2.0.26/node_modules/@opencode/cli-linux-x64/bin/opencode node scripts/test-runtime.mjs smoke-v2-direct-tools.mjs
+```
+
+Final pass: `.runtime/runtime-run-0zBqXY/results.json`.
+Captures and full synthetic protocol observations:
+`.runtime/v2-direct-tools-tmBhob/results.json`.
+The preceding identity/error-only run passed at `runtime-run-7434Yi`.
+
+Verified on the stock host:
+
+- Public Effect `tool.transform` changes only options, preserves the committed
+  executor/input/output identities and removes incompatible `pinned` options.
+  Context hooks remove generated `execute` without modifying other definitions.
+- A real model request retained across profile activation/reload runs its old
+  Code Mode executors. Two nested calls still share the outer source ID, explicitly
+  remaining ambiguous. New direct calls have distinct content-item IDs.
+- Two same-tool direct calls start concurrently with different inputs and identical
+  permission scopes. A fixture barrier publishes B before A, reversing model order.
+  Exact permission source IDs select the correct running assistant arguments;
+  no arrival-order join is used. Directory and shell stages have four separate IDs.
+- The 1.5-second pending window proves zero replies, shell writes or MCP execution.
+  The original stages and MCP call then require five distinct `once` replies and
+  produce exactly two fixture-local shell writes.
+- A real MCP `tools/list_changed` SSE notification triggers a fresh `tools/list`,
+  changes an existing schema and adds a tool. The profile replays over both
+  namespaced entries. Retained old request/catalog values remain unchanged; future
+  requests receive the changed schema and new direct tool. Two refreshed calls and
+  a retained MCP call after profile disposal bring the total to eight once replies.
+- A typed custom failure and actual native missing-file read are executed before
+  and after the Effect profile. Their typed `execute.after` errors, durable errors,
+  metadata and subsequent model-facing results compare equal.
+- A direct model-request snapshot retained across profile/custom registration
+  disposal still executes its captured version. Native interruption removes the
+  held permission and stops the fixture executor without a third shell write.
+- Native `glob`, `grep` and `opencode_models` remain directly callable and return
+  independently asserted results. Code Mode catalog `search()` is deliberately
+  unavailable while `execute` is removed. After disposal, actual Code Mode search
+  finds the refreshed MCP tool and direct MCP presentation disappears.
+- CLI disable drains its owned work and stops further publications.
+
+The Promise-profile prototype failed at `runtime-run-0iKV8m` because the expected
+typed failure hook was absent. Pinned `packages/plugin/src/promise/adapter.ts:491-502,
+624-631` wraps even options-only updates through `Effect.promise`, where a rejection
+is a defect. Switching the compatibility transform and typed controls to the
+**public Effect API** fixed that probe without weakening its error assertions.
+This is an important implementation boundary for any future profile.
+
+Limitations: these custom staged calls intentionally delegate to a known native
+shell executor inside the fixture; this does not prove native provenance or final
+effective shell arguments. Remote MCP behavior is not frozen by a retained host
+snapshot: the fixture server deliberately accepts old inputs after catalog refresh.
+Plugin unload/reload is distinct from registration disposal. No installed reviewer
+archive, complete capability matrix or live-provider behavior is claimed.
+
+W1's local host probes are verified. Its representative provider/catalog acceptance
+and adoption of direct presentation remain open dispositions. The user's subsequent
+direction is goal-first V2 adaptation, recorded in the migration plan; it is not
+recorded as acceptance of particular installation restrictions.
+
+### W2 preparation: public enforcement boundaries
+
+Source inspection at the pinned commit establishes the following inventory. It
+does not close W2's remaining host probes or the trust-model decision.
+
+| Area | Observable/enforceable by the reviewer | Remaining assumption or gap |
+| --- | --- | --- |
+| Tool registry | Exact surviving IDs, schemas/options and known mismatches | No owner/history/immutable registration token or registry seal; later additions replace IDs |
+| Native tools | Most core tools are already direct; five management/resource tools use Code Mode | Defaults are not provenance; `shadow-shell` remains a negative control |
+| MCP names | Server-name normalization collisions can be detected | Raw tool-pair collisions and overwritten registrations need an audited inventory |
+| Aliases | Request-local context definitions can be observed | Same-object context aliases are resolved after before-hooks; later hooks are not sealed |
+| Plugin/config changes | Public plugin/config/MCP change events can invalidate reviewer eligibility | Not a pre-change veto or atomic execution fence; unchanged inventory is not unchanged execution |
+| Shell inputs | Before-hooks expose declared input and source IDs | Final shell hook can change command/cwd but exposes no call IDs |
+
+Native defaults: `shell`, `skill`, `subagent`, `read`, `glob`, `grep`, `question`,
+`webfetch`, `websearch`, `edit`, `write`, `patch` are direct. The three edit tools
+also declare `permission: "edit"`. `opencode_session_rename`,
+`opencode_session_move`, `opencode_models`, `opencode_list_mcp_resources`, and
+`opencode_read_mcp_resource` use Code Mode; session move is pinned. The model-specific
+patch context hook also changes advertised edit/write/patch availability.
+
+MCP effective IDs normalize each server/tool segment to `[A-Za-z0-9_-]`, replacing
+other characters with `_`, then concatenate with `_`. `a.b/read` and `a_b/read`
+collide; so do `a_b/c` and `a/b_c`. A custom registration can use the same final ID.
+Public server inventory plus the surviving tool catalog cannot recover overwritten
+raw registrations.
+
+Pinned source references: `packages/core/src/tool.ts:177-204,225-284`,
+`tool/runtime.ts:274-279`, `tool/mcp.ts:16-17,40-68,124-142`,
+`session/model-request.ts:246-274`, `plugin/hooks.ts:69-94`,
+`plugin/tool-input-repair.ts:21-35`, `shell.ts:263-278`,
+`packages/schema/src/plugin.ts:10-49`, and public declarations
+`dist/promise/tool.d.ts`, `mcp.d.ts`, `shell.d.ts`.
+
+Audited restrictions would therefore be trust assumptions, not authenticated native
+origin. A V2 permission-first design should not claim native/custom provenance just
+from the requested action, tool name or a matching schema.
+
+### Earlier direct-shell probe
 
 ```sh
 node scripts/test-runtime.mjs smoke-v2-contracts.mjs
@@ -136,6 +305,12 @@ not the host's committed preference plus local visibility override. These contro
 do not establish an atomic replacement for the V1 guard.
 
 ## Checks
+
+Continuation checks: `npm run test:helpers` passed all **118** tests after both W1
+fixtures and release-policy inputs were added. `node --check` passed for both new
+scripts, and `git diff --check` was clean. Exact host results are recorded above.
+These are Phase-0 fixture changes; the production V1 test/build/package results
+remain their earlier evidence rather than being relabeled as V2 verification.
 
 - `node --test test/runtime-inventory.test.mjs`: 7 passed.
 - `npm run test:helpers`: 118 passed, including active-policy sparse dependency

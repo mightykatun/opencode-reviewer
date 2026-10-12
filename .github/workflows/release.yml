@@ -81,6 +81,8 @@ jobs:
             /scripts/smoke-mouse-proof.mjs
             /scripts/smoke-v2-mouse-proof.mjs
             /scripts/smoke-v2-contracts.mjs
+            /scripts/smoke-v2-catalog.mjs
+            /scripts/smoke-v2-direct-tools.mjs
             /scripts/smoke-v2-sidebar-state.mjs
             /scripts/smoke-style-retirement.mjs
             /scripts/smoke-approval-recovery.mjs
