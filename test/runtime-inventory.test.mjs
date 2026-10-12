@@ -49,6 +49,7 @@ test("rules reject unsupported scenario/flag combinations instead of promising a
     ["smoke.mjs", "edit", "--network-retry"], ["smoke.mjs", "auto-shell", "--reminders"],
     ["smoke-permissions.mjs", "external-edit", "--resource-whitespace"],
     ["smoke-permissions.mjs", "mcp", "--missing-usage"],
+    ["smoke-permissions.mjs", "mcp", "--approval-sound"], ["smoke.mjs", "auto-scroll-success", "--approval-sound"],
     ["smoke-streaming.mjs", "cancel", "--stats"],
     ["smoke-history-render.mjs", "notification"],
     ["smoke-notification-events.mjs", "question", "--queue"],
@@ -90,12 +91,15 @@ test("listing and all profile planning work with no host, fixture directory, or 
 
 test("smoke descriptors retain all old scenarios and independent stage expectations", async () => {
   assert.deepEqual(Object.keys(smokeScenarios).sort(), ["correction", "cancel", "error", "stalled-file", "external", "edit", "write", "patch", "edit-cancel",
-    "edit-config-error", "edit-disabled", "bash-disabled", "external-disabled", "auto-shell", "auto-cancel", "auto-scroll", "auto-edit", "auto-external",
+    "edit-config-error", "edit-disabled", "bash-disabled", "external-disabled", "auto-shell", "auto-cancel", "auto-scroll", "auto-scroll-success", "auto-edit", "auto-external",
     "auto-immediate", "auto-zero", "auto-unsafe", "auto-error", "auto-hide", "auto-dialog", "auto-fullscreen", "auto-narrow", "auto-manual", "auto-initially-hidden"].sort())
   assert.deepEqual(smokeScenario("external-disabled").plan.reviewKinds, [])
   assert.deepEqual(smokeScenario("auto-external").plan.stages.map(s => [s.kind, s.action]), [["external-directory", "countdown"], ["shell", "countdown"]])
   assert.equal(smokeScenario("write").knownPricing, false)
   assert.equal(smokeScenario("auto-scroll").autoDelay, 25)
+  assert.equal(smokeScenario("auto-scroll").cancel, true)
+  assert.equal(smokeScenario("auto-scroll-success").cancel, undefined)
+  assert.equal(runtimePlan("smoke.mjs", ["auto-scroll-success", "--notifications", "--approval-sound"]).classification, "production-host")
   assert.equal(smokeScenario("auto-zero").autoDelay, 0)
   const seen = []
   for (const name of ["edit", "auto-shell", "correction", "auto-scroll"]) await runSmokeFamily(smokeScenario(name), {

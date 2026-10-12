@@ -6,18 +6,19 @@ import { mkdir, writeFile } from "node:fs/promises"
 import { DatabaseSync } from "node:sqlite"
 import path from "node:path"
 import { runtimeArguments } from "./runtime-inventory.mjs"
+import { isolatedStateDirectory } from "./smoke-runtime.mjs"
 
 const { scenario } = runtimeArguments("smoke-history-lifecycle.mjs")
 const expected = { "auto-shell": "auto", "auto-immediate": "manual", "auto-manual": undefined, "auto-cancel": "rejected" }
 assert.ok(Object.hasOwn(expected, scenario))
 const root = path.resolve(import.meta.dirname, "..")
 let temp = process.argv[3]
+let output = ""
 if (!temp) {
-  const output = execFileSync(process.execPath, ["scripts/smoke.mjs", scenario], { cwd: root, encoding: "utf8", timeout: 120000 })
+  output = execFileSync(process.execPath, ["scripts/smoke.mjs", scenario], { cwd: root, encoding: "utf8", timeout: 120000 })
   process.stdout.write(output)
-  temp = output.match(/Isolated files: (\/tmp\/opencode-reviewer-[^\s]+)/)?.[1]
 }
-assert.ok(temp && path.isAbsolute(temp), "fixture must identify its isolated state")
+temp = isolatedStateDirectory(output, temp)
 const db = new DatabaseSync(path.join(temp, "state/opencode/opencode-reviewer/history-v1.sqlite"), { readOnly: true })
 try {
   const totals = JSON.parse(db.prepare("SELECT totals FROM meta WHERE id=1").get().totals)

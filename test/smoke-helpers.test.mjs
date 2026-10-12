@@ -3,15 +3,43 @@ import assert from "node:assert/strict"
 import { mkdtemp, rm, writeFile, rename } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { execFileSync } from "node:child_process"
 import { setImmediate as turn } from "node:timers/promises"
 import { observationPublisher, readObservation } from "../scripts/smoke-observations.mjs"
 import { selectedPaletteResult, activatePalette } from "../scripts/smoke-ui.mjs"
+import { isolatedStateDirectory } from "../scripts/smoke-runtime.mjs"
 
 async function fixture(t) {
   const directory = await mkdtemp(path.join(tmpdir(), "smoke-publisher-"))
   t.after(() => rm(directory, { recursive: true, force: true }))
   return path.join(directory, "observations.json")
 }
+
+test("isolated state discovery preserves normal, alternate TMPDIR and explicit literal paths", async t => {
+  const alternate = await mkdtemp(path.join(tmpdir(), "fixture temp with spaces-"))
+  t.after(() => rm(alternate, { recursive: true, force: true }))
+  for (const directory of [tmpdir(), alternate]) {
+    const output = execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import { mkdtempSync } from 'node:fs';
+      import { tmpdir } from 'node:os';
+      import path from 'node:path';
+      console.log('PASS fixture: committed state. Isolated files: ' + mkdtempSync(path.join(tmpdir(), 'opencode-reviewer-')));
+    `], { env: { ...process.env, TMPDIR: directory }, encoding: "utf8" })
+    const discovered = isolatedStateDirectory(output)
+    t.after(() => rm(discovered, { recursive: true, force: true }))
+    assert.equal(path.dirname(discovered), directory)
+    // A literal path must remain usable, including spaces in the temp directory.
+    await writeFile(path.join(discovered, "identity"), "owned state")
+    assert.equal(isolatedStateDirectory(output.replaceAll("\n", "\r\n")), discovered)
+    assert.equal(isolatedStateDirectory("", discovered), discovered)
+    assert.equal(isolatedStateDirectory("Isolated files: /other/state\n", discovered), discovered)
+  }
+  const literal = path.join(alternate, "state 'quoted' $literal ")
+  assert.equal(isolatedStateDirectory(`Isolated files: ${literal}\n`), literal)
+  for (const output of ["", "Isolated files: relative/state\n", "Isolated files: /one\nIsolated files: /two\n"])
+    assert.throws(() => isolatedStateDirectory(output), /identify its isolated state/)
+  assert.throws(() => isolatedStateDirectory("", "relative/state"), /identify its isolated state/)
+})
 
 test("observation publication serializes, coalesces, snapshots inputs, and flushes the newest update", async t => {
   const file = await fixture(t), releases = [], paths = []

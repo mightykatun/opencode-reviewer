@@ -1433,12 +1433,12 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [x] Require authoritative permission ordering before fresh attention.
   - [x] Recheck completed turns after healthy blocker removal.
   - [x] Verify no replay, cancellation and idle controls plus host cases; commit.
-- [ ] Phase 10: fixtures and cleanup (F19-F22,F27-F28).
-  - [ ] Clean owned descendants on wrapper exit while retaining pipe ownership.
-  - [ ] Repair silent/sound-enabled and cancelled/successful scroll assertions.
-  - [ ] Measure desktop playback success per case, retaining attempt diagnostics.
-  - [ ] Make startup budgets consistent and lifecycle paths portable.
-  - [ ] Verify helpers, exact failed runtime combinations and available desktop checks; commit.
+- [x] Phase 10: fixtures and cleanup (F19-F22,F27-F28).
+  - [x] Clean owned descendants on wrapper exit while retaining pipe ownership.
+  - [x] Repair silent/sound-enabled and cancelled/successful scroll assertions.
+  - [x] Measure desktop playback success per case, retaining attempt diagnostics.
+  - [x] Make startup budgets consistent and lifecycle paths portable.
+  - [x] Verify helpers, exact failed runtime combinations and available desktop checks; commit.
 - [ ] Phase 11: measured cleanup and documentation (F29-F31).
   - [ ] Remove only verified unused interfaces/bindings.
   - [ ] Archive historical notification findings with verified current dispositions.
@@ -1813,3 +1813,32 @@ contract. F33 remains dropped. Neither disposition claims an implemented fix.
   `.runtime/runtime-run-TRhF5H/`. They verify silent baseline ordering and exactly
   one missed-reply completion. Synthetic notification backends do not prove desktop
   sound or focus behavior. Fixture auto-update is explicitly disabled.
+
+### Phase 10 disposition: F19-F22/F27-F28 fixed
+
+- Wrapper exit immediately begins owned process-group termination while pipe/close
+  ownership is retained. Readiness handshakes separate startup and execution timeout
+  budgets. Tests retain unrelated-process survivors and distinguish abort from timeout.
+- Approval audio assertions follow effective configuration: silent defaults, explicit
+  `--approval-sound`, and no approval sound after cancellation/Unsafe/error. Scrolling
+  has separate permanent-cancellation and once-only-success scenarios.
+- Desktop playback aggregates successful logical cases, retains fallback attempts and
+  rejects unsuccessful/unmeasured cases. `npx tsx scripts/smoke-notification-desktop.ts
+  --sounds` passed all six cases via `paplay`, with measured waveforms and zero player
+  exit codes. Human audible perception, click/focus and live desktop banners untested.
+- Literal lifecycle path parsing supports spaces and alternate TMPDIR. Actual
+  `smoke-history-lifecycle.mjs auto-shell` passed with TMPDIR `/tmp/reviewer phase10.2nZPZC`
+  (`runtime-run-CHdNwE`). A first location under group-writable `/tmp/opencode` correctly
+  failed storage ancestry checks; the successful location uses private fixture-owned
+  ancestry without changing shared directory permissions.
+- `npm run check`: **1,232 source tests**, **118 helper tests**, typecheck/build;
+  final helper rerun **118 passed**, runtime-cleanup **8 passed**.
+- Exact pinned-host runner cases and `.runtime/` result directories:
+  - `smoke-permissions.mjs mcp --auto --notifications`: `runtime-run-3y3Wcn`.
+  - Same plus `--approval-sound`: `runtime-run-pVywLI`; also `--cancel`:
+    `runtime-run-sHXOy1`, `--unsafe`: `runtime-run-97xaaT`, `--error`: `runtime-run-WYxrzQ`.
+  - `smoke.mjs auto-scroll --notifications`: `runtime-run-tO8lSg`; plus approval sound:
+    `runtime-run-5kyf7U`; `auto-scroll-success --notifications --approval-sound`:
+    `runtime-run-9C8O9h`. Each contains `results.json`.
+- The shared isolated host environment now disables auto-update after a measured
+  covering-dialog failure, making pinned-host verification independent of new releases.

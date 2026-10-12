@@ -24,6 +24,9 @@ const { seedLifetime, readLifetime, assertLegacyUntouched } = await import("./sm
 const hostBinary = process.env.OPENCODE_BIN ?? "opencode"
 const hostVersion = execFileSync(hostBinary, ["--version"], { encoding: "utf8", timeout: 10000 }).trim()
 const stream = flag("stream")
+const approvalSound = flag("approval-sound")
+const notificationOptions = { notify: flag("notifications"),
+  ...(approvalSound ? { notifications: { approved: { sound: true } } } : {}) }
 const mcp = scenario.startsWith("mcp"), custom = scenario.startsWith("custom"), directory = scenario.startsWith("external-")
 const patch = scenario === "external-patch"
 const fixtureModel = patch ? "gpt-fixture" : "fixture"
@@ -177,7 +180,7 @@ try {
   if (!flag("unpriced")) config.provider.review = { npm: "@ai-sdk/openai-compatible", options: { baseURL: `http://127.0.0.1:${port}/review` },
     models: { review: { name: "Review", limit: { context: 32000, output: 1000 }, cost: { input: 1, output: 2, cache_read: 0, cache_write: 0 } } } }
   const tui = path.join(temp, "tui.json")
-  await writeFile(tui, JSON.stringify({ theme: "opencode", plugin: [[plugin, { notify: flag("notifications"), baseURL: `http://127.0.0.1:${port}/review`, model: "review",
+  await writeFile(tui, JSON.stringify({ theme: "opencode", plugin: [[plugin, { ...notificationOptions, baseURL: `http://127.0.0.1:${port}/review`, model: "review",
     ...plan.settings, autoApprove: auto, ...(flag("no-extra-careful") ? { extraCareful: false } : {}), autoApproveDelaySeconds: 2, stream }]] }))
   const env = { HOME: temp, XDG_CONFIG_HOME: path.join(temp, "config"), XDG_DATA_HOME: path.join(temp, "data"), XDG_STATE_HOME: path.join(temp, "state"), XDG_CACHE_HOME: path.join(temp, "cache"),
     OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_CONFIG: "", OPENCODE_CONFIG_DIR: path.join(temp, "config"), OPENCODE_TUI_CONFIG: tui,
@@ -379,10 +382,11 @@ try {
     assert.ok(banners.length)
     assert.ok(banners.every(record => record.summary.startsWith("Opencode (") && record.summary.endsWith(")")))
     assert.equal(banners.filter(record => record.title.startsWith("Reviewer will approve permission")).length, 0)
-    if (auto && !flag("unsafe") && !flag("error") && !flag("cancel")) {
-      assert.equal(banners.filter(record => record.title === "Reviewer approved a permission").length, plan.reviewKinds.length)
-      assert.ok(records.some(record => record.event === "sound" && record.kind === "approved"))
-    }
+    const approved = auto && !flag("unsafe") && !flag("error") && !flag("cancel") ? plan.reviewKinds.length : 0
+    assert.equal(banners.filter(record => record.title === "Reviewer approved a permission").length, approved,
+      "only successful automatic approvals emit the enabled approval banner")
+    assert.equal(records.filter(record => record.event === "sound" && record.kind === "approved").length,
+      approvalSound ? approved : 0, "approval audio follows the explicit sound setting; its default is silent")
     assertNotificationAudio(assert, records)
     await writeFile(path.join(root, `.runtime/permission-${tag}-notifications.json`), JSON.stringify(records, null, 2))
     console.log(`PASS ${tag} notifications: ${banners.map(record => record.title).join("; ")}`)

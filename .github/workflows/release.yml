@@ -66,6 +66,7 @@ jobs:
             /scripts/smoke-runtime.mjs
             /scripts/smoke-reviewer.mjs
             /scripts/smoke-notification-recorder.mjs
+            /scripts/smoke-desktop-playback.mjs
             /scripts/smoke-stages.mjs
             /scripts/smoke-permissions.mjs
             /scripts/smoke.mjs
@@ -110,6 +111,7 @@ jobs:
             /test/release-workflow.test.mjs
             /test/release-fixture.mjs
             /test/smoke-measurements.test.mjs
+            /test/smoke-desktop-playback.test.mjs
             /test/smoke-stages.test.mjs
             /test/runtime-inventory.test.mjs
             /test/runtime-runner.test.mjs

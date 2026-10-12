@@ -9,18 +9,19 @@ const historyCases = ["covered", "countdown", "navigation", "notification", "dia
 
 /** All accepted CLI dimensions. Rules describe supported combinations, not an exhaustive run matrix. */
 export const runtimeInventory = {
-  "smoke.mjs": host(Object.keys(smokeScenarios), ["measure-reuse", "notifications", "reminders", "network-retry", "seed-lifetime", "fail-after-listen", "plan"], {
+  "smoke.mjs": host(Object.keys(smokeScenarios), ["measure-reuse", "notifications", "approval-sound", "reminders", "network-retry", "seed-lifetime", "fail-after-listen", "plan"], {
     requires: ["linux", "git", "python3", "tmux", "bundle", "source-sqlite"],
     rules: [rule("measure-reuse", { scenarios: ["external"] }), rule("network-retry", { scenarios: ["auto-shell"] }),
+      rule("approval-sound", { requires: ["notifications"] }),
       rule("reminders", { requires: ["notifications"], scenarios: ["auto-shell", "auto-zero", "auto-unsafe", "auto-error", "auto-cancel"] })],
   }),
   "smoke-permissions.mjs": host(permissionScenarios, ["auto", "disabled", "correction", "held", "cancel", "unsafe", "error", "native-bash-enabled", "plan",
-    "stream", "resource-whitespace", "notifications", "no-usage", "missing-usage", "unpriced", "storage-error", "stats", "no-extra-careful"], {
+    "stream", "resource-whitespace", "notifications", "approval-sound", "no-usage", "missing-usage", "unpriced", "storage-error", "stats", "no-extra-careful"], {
     requires: ["linux", "git", "python3", "tmux", "bundle", "source-sqlite"],
     rules: [rule("resource-whitespace", { scenarios: ["mcp-resource"] }), rule("native-bash-enabled", { scenarios: ["custom-bash"] }),
       rule("cancel", { requires: ["auto"], excludes: ["unsafe", "error"] }), rule("no-usage", { excludes: ["missing-usage"] }),
       rule("missing-usage", { requires: ["correction"], excludes: ["error"] }),
-      rule("notifications", { excludes: ["disabled"] })],
+      rule("notifications", { excludes: ["disabled"] }), rule("approval-sound", { requires: ["notifications"] })],
   }),
   "smoke-streaming.mjs": host(["complete", "retry", "truncated", "nonstream", "cancel", "manual", "disable", "hidden", "dialog", "narrow", "fullscreen", "error"],
     ["observer-throws", "static", "stats"], { requires: ["linux", "git", "python3", "tmux", "bundle", "source-sqlite"],
@@ -59,7 +60,7 @@ export const runtimeInventory = {
   "audit-usage-history.mjs": { classification: "historical", scenarios: ["default"], default: "default", flags: [], rules: [],
     requires: ["git-tag:v0.7.0", "source", "esbuild", "node-sqlite"], hosts: 0, timeoutMs: 60000 },
   ...Object.fromEntries(["smoke-runtime.mjs", "smoke-stages.mjs", "smoke-scenarios.mjs", "smoke-reviewer.mjs", "smoke-lifetime.mjs",
-    "smoke-notification-recorder.mjs", "smoke-observations.mjs", "smoke-ui.mjs", "runtime-inventory.mjs", "runtime-runner.mjs", "test-runtime.mjs"]
+    "smoke-notification-recorder.mjs", "smoke-desktop-playback.mjs", "smoke-observations.mjs", "smoke-ui.mjs", "runtime-inventory.mjs", "runtime-runner.mjs", "test-runtime.mjs"]
     .map(name => [name, { classification: "helper", internal: name === "smoke-runtime.mjs" ? ["--guard <absolute-socket>"]
       : name === "test-runtime.mjs" ? ["--list", "--plan [--profile <name> | <entrypoint> <scenario> <flags>]", "--profile <name>"] : [] }])),
 }

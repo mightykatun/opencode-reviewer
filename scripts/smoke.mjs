@@ -20,6 +20,7 @@ const hostBinary = process.env.OPENCODE_BIN ?? "opencode"
 const { scenario } = runtimeArguments("smoke.mjs")
 const measureReuse = process.argv.includes("--measure-reuse")
 const notifications = process.argv.includes("--notifications")
+const approvalSound = process.argv.includes("--approval-sound")
 const reminders = process.argv.includes("--reminders")
 const networkRetry = process.argv.includes("--network-retry")
 const descriptor = smokeScenario(scenario)
@@ -281,7 +282,8 @@ try {
   await writeFile(tuiFile, JSON.stringify({
     $schema: "https://opencode.ai/tui.json",
     theme: scenario === "correction" ? "tokyonight" : "opencode",
-    plugin: [[pluginFile, { notify: notifications, staleReminderSeconds: reminders ? 1 : 60, baseURL: `http://127.0.0.1:${reviewPort}/review`, model: "review-fixture", apiKey: "fixture-review-key",
+    plugin: [[pluginFile, { notify: notifications, ...(approvalSound ? { notifications: { approved: { sound: true } } } : {}),
+      staleReminderSeconds: reminders ? 1 : 60, baseURL: `http://127.0.0.1:${reviewPort}/review`, model: "review-fixture", apiKey: "fixture-review-key",
       ...plan.settings,
       ...(scenario === "edit" || configFailure ? { instructions: customPrompts } : {}),
       ...(scenario === "patch" ? { maxFiles: 2 } : {}),
@@ -352,7 +354,7 @@ try {
   }
   const assertUsage = async () => {
     const input = correction ? 1000 : 500, output = correction ? 40 : 20
-    if (scenario === "correction" || scenario === "auto-scroll") {
+    if (scenario === "correction" || descriptor.scroll) {
       for (let i = 0; i < 30 && !capture().includes("ratings: 1 ✓ 0 ✗"); i++) { mouse(65, 140, 20); await sleep(40) }
     }
     await until((s) => s.includes(`token: ${input} in ${output} out`), 5000)
@@ -495,7 +497,7 @@ try {
         })
       }
       const { footerRow } = stage
-      if (scenario === "auto-scroll") {
+      if (descriptor.scroll) {
         const renderedCode = (s) => {
           assert.match(s, /RENDERED CODE FIXTURE/)
           assert.match(s, /fruit_count = len/)
@@ -538,7 +540,7 @@ try {
         await stableTick()
         await save("scrolled")
       }
-      if (["auto-cancel", "auto-scroll"].includes(scenario)) {
+      if (descriptor.cancel) {
         clickFooter("Cancel", footerRow)
         await until((s) => s.includes("Auto-approval canceled"), 3000)
         toggleSidebar()
@@ -1019,7 +1021,8 @@ try {
       if (["auto-unsafe", "auto-error", "auto-cancel"].includes(scenario)) assert.ok(before >= 2, "unresolved manual wait must repeat")
       else assert.equal(before, 0, "automatic approval must suppress reminders even across multiple intervals")
     }
-    if (["auto-shell", "auto-edit", "auto-external", "auto-scroll"].includes(scenario)) {
+    const successfulAuto = auto && !descriptor.cancel && !visibilityLoss && !descriptor.unsafe && !descriptor.error && scenario !== "auto-manual"
+    if (successfulAuto) {
       await until(async () => (await notificationRecords()).some(record => record.event === "sound" && record.kind === "ended"), 10000)
     } else await sleep(500)
     const records = await notificationRecords()
@@ -1029,13 +1032,14 @@ try {
     assert.equal(countdowns.length, 0, "auto-approval countdowns must not send notifications")
     const approvals = banners.filter(record => record.title === "Reviewer approved a permission")
     const attention = banners.filter(record => record.title === "Session needs attention")
-    if (["auto-shell", "auto-edit", "auto-external", "auto-scroll"].includes(scenario)) {
+    assert.equal(records.filter(record => record.event === "sound" && record.kind === "approved").length,
+      successfulAuto && approvalSound ? plan.reviewKinds.length : 0,
+      "only successful automatic approvals with explicitly enabled audio may play approval sounds")
+    if (successfulAuto) {
       assert.equal(approvals.length, plan.reviewKinds.length)
       assert.equal(attention.length, 0)
       assert.ok(!records.some(record => record.event === "sound" && record.kind === "attention"), "successful auto-approval must not play attention audio")
       assert.ok(banners.some(record => record.title === "Session ended"))
-    } else if (scenario === "auto-zero") {
-      assert.equal(countdowns.length, 0); assert.equal(approvals.length, 1); assert.equal(attention.length, 0)
     } else if (scenario === "auto-unsafe") {
       assert.equal(attention.length, 0); assert.equal(approvals.length, 0)
       assert.equal(banners.filter(record => record.title === "Unsafe permission needs human approval").length, 1)
@@ -1043,12 +1047,12 @@ try {
       assert.ok(!records.some(record => record.event === "sound" && record.kind === "attention"))
     } else if (["auto-error", "error", "bash-disabled", "edit-disabled", "external-disabled", "correction"].includes(scenario)) {
       assert.ok(attention.length >= 1); assert.equal(countdowns.length, 0); assert.equal(approvals.length, 0)
-    } else if (["auto-cancel", "auto-hide", "auto-dialog", "auto-fullscreen", "auto-narrow"].includes(scenario)) {
+    } else if (descriptor.cancel || visibilityLoss) {
       assert.equal(attention.length, 1); assert.equal(approvals.length, 0)
     }
     assertNotificationAudio(assert, records)
     await writeFile(path.join(root, `.runtime/${scenario}-notifications.json`), JSON.stringify(records, null, 2))
-    console.log(`PASS ${scenario} notifications: ${banners.map(record => record.title).join("; ")}; bundled normalized audio observed.`)
+    console.log(`PASS ${scenario} notifications: ${banners.map(record => record.title).join("; ")}; configured approval audio and normalized recorded sounds verified.`)
   }
   await assertLegacyUntouched(temp)
   if (["correction", "auto-shell"].includes(scenario)) {

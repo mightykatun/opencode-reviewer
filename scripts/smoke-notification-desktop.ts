@@ -6,12 +6,13 @@ import { LinuxNotifications } from "../src/notification-linux.js"
 import { OwnedNotificationProcesses, type NotificationProcesses } from "../src/notification-process.js"
 import { gnomeTerminalIdentity } from "../src/notification-terminal.js"
 import { runtimeArguments } from "./runtime-inventory.mjs"
+import { desktopPlaybackCase } from "./smoke-desktop-playback.mjs"
 
 runtimeArguments("smoke-notification-desktop.ts")
 
 const owned = new OwnedNotificationProcesses()
-const measurements: Promise<unknown>[] = []
-const playbacks: Promise<number | null>[] = []
+let playback: ReturnType<typeof desktopPlaybackCase> | undefined
+const completed: unknown[] = []
 let deliveredAt: number | undefined
 let notificationStartedAt: number | undefined
 const processes: NotificationProcesses = {
@@ -20,20 +21,24 @@ const processes: NotificationProcesses = {
     if (command === "notify-send" && process.argv.includes("--critical")) {
       args = args.map(value => value === "--urgency=normal" ? "--urgency=critical" : value)
     }
-    if (command === "paplay" || command === "pw-play") {
+    const player = command === "paplay" || command === "pw-play"
+    let measurement: Promise<void> | undefined
+    if (player) {
+      assert.ok(playback, "player attempt must belong to an active logical case")
+      assert.equal(args.at(-1)!.split("/").at(-1), `${playback.report().kind}.wav`, "player must match the current sound case")
       const deliveryToPlayerMs = deliveredAt === undefined ? undefined : performance.now() - deliveredAt
       const dispatchToPlayerMs = notificationStartedAt === undefined ? undefined : performance.now() - notificationStartedAt
       console.log(JSON.stringify({ player: command, deliveryToPlayerMs, dispatchToPlayerMs }))
-      measurements.push(readFile(args.at(-1)!).then(bytes => {
-      let square = 0, peak = 0
-      for (let i = 44; i < bytes.length; i += 2) {
-        const sample = bytes.readInt16LE(i) / 32768
-        square += sample * sample; peak = Math.max(peak, Math.abs(sample))
-      }
-      const rms = Math.sqrt(square / ((bytes.length - 44) / 2))
-      assert.ok(rms > 0 && rms <= 0.1001); assert.ok(peak <= 10 ** (-3 / 20) + 1 / 32768)
-      console.log(JSON.stringify({ sound: args.at(-1)!.split("/").at(-1), rms, peak, normalizedBytes: bytes.length }))
-    }))
+      measurement = readFile(args.at(-1)!).then(bytes => {
+        let square = 0, peak = 0
+        for (let i = 44; i < bytes.length; i += 2) {
+          const sample = bytes.readInt16LE(i) / 32768
+          square += sample * sample; peak = Math.max(peak, Math.abs(sample))
+        }
+        const rms = Math.sqrt(square / ((bytes.length - 44) / 2))
+        assert.ok(rms > 0 && rms <= 0.1001); assert.ok(peak <= 10 ** (-3 / 20) + 1 / 32768)
+        console.log(JSON.stringify({ sound: args.at(-1)!.split("/").at(-1), rms, peak, normalizedBytes: bytes.length }))
+      })
     }
     const task = owned.start(command, args, ms, signal, value => {
       if (command === "notify-send" && /^[1-9][0-9]*$/.test(value)) {
@@ -43,7 +48,7 @@ const processes: NotificationProcesses = {
       if (process.argv.includes("--click")) console.log(`${command} event: ${JSON.stringify(value.replace(/Activation Token: .*/, "Activation Token: <redacted>"))}`)
       line?.(value)
     })
-    if (task && (command === "paplay" || command === "pw-play")) playbacks.push(task.result.then(result => result.code))
+    if (player) playback!.observe(command, task?.result, measurement)
     if (task && process.argv.includes("--click")) void task.result.then(result => console.log(`${command}: exit ${result.code}; ${JSON.stringify(result.stdout.replace(/Activation Token: [^\n]*/g, "Activation Token: <redacted>"))}`))
     return task
   }, dispose: () => owned.dispose(),
@@ -66,31 +71,39 @@ if (process.argv.includes("--all")) {
     await sleep(10000)
     for (const item of cases) {
       console.log(`SHOW ${item.title}; SOUND ${item.kind}`)
-      const before = playbacks.length
+      playback = desktopPlaybackCase(item.kind)
+      deliveredAt = notificationStartedAt = undefined
       const handle = await backend.show({ ...item, body: "Reviewer desktop sound test", sessionID: "desktop-fixture", banner: true, sound: true }, new AbortController().signal)
-      const end = Date.now() + 15000
-      while (playbacks.length === before && Date.now() < end) await sleep(50)
-      assert.equal(playbacks.length, before + 1, `${item.title} must reach its sound player`)
-      assert.equal(await playbacks[before], 0, `${item.title} sound playback must succeed`)
+      assert.ok(handle, `${item.title} must reach the notification backend`)
+      const result = await playback.wait()
+      assert.notEqual(deliveredAt, undefined, `${item.title} banner must be delivered`)
+      completed.push(result)
+      console.log(JSON.stringify(result))
       // Give each banner time to be read before the following test.
       await sleep(1500)
-      handle?.close()
+      handle.close()
+      await handle.closed
+      playback = undefined
     }
-    await Promise.all(measurements)
-    assert.equal(measurements.length, cases.length)
-    console.log("PASS: all six notification messages and their normalized sounds were delivered; every sound player exited successfully.")
-  } finally { await backend.dispose() }
+    assert.equal(completed.length, cases.length)
+    console.log("PASS: all six banners were delivered and each normalized sound had a successful player exit; attempts are reported per case.")
+  } finally { if (playback) console.log(JSON.stringify(playback.report())); await backend.dispose() }
 } else if (process.argv.includes("--sounds")) {
   const audio = new NotificationAudio(processes, new URL("../sounds/", import.meta.url).pathname)
   try {
     for (const kind of ["attention", "unsafe", "question", "approved", "error", "ended"] as const) {
       console.log(`PLAY ${kind}`)
+      playback = desktopPlaybackCase(kind)
       await audio.play(kind, new AbortController().signal)
+      const result = await playback.complete()
+      completed.push(result)
+      console.log(JSON.stringify(result))
+      playback = undefined
       await sleep(300)
     }
-    await Promise.all(measurements)
-    assert.equal(measurements.length, 6, "all six sounds must reach actual desktop playback")
-  } finally { await audio.dispose(); owned.dispose() }
+    assert.equal(completed.length, 6, "all six logical sound cases must complete successful desktop playback")
+    console.log("PASS: all six normalized sounds had a successful player exit; attempts are reported per case.")
+  } finally { if (playback) console.log(JSON.stringify(playback.report())); await audio.dispose(); owned.dispose() }
 } else if (process.argv.includes("--click")) {
   assert.ok(gnomeTerminalIdentity(), "run directly inside GNOME Terminal, outside tmux/SSH")
   let clicked = false

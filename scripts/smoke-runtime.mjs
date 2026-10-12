@@ -94,12 +94,19 @@ export function smokeMetrics(server, { pollIntervalMs, hostVersion, origin = "sh
   }
 }
 
+/** Preserve the complete literal path reported by a fixture, or explicitly supplied by its caller. */
+export function isolatedStateDirectory(output, existing) {
+  const paths = existing ? [existing] : [...output.matchAll(/(?:^|[ \t])Isolated files: ([^\r\n]+)\r?$/gm)].map(match => match[1])
+  if (paths.length !== 1 || !path.isAbsolute(paths[0])) throw new Error("fixture must identify its isolated state")
+  return paths[0]
+}
+
 /** Start both the supervisor and tmux with fixture-local state and no inherited startup hooks. */
 export function smokeEnvironment(directory, parent = process.env) {
   if (!path.isAbsolute(directory)) throw new Error("Fixture directory must be absolute")
   // The fixture asserts exact theme RGB values; tmux supports truecolor even without an attached client.
   return { PATH: parent.PATH ?? "/usr/bin:/bin", HOME: directory, SHELL: "/bin/sh", TERM: "xterm-256color", COLORTERM: "truecolor",
-    LANG: "C.UTF-8", LC_ALL: "C.UTF-8", TZ: "UTC", XDG_CONFIG_HOME: path.join(directory, "config"),
+    LANG: "C.UTF-8", LC_ALL: "C.UTF-8", TZ: "UTC", OPENCODE_DISABLE_AUTOUPDATE: "1", XDG_CONFIG_HOME: path.join(directory, "config"),
     XDG_DATA_HOME: path.join(directory, "data"), XDG_STATE_HOME: path.join(directory, "state"), XDG_CACHE_HOME: path.join(directory, "cache") }
 }
 
