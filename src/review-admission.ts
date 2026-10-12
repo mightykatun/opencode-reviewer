@@ -1,4 +1,3 @@
-import type { PermissionRequest } from "@opencode-ai/sdk/v2"
 import { withDeadline } from "./deadline.js"
 import { bindTransportOwnership, TransportOwnership, transportOwnership } from "./transport-ownership.js"
 
@@ -26,7 +25,7 @@ export function ownedReview<T>(parent: AbortSignal, ms: number, run: (signal: Ab
 }
 
 interface Waiting {
-  request: PermissionRequest
+  request: { readonly id: string }
   start(): void
 }
 
@@ -42,7 +41,7 @@ export class ReviewAdmission {
 
   constructor(private front: (root: string) => string | undefined = () => undefined) {}
 
-  run<T>(request: PermissionRequest, root: string, signal: AbortSignal, evaluate: () => ReviewEvaluation<T>): Promise<T> {
+  run<T>(request: { readonly id: string }, root: string, signal: AbortSignal, evaluate: () => ReviewEvaluation<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (signal.aborted) { reject(signal.reason); return }
       const cancel = () => {

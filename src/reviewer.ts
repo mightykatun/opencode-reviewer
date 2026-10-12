@@ -9,6 +9,7 @@ import { AssessmentFormatError, StreamingAssessment } from "./streaming-assessme
 import { diagnosticAttempt, type DiagnosticObserver } from "./diagnostics.js"
 import { AssessmentStreamError, httpFailure, networkFailure, TransportRetries } from "./transport-retry.js"
 import { TransportOwnership, transportOwnership } from "./transport-ownership.js"
+import type { HostReviewEvidence } from "./host-evidence.js"
 export { withDeadline } from "./deadline.js"
 
 export function parseAssessment(content: string): Assessment {
@@ -235,7 +236,7 @@ export interface ReviewerDependencies {
 }
 
 export async function review(
-  evidence: ReviewEvidence,
+  evidence: ReviewEvidence | HostReviewEvidence,
   config: Config,
   signal: AbortSignal,
   { fetcher = fetch, environment = process.env, prompts = BUILTIN_PROMPTS,

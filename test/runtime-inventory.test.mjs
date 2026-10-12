@@ -76,6 +76,13 @@ test("every declared scenario and flag has at least one valid invocation under i
   }
 })
 
+test("a multi-scenario fixture can retain its default while explicitly selecting advisory review", () => {
+  assert.equal(runtimePlan("smoke-v2-invocation.mjs").scenario, "default")
+  assert.equal(runtimePlan("smoke-v2-invocation.mjs", ["review"]).scenario, "review")
+  assert.throws(() => runtimePlan("smoke-v2-invocation.mjs", ["review", "extra"]), /Unexpected arguments/)
+  assert.throws(() => runtimePlan("smoke-v2-invocation.mjs", ["unsupported"]), /Unknown scenario/)
+})
+
 test("listing and all profile planning work with no host, fixture directory, or bundle access", () => {
   const runner = new URL("../scripts/test-runtime.mjs", import.meta.url).pathname
   const env = { PATH: "", HOME: "/missing-fixture-home", OPENCODE_BIN: "/missing-opencode" }
@@ -87,6 +94,7 @@ test("listing and all profile planning work with no host, fixture directory, or 
   for (const file of ["smoke-v2-lifecycle", "smoke-v2-invocation", "smoke-v2-root-presentation", "smoke-v2-native-queue"])
     assert.ok(ci.some(item => item.id.startsWith(file + "/")))
   assert.ok(ci.every(item => item.hostVersion === "opencode v2.0.26" && item.hosts <= 2))
+  assert.ok(ci.some(item => item.id === "smoke-v2-invocation/review"))
   const historical = profilePlan("ci-v1")
   for (const file of ["smoke-approval-geometry", "smoke-fast-mode", "smoke-notification-w4", "smoke-history-lifecycle", "smoke-streaming"])
     assert.ok(historical.some(item => item.id.startsWith(file + "/")))

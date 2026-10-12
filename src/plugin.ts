@@ -56,5 +56,6 @@ export type { DiagnosticEvent } from "./diagnostics.js"
 /** Read-only embedding seam shared with the production host adapter. */
 export { readPendingInvocation } from "./host-reader.js"
 export { readHostEvidence } from "./host-evidence-reader.js"
+export { evaluateHostReview } from "./host-evaluate.js"
 
 export default createPlugin()

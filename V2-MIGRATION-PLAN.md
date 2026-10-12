@@ -1,6 +1,6 @@
 # OpenCode V2 migration plan
 
-Status: Phase 1 committed (`070e6ad`), Phase 2 adapter committed (`5ac7438`) with expanded native-context verification. Controller/UI preparation next; review/approval acceptance gates remain open.
+Status: Phases 1-2 committed and verified; Phase 3 shared-controller/advisory evaluator preparation verified. Production UI and automatic approval remain unconnected and gated.
 Prepared: 2026-10-12.
 Revised: 2026-10-12, following the user's requirement that upstream changes are unavailable.
 Baseline: `v1.0.2` (`7cd1e561aea594ab9c7a99a32f30568579098747`), the final
@@ -909,6 +909,36 @@ equivalence separately from intentional compatibility-profile behavior changes.
 Files: `src/controller.ts`, `route-approval.ts`, `review-presentation.ts`,
 `live-review-panel.tsx`, `review-description.tsx`, `appearance.ts`, `history-cover.ts`,
 `history-view.tsx`, `tui.tsx` and command modules.
+
+Preparation tracker:
+
+- [x] Parameterize the existing controller/admission/pending refresh over owned request identity, retaining historical V1 defaults/tests.
+- [x] Add native candidate/queue selection seams and explicit no-hidden-route policy without cloning the state machine or faking V1 requests.
+- [x] Feed validated native evidence into the existing reviewer transport with one physical admission lease and total deadline.
+- [x] Port built-in shell/edit/directory guidance to native fields, keeping legacy evidence semantics explicitly separate.
+- [x] Verify the advisory evaluator in the installed archive (`runtime-run-xYACm1`, `v2-invocation-kv2Dqr`): one exact native evidence POST and validated assessment, zero permission replies/execution.
+- [ ] Connect native pending/cache reconciliation, mode gating and the stable production UI.
+- [ ] Add native actual-dispatch/confirmed-resolution semantics, distinct from the legacy `Promise<void>` writer.
+- [ ] Pass the production normal/fast presentation and cancellation/retention acceptance cases below.
+
+The controller remains unactivated for V2. The native once transport cannot satisfy
+the legacy confirmed-void approval contract, as asserted by a compile-time negative
+test. `allowHiddenRoute: false` source tests cover root departure and never-armed
+hidden completion, but are not real native approval/UI proof. The advisory archive
+probe invokes `evaluateHostReview` through an embedding seam; it does not claim a
+displayed production report or automatic approval. Its `review` scenario is added
+to V2 CI only after that actual archive run passed. The default scenario retains
+zero reviewer POSTs. The runner now permits an explicit second scenario when a
+multi-scenario entrypoint retains `default` as its first scenario.
+
+Final preparation checks: 1,390 source tests, 120 helpers and nine built-artifact/npm
+CLI smoke tests pass. The five-file archive is reproducible with bundle SHA-256
+`531a3f048075397869cb57ee2f48d3dc5232d7edef87a03a44177b8427a5e76c`.
+All six current V2 CI cases pass in `.runtime/runtime-run-9O85zf/results.json`:
+installed lifecycle `v2-lifecycle-nhzpkh`, default evidence `v2-invocation-Nbi0cJ`,
+advisory evaluation `v2-invocation-RBx8If`, two explicitly synthetic root-
+presentation controls and the synthetic native-family queue probe. Production
+normal/fast approval and UI/history integration are not part of this pass.
 
 - Connect the normalized host to existing admission, mode, queue and approval state
   machines. Preserve fresh identity/native-priority checks immediately before the

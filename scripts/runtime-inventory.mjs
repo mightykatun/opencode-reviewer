@@ -46,7 +46,7 @@ export const runtimeInventory = {
   "smoke-v2-delegation.mjs": host(["initial-resume", "coalesced"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux"] }),
   "smoke-v2-companion-package.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux", "npm-pack", "tar", "source"] }),
   "smoke-v2-lifecycle.mjs": host(["default"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
-  "smoke-v2-invocation.mjs": host(["default"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
+  "smoke-v2-invocation.mjs": host(["default", "review"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-sidebar-state.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux"] }),
   "smoke-style-retirement.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux", "bundle", "babel"] }),
   "smoke-approval-recovery.mjs": host(["read-error", "read-timeout", "correction-after", "correction-before", "transport-after", "transport-before"], [], {
@@ -89,7 +89,7 @@ export function runtimePlan(entrypoint, args = []) {
   const positional = args.filter(arg => !arg.startsWith("--")), flags = args.filter(arg => arg.startsWith("--")).map(arg => arg.slice(2))
   const scenario = positional[0] ?? entry.default
   assert.ok(entry.scenarios.includes(scenario), `Unknown scenario for ${entrypoint}: ${scenario}`)
-  assert.ok(positional.length <= (entry.optionalArgument ? 2 : entry.scenarios[0] === "default" ? 0 : 1), `Unexpected arguments for ${entrypoint}`)
+  assert.ok(positional.length <= (entry.optionalArgument ? 2 : entry.scenarios.length === 1 && entry.scenarios[0] === "default" ? 0 : 1), `Unexpected arguments for ${entrypoint}`)
   assert.equal(new Set(flags).size, flags.length, "Duplicate fixture flag")
   for (const flag of flags) assert.ok(entry.flags.includes(flag), `Unknown ${entrypoint} flag: --${flag}`)
   if (entry.exactlyOne) assert.equal(flags.filter(f => entry.exactlyOne.includes(f)).length, 1, `Choose one of ${entry.exactlyOne.join(", ")}`)
@@ -123,6 +123,7 @@ export const runtimeProfiles = {
   ci: [
     ["smoke-v2-lifecycle.mjs"],
     ["smoke-v2-invocation.mjs"],
+    ["smoke-v2-invocation.mjs", "review"],
     ["smoke-v2-root-presentation.mjs", "mouse-on"],
     ["smoke-v2-root-presentation.mjs", "mouse-off"],
     ["smoke-v2-native-queue.mjs"],

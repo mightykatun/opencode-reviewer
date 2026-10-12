@@ -1,20 +1,20 @@
 import type { PermissionRequest } from "@opencode-ai/sdk/v2"
 import { withDeadline } from "./deadline.js"
 
-interface PendingState {
+interface PendingState<R = PermissionRequest> {
   readonly revision: number
-  reconcile(requests: readonly PermissionRequest[], revision: number): void
+  reconcile(requests: readonly R[], revision: number): void
 }
 
 /** Read-only recovery. Deadline callbacks produce data, never controller effects. */
-export class PendingRefresh {
+class PendingRefreshCore<R = PermissionRequest> {
   private syncing = false
   private stopped = false
   private again = false
   private generation = 0
   private abort = new AbortController()
   private signal: AbortSignal
-  constructor(private pending: PendingState, private read: (signal: AbortSignal) => Promise<PermissionRequest[]>, parent: AbortSignal,
+  constructor(private pending: PendingState<R>, private read: (signal: AbortSignal) => Promise<readonly R[]>, parent: AbortSignal,
     private health?: (healthy: boolean) => void) {
     this.signal = AbortSignal.any([parent, this.abort.signal])
   }
@@ -25,7 +25,7 @@ export class PendingRefresh {
     this.syncing = true
     const generation = ++this.generation
     const revision = this.pending.revision
-    let worker: Promise<PermissionRequest[]> | undefined
+    let worker: Promise<readonly R[]> | undefined
     const report = (healthy: boolean) => { if (!this.stopped && !this.signal.aborted) { try { this.health?.(healthy) } catch {} } }
     try {
       const requests = await withDeadline(this.signal, 5000, signal => worker = Promise.resolve().then(() => {
@@ -57,3 +57,11 @@ export class PendingRefresh {
     this.abort.abort()
   }
 }
+
+export type PendingRefresh<R = PermissionRequest> = PendingRefreshCore<R>
+export const PendingRefresh: {
+  new <R = PermissionRequest>(pending: PendingState<R>, read: (signal: AbortSignal) => Promise<readonly R[]>, parent: AbortSignal,
+    health?: (healthy: boolean) => void): PendingRefresh<R>
+  new (pending: PendingState, read: (signal: AbortSignal) => Promise<readonly PermissionRequest[]>, parent: AbortSignal,
+    health?: (healthy: boolean) => void): PendingRefresh
+} = PendingRefreshCore

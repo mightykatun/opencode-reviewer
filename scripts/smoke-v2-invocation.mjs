@@ -1,5 +1,6 @@
 // Archived production companion, invocation and evidence readers on OpenCode 2.0.26.
-// Inventory owner registers default, no flags; linux/git/python3/tmux/bundle/npm-pack/tar.
+// Default is read-only evidence; review adds one advisory reviewer response.
+// No flags; linux/git/python3/tmux/bundle/npm-pack/tar.
 // Build first. Host execution requires the inventory owner's explicit grant.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
@@ -92,7 +93,7 @@ function observedFilePlugin(production, nativeIO) {
 
 // The CLI monitor imports the actual archived reader. Baseline observations use
 // ctx.client itself. Only explicitly named rejection controls wrap copied reads.
-async function monitorSetup(ctx) {
+async function monitorSetup(ctx, reviewerState) {
   const rpc = ctx.client.rpc(Rpc.define(rpcDefinition()))
   const publisher = observationPublisher(fixture.monitor), abort = new AbortController()
   const record = { version: ctx.app.version, ready: true, errors: [], asked: [], replied: [], progress: [], replies: {} }
@@ -246,6 +247,18 @@ async function monitorSetup(ctx) {
           await ctx.client.session.interrupt({ sessionID: command.sessionID, continue: false }, options())
         } else if (command.type === "pending") {
           value = await ctx.client.permission.list({ sessionID: command.sessionID }, options())
+        } else if (command.type === "review") {
+          assert.equal(fixture.review, true)
+          assert.ok(reviewerState.config)
+          assert.equal(reviewerState.config.autoApprove, false)
+          const request = await ctx.client.permission.get({ sessionID: command.sessionID, requestID: command.requestID }, options())
+          const owned = await production.readPendingInvocation(ctx.client, command.scope, request, signal())
+          assert.ok(owned)
+          let identified = 0
+          const work = production.evaluateHostReview(ctx.client, owned.snapshot, reviewerState.config,
+            reviewerState.prompts, signal(), () => { identified++ })
+          try { value = { assessment: await work, identified } }
+          finally { await work.settled }
         } else if (["read", "controls", "evidence", "evidence-controls"].includes(command.type)) {
           const request = await ctx.client.permission.get({ sessionID: command.sessionID, requestID: command.requestID }, options())
           if (command.type === "controls") value = await rejectionControls(request, command.scope)
@@ -270,7 +283,7 @@ async function monitorSetup(ctx) {
   }
 }
 
-runtimeArguments("smoke-v2-invocation.mjs")
+const { scenario } = runtimeArguments("smoke-v2-invocation.mjs")
 const root = path.resolve(import.meta.dirname, "..")
 await mkdir(path.join(root, ".runtime"), { recursive: true })
 const artifacts = await mkdtemp(path.join(root, ".runtime/v2-invocation-"))
@@ -287,6 +300,7 @@ const serverPath = path.join(project, "opencode.json")
 const archiveFiles = ["dist/tui.js", "package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"].sort()
 const publishers = new Map(), calls = [], waiting = new Map(), errors = [], evidence = {}, negativeWindows = []
 const network = { reviewPOSTs: 0, mcpToolCalls: 0 }
+let expectedReviewPOSTs = 0
 let sequence = 0, version, modelServer, mcpServer
 const publish = async (file, value) => {
   let publisher = publishers.get(file)
@@ -304,7 +318,8 @@ const observations = async () => {
     assert.deepEqual(server.errors, [])
     assert.ok(server.after.every(item => item.tool === "execute" || item.status !== "completed"), "No held leaf may complete")
   }
-  assert.deepEqual(network, { reviewPOSTs: 0, mcpToolCalls: 0 })
+  assert.equal(network.mcpToolCalls, 0)
+  assert.ok(network.reviewPOSTs <= expectedReviewPOSTs, "No reviewer request outside its explicit advisory control")
   return { cli, servers }
 }
 const until = async (label, predicate, timeout = 60000) => {
@@ -406,7 +421,7 @@ const assertDirect = (row, expected, scope, sessionID, prompt) => {
   assert.deepEqual(value.conversation.limitations, [])
 }
 const limits = [
-  "Uses the archived default server companion and production invocation/evidence readers, followed by server-only observed native FileIO; no reviewer/controller, approval, history or presentation integration.",
+  "Uses the archived default server companion and production invocation/evidence readers, followed by server-only observed native FileIO. The review scenario adds one advisory evaluation; no production controller/UI, approval or history integration.",
   "One local standalone host. No remote workspace, disconnect, native cache reconciliation or multi-terminal proof.",
   "Rejection controls mutate copies only at the reader boundary, never the actual pending requests, captured calls or tool executors.",
   "Native Code Mode ambiguity is exercised using two native MCP-dispatch calls under one execute source; it does not establish MCP category evidence readiness.",
@@ -443,7 +458,29 @@ try {
   assert.deepEqual(manifest.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })
   modelServer = createServer(async (req, res) => {
     try {
-      if (req.url?.startsWith("/review")) { network.reviewPOSTs++; throw Error("Unexpected reviewer request") }
+      if (req.url === "/review/chat/completions") {
+        network.reviewPOSTs++
+        assert.equal(scenario, "review")
+        assert.equal(network.reviewPOSTs, 1)
+        assert.equal(req.method, "POST")
+        let text = ""
+        for await (const chunk of req) { text += chunk; assert.ok(text.length < 1024 * 1024) }
+        const body = JSON.parse(text), data = JSON.parse(body.messages[1].content)
+        assert.equal(body.model, "phase3-advisory-reviewer")
+        assert.equal(body.stream, false)
+        assert.match(body.messages[0].content, /permission\.action="shell"/)
+        assert.equal(data.permission.action, "shell")
+        assert.deepEqual(data.permission.resources, ["python3 fixture.py"])
+        assert.equal(data.permission.type, undefined)
+        assert.equal(data.location.directory, initial)
+        assert.equal(data.cwd, inputs)
+        assert.equal(data.files[0].contents, await readFile(path.join(inputs, "fixture.py"), "utf8"))
+        evidence.advisoryPayload = body
+        res.writeHead(200, { "Content-Type": "application/json" })
+        res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify({ safe: true, desc: "The isolated fixture appends a marker to a local file." }) }, finish_reason: "stop" }] }))
+        return
+      }
+      if (req.url?.startsWith("/review")) { network.reviewPOSTs++; throw Error("Unexpected reviewer path") }
       assert.equal(req.method, "POST")
       assert.equal(req.url, "/v1/chat/completions")
       let text = ""
@@ -478,7 +515,7 @@ try {
   })
   await Promise.all([modelServer, mcpServer].map(server => new Promise(resolve => server.listen(0, "127.0.0.1", resolve))))
   const origin = `http://127.0.0.1:${modelServer.address().port}`
-  const fixture = { initial, observations: observationDirectory, monitor: monitorPath, control: controlPath, fileIO: fileIOPath, origin,
+  const fixture = { initial, observations: observationDirectory, monitor: monitorPath, control: controlPath, fileIO: fileIOPath, origin, review: scenario === "review",
     moduleURL: pathToFileURL(path.join(installed, "dist/tui.js")).href }
   const companion = path.join(temp, "companion"), observer = path.join(temp, "observer"), monitor = path.join(temp, "monitor")
   const observedCompanion = path.join(temp, "observed-companion")
@@ -499,7 +536,7 @@ try {
   await publish(path.join(monitor, "package.json"), { name: "phase2-reader-monitor", type: "module", exports: { "./tui": "./tui.mjs" } })
   await writeFile(path.join(monitor, "tui.mjs"), prelude + `\nimport * as production from ${JSON.stringify(fixture.moduleURL)}\n`
     + 'import {Rpc} from "@opencode/plugin/rpc"\n' + rpcDefinition + "\n" + monitorSetup
-    + '\nexport default {id:"fixture.invocation.monitor",setup:monitorSetup}\n')
+    + '\nexport default {id:"fixture.invocation.monitor",async setup(ctx){return production.withPluginSetup(async(ready,life)=>{assert.equal(ready.role,"cli");life.addCleanup(await monitorSetup(ctx,ready.state))}).setup(ctx)}}\n')
   for (const file of [path.join(companion, "index.mjs"), path.join(observedCompanion, "index.mjs"), path.join(observer, "index.mjs"), path.join(monitor, "tui.mjs")])
     execFileSync(process.execPath, ["--check", file], { env, timeout: 10000 })
   const permissions = [{ action: "*", resource: "*", effect: "allow" },
@@ -511,7 +548,8 @@ try {
     mcp: { servers: { invocation: { type: "remote", url: `http://127.0.0.1:${mcpServer.address().port}/mcp` } } },
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: origin + "/v1", apiKey: "synthetic-only" },
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } }
-  const cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, attention: { notifications: false, sound: false }, plugins: [monitor] }
+  const cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, attention: { notifications: false, sound: false }, plugins: [{ package: monitor,
+    options: { baseURL: origin + "/review", model: "phase3-advisory-reviewer", stream: false, autoApprove: false, notify: false, notifySound: false } }] }
   await publish(serverPath, config); await publish(cliPath, cli)
   await publish(path.join(artifacts, "setup.json"), { version, temp, fixture, archive, packed, config, cli, limits,
     socket: runtime.socket, supervisorPID: runtime.supervisorPID })
@@ -573,6 +611,14 @@ try {
   evidence.disabledShell = await readEvidence(direct[0], scope, { ...collection, reviewBash: false })
   assert.equal(evidence.disabledShell.result.value.result.status, "disabled")
   evidence.evidenceControls = await command({ type: "evidence-controls", sessionID, requestID: direct[0].id, scope, options: collection })
+  if (scenario === "review") {
+    expectedReviewPOSTs = 1
+    evidence.advisory = await command({ type: "review", sessionID, requestID: direct[0].id, scope })
+    assert.equal(evidence.advisory.identified, 1)
+    assert.deepEqual({ safe: evidence.advisory.assessment.safe, desc: evidence.advisory.assessment.desc },
+      { safe: true, desc: "The isolated fixture appends a marker to a local file." })
+    assert.equal(network.reviewPOSTs, 1)
+  }
   await negativeWindow(sessionID, direct, "concurrent equal-resource direct calls and rejection controls")
   await interrupt(sessionID)
 
@@ -824,9 +870,9 @@ try {
   const cleaned = await until("monitor cleanup", state => state.cli?.cleaned && state.cli)
   await sleep(300)
   assert.deepEqual(await readObservation(monitorPath), cleaned)
-  await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, temp, archiveFiles, evidence,
+  await publish(path.join(artifacts, "results.json"), { outcome: "pass", scenario, version, temp, archiveFiles, evidence,
     negativeWindows, network, calls, observations: await observations(), limits })
-  console.log(`PASS V2 archived production invocation reader: ${artifacts}`)
+  console.log(`PASS V2 archived invocation/evidence ${scenario}: ${artifacts}`)
   console.log(`Isolated files: ${temp}`)
 } catch (error) {
   try { await writeFile(path.join(artifacts, "failed.txt"), capture()) } catch { /* Host may not have started. */ }

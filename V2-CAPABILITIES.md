@@ -104,6 +104,39 @@ coverage. A failed fixture attempt (`runtime-run-nCcltF`) used the wrong attachm
 input shape; changing it to the declared prompt `uri` input required no production
 change.
 
+## Shared controller and advisory evaluator preparation
+
+The controller algorithm now accepts owned request identities with injected host
+candidate/queue policies. Historical V1 typing/F34 behavior is retained as the
+default specialization; native callers can disable hidden-route eligibility.
+Admission remains four physically owned evaluators and root round-robin, and
+pending refresh keeps revision/settlement guards. Native actual-dispatch and
+resolution confirmation are not wired to the legacy void writer.
+
+`evaluateHostReview` composes the real native evidence RPC and existing reviewer
+transport under one admission/deadline/cleanup lease. Built-in shell/edit/directory
+guidance now explains native action/resources/save and conversation/location fields,
+with legacy field meanings kept separate. Native evidence is forwarded as data,
+not converted to a fabricated V1 SDK request.
+
+Installed advisory pass: `.runtime/runtime-run-xYACm1/results.json`, detailed native
+payload and response at `.runtime/v2-invocation-kv2Dqr/results.json`. Exactly one
+explicit non-streaming reviewer POST receives native shell evidence and full server
+source; its strict Safe assessment completes without permission replies or held
+shell/MCP execution. All expanded ancestry/attachment/move controls remain active.
+This is an evaluator seam, not a mounted production UI/controller. Normal/fast
+automatic writes and physical presentation remain open gates. The separate default
+scenario still proves zero reviewer POSTs.
+
+Final preparation pass: `.runtime/runtime-run-9O85zf/results.json` contains all six
+current V2 CI cases. The installed evaluator observations/payload are at
+`v2-invocation-RBx8If`; default zero-POST evidence is at `v2-invocation-Nbi0cJ` and
+lifecycle at `v2-lifecycle-nhzpkh`. Source tests pass 1,390, helpers 120, built-package/
+npm CLI smoke tests nine. Reproducible bundle SHA-256:
+`531a3f048075397869cb57ee2f48d3dc5232d7edef87a03a44177b8427a5e76c`.
+Synthetic physical-presentation/native-queue cases retain their classifications;
+none establishes a connected production reviewer UI or automatic write path.
+
 ## Selected research target
 
 | Component | Exact version |
