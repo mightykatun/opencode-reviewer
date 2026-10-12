@@ -29,7 +29,9 @@ test("PR CI is read-only, pinned, and checks the supported development Node floo
     "sudo apt-get update && sudo apt-get install --yes tmux", "npm run test:runtime-cleanup"])
   const runtime = workflow.split("\n  runtime:\n")[1]
   assert.deepEqual([...runtime.matchAll(/^      - run: (.+)$/gm)].map(m => m[1]), ["npm ci --ignore-scripts",
-    "sudo apt-get update && sudo apt-get install --yes tmux git python3", "npm install --global opencode-ai@1.18.35",
+    "sudo apt-get update && sudo apt-get install --yes tmux git python3",
+    'npm install --prefix "$RUNNER_TEMP/reviewer-host" --ignore-scripts --no-audit --no-fund @opencode/cli-linux-x64@2.0.26',
+    'echo "d9123b9bcdb0a31f7ab9fe9812b58a9dc1768ad6d97e7b276dff1181813218c9  $OPENCODE_BIN" | sha256sum --check',
     "npm run build", "node scripts/test-runtime.mjs --profile ci"])
   assert.match(runtime, /if: always\(\)/)
   assert.match(runtime, /path: \.runtime\//)

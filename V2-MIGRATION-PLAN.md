@@ -1,6 +1,6 @@
 # OpenCode V2 migration plan
 
-Status: Phase 1 lifecycle shell verified on installed V2 archive; Phase 2 typed evidence adapter next. Review/approval/UI acceptance gates remain open.
+Status: Phase 1 committed (`070e6ad`); Phase 2 typed evidence adapter in progress. Review/approval/UI acceptance gates remain open.
 Prepared: 2026-10-12.
 Revised: 2026-10-12, following the user's requirement that upstream changes are unavailable.
 Baseline: `v1.0.2` (`7cd1e561aea594ab9c7a99a32f30568579098747`), the final
@@ -761,7 +761,7 @@ Phase 1 implementation tracker:
 - [x] Verify the actual installed archive on pinned V2: default package loading, scoped RPC, repeated reload and partial failure.
 - [x] Verify custom prompt startup snapshot and built-in per-file fallback in the installed archive.
 - [ ] Verify worker cleanup and injected dependency behavior when those consumers are connected in Phases 2-4.
-- [x] Finish Phase 1 shell verification before Phase 2. Commit this verified increment.
+- [x] Finish Phase 1 shell verification before Phase 2 and commit as `070e6ad`.
 
 Implementation currently uses `src/plugin.ts`, `src/cli-plugin.ts`,
 `src/companion.ts`, `src/companion-protocol.ts` and `src/plugin-lifecycle.ts`.
@@ -801,6 +801,64 @@ failed setup leave no duplicate slots, listeners, workers or model calls.
 
 Files: `src/types.ts`, `context.ts`, `classification.ts`, `evaluate.ts`, evidence
 collectors, `approval.ts`, `pending-refresh.ts`, and their source tests.
+
+Implementation tracker:
+
+- [x] Add reviewer-owned V2 request/scope/invocation projections, preserving mandatory fields and optional absence.
+- [x] Add bounded live companion capture with scoped RPC, exact durable direct-call binding and final request/epoch checks.
+- [x] Add bounded delivered-root history reads using native cursor ordering and explicit optional delegation omission.
+- [x] Verify these boundaries in 42 focused tests, including late physical read ownership, duplicate/nested identity, rewrites and scope changes.
+- [x] Verify the built production adapter against actual held V2 permissions and missed-capture/reload cases.
+- [x] Connect native evidence collectors to the server filesystem with scoped request-only RPC inputs.
+- [x] Verify native shell snapshots, pending edit diffs and separate directory scope in the installed archive.
+- [x] Verify the server-side `withFileAccess` consumer, disabled collection and copy-only response rejection controls.
+- [x] Add the pinned permission read/once submission boundary with single-flight/uncertain-write guards in source tests.
+- [x] Verify location-wide pending reconciliation separately from per-session permission lists; retain owned native-wire round trips.
+- [ ] Close the remaining Phase 2 acceptance cases and commit verified increments before production controller activation.
+
+Phase 2 evidence increment: `src/host-{types,request,context,invocation,reader,evidence,evidence-options,evidence-reader,permissions}.ts`
+and `src/invocation-capture.ts` retain V2 fields without a fabricated V1 permission.
+The companion accepts only exact request IDs/scope and bounded collection options;
+it derives paths/inputs from its own live capture and fresh pending request. Native
+shell files execute on the server, edit diffs use `metadata.files`, and directory
+reviews perform no target reads. The CLI independently verifies operation/identity
+and attaches delivered root intent only after the server response. Deadline/abort
+does not release capacity before actual reads and late descriptor cleanup settle.
+
+Installed-archive pass: `.runtime/runtime-run-JTJJDV/results.json`, with detailed
+responses at `.runtime/v2-invocation-HQfK4d/results.json`. This includes concurrent
+equal-resource shells, complete server file snapshots, edit/directory stages,
+disabled kinds, ten invocation and eight evidence response controls, ambiguous
+native Code Mode MCP calls, epoch replacement/lost-capture rejection and actual
+server-only injected FileIO. Native permission replies, shell/MCP execution and
+reviewer POSTs remain zero. An initial fixture readiness race (`runtime-run-CxugGq`)
+was fixed by waiting for native active status as well as the registered handshake.
+
+The standalone run does not prove remote/moved-session, live subagent context,
+attachment-only context, approval/controller/UI/history or multi-terminal behavior.
+Source tests independently cover attachment-only roots, bounded nested ancestry,
+factually omitted delegation, changed scopes and all category switches. Unknown
+MCP/custom origin and unavailable mandatory skill instructions retain the W7 manual
+fallback. The new once transport's real submission/confirmation integration remains
+a Phase 3 gate; a void native reply response is not a resolution event.
+
+CI now selects V2 lifecycle/invocation plus the already verified synthetic root-
+presentation and native-family queue cases; the old V1 profile is retained as
+`ci-v1`, not counted as V2 evidence. CI pins the Linux binary 2.0.26 and independently
+checks its SHA-256. The first local aggregate attempt (`runtime-run-Oo99L2`) exceeded
+the caller's 120-second budget during mouse-off; that interrupted attempt is not a
+completed profile pass.
+
+Final increment checks: `npm run check` passes 1,375 source tests and 119 helpers;
+`check:package` verifies the reproducible five-file archive, SHA-256
+`cc4b316cd81fd149145378a6c70bc2c4eebdca8aa42cc442cf3d49237314ba48`, and
+the nine built-artifact/npm CLI smoke tests pass without publication. One loaded
+aggregate run hit the unchanged history-bootstrap 2-second slice assertion;
+the final aggregate rerun passed with no timing-policy edits. All five final V2
+CI cases pass in `.runtime/runtime-run-3PqsOh/results.json`, including installed
+lifecycle `v2-lifecycle-CJfDQ6` and evidence `v2-invocation-pV5UmZ`. The earlier
+complete profile pass remains in `runtime-run-1gXlyi`. None of the synthetic
+presentation/queue cases activates production approval behavior.
 
 - Introduce focused reviewer-owned request/session/message/catalog projections
   rather than reproducing the entire V1 SDK. Keep original V2 identifiers and

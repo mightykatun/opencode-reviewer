@@ -18,8 +18,10 @@
   `npm test` covers only `test/*.test.ts`. Add pure `.mjs` tests to
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
-  `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the same
-  representative pinned-host cases as PR CI. `npm run test:runtime` and
+  `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
+  foundation cases from PR CI, including explicitly classified synthetic probes;
+  these are not full reviewer/controller acceptance. `--profile ci-v1` retains the
+  historical V1 selection and needs its separate host/build. `npm run test:runtime` and
   `npm run test:runtime-permissions` retain their original family subsets.
   All runtime commands require a prior build; none implicitly rebuilds.
   Documentation-only changes need reference/format review, not runtime tests.

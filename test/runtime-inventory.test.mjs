@@ -84,9 +84,13 @@ test("listing and all profile planning work with no host, fixture directory, or 
     assert.equal(typeof JSON.parse(execFileSync(process.execPath, [runner, ...args], { env, cwd: "/", encoding: "utf8" })), "object")
   }
   const ci = profilePlan("ci")
-  for (const file of ["smoke-approval-geometry", "smoke-fast-mode", "smoke-notification-w4", "smoke-history-lifecycle", "smoke-streaming"])
+  for (const file of ["smoke-v2-lifecycle", "smoke-v2-invocation", "smoke-v2-root-presentation", "smoke-v2-native-queue"])
     assert.ok(ci.some(item => item.id.startsWith(file + "/")))
-  assert.ok(ci.every(item => item.hostVersion === "1.18.35" && item.hosts <= 2))
+  assert.ok(ci.every(item => item.hostVersion === "opencode v2.0.26" && item.hosts <= 2))
+  const historical = profilePlan("ci-v1")
+  for (const file of ["smoke-approval-geometry", "smoke-fast-mode", "smoke-notification-w4", "smoke-history-lifecycle", "smoke-streaming"])
+    assert.ok(historical.some(item => item.id.startsWith(file + "/")))
+  assert.ok(historical.every(item => item.hostVersion === "1.18.35" && item.hosts <= 2))
 })
 
 test("smoke descriptors retain all old scenarios and independent stage expectations", async () => {

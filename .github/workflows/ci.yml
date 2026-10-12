@@ -38,6 +38,8 @@ jobs:
   runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      OPENCODE_BIN: ${{ runner.temp }}/reviewer-host/node_modules/@opencode/cli-linux-x64/bin/opencode
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -47,7 +49,8 @@ jobs:
           node-version: 24.15.0
       - run: npm ci --ignore-scripts
       - run: sudo apt-get update && sudo apt-get install --yes tmux git python3
-      - run: npm install --global opencode-ai@1.18.35
+      - run: npm install --prefix "$RUNNER_TEMP/reviewer-host" --ignore-scripts --no-audit --no-fund @opencode/cli-linux-x64@2.0.26
+      - run: echo "d9123b9bcdb0a31f7ab9fe9812b58a9dc1768ad6d97e7b276dff1181813218c9  $OPENCODE_BIN" | sha256sum --check
       - run: npm run build
       - run: node scripts/test-runtime.mjs --profile ci
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

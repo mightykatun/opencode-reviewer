@@ -32,7 +32,7 @@ function createPlugin(dependencies: PluginDependencies = {}, observe?: PluginSet
             await observe?.({ role: "cli", state }, lifecycle)
           } }).setup(context)
         } else {
-          const state = await setupCompanion(context, lifecycle)
+          const state = await setupCompanion(context, lifecycle, dependencies.fileIO)
           await observe?.({ role: "server", state }, lifecycle)
         }
       })
@@ -53,5 +53,8 @@ export function withNotificationProcesses(factory: () => NotificationProcesses) 
 }
 export type { HistoryRenderProbe, DiagnosticObserver, NotificationBackendFactory }
 export type { DiagnosticEvent } from "./diagnostics.js"
+/** Read-only embedding seam shared with the production host adapter. */
+export { readPendingInvocation } from "./host-reader.js"
+export { readHostEvidence } from "./host-evidence-reader.js"
 
 export default createPlugin()

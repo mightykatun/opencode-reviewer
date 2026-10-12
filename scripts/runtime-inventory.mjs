@@ -46,6 +46,7 @@ export const runtimeInventory = {
   "smoke-v2-delegation.mjs": host(["initial-resume", "coalesced"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux"] }),
   "smoke-v2-companion-package.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux", "npm-pack", "tar", "source"] }),
   "smoke-v2-lifecycle.mjs": host(["default"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
+  "smoke-v2-invocation.mjs": host(["default"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-sidebar-state.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux"] }),
   "smoke-style-retirement.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux", "bundle", "babel"] }),
   "smoke-approval-recovery.mjs": host(["read-error", "read-timeout", "correction-after", "correction-before", "transport-after", "transport-before"], [], {
@@ -120,6 +121,13 @@ export const runtimeProfiles = {
     ["smoke-history-auto.mjs", "covered"],
   ],
   ci: [
+    ["smoke-v2-lifecycle.mjs"],
+    ["smoke-v2-invocation.mjs"],
+    ["smoke-v2-root-presentation.mjs", "mouse-on"],
+    ["smoke-v2-root-presentation.mjs", "mouse-off"],
+    ["smoke-v2-native-queue.mjs"],
+  ],
+  "ci-v1": [
     ["smoke-history-lifecycle.mjs", "auto-shell"],
     ["smoke-approval-geometry.mjs", "resize"],
     ["smoke-fast-mode.mjs", "complete"],

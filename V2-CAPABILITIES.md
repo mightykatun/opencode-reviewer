@@ -41,6 +41,55 @@ and shared-service behavior retain their later-phase gates. Default CLI setup ha
 no public completion observer; wrapper observations use the actual archived setup.
 Response faults are explicit fixture injections, not production host errors.
 
+## Phase 2 installed invocation and server evidence adapter
+
+The actual archive's `readPendingInvocation` joins a continuously captured server
+call to one exact pending source and one durable running tool item. Changed
+arguments, missed capture, duplicate/nested calls, scope mismatch or replaced epoch
+provide no operation evidence. It reads delivered root user messages with native
+cursor ordering, never inferring immediate delegation from arrival timing.
+
+`readHostEvidence` sends only owned request/scope identity, collection switches/
+limits and its remaining deadline to the companion. The companion reads shell
+files on its own filesystem, projects pending native edit diffs and keeps external
+directory stages separate. The CLI verifies exact mandatory arguments/scope and
+attaches root intent after the server response. There is no terminal-local path
+fallback or caller-chosen filesystem path in this RPC.
+
+Pass: `.runtime/runtime-run-JTJJDV/results.json`, detailed observations at
+`.runtime/v2-invocation-HQfK4d/results.json`. Verified concurrent equal-resource
+shells, full literal source snapshots, native direct write/edit previews, independent
+directory stages, disabled category controls, ten invocation/eight evidence copy-
+mutation rejection controls, nested native Code Mode MCP ambiguity, companion
+reload and unavailable missed captures. Replacing only the companion installation
+with `withFileAccess` proved the archived server consumer forwards native filesystem
+operations. Negative windows preserve pending native requests with zero replies,
+shell/MCP execution or reviewer POSTs.
+
+`runtime-run-niabJa` was the earlier invocation-only pass. The expanded fixture's
+first attempt (`runtime-run-CxugGq`) detected that handshake registration can precede
+native active-state publication; the fixture now waits for both. No production
+logic was changed to hide that startup race.
+
+Native names still rely on the accepted trusted-installation contract. Unknown
+custom/MCP origin and unavailable mandatory skill instructions remain manual.
+Root/delegation source tests are not live native-subagent or remote/moved-session
+proof. The once transport's source tests establish fresh identity and no-retry
+guards, not automatic-approval confirmation or actual physical root presentation.
+Production review/controller, history, notifications and multi-terminal gates remain
+open. The five-case V2 CI profile retains synthetic classifications explicitly;
+its old V1 selection is now `ci-v1`.
+
+Final built increment: bundle SHA-256
+`cc4b316cd81fd149145378a6c70bc2c4eebdca8aa42cc442cf3d49237314ba48`.
+All five cases in `.runtime/runtime-run-3PqsOh/results.json` pass, with installed
+archive lifecycle observations at `v2-lifecycle-CJfDQ6` and invocation/evidence
+observations at `v2-invocation-pV5UmZ`. The source aggregate passes 1,375 tests,
+pure helpers 119, and built-package/npm CLI smoke checks nine. A prior loaded
+aggregate hit the unchanged history-bootstrap timing assertion; it was rerun
+without weakening the watchdog or test. Location-wide pending projections retain
+all session requests; a per-session list is never a complete reconciliation.
+
 ## Selected research target
 
 | Component | Exact version |

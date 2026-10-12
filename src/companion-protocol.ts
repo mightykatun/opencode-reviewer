@@ -1,5 +1,6 @@
 import { Rpc } from "@opencode/plugin/rpc"
 import path from "node:path"
+import { evidenceOptionsSchema } from "./host-evidence-options.js"
 
 export const companionProtocol = 1
 export const supportedHostVersion = "2.0.26"
@@ -31,6 +32,23 @@ export const companionRpc = Rpc.define({
         },
         required: ["protocol", "hostVersion", "epoch", "location", "project"], additionalProperties: false,
       },
+      errors: { scope: { type: "object", properties: {}, additionalProperties: false } },
+    },
+    invocation: {
+      input: { type: "object", properties: { location, epoch: text, sessionID: text, requestID: text },
+        required: ["location", "epoch", "sessionID", "requestID"], additionalProperties: false },
+      output: { anyOf: [{ type: "null" }, { type: "object", properties: {
+        request: { type: "object" }, invocation: { type: "object" },
+      }, required: ["request", "invocation"], additionalProperties: false }] },
+      errors: { scope: { type: "object", properties: {}, additionalProperties: false } },
+    },
+    evidence: {
+      input: { type: "object", properties: { location, epoch: text, sessionID: text, requestID: text,
+        options: evidenceOptionsSchema, timeoutMs: { type: "number", exclusiveMinimum: 0, maximum: 5000 } },
+        required: ["location", "epoch", "sessionID", "requestID", "options", "timeoutMs"], additionalProperties: false },
+      output: { anyOf: [{ type: "null" }, { type: "object", properties: {
+        request: { type: "object" }, invocation: { type: "object" }, result: { type: "object" },
+      }, required: ["request", "invocation", "result"], additionalProperties: false }] },
       errors: { scope: { type: "object", properties: {}, additionalProperties: false } },
     },
   },
