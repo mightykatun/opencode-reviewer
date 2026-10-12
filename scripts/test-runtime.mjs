@@ -31,12 +31,18 @@ if (args[0] === "--list") {
     if (prerequisites.has("source-sqlite")) await access(path.join(root, "src/history-schema.ts"))
     if (prerequisites.has("source-sqlite") || prerequisites.has("node-sqlite")) await import("node:sqlite")
     if (prerequisites.has("git-tag:v0.7.0")) execFileSync("git", ["rev-parse", "--verify", "refs/tags/v0.7.0^{commit}"], { cwd: root, stdio: "pipe" })
+    let hostVersion
     if (selected.some(item => item.hosts)) {
       assert.equal(process.platform, "linux")
+      const versions = new Set(selected.filter(item => item.hosts).map(item => item.hostVersion))
+      assert.equal(versions.size, 1, "One runtime run must select a single pinned host version")
+      const expected = [...versions][0]
+      assert.ok(expected, "Host fixtures must declare their exact version")
       const host = process.env.OPENCODE_BIN ?? "opencode"
-      assert.equal(execFileSync(host, ["--version"], { encoding: "utf8", timeout: 10000 }).trim(), "1.18.35")
-      await access(path.join(root, "dist/tui.js"))
+      hostVersion = execFileSync(host, ["--version"], { encoding: "utf8", timeout: 10000 }).trim()
+      assert.equal(hostVersion, expected)
     }
+    if (prerequisites.has("bundle")) await access(path.join(root, "dist/tui.js"))
     await mkdir(path.join(root, ".runtime"), { recursive: true })
     const lock = path.join(root, ".runtime/runtime-runner.lock")
     await mkdir(lock).catch(cause => { throw new Error(`Runtime runner already owned or lock unavailable: ${lock}`, { cause }) })
@@ -62,7 +68,7 @@ if (args[0] === "--list") {
           invocation: [process.execPath, item.entrypoint, ...item.args],
           status: result.code === (expectedFailure ? 1 : 0) && cleanupProof && !result.timedOut && !result.interrupted ? "passed" : "failed" })
         await publishObservation(path.join(directory, "results.json"), { profile: args[0] === "--profile" ? args[1] : undefined,
-          hostVersion: selected.some(item => item.hosts) ? "1.18.35" : undefined, nodeVersion: process.version, concurrency: "serial; at most two hosts", results })
+          hostVersion, nodeVersion: process.version, concurrency: "serial; at most two hosts", results })
         if (results.at(-1).status !== "passed") break
       }
       console.log(`Runtime results: ${directory}/results.json`)

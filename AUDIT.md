@@ -16,8 +16,10 @@
 - **User-requested presentation change:** keep the reviewer side panel visible only
   in the top-level conversation. Navigating into its subagents should hide the
   panel while normal review countdowns and automatic approvals continue (F34).
-- **Implementation status:** Phases 1-2 and 4-11 are complete with post-fix
-  dispositions below. F31 has measured retirement improvements; F32 retains a
+- **Implementation status:** The completeness-review gaps in **F10 (Phase 7)** and
+  **F16 (Phase 8)** are now fixed and verified in the follow-up below. Phases 1-2
+  and 4-11 are complete within their recorded scopes. F31 has measured retirement
+  improvements; F32 retains a
   measured mouse-disabled compatibility limitation. F33 was dropped and F34
   deferred by the user. Historical audit
   reproductions assert the original failure; only implementation-disposition
@@ -1422,14 +1424,14 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [x] Protect pathname opening and sidecars against replaceable ancestors.
   - [x] Release report-bearing close/delete/dispose state.
   - [x] Verify active-file markers, ownership controls, aggregate retention and host behavior; commit.
-- [x] Phase 7: review admission and mode idempotency (F10-F11).
-  - [x] Bound evaluator admission with native-front priority and cancellation-aware fairness.
+- [x] Phase 7: review admission and mode idempotency (F10-F11), including follow-up gaps.
+  - [x] Retain actual transport/nested context settlement ownership and prevent same-root background starvation.
   - [x] Make unchanged Enable non-destructive, including persistence retry.
-  - [x] Verify fanout, handoff, mode commands and relevant host cases; commit.
-- [x] Phase 8: transport and time (F16,F24,F26).
-  - [x] Drain valid terminal-rejection usage without retrying rejected assessments.
+  - [x] Extend fanout/ownership/fairness regressions for the reproduced gaps and verify source/host behavior.
+- [x] Phase 8: transport and time (F16,F24,F26), including follow-up finish-state gap.
+  - [x] Preserve finish-state validation during terminal-rejection draining, usage retention and non-retryability.
   - [x] Inherit absolute deadline ends and control actual backoff sleep in tests.
-  - [x] Verify framing/abort/resource limits and both supported Node floors; commit.
+  - [x] Add post-finish-content controls and verify the fix on both supported Node floors.
 - [x] Phase 9: notification reconciliation (F17-F18).
   - [x] Require authoritative permission ordering before fresh attention.
   - [x] Recheck completed turns after healthy blocker removal.
@@ -1758,11 +1760,13 @@ contract. F33 remains dropped. Neither disposition claims an implemented fix.
 - PATH now supplies OpenCode V2. Verification explicitly used isolated npm
   `opencode-linux-x64@1.18.35` via `OPENCODE_BIN`; no V2 compatibility is claimed.
 
-### Phase 7 disposition: F10/F11 fixed
+### Phase 7 initial disposition: F11 fixed; F10 required the verified follow-up below
 
 - Four evaluators per controller cover evidence collection and model transport;
   queued work uses native-front priority and round-robin root service. Abort and
   deadline-visible completion retain leases through actual evaluator settlement.
+  This is callback settlement, not all underlying transport settlement; the final
+  completeness review below reproduces that gap and same-root starvation.
   Waiting work is removed on disable/deletion/disposal; retained fast reports keep
   their existing lifecycle. Tests cover 64-way fanout and noncooperative settlement.
 - Unchanged Enable retries persistence without invalidating the controller. Actual
@@ -1778,11 +1782,12 @@ contract. F33 remains dropped. Neither disposition claims an implemented fix.
   dialog. Startup absence is optional only until first publication; these fixtures
   now explicitly disable host auto-update. No approval assertion was weakened.
 
-### Phase 8 disposition: F16/F24/F26 fixed
+### Phase 8 initial disposition: F24/F26 fixed; F16 required the verified follow-up below
 
 - Terminal SSE refusal/filter/tool-call clears previews, drains well-framed usage,
   finalizes once and remains non-retriable. Framing/UTF-8/resource errors, abort and
-  the original deadline stop draining. Fourteen source integration cases include
+  the original deadline stop draining, except the post-finish content validation
+  gap reproduced in the final completeness review. Fourteen source integration cases include
   byte splits, real HTTP and malformed tails.
 - Nested stages inherit the exact parent deadline end. Tests control production
   sleep plus monotonic time, asserting precise jitter/Retry-After boundaries and
@@ -1878,3 +1883,140 @@ contract. F33 remains dropped. Neither disposition claims an implemented fix.
   `9962a49` transport/deadlines; `31f85d0` notification reconciliation; `7bdc84a`
   fixture reliability. F33 remains dropped and F34 deferred. F32 stays manual when
   host mouse tracking provides no physical hit ownership; no unsupported override.
+
+### Completeness review: F10 and F16 reopened, resolved by follow-up below (2026-10-12)
+
+Reviewed original acceptance criteria against current code, tests, commits and
+recorded host artifacts rather than relying on checkboxes. No additional unmet
+criteria were found for F01-F09, F11-F15 or F17-F31 within their documented scopes.
+The earlier all-complete summary was too broad. Three concrete gaps were reproduced:
+
+1. **F10 physical transport ownership:** `ownedReview` tracks the evaluator callback,
+   but `review()` rejects its abortable fetch wait before a noncooperative fetch
+   settles. Controller -> ownedReview -> actual reviewer source reproduced **12
+   unsettled fetch promises** under the nominal four-slot cap, after all 12 signals
+   had aborted. No network/provider exhaustion was measured. All promises and late
+   bodies were released after the probe. The separate body-cancel ownership boundary
+   is source-supported but was not experimentally exercised here.
+2. **F10 same-root fairness:** native-front selection falls back to session/request
+   ordering within a root. With the completed front permission still pending,
+   repeatedly arriving child work displaced an older root waiter through **31 slot
+   completions and 30 later arrivals**. Cross-root rotation and finite fanout draining
+   do not establish starvation-free background progress within one root.
+3. **F16 terminal finish semantics:** terminal-drain early returns omit finish-state
+   tracking. Both `content_filter -> content -> usage -> DONE` and
+   `refusal -> stop -> content -> usage -> DONE` retained later usage despite invalid
+   post-finish content. Each still made exactly one POST, rejected the report and
+   finalized once. This is a drain/accounting strictness gap, not approval bypass.
+
+Reproductions are retained as ignored review artifacts, not accepted regression tests:
+
+```sh
+node --import tsx --test --test-reporter=tap \
+  .runtime/completeness-f10/fetch-ownership.test.mts \
+  .runtime/completeness-f10/same-root-fairness.test.mts \
+  .runtime/completeness-f16/post-finish-content.test.mjs
+```
+
+An independent rerun produced **four expected assertion failures** demonstrating the
+three gaps. Output: `/tmp/opencode/completeness-reproductions.log`; per-probe captures
+are alongside the scripts. No production code changed during this review.
+
+- Fresh F01-F04 evidence/skill regression run: **26 passed**. Focused approval,
+  presentation and mode suites also passed, demonstrating these gaps were absent
+  from the existing acceptance coverage. Deadline/retry tests passed **15 per floor**
+  on Node 22.22.2 and 24.15.0 during review.
+- All **53** referenced runtime records exist: 52 passing records and one explicitly
+  documented historical failure followed by a passing rerun. No hosts were rerun.
+- The six desktop playback results exist in the earlier tool conversation, but no
+  retained standalone playback artifact was found. Historical full floor/mutation
+  runs likewise lack located disk logs; their recorded execution is not a new proof.
+- **F32:** investigation complete, compatibility fix deferred; mouse-disabled
+  automatic approval remains unavailable. **F34:** user-deferred, unimplemented.
+  **F33:** user-dropped, not fixed and not pending implementation scope.
+
+### F10/F16 follow-up: fixed and verified
+
+- Implementation commit: `c26cd1a`.
+- `TransportOwnership` tracks physical fetch continuations, response reads and body
+  cancellation through actual settlement. `ownedReview` carries that ownership on
+  the same bounded signal passed through production evidence and reviewer calls.
+  Late response cancellation is part of the original fetch lease, with no gap at
+  headers. Deadline-visible failures and usage finalization still return promptly;
+  the existing 3.5-second lifecycle drain budget remains bounded.
+- Additional production-context probing found nested stage expiry could also release
+  held project/session/delegation reads (four growing to eight). Nested deadlines now
+  inherit the lease and track actual callback settlement; parallel ancestry branches
+  are individually owned so one rejection cannot release a pending sibling. Seven
+  new source regressions first failed, then passed after this additional correction.
+- Transport retries and format corrections wait for prior physical cleanup within
+  the original deadline. A noncooperative operation can retain capacity indefinitely,
+  rather than allowing timed-out operations to multiply unnoticed.
+- Within each root, actual native-front work retains priority; other waiting reviews
+  now run FIFO. Cross-root round-robin remains intact. Continuous later child arrivals
+  no longer overtake earlier root waiters. The host fixture no longer incorrectly
+  requires all background work to follow lexicographic native ordering.
+- Terminal rejection draining records finish markers and rejects later content,
+  reasoning, metadata or conflicting finishes. Earlier usage survives invalid tails;
+  subsequent usage is excluded. Every terminal rejection remains one non-retried POST.
+- New tracked regressions exercise the actual Controller -> ownedReview -> reviewer
+  composition with held fetch/read/cancel operations, late response disposal, cleanup
+  before retries, parent cancellation and bounded shutdown. All four original review
+  reproduction assertions now pass. Independent source review plus **52 focused tests**
+  found no further gaps within the declared production contract.
+- Final `npm run check`: **1,258 source tests**, **118 helper tests**, typecheck/build.
+  Context/transport ownership, terminal, admission and deadline suites: **61 passed
+  on each Node 22.22.2 and 24.15.0**. Logs under `/tmp/opencode/`:
+  `f10-f16-final-check.log`, `f10-f16-final-node22.log`, `f10-f16-final-node24.log`.
+  `npm run check:package` passed reproducibility/exact archive checks; **9 offline
+  package/CLI tests passed**, logs `f10-f16-final-package.log`,
+  `f10-f16-final-package-smoke.log`. Final runner/helper changes: **118 helpers passed**.
+- Pinned OpenCode 1.18.35 follow-up host commands, all through `scripts/test-runtime.mjs`:
+  `smoke-review-admission.mjs fanout64` (`.runtime/runtime-run-hK5L2m/results.json`),
+  `smoke-streaming.mjs truncated --static --stats` (`runtime-run-y9ouKu`),
+  all **7 CI-profile cases** (`runtime-run-yR5hF3`), and `smoke-session-mode.mjs`
+  (`runtime-run-oFLWbL`), each with `results.json`. Fanout observed at most four
+  concurrent reviewer HTTP requests; noncooperative promise ownership is source-tested.
+
+### F32 V2 reinvestigation: no supported mouse-independent ownership API found
+
+- Exact release: OpenCode **2.0.26**, public **`@opencode/plugin@2.0.26`**, matching
+  OpenTUI **0.5.17**. [OpenCode source](https://github.com/anomalyco/opencode/tree/9b4ec5714d481559990db0a816d5dec19541a814)
+  pins that renderer; [matching renderer source](https://github.com/anomalyco/opentui/blob/6f0efd3330978d696b42db3d7d95d2042008312b/packages/core/src/renderer.ts)
+  still skips `addToHitGrid` when `useMouse` is false. Public `hitTest` therefore
+  cannot identify painted ownership independently of mouse input.
+- Reviewed official [migration](https://opencode.ai/v2/docs/migrate-v1),
+  [plugin migration](https://opencode.ai/v2/docs/build/plugins/migrate-v1),
+  [CLI plugins](https://opencode.ai/v2/docs/build/plugins/cli) and
+  [CLI settings](https://opencode.ai/v2/docs/cli/config), plus released plugin types
+  and host panel/focus implementation. `session.panel` focus/presentation reports
+  layout and focus selection, not physical ownership under another layer. The V2
+  public Dialog interface also lacks V1's open/depth observation accessors.
+- New `scripts/smoke-v2-mouse-proof.mjs` is a **synthetic public-API probe**, not a
+  migrated reviewer. Actual mouse-disabled native V2 host controls passed: visible,
+  command-palette-covered, permission-fullscreen-covered and restored. Same panel
+  owner stayed logically visible throughout; captured text disappeared under the
+  actual covers; all hit probes stayed unowned. Each state was held for four seconds.
+  One native permission, zero replies and zero execution; no mouse override.
+- Successful serialized runner command:
+  `OPENCODE_BIN=/home/user/.opencode/bin/opencode node scripts/test-runtime.mjs
+  smoke-v2-mouse-proof.mjs`. Results: `.runtime/runtime-run-yhMNFW/results.json`;
+  captures/observations: `.runtime/v2-mouse-proof-75Ed6B/`. An independent matching
+  native renderer experiment additionally proved mouse-enabled visible/covered/restored
+  ownership works; its output is retained there as `core-proof-results.json`.
+- Initial probe failures exposed unsupported direct-file plugin loading and a palette
+  dismissal race. The fixture uses a package `./tui` entry and waits for an actual
+  restored frame/base mode before invoking the public native fullscreen command.
+  The runner now enforces each selected fixture's exact declared host version and
+  records the measured version. Production CI fixtures remain pinned to 1.18.35;
+  mixed-version plans are rejected. The V2 probe requires no reviewer bundle.
+- **Disposition:** F32 remains a measured compatibility limitation, including V2.
+  A supported upstream mouse-independent painted-owner facility is still needed;
+  geometry, logical visibility and focus cannot safely substitute for it.
+- V2 compatibility would require a separate host-adapter migration: Plugin.define
+  setup/lifecycle, `@opencode/client`, data/event/location access, changed permission
+  and evidence shapes, dotted slots, route/theme/keymap APIs, storage location and
+  deletion-envelope validation. Released approval uses `decision: "once"`, not the
+  current guide example's `reply` field. No package/API pins or production approval
+  behavior were changed by this investigation; no complete V2 plugin compatibility
+  is claimed. **F34 remains user-deferred; F33 remains user-dropped.**
