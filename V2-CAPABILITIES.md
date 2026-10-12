@@ -1,8 +1,10 @@
 # V2 capability verification
 
-Status: native Code Mode, trusted native-tool installation and visible-root V2 automation approved.
-Production migration has not started. Section 3A of the migration plan supersedes
-the historical upstream recommendation below; remaining phase 0 gates are open.
+Status: scoped architecture approved, with production entrypoint/lifecycle work next.
+Native Code Mode, trusted native-tool installation, visible-root automation, shared
+companion setup, optional delegation omissions and uncertain-history retention are
+selected. See the plan's W7 contract. Remaining production acceptance gates are open;
+synthetic probes do not establish a completed migration.
 
 ## Selected research target
 
@@ -407,7 +409,9 @@ The fixture's candidate is deliberately not authoritative lineage. Restart/copy/
 database replacement, shared-service/multiple-terminal behavior, disconnect and
 stale-response controls remain open. No six-file packaging exception is needed
 for this verified minimal architecture; production worker/build integration and
-the companion setup decision still have their own gates.
+the companion setup decision still have their own gates. The user subsequently
+approved that setup, optional delegation omission and uncertain-history retention;
+this does not turn unverified lifecycle/lineage cases into passing tests.
 
 ### W2 preparation: public enforcement boundaries
 

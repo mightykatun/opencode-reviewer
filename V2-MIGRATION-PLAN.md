@@ -1,6 +1,6 @@
 # OpenCode V2 migration plan
 
-Status: visible-root automation, trusted native-tool installation and native Code Mode selected; remaining phase 0 evidence/lifecycle gates open.
+Status: scoped V2 architecture selected; Phase 1 entrypoint/lifecycle work next. Unverified production acceptance gates remain open.
 Prepared: 2026-10-12.
 Revised: 2026-10-12, following the user's requirement that upstream changes are unavailable.
 Baseline: `v1.0.2` (`7cd1e561aea594ab9c7a99a32f30568579098747`), the final
@@ -24,29 +24,29 @@ Current execution tasks (resumed 2026-10-12; completed reading gates retained):
   - [x] Establish representative provider/catalog acceptance or an explicit release gate.
   - [x] Run fixture and helper checks and record exact artifacts.
   - [x] Commit the verified W1 fixture increment (`test: verify stock V2 direct-tool compatibility probes`).
-- [ ] W2: establish controlled-profile restrictions and obtain trust-model decision.
+- [x] W2 disposition: trusted native installation, stock Code Mode and no guessed origin/linkage.
   - [x] Verify MCP normalization collision, metadata-identical replacement and native-looking alias execution.
   - [x] Verify retained mappings across public registration reload/disposal; reuse the recorded shadow-shell negative control.
   - [x] User accepted the native-tool installation trust assumption.
   - [ ] Resolve any additional MCP mapping/skill snapshot restrictions separately.
-- [ ] W3: prove location/effective evidence and obtain per-kind scope decisions.
+- [x] W3 disposition: continuously observed direct evidence; missing mandatory evidence stays manual, including unproven skill instructions.
   - [x] Probe concurrent late shell rewrites, skill catalog reload and continuously observed moved-session location.
   - [x] Probe exact pending edit preview and the earlier external-directory stage.
   - [x] Apply the user's "keep it simple" direction to skills: no extra catalog-mutation assumption or revision-guard subsystem; missing exact main instructions remains manual.
   - [ ] Resolve immutable final evidence, reconnect/reload recovery and category scope.
-- [ ] W4: prove delegation subset and obtain remaining representation decisions.
+- [x] W4 disposition: omit unavailable optional delegation; do not introduce an ordered-input substitute.
   - [x] Verify native initial/resumed/nested delegation, tool-only continuation and coalesced steer/synthetic inputs excluding queued follow-up.
   - [ ] Resolve unproven exact-delegation handling and remaining lifecycle cases.
-- [ ] W5: prove presentation/coverage and obtain descendant-route decision.
+- [x] W5 disposition: synthetic physical path verified; visible-root contract selected, with production acceptance in Phase 3.
   - [x] User selected visible-root presentation for V2 automatic approval.
   - [x] Verify synthetic root Markdown/frame/hit proof and descendant, hide, modal, fullscreen, narrow and mouse-disabled controls.
   - [x] Verify native root queue includes deep descendants and uses root-first/public-family order.
   - [ ] Verify root physical proof and descendant cancellation/return behavior.
-- [ ] W6: prove lineage/absence and packed companion lifecycle/configuration.
+- [x] W6 disposition: five-file shared companion selected; retain history without proven deletion ownership.
   - [x] Verify five-file packed shared entrypoint, lazy CLI rendering, scoped RPC and location/CLI lifecycle.
   - [x] Verify typed direct-server absence and read/set initialization-race negative controls.
   - [ ] Resolve durable lineage and remaining service/connection lifecycle gates.
-- [ ] W7: reconcile approved contracts before any dependent production port.
+- [x] W7: reconcile the scoped production contract below before dependent production work.
 - [ ] Implement and verify Phases 1-6 sequentially against their existing exits.
 - [ ] Keep evidence/checkmarks current and commit verified increments.
   - [x] Commit the mapping/effective-evidence/root-proof increment (`f847799`).
@@ -92,6 +92,43 @@ the user answered **"keep it simple"**. Do not add that assumption or a speculat
 revision-guard subsystem. Apply the existing mandatory-evidence rule: skill requests
 whose exact main instructions cannot be established remain manual. No new source
 of immutable skill evidence is claimed.
+
+The user then explicitly selected **"Use the companion"**, **"Omit unavailable
+delegation"** and **"Retain uncertain history"**. This approves server configuration
+plus global CLI configuration, factual omission of unproven optional immediate
+delegation while preserving root intent and verified operation evidence, and
+retention instead of offline deletion when durable ownership is uncertain.
+Exact live deletion events remain usable only within their proven scope.
+
+### W7 scoped production contract
+
+The W1-W6 parent checkmarks above are dispositions, not claims that every proposed
+probe passed. Untested scenarios remain unchecked and cannot establish release
+coverage. Implement the following selected scope:
+
+1. Stock 2.0.26, matching released public APIs, one five-file package with shared
+   server/CLI entrypoint and lazy CLI dependencies. No executor replacement or
+   direct-tool profile. Companion observation/RPC never makes approval decisions.
+2. Capture immutable copies of continuously observed direct-call identity/location.
+   Scope reads to the connected companion/location/epoch; missed capture, unknown
+   origin, ambiguous nested identity or missing mandatory operation evidence means
+   manual handling. Preserve exact pending scopes and source arguments. The native
+   classification/input trust assumptions are those explicitly accepted above.
+3. Native shell/edit/directory evidence uses the verified paths under those
+   assumptions. Optional definitions/delegation may be omitted factually. Never
+   synthesize exact delegation from temporal proximity. Mandatory unknown skill
+   instructions remain manual. Disabled/unsupported requests still own native order.
+4. Real root physical proof, root-first/full-family native priority and once-only
+   writes. Descendant routes cannot approve. Production countdown/fast/history-cover
+   races and tombstones are Phase 3 acceptance gates, not synthetic-probe successes.
+5. Keep process epochs distinct from persistent ownership. Preserve old history and
+   accumulated totals; no random read/set token, pathname or bare 404 grants offline
+   deletion authority. Retain uncertain records. Live deletion requires verified
+   connected scope and identity; multi-instance/reconnect cases remain Phase 4 tests.
+6. Phase 1 must prove the actual installed reviewer lifecycle, including partial
+   setup failure and repeated reload. The synthetic packed prototype establishes
+   feasibility only. File evidence must execute on the proven server filesystem,
+   never a same-named terminal-local path when co-location is unknown.
 
 - [x] 1. Read the complete plan and existing completion state.
 - [x] 2. Read referenced implementation, fixture, package and workflow files.
@@ -628,10 +665,10 @@ Decision record (checked only when explicitly supplied):
 
 - [x] Resolve tool presentation: keep native Code Mode; ambiguous nested calls remain manual (2026-10-12).
 - [x] Accept native-tool installation trust: no replacements/aliases or post-capture command rewrites (2026-10-12).
-- [ ] Approve any executor instrumentation, packaging exception or additional setup.
-- [ ] Accept precise delegation omissions/multiple-input representation, if needed.
+- [x] Approve the shared companion plus global CLI setup; no executor instrumentation or packaging exception selected (2026-10-12).
+- [x] Omit unavailable optional delegation; keep root intent and verified operation evidence (2026-10-12).
 - [x] Choose the descendant-route behavior: require visible-root presentation (2026-10-12).
-- [ ] Approve any remaining category or offline-maintenance limitation explicitly.
+- [x] Retain uncertain history when offline deletion ownership cannot be proven (2026-10-12).
 
 For a failed gate, report Expected/Found/Impact/Options with the smallest concrete
 behavior choice. Continue independent probes, but do not begin dependent production

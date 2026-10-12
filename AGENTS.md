@@ -152,6 +152,11 @@
   it simple". Keep requests manual when exact mandatory skill instructions are
   unavailable; do not add a speculative catalog revision-guard subsystem or assume
   catalog immutability. Ordinary optional-context omissions remain a separate policy.
+- The user approved the shared server companion plus global CLI setup, factual
+  omission of unavailable optional immediate delegation, and retention of history
+  when offline deletion ownership is unproven. Preserve root intent and mandatory
+  operation evidence. Exact live deletion events require proven connection/scope;
+  a random storage token, pathname or bare 404 is never deletion authority.
 
 ### Current V1 implementation
 
