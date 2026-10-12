@@ -127,7 +127,8 @@ not acceptance evidence for the distributed V2 archive.
   `@opencode/theme`. OpenTUI is 0.5.17 and Solid is 1.9.15, matching the host.
   The V1 implementation and fixtures remain migration inputs, targeting 1.18.35;
   do not count their source-test successes as V2 runtime verification. Check
-  `V2-MIGRATION-PLAN.md` for exact completed host checks and acceptance limits.
+  the archived plan with `git show 181245e:V2-MIGRATION-PLAN.md` for exact
+  completed host checks and acceptance limits.
   Use public APIs/slots, never private UI imports or native approval-dialog patches.
 - Package and plugin ID are `opencode-reviewer`. `src/tui.tsx` exports the default
   legacy `{ id, tui }` module. The build now starts at `src/plugin.ts`; its shared
@@ -159,8 +160,8 @@ not acceptance evidence for the distributed V2 archive.
 ### Approved V2 migration presentation contract
 
 - For the V2 port, the user selected **visible-root presentation** on 2026-10-12.
-  See `V2-MIGRATION-PLAN.md` section 3A.6 for the exact replacement and acceptance
-  cases. This supersedes the F34 hidden-route approval exception for V2 only; the
+  See `git show 181245e:V2-MIGRATION-PLAN.md`, section 3A.6, for the exact
+  replacement and acceptance cases. This supersedes the F34 hidden-route approval exception for V2 only; the
   V1 implementation and historical F34 verification below remain the baseline.
 - V2 normal and fast automatic replies require the root conversation route and
   actual physical presentation proof. Descendant browsing permits no automatic
@@ -250,8 +251,8 @@ not acceptance evidence for the distributed V2 archive.
   must not create messages or model calls. Re-enable uses a fresh pending snapshot
   and must preserve canceled/uncertain-approval tombstones until native resolution.
 - F34's root-only presentation and same-root route exception below govern both
-  normal and fast mode. See `AUDIT.md`'s "F34 confirmed replacement contract" and
-  implementation disposition for scope, acceptance checks and verification.
+  normal and fast mode. In `git show v1.0.2:AUDIT.md`, see "F34 confirmed replacement
+  contract" and its implementation disposition for scope, acceptance checks and verification.
 - Normal auto-approval needs a completed, validated Safe assessment. Final Markdown
   highlighting and a matching painted frame are required outside the F34 same-root
   descendant-route exception. Only opt-in `fastMode` with `autoApprove` may approve
