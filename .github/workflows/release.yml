@@ -83,6 +83,9 @@ jobs:
             /scripts/smoke-v2-contracts.mjs
             /scripts/smoke-v2-catalog.mjs
             /scripts/smoke-v2-direct-tools.mjs
+            /scripts/smoke-v2-profile-mapping.mjs
+            /scripts/smoke-v2-effective-evidence.mjs
+            /scripts/smoke-v2-root-presentation.mjs
             /scripts/smoke-v2-sidebar-state.mjs
             /scripts/smoke-style-retirement.mjs
             /scripts/smoke-approval-recovery.mjs

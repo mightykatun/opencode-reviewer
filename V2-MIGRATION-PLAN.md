@@ -25,10 +25,16 @@ Current execution tasks (resumed 2026-10-12; completed reading gates retained):
   - [x] Run fixture and helper checks and record exact artifacts.
   - [x] Commit the verified W1 fixture increment (`test: verify stock V2 direct-tool compatibility probes`).
 - [ ] W2: establish controlled-profile restrictions and obtain trust-model decision.
+  - [x] Verify MCP normalization collision, metadata-identical replacement and native-looking alias execution.
+  - [x] Verify retained mappings across public registration reload/disposal; reuse the recorded shadow-shell negative control.
+  - [ ] Reconcile the remaining installation trust assumptions with the user.
 - [ ] W3: prove location/effective evidence and obtain per-kind scope decisions.
+  - [x] Probe concurrent late shell rewrites, skill catalog reload and continuously observed moved-session location.
+  - [ ] Resolve immutable final evidence, reconnect/reload recovery and category scope.
 - [ ] W4: prove delegation subset and obtain remaining representation decisions.
 - [ ] W5: prove presentation/coverage and obtain descendant-route decision.
   - [x] User selected visible-root presentation for V2 automatic approval.
+  - [x] Verify synthetic root Markdown/frame/hit proof and descendant, hide, modal, fullscreen, narrow and mouse-disabled controls.
   - [ ] Verify root physical proof and descendant cancellation/return behavior.
 - [ ] W6: prove lineage/absence and packed companion lifecycle/configuration.
 - [ ] W7: reconcile approved contracts before any dependent production port.
@@ -295,9 +301,9 @@ Determine which restrictions the public APIs can actually enforce or detect; lis
 the remainder as trust assumptions. Do not advertise automatic detection of every
 unsupported transform or silently classify an unknown request as native.
 
-- [ ] Probe the controlled native, custom and MCP mappings, including sanitized
+- [x] Probe the controlled native, custom and MCP mappings, including sanitized
   name collisions, aliases, registration reload and native-looking custom actions.
-- [ ] Reuse `shadow-shell` as a negative control. It must either be excluded by a
+- [x] Reuse `shadow-shell` as a negative control. It must either be excluded by a
   genuinely enforced profile boundary or demonstrate the profile's documented
   reliance on audited configuration. A name/schema comparison is not a passing fix.
 - [ ] Decide whether the user accepts the controlled-profile trust model.
@@ -306,6 +312,15 @@ unsupported transform or silently classify an unknown request as native.
 
 **Parity disposition:** conditional on a restricted installation; unrestricted
 native/custom/MCP parity on 2.0.26 remains unproven.
+
+W2 local evidence: `smoke-v2-profile-mapping.mjs` passed in
+`.runtime/runtime-run-ARUSbK/results.json`. Both raw MCP catalogs normalize to one
+effective entry; replacing its executor leaves all public descriptive fields
+identical. A same-object `read` alias executes a custom target while the durable
+tool name remains `read`. Retained requests execute their old mappings after
+registration reload/disposal. The existing `shadow-shell` observation remains a
+negative control, not excluded by any newly enforced boundary. The trust decision
+and plugin-unload coverage remain open; no pending permissions were used by W2.
 
 ### 3A.3 Blocker 2: Code Mode nested-call identity
 
@@ -408,6 +423,10 @@ Treat the evidence kinds separately:
 
 - [ ] Probe a moved session, late argument rewrite, concurrent shells, registry
   replacement between model dispatch and permission, and skill reload after selection.
+  - [x] W2 executor replacement after dispatch, without pending permissions.
+  - [x] W3 description reload, concurrent late shell rewrites and pending skill reload.
+  - [x] Continuously observed move after interruption, retaining A/B location captures.
+  - [ ] Executor replacement across a pending-permission boundary and active-step move/reconnect cases.
 - [ ] Evaluate executor instrumentation only if observation cannot capture the
   boundary. It would be a separate architecture decision because it changes tool
   registrations. It must preserve arguments, results, signals and execution count,
@@ -427,6 +446,15 @@ Treat the evidence kinds separately:
 - [ ] Preserve deadlines, abort propagation, whole-item limits, descriptor/symlink
   checks and actual I/O ownership. An evidence RPC accepts scoped identities, not
   arbitrary executable code or unrestricted paths.
+
+W3 local evidence: `smoke-v2-effective-evidence.mjs` passed for `shell-rewrite`,
+`skill-reload` and `moved-location` in `runtime-run-1LYaH4`, `runtime-run-iQzsxp`
+and `runtime-run-13RyMC`. Stored source inputs precede the observed rewrites; final
+shell-hook command/cwd observations still have no call ID. The current skill
+catalog can change A to B while the exact request remains pending. Continuously
+observed companion locations distinguish A/B for the same moved session, without
+reconstructing missed captures. All permissions were interrupted, never replied to.
+These are verified capability boundaries, not solved final-evidence guarantees.
 
 **Parity disposition:** live location capture and bounded evidence transport are
 plausible. Mandatory final arguments, native skill snapshots and recovery after
@@ -494,6 +522,8 @@ passing parity tests. Root frame/coverage verification is still pending.
 - [x] Dispose the hidden-route sidebar-state gap through the approved visible-root contract.
 - [ ] Test root frames/highlighting, modal/native fullscreen, tabs, narrow widths,
   history cover and mouse-disabled controls independently from sidebar state.
+  - [x] Synthetic root-sidebar/app physical proof and native cover controls with mouse on/off.
+  - [ ] Production history cover, tabs and controller cancellation/approval boundaries.
 - [x] Obtain the chosen route contract before porting F34 behavior.
 - [ ] Retain root-only live/history display and all cancellation/uncertain-write
   tombstones. Never force sidebar visibility, navigate to root to probe state,

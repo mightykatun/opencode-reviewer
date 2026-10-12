@@ -163,6 +163,122 @@ The user's subsequent
 direction is goal-first V2 adaptation, recorded in the migration plan; it is not
 recorded as acceptance of particular installation restrictions.
 
+### W2 executed mapping boundaries
+
+```sh
+OPENCODE_BIN=/tmp/opencode/reviewer-host-2.0.26/node_modules/@opencode/cli-linux-x64/bin/opencode node scripts/test-runtime.mjs smoke-v2-profile-mapping.mjs
+```
+
+Pass: `.runtime/runtime-run-ARUSbK/results.json`.
+Protocol observations/captures: `.runtime/v2-profile-mapping-2u0r8w/`.
+
+- Both `a.b/echo` and `a_b/echo` publish identical catalogs; one `a_b_echo` survives.
+  Actual endpoint calls identify the surviving server, without assuming ordering.
+- An Effect transform replaces that executor while preserving every public
+  descriptive field. Subsequent calls return the custom marker instead of MCP.
+- A same-object context alias advertises a custom target as `read`. Before-hooks
+  and durable tool items say `read`; after-hooks and actual results identify the
+  custom target. The native registry `read` entry remains unchanged.
+- Held MCP and custom model-request snapshots retain their original executors
+  across later replacement, revision reload and disposal. Future requests restore
+  the original MCP/native mappings. Nine calls finish with asserted durable and
+  model-facing markers; no permission request/reply occurs.
+- The fixture uses an initial isolated MCP allow rule. It proves mapping ambiguity,
+  not pending-permission provenance or an enforceable installation seal. Existing
+  `shadow-shell` results remain the pending native-looking negative control.
+
+Contrary fixture observations were retained: `runtime-run-XkxmXe` showed native
+input repair removing non-read-shaped alias arguments before alias resolution;
+`runtime-run-vEIESm` showed a custom output without a declared output schema failing
+before the expected after-hook. The final fixture uses native read-shaped input
+and an explicit custom output schema. `runtime-run-s5tuU6` failed before host startup
+because a version check had created non-private state directories; final setup
+creates private state ancestors first. None is recorded as a host capability pass.
+
+### W3 executed effective-evidence boundaries
+
+Invoke each scenario with the same pinned host prefix above and
+`node scripts/test-runtime.mjs smoke-v2-effective-evidence.mjs <scenario>`:
+
+| Scenario | Runner result | Observations/captures |
+| --- | --- | --- |
+| `shell-rewrite` | `.runtime/runtime-run-1LYaH4/results.json` | `.runtime/v2-effective-evidence-shell-rewrite-sWDYKS/` |
+| `skill-reload` | `.runtime/runtime-run-iQzsxp/results.json` | `.runtime/v2-effective-evidence-skill-reload-fqrRQW/` |
+| `moved-location` | `.runtime/runtime-run-13RyMC/results.json` | `.runtime/v2-effective-evidence-moved-location-hQaUpi/` |
+
+All three pass with pending-window checks, zero replies and zero shell execution.
+Interruption removes the requests; CLI cleanup stops publications.
+
+- Two concurrent direct shells have distinct exact source IDs and identical parsed
+  permission scopes. Their stored arguments precede later tool-hook changes. The
+  final shell hook changes command/cwd again, but exposes only command/cwd/env/shell/
+  timeout, with no invocation IDs. The fixture deliberately makes pre-shell-hook
+  inputs identical and never assigns final rows by timing or command-text joins.
+- Description reload after dispatch exposes current definition B while a retained
+  outgoing request still contains A. A current catalog is not a pending snapshot.
+- A controlled native skill permission-evaluation barrier occurs after selection
+  under catalog A. Once the permission is pending, public reload publishes B at
+  the same skill ID/path. The request and source item contain no selected content.
+  Selection of A relies on pinned native source ordering plus this controlled
+  barrier, not a newly exposed public snapshot or pre-approval result.
+- Live location-scoped hooks capture A and then B for the same session and relative
+  workdir. Captured A remains A after the public session moves to B. This case
+  interrupts before moving; active-step moves, observer restart/reconnect and
+  workspace/remote filesystem ownership remain unverified.
+
+Initial `runtime-run-nHfNBF` disabled the fixture transform because it incorrectly
+required options-object reference identity. The corrected probe requires options
+value equality while preserving executor/schema identity; all final scenarios pass.
+
+### W5 executed synthetic visible-root proof
+
+Invoke `smoke-v2-root-presentation.mjs mouse-on` or `mouse-off` through the pinned
+runner prefix above. Results:
+
+| Scenario | Runner result | Observations/captures |
+| --- | --- | --- |
+| `mouse-on` | `.runtime/runtime-run-WKgO7V/results.json` | `.runtime/v2-root-presentation-mouse-on-AJxfju/` |
+| `mouse-off` | `.runtime/runtime-run-J5SwNx/results.json` | `.runtime/v2-root-presentation-mouse-off-567g9D/` |
+
+The probe uses a real root sidebar anchor and an app-slot panel at its measured
+geometry, actual Markdown highlighting promises, renderer FRAME events and
+heading/body/footer hit ownership. Mouse-on establishes matching root proof;
+mouse-off establishes none, even when the report is visibly painted. No fixture
+changes mouse tracking. A timer never counts as a frame.
+
+Bounded windows verify no proof/panel on direct, sibling and nested descendant
+routes; narrow root/descendant hiding; native sidebar hide/show; palette, modal and
+permission fullscreen coverage; and fresh proof after restoration. Every case
+keeps the same native permission unresolved, with zero replies and shell writes.
+Initial `runtime-run-ycNjQu` retained a reactive route object in historical samples;
+the fixed probe copies route values at observation time instead of allowing old
+samples to change during navigation.
+
+This establishes a public synthetic physical-proof path, not production approval.
+Countdown cancellation/non-rearm, normal/fast verification races, retained reports,
+production history cover and tabs still require their implementation acceptance
+cases. W5's production presentation gate remains open.
+
+### W6 preparation: storage initialization boundary
+
+Pinned source inspection, not a completed lifecycle probe:
+
+- `packages/core/src/plugin/host.ts:609-635` namespaces storage solely by encoded
+  plugin ID. Location is not included, so instances at different locations share
+  the plugin's keys in the same host database.
+- `packages/core/src/kv.ts:36-58` implements storage in the host database. `set`
+  is an unconditional upsert. The public `get/set/remove/scan` interface has no
+  compare-and-set, insert-if-absent or transaction operation. Concurrent
+  read-then-set token initialization is therefore not a verified lineage protocol.
+- `dist/app.d.ts` exposes app name/version/channel, not durable database identity.
+  A process-global lock would not itself establish cross-process ownership or
+  copied-database continuity. Those remain W6 host-test/design gates.
+- `packages/plugin/src/host.ts:17-43` resolves server and TUI entries separately,
+  preferring `server` then the package root for the server and `tui` for the CLI.
+  A single archive file can be targeted by both exports at resolution time, but
+  this does not establish that one default module loads in both runtimes. A real
+  packed lifecycle test is still required before adopting that package shape.
+
 ### W2 preparation: public enforcement boundaries
 
 Source inspection at the pinned commit establishes the following inventory. It
