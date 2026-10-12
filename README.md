@@ -14,9 +14,8 @@ This plugin is meant to enable you to run sessions with less frequent input in a
 
 ![](./assets/recording.gif)
 
-Targets OpenCode V2 on Linux. Host version numbers do not gate plugin activation;
-the companion protocol and actual scoped API contracts govern review and approval.
-Verified host checks are recorded in the maintainer migration plan.
+For OpenCode V2 on Linux. The plugin checks the server companion's protocol and
+each request's data and scope rather than allowing only specific host versions.
 
 ## Install and config
 
@@ -156,47 +155,49 @@ The sidebar shows Safe, Unsafe, or Analysis unavailable. Explanations support
 Markdown and scrolling. If the sidebar is hidden, use OpenCode's Show sidebar
 command.
 
-The reviewer side panel appears only in the top-level conversation. Browsing its
-subagents, including nested subagents, hides the panel and prevents both normal
-and fast automatic approvals. Reviews may finish while hidden. A Safe report that
-has never started a normal countdown may first become eligible after returning to
-the root and receiving real presentation proof, with a fresh countdown. Leaving
-the root after a countdown starts permanently makes that request manual for the
-running controller, even after returning or disabling/re-enabling review.
+The reviewer panel appears only in the main conversation. Opening any subagent,
+including a nested one, hides the panel and prevents normal and fast auto-approval.
+Reviews may still finish while hidden. If a Safe report has never started a normal
+countdown, returning to the main conversation can start a fresh one once the host
+confirms the panel is visible. Leaving after a countdown starts cancels auto-approval
+for that request for the rest of that plugin run. Returning or disabling and
+re-enabling review won't restart it.
 
-Automatic approval requires mouse tracking for the host's painted-panel ownership
-checks. With mouse tracking disabled, reports remain available for manual review.
-The plugin never enables mouse tracking. It preserves sidebar visibility except
-after an explicit approval-notification click, when a root frame confirms the
-sidebar is absent before revealing it.
+Auto-approval requires mouse tracking so the host can check that the panel is
+visible and receives clicks. With mouse tracking off, you can still read reports
+and approve requests manually. The plugin doesn't enable mouse tracking or reveal
+a hidden sidebar unless you click an approval notification; it checks that the
+sidebar is absent from the main conversation before showing it.
 
-The category switches are retained, but the current V2 collectors do not support
-skill, MCP or custom-tool reviews. Missing mandatory skill instructions and unproven
-MCP/custom origin or catalog evidence leave these requests manual, not Safe.
+The skill, MCP and custom-tool options are still present, but these reviews aren't
+supported in V2. The reviewer can't get the required skill instructions or verify
+the source and catalog information for MCP and custom tools. Those requests need
+manual approval; they aren't rated Safe.
 
-Native Code Mode and its tool search remain enabled. Exactly linked native calls
-can be reviewed; ambiguously linked nested calls remain manual. The plugin assumes
-installed plugins preserve native tool meanings, do not replace or alias native
-executors, and do not rewrite commands after evidence capture.
+Code Mode and its tool search stay enabled. Native tool calls can be reviewed when
+the reviewer can match them exactly to their permission requests. Nested calls
+without an exact match need manual approval. This assumes other installed plugins don't change
+what native tools do, replace or alias their executors, or rewrite commands after
+the reviewer has captured them.
 
-Subagent requests carry the genuine latest root-user prompt. Exact immediate
-delegation is currently unavailable through the supported V2 evidence path and is
-factually omitted, not guessed from older tasks, sibling requests or queued follow-ups.
-Optional context omissions do not alone prevent review when mandatory operation
-evidence is verified. Context cannot override the review contract.
+Subagent reviews include the latest user prompt from the main conversation. The
+V2 evidence collector can't get the exact task passed to the requesting subagent,
+so it leaves that out rather than guessing from older tasks, sibling requests or
+queued follow-ups. Missing optional context doesn't prevent review if the required
+operation evidence is verified. Context can't override the review rules.
 
 With streaming enabled, Evaluating and its spinner disappear when a rating arrives.
-The rating remains provisional until the full response is validated. A retry
-clears the preview and restores the loading indicator. Normal auto-approval
-starts only after the full response is validated and rendered on the top-level
-conversation, with matching physical presentation proof.
+The rating is provisional until the full response passes validation. A retry
+clears the preview and brings back the loading indicator. Normal auto-approval
+waits for the full validated report and for the host to confirm that it's displayed
+in the main conversation.
 
-With `autoApprove: true` and `fastMode: true`, a parsed Safe rating approves the
-current eligible permission immediately, without a countdown or waiting for the
-rest of a streamed report. It still requires native front-of-queue ownership and
-physical presentation on the top-level conversation. Subagent browsing, explicit
-sidebar hiding, covering dialogs and report history prevent fast approval. Without
-streaming, fast mode waits for the full validated response and then skips the countdown.
+With `autoApprove: true` and `fastMode: true`, a parsed Safe rating can approve the
+request before the streamed report finishes, without a countdown. The request must
+be first in OpenCode's permission queue, and the host must confirm the panel is
+visible in the main conversation. Browsing a subagent, hiding the sidebar or
+covering it with a dialog or report history prevents fast approval. Without
+streaming, fast mode waits for the full validated response, then skips the countdown.
 
 After confirmed fast approval, the live panel shows **Auto-approved; finishing
 report…** and stays ahead of newer requests until its report finishes. Hiding the
@@ -219,11 +220,12 @@ limits and overall timeout still apply. Retried requests can incur additional
 provider charges, and unreported usage remains unknown.
 
 During an auto-approval countdown, click the countdown to allow once immediately,
-or Cancel to leave the request manual. Hiding or covering the panel also cancels
-that request's countdown, except for this plugin's physically proven report-history
-cover on the root route. Browsing any subagent or switching conversations cancels it.
-Returning, remounting or re-enabling cannot revive a canceled request. An uncertain
-approval write also remains manual and is never retried.
+or Cancel to leave the request manual. Hiding or covering the panel cancels the
+countdown too, except when this plugin's report history is displayed in the main
+conversation and passes the host's visibility checks. Browsing any subagent or
+switching conversations cancels it. Returning, reopening the panel or re-enabling
+review won't restart a canceled countdown. If the plugin can't confirm the result
+of an approval attempt, it leaves the request manual and never retries that attempt.
 Cancel before using native Allow always or rejection
 forms; those forms alone do not stop the countdown.
 Positive countdowns add a 200 ms initial grace and then update on remaining-time
@@ -234,9 +236,9 @@ descendants. The setting is saved for resume. Both commands are also in the comm
 palette. Disabling stops unapproved reviews and countdowns while native permission
 controls remain available. Already-approved fast-mode reports finish in the background.
 
-After a server reconnect or companion replacement, the old controller stops reviews
-and automatic replies until the plugin is reloaded or OpenCode is restarted. It does
-not mix old permission caches with a new connection.
+If the server reconnects or the companion is replaced, reviews and auto-approval
+stop. Reload the plugin or restart OpenCode to resume. This keeps cached permissions
+from the old connection separate from the new one.
 
 ### Report history
 
@@ -256,20 +258,21 @@ native Allow once replies whose submitting client cannot be identified. History
 keeps the latest completed report, which can differ from the report that caused
 approval in another window.
 
-Normal-mode history cover preserves an ongoing countdown only on
-the root route, with physical proof of the history heading/footer and rendered
-report. A newly completed Safe review may become eligible under that same proof.
-Native dialogs, including the command palette, still cancel an active countdown;
-opening history afterward cannot restart it. Fast mode has no history-cover
-exception. Browsing saved reports never approves a request or replays notifications.
+In normal mode, opening report history can leave a countdown running in the main
+conversation. The host must confirm that the history heading and footer are visible
+and the review report is rendered. A newly completed Safe review can become eligible
+for a countdown under the same checks. OpenCode dialogs, including the command palette, still cancel an
+active countdown; opening history afterward won't restart it. History blocks fast
+approval. Browsing saved reports doesn't itself approve requests or replay notifications.
 
-Reports are saved only after a qualifying permission resolution. Saved reports
-can contain private text and are retained in OpenCode's local state directory
-unless deletion ownership is proven. A conversation deletion does not authorize
-purging reports without proven server/scope ownership. Uncertain offline deletions
-retain history; a missing list entry or bare 404 is not enough. Windows using the
-same state directory share this history, partitioned by host directory and root
-conversation. Uncommitted reports can be lost on shutdown or prolonged storage failure.
+Reports are saved only after a permission resolution that qualifies for history.
+They can contain private text and are kept in OpenCode's local state directory.
+The plugin deletes them only when it can verify that a deleted conversation belongs
+to the matching server and scope. If that can't be verified after an offline
+deletion, it keeps the history; a missing list entry or bare 404 isn't enough.
+Windows using the same state directory share history, grouped by host directory
+and main conversation. Reports not yet saved can be lost on shutdown or during a
+prolonged storage failure.
 
 ### Usage totals
 
