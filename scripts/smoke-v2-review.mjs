@@ -1050,8 +1050,16 @@ try {
        await negativeWindow("never-armed normal response is held on a native child route", [request], [], null, 1, 1500, hiddenDescendant)
        presentationEvidence = { lastRootProof: await presentation() }
      }
-     finishReview()
-     if (hiddenComplete) {
+      if (scenario === "normal-cancel") {
+        // Plugin setup and physical paint can precede native terminal startup.
+        // Keep the model response held until that startup notice clears, so the
+        // real mouse-input test does not race the host's input initialization.
+        await until("native startup settled before the Cancel input test", record =>
+          record?.frame && record.mouse && record.mode === "base" && !capture().includes("Finishing startup"))
+        await saveCapture("cancel-input-ready")
+      }
+      finishReview()
+      if (hiddenComplete) {
        presentationEvidence.hiddenAccepted = await until("actual normal final acceptance while native child route hides reviewer", async () => {
          const facts = await coverState(), saved = await readHistory()
          if (!facts.events.some(event => event.type === "reviewAccepted" && event.accepted)
