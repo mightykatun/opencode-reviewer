@@ -202,7 +202,7 @@ export class SessionModes implements SessionModeGate {
     this.values.set(root, enabled)
     return this.store.write(root, enabled)
   }
-  deleted(id: string) {
+  deleted(_id: string) {
     this.ancestryRevision++
     // Cached distances do not retain every intermediate edge. An intermediate
     // deletion therefore invalidates all bounded suffixes, not just root matches.

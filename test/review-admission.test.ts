@@ -253,7 +253,7 @@ for (const stage of ["evidence", "model"] as const) test(`fanout64 ${stage} dead
   t.mock.timers.enable({ apis: ["setTimeout"] })
   let evidence = 0, models = 0, actual = 0, maximum = 0, accepted = 0
   const physical: ReturnType<typeof deferred<void>>[] = []
-  const controller = new Controller((req, parent, identified) => ownedReview(parent, 100, async signal => {
+  const controller = new Controller((_req, parent, identified) => ownedReview(parent, 100, async signal => {
     evidence++; actual++; maximum = Math.max(maximum, actual)
     const held = deferred<void>(); physical.push(held)
     try {

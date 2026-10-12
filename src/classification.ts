@@ -5,7 +5,7 @@ import type { ReviewKind } from "./types.js"
 
 export type ReviewOptions = Pick<Config, "reviewBash" | "reviewEdits"> & Partial<Pick<Config, "reviewSkills" | "reviewMcp" | "reviewCustomTools" | "reviewExternalDirectories">>
 // Native registry IDs in the supported host, not a heuristic list of tool names.
-export const nativeTools = new Set(["invalid", "question", "bash", "read", "glob", "grep", "edit", "write", "task", "webfetch", "todowrite", "websearch", "skill", "apply_patch", "execute", "lsp", "plan_exit"])
+const nativeTools = new Set(["invalid", "question", "bash", "read", "glob", "grep", "edit", "write", "task", "webfetch", "todowrite", "websearch", "skill", "apply_patch", "execute", "lsp", "plan_exit"])
 const resources = new Set(["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"])
 const sanitize = (name: string) => name.replace(/[^a-zA-Z0-9_-]/g, "_")
 

@@ -65,7 +65,7 @@ export async function loadRootMessages(client: OpencodeClient, sessionID: string
 }
 
 /** Filter synthetic and attributed text using the public part metadata. */
-export function findUserPrompt(messages: readonly { info: Message; parts: Part[] }[], sessionID?: string): { text: string | null } | undefined {
+function findUserPrompt(messages: readonly { info: Message; parts: Part[] }[], sessionID?: string): { text: string | null } | undefined {
   const ordered = messages.filter((m) => m.info.role === "user" && (sessionID === undefined || m.info.sessionID === sessionID)).toSorted((a, b) => b.info.time.created - a.info.time.created || (a.info.id < b.info.id ? 1 : a.info.id > b.info.id ? -1 : 0))
   for (const message of ordered) {
     const owned = message.parts.filter((p) => p.sessionID === message.info.sessionID && p.messageID === message.info.id)

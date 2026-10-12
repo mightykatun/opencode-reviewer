@@ -1,6 +1,49 @@
-# Notification and Approval Ordering Audit
+# Notification and Approval Ordering Audit (Archived)
 
-## Handoff summary
+## Archive status and current disposition
+
+This is the **2026-10-09 snapshot**, not current fixing instructions. The original
+observations, reproductions, severity table, recommendations and proposed checks
+below describe commit `0aaf9d6184f7de5f705e46bbf1881987657d0fbe`. In particular, the
+inline reproduction asserts historical buggy behavior and is not a current test.
+Old source line links describe that commit; use the named symbols to navigate it.
+
+[AUDIT.md](AUDIT.md) is the current issue/disposition ledger. Its finding text also
+has historical context: consult the linked phase dispositions for implemented fixes.
+The following source/test comparison was verified on 2026-10-12:
+
+| Historical ID | Current disposition and evidence |
+| --- | --- |
+| NA-01 | Fixed at the actual write callback: `Controller.approveNow` rechecks eligibility, revision and exact request before invoking `once`; dispatch facts follow invocation. See [controller](src/controller.ts) and the microtask dispatch-reservation regressions in [approval tests](test/approval.test.ts) and [fast-mode tests](test/fast-mode.test.ts). |
+| NA-02 | The original stale-revision failure now recovers through bounded fresh reads. The later pre-dispatch read-error/budget variant was tracked separately as F12 and is also fixed; see [Phase 2 disposition](AUDIT.md#phase-2-disposition-f12-f13-fixed-2026-10-10), [approval tests](test/approval.test.ts) and [notification/controller tests](test/notification-controller.test.ts). |
+| NA-03 | Two occupied player slots now queue eligible audio rather than immediately dropping it. [Audio scheduling](src/notification-audio.ts) and the [8:1 actionable/routine queue](src/notification-queue.ts) retain abort ownership and root rotation. [Linux notification tests](test/notification-linux.test.ts) cover held players and policy/backend sound-only playback, resolution, preemption, deletion and disposal. |
+| NA-04 | Event-born questions are readmitted on healthy polling and ancestry-capacity release, retaining birth/visit eligibility. See `refreshQuestions`, `lookup` and `admissions` in the [host bridge](src/notification-host.ts), plus failed-ancestry and third-question capacity regressions in [host tests](test/notification-host.test.ts). |
+| NA-05 | Question delivery waits for the healthy permission baseline; baseline requests remain silent blockers. [Host tests](test/notification-host.test.ts) cover held, failed and event-raced reads for root and child permissions. The later permission-attention variant F17 and missed-question completion F18 are fixed separately; see [Phase 9 disposition](AUDIT.md#phase-9-disposition-f17f18-fixed). |
+| NA-06 | Action receipt starts a click lease and aborts the previous activation before asynchronous desktop completion. See the [Linux backend](src/notification-linux.ts), [host bridge](src/notification-host.ts), and delayed-EOF/held-activation/route-invalidation regressions in [Linux](test/notification-linux.test.ts) and [host tests](test/notification-host.test.ts). |
+
+### Remaining limits
+
+- These dispositions cover the named source interleavings, not every possible cause
+  of a Safe-but-manual report. Actual visibility/priority loss, explicit cancellation
+  and uncertain dispatched writes retain durable manual state. Unsettled reads keep
+  their physical slot; recovery requires fresh identical pending state and cannot
+  guarantee progress during a continuing outage.
+- Audio has two active slots and at most 64 queued jobs. A full queue can still
+  reject new playback; missing players, decoding failures and desktop failures do
+  not guarantee delivery. The NA-03 fix covers contention within those bounds.
+- Admission remains bounded by visited-root/event ownership and available ancestry
+  reads. Baseline/pre-visit requests do not become notification births, and unknown
+  ordering deliberately withholds attention until healthy reconciliation.
+- Mocked processes do not prove human-audible sound or actual GNOME window/tab focus.
+  [Phase 10](AUDIT.md#phase-10-disposition-f19-f22f27-f28-fixed) records six successful
+  normalized desktop playback cases and player exits, with human perception,
+  click/focus and live desktop banners still untested there. No host or desktop
+  session was run for this archive update.
+- Other current limitations, including mouse-disabled presentation (F32) and the
+  user-deferred root-only presentation scope (F34), retain their dispositions in
+  [AUDIT.md](AUDIT.md); this archive does not close them.
+
+## Historical handoff summary
 
 - **Audited commit:** `0aaf9d6184f7de5f705e46bbf1881987657d0fbe` (`v1.0.0` manifests).
 - **Audit date:** 2026-10-09.
@@ -12,7 +55,8 @@
   produce "Session needs attention" and remain unapproved.
 - **Result:** six source-level issues reproduced with deterministic in-memory mocks.
   **NA-02 directly reproduces the user's additional symptom.**
-- **Implementation status:** findings are open. This document is a fixing-agent handoff.
+- **Implementation status at the audited commit:** findings were open. This was a
+  fixing-agent handoff; current dispositions are listed above.
 
 P1 means high priority because an approval eligibility boundary can be crossed.
 P2 means medium priority because automation, notification delivery, or navigation can
@@ -105,7 +149,7 @@ Read `AGENTS.md` before implementing. In particular:
 10. **Notification work remains observational.** Desktop/audio failures must not
     affect reviews, approval timing, history attribution, or approval writes.
 
-### Current intended sound timing
+### Sound timing at the audited commit
 
 The policy chooses whether a message requests sound. For a banner plus sound,
 `LinuxNotifications.show` prepares the sound before starting `notify-send`, then

@@ -16,13 +16,14 @@
 - **User-requested presentation change:** keep the reviewer side panel visible only
   in the top-level conversation. Navigating into its subagents should hide the
   panel while normal review countdowns and automatic approvals continue (F34).
-- **Implementation status:** F01-F04, F06-F09, F12-F15, F23 and F25 have post-fix
-  dispositions below. F05 is now complete; F32 has a measured compatibility disposition.
-  F33 was dropped and F34 deferred by the user; remaining findings are open. Historical audit
+- **Implementation status:** Phases 1-2 and 4-11 are complete with post-fix
+  dispositions below. F31 has measured retirement improvements; F32 retains a
+  measured mouse-disabled compatibility limitation. F33 was dropped and F34
+  deferred by the user. Historical audit
   reproductions assert the original failure; only implementation-disposition
   results describe verification of fixes.
-- **Repository changes by this review:** this document only. `AUDIT.md` was already
-  empty when this handoff was requested. No production fixes have been applied.
+- **Original audit changes:** this document only. Subsequent implementation commits
+  and verification are recorded in the disposition sections below.
 
 Read `AGENTS.md` before implementing. Source references below describe the audited
 commit; verify them after edits. Preserve user work and do not infer that historical
@@ -1439,11 +1440,11 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [x] Measure desktop playback success per case, retaining attempt diagnostics.
   - [x] Make startup budgets consistent and lifecycle paths portable.
   - [x] Verify helpers, exact failed runtime combinations and available desktop checks; commit.
-- [ ] Phase 11: measured cleanup and documentation (F29-F31).
-  - [ ] Remove only verified unused interfaces/bindings.
-  - [ ] Archive historical notification findings with verified current dispositions.
-  - [ ] Measure syntax-style retirement before deciding whether a change is needed.
-  - [ ] Record remaining limits, final verification and commits.
+- [x] Phase 11: measured cleanup and documentation (F29-F31).
+  - [x] Remove only verified unused interfaces/bindings.
+  - [x] Archive historical notification findings with verified current dispositions.
+  - [x] Measure syntax-style retirement before deciding whether a change is needed.
+  - [x] Record remaining limits, final verification and commits.
 
 For every implemented or investigated finding, append a concise disposition here:
 
@@ -1842,3 +1843,38 @@ contract. F33 remains dropped. Neither disposition claims an implemented fix.
     `runtime-run-9C8O9h`. Each contains `results.json`.
 - The shared isolated host environment now disables auto-update after a measured
   covering-dialog failure, making pinned-host verification independent of new releases.
+
+### Phase 11 disposition: F29/F30 cleanup; F31 measured retirement improvement
+
+- Consumer analysis removed unused exports `nativeTools`, `findUserPrompt` and
+  `reportedModel`, unused bindings and an unreachable desktop CLI fallback. Public
+  embedding seams and the mode-deletion signature remain intact. Both normal typecheck
+  and `--noUnusedLocals --noUnusedParameters` pass. `NOTIFICATION-AUDIT.md` explicitly
+  archives its original snapshot and links verified current dispositions.
+- Baseline actual-host style measurements showed transient retirement, not a proven
+  permanent leak: sustained global live rendering accumulated 32 retired styles and
+  3,234 native entries before idle released them. The default Markdown component now
+  synchronously hands styles to all descendants and retires detached styles without
+  waiting for unrelated global renderer idle; owner teardown ends future readers.
+- Independent review corrected an overbroad reader-fence claim: `highlightingDone`
+  exposes only the latest highlight. Safety relies on pinned default synchronous
+  callbacks and parser revision/destruction checks, not a universal all-reader fence.
+  The fixture covers overlapping parser A/B completions, delayed first highlighting
+  and nested descendants across replacement/disposal. Arbitrary custom asynchronous
+  `onHighlight`/`onChunks` replacement is not supported by this component; negative
+  controls explicitly reproduce two stale-style reads for that mutation seam.
+- Final `.runtime/style-retirement/result.json`: **255 allocations/destructions**,
+  zero final native entries, **zero default-path post-destroy reads**, 192 theme changes,
+  60 mounts, 421 stream updates and 863 frames. This synthetic app-slot fixture uses
+  actual built components and pinned highlighting; it is not a model-transport test
+  or proof of native heap/GC reclamation. Fresh parser-worker startup is not measured.
+- Final `npm run check`: **1,234 source tests**, **118 helper tests**, typecheck/build.
+  `npm run check:package` passed reproducible builds and the exact five-file archive;
+  **9 offline release/npm CLI checks passed**. No publication was performed.
+- Final pinned-host CI profile: all **7 cases passed**, with exact commands/results
+  in `.runtime/runtime-run-2MojTz/results.json`. This supplements the phase-specific
+  host cases above and does not claim the full runtime matrix.
+- Continuation commits: `64a03ad` legacy page rebuild; `9179fa3` admission/mode;
+  `9962a49` transport/deadlines; `31f85d0` notification reconciliation; `7bdc84a`
+  fixture reliability. F33 remains dropped and F34 deferred. F32 stays manual when
+  host mouse tracking provides no physical hit ownership; no unsupported override.

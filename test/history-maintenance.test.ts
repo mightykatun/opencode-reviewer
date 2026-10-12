@@ -169,7 +169,7 @@ test("live deleted-child lookup saturation retains only a dirty signal, recovery
   const pending: (() => void)[] = []
   let reads = 0
   const coordinator = new HistoryCoordinator(context.scope, {
-    ...f.store, onCommit: () => () => {}, query: async q => {
+    ...f.store, onCommit: () => () => {}, query: async () => {
       reads++; await new Promise<void>(resolve => pending.push(resolve)); throw Error("unavailable")
     },
   }, async () => { throw Error("deleted ancestry must not be required") })

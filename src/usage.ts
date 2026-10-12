@@ -11,7 +11,7 @@ const record = (value: unknown): Record<string, unknown> => value && typeof valu
 const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0
 const rate = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0
 /** Bounded historical metadata, independent of assessment validation and pricing. */
-export const reportedModel = (value: unknown): string | undefined => typeof value === "string" && value.trim()
+const reportedModel = (value: unknown): string | undefined => typeof value === "string" && value.trim()
   && !value.includes("\0") && Buffer.byteLength(value) <= HISTORY_TEXT_BYTES ? value : undefined
 const endpoint = (value: unknown) => {
   if (typeof value !== "string") return

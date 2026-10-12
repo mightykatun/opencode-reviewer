@@ -122,4 +122,4 @@ if (process.argv.includes("--all")) {
     }
     assert.ok(clicked, "no real click/activation was observed during the transient banner tests")
   } finally { await backend.dispose() }
-} else throw new Error("Use --all, --sounds or --click")
+}
