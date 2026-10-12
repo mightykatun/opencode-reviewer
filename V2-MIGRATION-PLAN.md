@@ -1,6 +1,6 @@
 # OpenCode V2 migration plan
 
-Status: execution started; phase 0 capability verification in progress.
+Status: phase 0 blocked on verified public-API gaps; awaiting scope/upstream guidance.
 Prepared: 2026-10-12.
 Baseline: `v1.0.2` (`7cd1e561aea594ab9c7a99a32f30568579098747`), the final
 OpenCode V1-compatible release. Current `main` also contains a subsequent README
@@ -11,11 +11,14 @@ edit. Preserve that work when starting implementation.
 ### Execution tracker
 
 - [x] 1. Read the complete plan and existing completion state.
-- [ ] 2. Read referenced implementation, fixture, package and workflow files.
+- [x] 2. Read referenced implementation, fixture, package and workflow files.
 - [x] 3. Derive ordered implementation tasks and acceptance gates.
 - [ ] 4. Implement sequentially and commit verified increments.
   - [ ] Phase 0: pin and probe public host capabilities; resolve architecture.
-    - [ ] Inspect exact installed host and released package contracts.
+    - [x] Inspect exact installed host and released package contracts.
+    - [x] Verify direct native request reads/reply, options and unload cleanup.
+    - [x] Reproduce custom replacement behind native-looking tool/catalog data.
+    - [x] Reproduce descendant auto/hide ambiguity and test disk/env alternatives.
     - [ ] Probe invocation/delegation, catalog provenance and pending evidence.
     - [ ] Probe lifecycle, queue, coverage, scope and reply/error events.
     - [ ] Record findings and resolve mandatory capability gaps.
@@ -26,8 +29,16 @@ edit. Preserve that work when starting implementation.
   - [ ] Phase 5: fixtures/inventory/CI updated alongside their features.
   - [ ] Phase 6: documentation and installed-archive verification.
 - [ ] 5. Verify each phase against its exit criteria before proceeding.
-- [ ] 6. Record completed items and concrete evidence incrementally.
-- [ ] 7. Escalate any unresolved mismatch with expected/found/impact/options.
+- [x] 6. Record completed items and concrete evidence incrementally.
+- [x] 7. Escalate any unresolved mismatch with expected/found/impact/options.
+
+Phase-0 evidence and exact commands are tracked in [V2-CAPABILITIES.md](V2-CAPABILITIES.md).
+The first verified probe increment is commit `c7546e1`. Released 2.0.26 contracts
+expose gaps in tool provenance, nested invocation identity, delegation linkage
+and terminal sidebar-state observation. Real-host direct/replacement and sidebar
+reproductions pass, and all 118 helper tests pass. See the capability document's
+escalation and exact artifact paths. Phase 0 remains incomplete; later phases
+remain gated rather than accepting inferred identities.
 
 Port `opencode-reviewer` to the public OpenCode V2 plugin and client APIs while
 preserving its existing review, approval, history, statistics and notification
@@ -423,7 +434,7 @@ playback or focus behavior.
 
 ## 6. Completion and handoff checklist
 
-- [ ] Exact V2 host/client/plugin/runtime versions and phase-0 findings recorded.
+- [x] Exact V2 host/client/plugin/runtime versions and phase-0 findings recorded.
 - [ ] Mandatory evidence, location and delegation questions resolved with public APIs.
 - [ ] CLI-only or documented companion architecture reconciled with package policy.
 - [ ] Production imports and active fixtures no longer rely on V1 API shapes.

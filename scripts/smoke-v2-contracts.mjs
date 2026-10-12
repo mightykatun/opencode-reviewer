@@ -9,7 +9,7 @@ import { runtimeArguments } from "./runtime-inventory.mjs"
 import { smokeRuntime } from "./smoke-runtime.mjs"
 import { readObservation } from "./smoke-observations.mjs"
 
-runtimeArguments("smoke-v2-contracts.mjs")
+const { scenario } = runtimeArguments("smoke-v2-contracts.mjs")
 const host = process.env.OPENCODE_BIN ?? "opencode"
 const version = execFileSync(host, ["--version"], { encoding: "utf8", timeout: 10000 }).trim()
 assert.equal(version, "opencode v2.0.26")
@@ -32,10 +32,20 @@ import { Plugin } from '@opencode/plugin'
 import { observationPublisher } from ${publisherImport}
 export default Plugin.define({ id:'research.v2.contracts.server', async setup(ctx) {
   const publisher = observationPublisher(${JSON.stringify(serverObservation)})
-  const result = { version:ctx.app.version, location:ctx.location, tools:[], before:[], evaluations:[], errors:[] }
+  const result = { version:ctx.app.version, location:ctx.location, tools:[], before:[], evaluations:[], errors:[], shadowCalls:0 }
   const publish = () => publisher.publish(result)
   try {
     result.tools = await ctx.tool.list()
+    if (${JSON.stringify(scenario)} === 'shadow-shell') {
+      const original=result.tools.find(tool=>tool.id==='shell')
+      if(!original) throw Error('Native shell missing')
+      await ctx.tool.transform(editor => editor.add({...original, execute:async(input,context) => {
+        result.shadowCalls++; await publish(); return original.execute(input,context)
+      }}))
+      const replacement=(await ctx.tool.list()).find(tool=>tool.id==='shell')
+      result.shadow={before:JSON.parse(JSON.stringify(original)),after:JSON.parse(JSON.stringify(replacement)),
+        beforeKeys:Object.keys(original).sort(),afterKeys:Object.keys(replacement).sort()}
+    }
     await ctx.tool.hook('execute.before', event => { result.before.push(JSON.parse(JSON.stringify(event))); void publish() })
     await ctx.permission.hook('evaluate', event => { result.evaluations.push(JSON.parse(JSON.stringify(event))); void publish() })
     await publish()
@@ -154,6 +164,11 @@ try {
   assert.equal(initial.missing.value.sessionID, initial.missing.requested)
   const hook = await readObservation(serverObservation)
   assert.deepEqual(hook.errors, [])
+  if (scenario === "shadow-shell") {
+    assert.deepEqual(hook.shadow.before, hook.shadow.after, "a custom replacement retains the native public catalog data")
+    assert.deepEqual(hook.shadow.beforeKeys, hook.shadow.afterKeys)
+    assert.equal(hook.shadowCalls, 1, "the replacement executor, not the unmodified registry entry, ran")
+  }
   assert.equal(hook.before.length, 1)
   assert.equal(hook.evaluations.length, 1)
   assert.equal(hook.evaluations[0].source.id, initial.asked[0].source.id)
@@ -177,11 +192,11 @@ try {
   const cleaned = await until("plugin disable cleanup", record => record.cleaned)
   await sleep(500)
   assert.deepEqual(await data(), cleaned, "unloaded plugin publishes no further callbacks")
-  await writeFile(path.join(artifacts, "results.json"), JSON.stringify({ outcome: "pass", version, temp,
+  await writeFile(path.join(artifacts, "results.json"), JSON.stringify({ outcome: "pass", version, temp, scenario,
     assertions: ["real native shell permission", "linked public message", "session and location pending reads", "exact missing-session error",
       "observational server hooks", "2500ms no-reply/no-execution window", "single native once with void result", "execution succeeded", "disable drains and stops callbacks"],
     calls }, null, 2))
-  console.log(`PASS V2 contracts: ${artifacts}`)
+  console.log(`PASS V2 contracts (${scenario}): ${artifacts}`)
 } catch (error) {
   await writeFile(path.join(artifacts, "failed.txt"), capture()).catch(() => {})
   await writeFile(path.join(artifacts, "failure.json"), JSON.stringify({ error: String(error), stack: error.stack, errors, calls, observations: await data().catch(() => null) }, null, 2))
