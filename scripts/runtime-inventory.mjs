@@ -53,7 +53,7 @@ export const runtimeInventory = {
     rules: [rule("queue", { requires: ["reminders"] }), rule("banner-only", { excludes: ["sound-only"] }),
       ...["reminders", "queue", "banner-only", "sound-only", "dismiss"].map(flag => rule(flag, { scenarios: ["question"] }))],
   }),
-  "smoke-notification-w4.mjs": host(["baseline", "capacity", "click"], [], { default: undefined, timeoutMs: 360000 }),
+  "smoke-notification-w4.mjs": host(["baseline", "baseline-permission", "question-reconcile", "capacity", "click"], [], { default: undefined, timeoutMs: 360000 }),
   "smoke-notification-desktop.ts": { classification: "interactive", scenarios: ["default"], default: "default", flags: ["all", "sounds", "click", "critical"],
     rules: [], exactlyOne: ["all", "sounds", "click"], requires: ["linux", "desktop-bus", "audio-player", "source", "tsx"], hosts: 0, timeoutMs: 180000 },
   "audit-usage-history.mjs": { classification: "historical", scenarios: ["default"], default: "default", flags: [], rules: [],

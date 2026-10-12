@@ -204,7 +204,7 @@ export class NotificationPolicy {
     this.withdraw(entry.banner)
     entry.banner = undefined; entry.message = undefined; entry.phase = "waiting"
   }
-  snapshot(views: readonly View[], blockers: ReadonlyMap<string, NotificationInteraction> = this.blockers) {
+  snapshot(views: readonly View[], blockers: ReadonlyMap<string, NotificationInteraction> = this.blockers, healthy = true) {
     if (this.stopped) return
     // Queue identity and outcomes must change together. Otherwise handing off
     // the queue could briefly notify from an older completed/manual snapshot.
@@ -212,7 +212,8 @@ export class NotificationPolicy {
     this.blockers = new Map(blockers)
     for (const [id, entry] of this.permissions) {
       if (this.views.has(id)) this.select(entry)
-      else this.resolved("permission", id)
+      else if (healthy) this.resolved("permission", id)
+      else this.wait(entry) // Incomplete snapshots cannot retire fresh eligibility.
     }
     for (const entry of this.questions.values()) this.select(entry)
   }

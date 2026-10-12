@@ -6,7 +6,7 @@ import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { NotificationHost } from "../src/notification-host.js"
 import { NotificationPolicy } from "../src/notification-policy.js"
 import { parseNotificationConfig } from "../src/notification-config.js"
-import type { NotificationMessage } from "../src/notification-types.js"
+import type { NotificationBackend, NotificationMessage } from "../src/notification-types.js"
 import type { HistoryTarget } from "../src/history-records.js"
 import type { View } from "../src/controller.js"
 import { Controller } from "../src/controller.js"
@@ -15,7 +15,7 @@ import { SessionModes, type AncestryReader } from "../src/session-mode.js"
 
 const request = (id = "p", sessionID = "root"): PermissionRequest => ({ id, sessionID, permission: "bash", patterns: [], always: [], metadata: {} })
 function fixture(resolve: AncestryReader = async id => id, options: Record<string, unknown> = {},
-  readQuestions?: (signal: AbortSignal) => Promise<readonly QuestionRequest[]>) {
+  readQuestions?: (signal: AbortSignal) => Promise<readonly QuestionRequest[]>, backend?: NotificationBackend) {
   const listeners = new Map<string, Set<(event: Event) => void>>()
   const sessions = new Map<string, { id: string; parentID?: string; title: string }>([
     ["root", { id: "root", title: "Root title" }], ["child", { id: "child", parentID: "root", title: "Child" }],
@@ -47,7 +47,7 @@ function fixture(resolve: AncestryReader = async id => id, options: Record<strin
     ui: { dialog: { get open() { return dialog } } }, lifecycle: { signal: new AbortController().signal },
   } as unknown as TuiPluginApi
   const questions = new Map<string, { id: string; sessionID: string; questions: [] }>()
-  const policy = new NotificationPolicy(parseNotificationConfig({ notifySound: false, staleReminderSeconds: 0, ...options }), true, {
+  const policy = new NotificationPolicy(parseNotificationConfig({ notifySound: false, staleReminderSeconds: 0, ...options }), true, backend ?? {
     async show(message) { banners.push(message); return { close() {} } }, dispose() {},
   }, clock)
   const host = new NotificationHost(api, policy, resolve, readQuestions ?? (async () => [...questions.values()]), clock,
@@ -200,7 +200,7 @@ test("root completion requires a new turn and final message; retries, question p
 })
 
 test("fatal errors notify once; aborted turns and recovered retry/overflow errors do not become failures", async () => {
-  const f = fixture(); f.host.visit("root")
+  const f = fixture(); f.host.snapshot([], true); f.host.visit("root")
   f.message({ id: "u1", role: "user" })
   f.status("retry"); f.emit("session.error", { sessionID: "root", error: { name: "ContextOverflowError" } })
   await f.tick(); assert.equal(f.banners.length, 0)
@@ -332,7 +332,7 @@ test("question deadline expiry retains the actual read slot through late settlem
 
 test("host publishes queue and review outcomes atomically across a snapshot-only handoff", async () => {
   const f = fixture(undefined, { staleReminderSeconds: 1 })
-  f.host.visit("root"); await settle()
+  f.host.snapshot([], true); f.host.visit("root"); await settle()
   const a = request("a"), b = request("b")
   f.emit("permission.asked", a); f.emit("permission.asked", b)
   f.host.snapshot([{ request: a, status: "analyzing" }, { request: b, status: "complete", assessment: { safe: false, desc: "old report" } }])
@@ -463,4 +463,199 @@ test("notification ancestry admission owns actual metadata reads after deadline 
     for (const p of pending) p.release({ id: p.id })
     await settle()
   }
+})
+
+for (const session of ["root", "child"]) test(`fresh permission waits for authoritative ${session} baseline through held, failed and incomplete publications`, async t => {
+  const f = fixture(undefined, { staleReminderSeconds: 10 })
+  const controller = new Controller(async () => null, () => {
+    if (!controller.reconciling) f.host.snapshot(controller.pendingViews)
+  }, { reviewOptions: { reviewBash: false, reviewEdits: false } })
+  let resolve!: (requests: PermissionRequest[]) => void, reject!: (error: Error) => void
+  const refresh = new PendingRefresh(controller, () => new Promise((yes, no) => { resolve = yes; reject = no }), new AbortController().signal,
+    healthy => f.host.snapshot(controller.pendingViews, healthy))
+  t.after(async () => { refresh.dispose(); await controller.dispose(); await f.host.dispose() })
+  f.host.visit("root"); await settle()
+  let wait = refresh.refresh(); await settle()
+  const fresh = request("z-fresh"), baseline = request("a-baseline", session)
+  f.emit("permission.asked", fresh); controller.asked(fresh)
+  await f.advance(10000); assert.equal(f.banners.length, 0, "a stalled startup read cannot establish native priority")
+  reject(new Error("offline")); await wait
+  // An incomplete publication must not consume the event birth in host or policy.
+  f.host.snapshot([], false); f.host.snapshot(controller.pendingViews)
+  await f.advance(10000); assert.equal(f.banners.length, 0)
+  wait = refresh.refresh(); await settle(); resolve([baseline, fresh]); await wait
+  await f.advance(10000); assert.equal(f.banners.length, 0, "snapshot-only baseline blocks silently")
+  wait = refresh.refresh(); await settle(); resolve([fresh]); await wait; await settle()
+  assert.deepEqual(f.banners.map(m => m.title), ["Session needs attention"])
+  await f.advance(9999); assert.equal(f.banners.length, 1)
+  await f.advance(1); assert.equal(f.banners[1]?.title, "Session needs attention (Reminder)")
+})
+
+test("fresh permission waits for the entire baseline ancestry and recovers without another birth", async () => {
+  const f = fixture()
+  f.host.visit("root"); await settle()
+  f.sessions.set("a-child", { id: "a-child", parentID: "missing-parent", title: "Child" })
+  const fresh: View = { request: request("fresh"), status: "unavailable" }
+  const baseline: View = { request: request("baseline", "a-child"), status: "unrelated" }
+  f.emit("permission.asked", fresh.request)
+  f.host.snapshot([baseline, fresh], true); await settle()
+  assert.equal(f.banners.length, 0, "a present session with missing parent is still unknown ancestry")
+  f.sessions.set("missing-parent", { id: "missing-parent", parentID: "root", title: "Parent" })
+  f.emit("session.updated", { info: f.sessions.get("missing-parent") }); await settle()
+  assert.deepEqual(f.banners.map(m => m.kind), ["attention"], "resolved deep descendant does not own the native root queue")
+  await f.host.dispose()
+})
+
+for (const soundOnly of [false, true]) test(`permission health and queue loss cancel pending ${soundOnly ? "sound" : "banner"} delivery without consuming recovery eligibility`, async () => {
+  const attempts: { message: NotificationMessage; signal: AbortSignal; release: () => void }[] = []
+  const delivered: NotificationMessage[] = []
+  const f = fixture(undefined, { notifySound: soundOnly, staleReminderSeconds: 1,
+    notifications: { attention: { banner: !soundOnly, sound: soundOnly } } }, undefined, {
+    async show(message, signal) {
+      await new Promise<void>(resolve => attempts.push({ message, signal, release: resolve }))
+      if (!signal.aborted) delivered.push(message)
+      return { close() {} }
+    }, dispose() {},
+  })
+  const fresh: View = { request: request("z-fresh"), status: "unavailable" }
+  f.host.snapshot([], true); f.host.visit("root"); await settle()
+  f.emit("permission.asked", fresh.request); f.host.snapshot([fresh]); await settle()
+  assert.equal(attempts.length, 1)
+  f.host.snapshot([], false)
+  assert.equal(attempts[0]!.signal.aborted, true)
+  attempts[0]!.release(); await settle(); await f.advance(2000)
+  assert.deepEqual(delivered, []); assert.equal(attempts.length, 1)
+  f.host.snapshot([fresh], true); await settle(); assert.equal(attempts.length, 2)
+  f.host.snapshot([{ request: request("a-baseline"), status: "unrelated" }, fresh], true)
+  assert.equal(attempts[1]!.signal.aborted, true)
+  attempts[1]!.release(); await settle()
+  f.emit("permission.replied", { requestID: fresh.request.id, sessionID: "root", reply: "once" })
+  f.host.snapshot([], true); await f.advance(10000)
+  assert.equal(attempts.length, 2); assert.deepEqual(delivered, [], "resolved queued request never replays")
+  await f.host.dispose()
+})
+
+for (const kind of ["question", "permission"] as const) for (const baseline of [false, true]) {
+  test(`healthy ${kind} removal recovers one completed turn behind ${baseline ? "snapshot-only" : "event-born"} child blocker`, async () => {
+    let fail = false
+    const f = fixture(undefined, {}, async () => {
+      if (fail) throw new Error("question list unavailable")
+      return [...f.questions.values()]
+    })
+    f.host.snapshot([], true); f.host.visit("root"); await settle()
+    if (kind === "question") {
+      const q = { id: "blocker", sessionID: "child", questions: [] as [] }
+      if (baseline) { f.questions.set(q.id, q); await f.tick() }
+      else f.emit("question.asked", q)
+    } else {
+      if (!baseline) f.emit("permission.asked", request("blocker", "child"))
+      f.host.snapshot([{ request: request("blocker", "child"), status: "unrelated" }], true)
+    }
+    await settle()
+    assert.equal(f.banners.length, baseline ? 0 : 1)
+    f.message({ id: "user", role: "user" })
+    f.message({ id: "final", role: "assistant", parentID: "user", finish: "stop", time: { created: 2, completed: 3 } })
+    f.emit("session.idle", { sessionID: "root" }); await f.advance(100)
+    assert.equal(f.banners.filter(m => m.kind === "ended").length, 0)
+    if (kind === "question") {
+      f.questions.delete("blocker"); fail = true; await f.tick(); await f.advance(100)
+      assert.equal(f.banners.filter(m => m.kind === "ended").length, 0, "failed list is not a resolution")
+      fail = false; await f.tick()
+    } else {
+      f.host.snapshot([], false); await f.advance(100)
+      assert.equal(f.banners.filter(m => m.kind === "ended").length, 0, "unhealthy omission is not a resolution")
+      f.host.snapshot([], true)
+    }
+    await f.advance(100)
+    assert.equal(f.banners.filter(m => m.kind === "ended").length, 1, "healthy removal needs no repeated idle event")
+    for (let n = 0; n < 3; n++) { f.host.snapshot([], true); await f.tick(); await f.advance(100) }
+    f.emit("session.idle", { sessionID: "root" }); await f.advance(100)
+    assert.equal(f.banners.filter(m => m.kind === "ended").length, 1)
+    await f.host.dispose()
+  })
+}
+
+for (const condition of ["busy", "retry", "cancelled", "aborted-message", "tool-calls", "incomplete", "baseline-turn", "new-turn", "permission", "question", "unknown", "unhealthy-permissions"]) {
+  test(`question reconciliation cannot manufacture completion with ${condition}`, async () => {
+    const f = fixture()
+    f.host.snapshot([], true)
+    if (condition === "baseline-turn") f.message({ id: "user", role: "user" })
+    f.host.visit("root"); await settle()
+    if (condition !== "baseline-turn") f.message({ id: "user", role: "user" })
+    f.emit("question.asked", { id: "remove", sessionID: "child", questions: [] })
+    f.message({ id: "final", role: "assistant", parentID: "user", finish: condition === "tool-calls" ? "tool-calls" : "stop",
+      time: condition === "incomplete" ? { created: 2 } : { created: 2, completed: 3 },
+      ...(condition === "aborted-message" ? { error: { name: "MessageAbortedError", data: { message: "cancelled" } } } : {}) })
+    f.emit("session.idle", { sessionID: "root" }); await f.advance(100)
+    if (condition === "busy" || condition === "retry") f.status(condition)
+    if (condition === "cancelled") f.emit("session.error", { sessionID: "root", error: { name: "MessageAbortedError" } })
+    if (condition === "new-turn") f.message({ id: "new-user", role: "user" })
+    if (condition === "permission") f.host.snapshot([{ request: request("remaining", "deep"), status: "unavailable" }], true)
+    if (condition === "question" || condition === "unknown") f.questions.set("remaining", { id: "remaining", sessionID: condition === "question" ? "deep" : "unknown", questions: [] })
+    if (condition === "unhealthy-permissions") f.host.snapshot([], false)
+    f.questions.delete("remove")
+    for (let n = 0; n < 3; n++) { await f.tick(); await f.advance(100) }
+    assert.deepEqual(f.banners.filter(m => m.kind === "ended" || m.kind === "error"), [])
+    await f.host.dispose()
+  })
+}
+
+test("reconciliation recovers final errors and deduplicates by the actual turn across later idle and ended outcomes", async () => {
+  const f = fixture(); f.host.snapshot([], true); f.host.visit("root"); await settle()
+  f.message({ id: "user", role: "user" })
+  f.emit("question.asked", { id: "q", sessionID: "root", questions: [] })
+  f.message({ id: "final", role: "assistant", parentID: "user", error: { name: "APIError" } } as never)
+  f.emit("session.idle", { sessionID: "root" }); await f.advance(100)
+  f.questions.delete("q"); await f.tick(); await f.advance(100)
+  assert.deepEqual(f.banners.map(m => m.kind), ["question", "error"])
+  f.message({ id: "final", role: "assistant", parentID: "user", finish: "stop", time: { created: 2, completed: 3 } })
+  await f.tick(); await f.advance(100)
+  f.emit("session.idle", { sessionID: "root" }); await f.advance(100)
+  assert.deepEqual(f.banners.map(m => m.kind), ["question", "error"])
+  f.message({ id: "next-user", role: "user" })
+  f.message({ id: "next-final", role: "assistant", parentID: "next-user", finish: "stop", time: { created: 4, completed: 5 } })
+  f.emit("session.idle", { sessionID: "root" }); await f.advance(100)
+  assert.deepEqual(f.banners.map(m => m.kind), ["question", "error", "ended"])
+  await f.host.dispose()
+})
+
+test("missing and malformed question baselines defer final outcomes until healthy recovery", async () => {
+  let release!: (value: QuestionRequest[]) => void, malformed = false
+  const f = fixture(undefined, {}, () => malformed ? Promise.resolve(null as never) : new Promise(resolve => { release = resolve }))
+  f.host.snapshot([], true); f.host.visit("root"); await settle()
+  f.message({ id: "user", role: "user" })
+  f.message({ id: "final", role: "assistant", parentID: "user", finish: "stop", time: { created: 2, completed: 3 } })
+  f.emit("session.idle", { sessionID: "root" }); await f.advance(100)
+  assert.equal(f.banners.length, 0)
+  release(null as never); await settle(); malformed = true
+  await f.tick(); await f.advance(100); assert.equal(f.banners.length, 0)
+  malformed = false; await f.tick(); release([]); await settle(); await f.advance(100)
+  assert.deepEqual(f.banners.map(m => m.kind), ["ended"])
+  await f.host.dispose()
+})
+
+test("healthy question removal cancels pending attention before delivering the actual completed outcome", async () => {
+  let release!: () => void, questionSignal!: AbortSignal
+  const delivered: NotificationMessage[] = []
+  const f = fixture(undefined, { staleReminderSeconds: 1 }, undefined, {
+    async show(message, signal) {
+      if (message.kind === "question") {
+        questionSignal = signal
+        await new Promise<void>(resolve => { release = resolve })
+      }
+      if (!signal.aborted) delivered.push(message)
+      return { close() {} }
+    }, dispose() {},
+  })
+  f.host.snapshot([], true); f.host.visit("root"); await settle()
+  f.emit("question.asked", { id: "q", sessionID: "child", questions: [] }); await settle()
+  f.message({ id: "user", role: "user" })
+  f.message({ id: "final", role: "assistant", parentID: "user", finish: "stop", time: { created: 2, completed: 3 } })
+  f.emit("session.idle", { sessionID: "root" }); await f.advance(100)
+  f.questions.delete("q"); await f.tick()
+  assert.equal(questionSignal.aborted, true)
+  release(); await settle(); await f.advance(100)
+  assert.deepEqual(delivered.map(m => m.kind), ["ended"])
+  await f.advance(10000); assert.deepEqual(delivered.map(m => m.kind), ["ended"])
+  await f.host.dispose()
 })

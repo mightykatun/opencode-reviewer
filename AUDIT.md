@@ -1429,10 +1429,10 @@ results above are not post-fix verification. Checkboxes below require new eviden
   - [x] Drain valid terminal-rejection usage without retrying rejected assessments.
   - [x] Inherit absolute deadline ends and control actual backoff sleep in tests.
   - [x] Verify framing/abort/resource limits and both supported Node floors; commit.
-- [ ] Phase 9: notification reconciliation (F17-F18).
-  - [ ] Require authoritative permission ordering before fresh attention.
-  - [ ] Recheck completed turns after healthy blocker removal.
-  - [ ] Verify no replay, cancellation and idle controls plus host cases; commit.
+- [x] Phase 9: notification reconciliation (F17-F18).
+  - [x] Require authoritative permission ordering before fresh attention.
+  - [x] Recheck completed turns after healthy blocker removal.
+  - [x] Verify no replay, cancellation and idle controls plus host cases; commit.
 - [ ] Phase 10: fixtures and cleanup (F19-F22,F27-F28).
   - [ ] Clean owned descendants on wrapper exit while retaining pipe ownership.
   - [ ] Repair silent/sound-enabled and cancelled/successful scroll assertions.
@@ -1796,3 +1796,20 @@ contract. F33 remains dropped. Neither disposition claims an implemented fix.
   `.runtime/runtime-run-U8MXhy/results.json`; `truncated --static --stats` passed in
   `.runtime/runtime-run-Xu4zKa/results.json`. The fixture now disables auto-update
   after an initial run correctly failed on a covering native update dialog.
+
+### Phase 9 disposition: F17/F18 fixed
+
+- Attention waits for a healthy permission baseline and resolved ancestry. Failed
+  or incomplete snapshots retain fresh-event eligibility while withdrawing pending
+  delivery; baseline-only requests never acquire notification eligibility.
+- Healthy blocker removal rechecks actual completed turns, including missed question
+  reply events, under idle/final-message/cancellation/remaining-blocker/dedup guards.
+  No extra idle event is required and no completion is inferred from disappearance.
+- `npm run check`: **1,232 source tests**, **111 helper tests**, typecheck and build.
+  An initial run exposed another timer-only mock after F24; notification scheduling
+  now advances its monotonic clock consistently, with all six scheduling checks passing.
+- New pinned-host `smoke-notification-w4.mjs baseline-permission` and
+  `question-reconcile` passed with results in `.runtime/runtime-run-ecn52I/` and
+  `.runtime/runtime-run-TRhF5H/`. They verify silent baseline ordering and exactly
+  one missed-reply completion. Synthetic notification backends do not prove desktop
+  sound or focus behavior. Fixture auto-update is explicitly disabled.

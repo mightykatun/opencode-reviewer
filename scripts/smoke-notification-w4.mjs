@@ -13,6 +13,7 @@ import { runtimeArguments } from "./runtime-inventory.mjs"
 import { readObservation } from "./smoke-observations.mjs"
 
 const { scenario } = runtimeArguments("smoke-notification-w4.mjs")
+const baselineScenario = scenario === "baseline" || scenario === "baseline-permission"
 const root = path.resolve(import.meta.dirname, ".."), host = process.env.OPENCODE_BIN ?? "opencode"
 assert.equal(execFileSync(host, ["--version"], { encoding: "utf8" }).trim(), "1.18.35")
 const temp = await mkdtemp(path.join(tmpdir(), "reviewer-notification-w4-")), project = path.join(temp, "project")
@@ -30,7 +31,7 @@ import { createEffect } from 'solid-js';
 export default { id: 'notification-w4', tui: async (api, options) => {
   const scenario = ${JSON.stringify(scenario)};
   const data = { events: [], starts: [], actions: [], peak: 0, released: false };
-  let releaseBaseline, sequence = 0;
+  let releaseBaseline, sequence = 0, baselinePermission, staleQuestion;
   const publisher = observationPublisher(${JSON.stringify(records)});
   const save = () => publisher.publish(data);
   const baseline = new Promise(resolve => { releaseBaseline = resolve });
@@ -59,13 +60,37 @@ export default { id: 'notification-w4', tui: async (api, options) => {
     }, dispose() { for (const item of children) item.finish(); }
   });
   for (const type of ['permission.asked','permission.replied','question.asked','question.replied']) api.event.on(type, event => {
+    if (type === 'question.asked') staleQuestion = event.properties;
     data.events.push({type, ...event.properties, at:Date.now()}); void save();
   });
+  api.event.on('message.updated', event => {
+    const message = event.properties.info;
+    if (message.role === 'assistant' && !message.summary && message.time.completed && message.finish === 'stop') { data.completed = true; void save(); }
+  });
+  api.event.on('session.idle', () => { data.idles = (data.idles ?? 0) + 1; void save(); });
+  api.event.on('session.status', event => { if (event.properties.status.type === 'idle') { data.idles = (data.idles ?? 0) + 1; void save(); } });
   createEffect(() => { data.route = api.route.current.name === 'session' ? api.route.current.params.sessionID : undefined; void save(); });
   const on = api.event.on.bind(api.event);
-  const wrapped = scenario !== 'baseline' ? api : {...api,
-    event: {...api.event, on(type, callback) { return on(type, event => { if (type !== 'permission.asked') callback(event); }); }},
-    client: new Proxy(api.client, {get(target, key) { if (key !== 'permission') return Reflect.get(target, key, target);
+  const baselineScenario = scenario === 'baseline' || scenario === 'baseline-permission';
+  const wrapped = !baselineScenario && scenario !== 'question-reconcile' ? api : {...api,
+    event: {...api.event, on(type, callback) { return on(type, event => {
+      if (baselineScenario && type === 'permission.asked') {
+        baselinePermission ??= event.properties.id;
+        if (scenario === 'baseline' || event.properties.id === baselinePermission) return;
+      }
+      if (scenario === 'question-reconcile' && ['question.replied','question.rejected'].includes(type)) return;
+      callback(event);
+    }); }},
+    client: new Proxy(api.client, {get(target, key) {
+      if (scenario === 'question-reconcile' && key === 'question') return new Proxy(api.client.question, {get(target, key) {
+        if (key !== 'list') return Reflect.get(target, key, target);
+        return async (...args) => {
+          const value = await api.client.question.list(...args);
+          if (!data.released && staleQuestion) return {...value, data:[staleQuestion]};
+          return value;
+        };
+      }});
+      if (!baselineScenario || key !== 'permission') return Reflect.get(target, key, target);
       return new Proxy(api.client.permission, {get(target, key) { if (key !== 'list') return Reflect.get(target, key, target); return async (...args) => {
       data.baselineHeld = true; void save(); await baseline;
       const value = await api.client.permission.list(...args); data.baselineRead = true; void save(); return value;
@@ -89,7 +114,7 @@ export default { id: 'notification-w4', tui: async (api, options) => {
 } };
 `)
 let sent = false, reviewCount = 0, questionSent = false
-const count = scenario === "capacity" ? 70 : 1
+const count = scenario === "capacity" ? 70 : scenario === "baseline-permission" ? 2 : scenario === "question-reconcile" ? 0 : 1
 const errors = []
 const heldReviews = []
 const question = index => ({ index, id: "question", type: "function", function: { name: "question", arguments: JSON.stringify({ questions: [{ header: "W4", question: "W4 controlled question", options: [{ label: "Done", description: "Complete fixture" }] }] }) } })
@@ -113,7 +138,7 @@ const server = createServer(async (req, res) => {
     if (main && !sent) {
       sent = true
       tools = Array.from({ length: count }, (_, index) => ({ index, id: "bash-" + index, type: "function", function: { name: "bash", arguments: JSON.stringify({ command: "printf 'W4 fixture\\n'", description: "W4 command " + index }) } }))
-      if (scenario === "baseline") { tools.push(question(count)); questionSent = true }
+      if (baselineScenario || scenario === "question-reconcile") { tools.push(question(count)); questionSent = true }
     } else if (main && scenario === "capacity" && !questionSent) { tools = [question(0)]; questionSent = true }
     const message = tools ? { role: "assistant", tool_calls: tools } : { role: "assistant", content: main ? "W4 fixture complete." : "W4 title" }
     if (body.stream) {
@@ -146,18 +171,38 @@ try {
   const tui = path.join(temp, "tui.json")
   await writeFile(tui, JSON.stringify({ plugin: [[plugin, { baseURL: base + "/review", model: "fixture", notify: true, notifySound: scenario === "capacity",
     notifications: { approved: { sound: true } },
-    staleReminderSeconds: 0, autoApprove: scenario !== "baseline", reviewBash: scenario !== "baseline", autoApproveDelaySeconds: 0, timeoutMs: 120000 }]] }))
+    staleReminderSeconds: 0, autoApprove: !baselineScenario, reviewBash: !baselineScenario, autoApproveDelaySeconds: 0, timeoutMs: 120000 }]] }))
   const env = { OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_CONFIG: "", OPENCODE_CONFIG_DIR: path.join(temp, "config"), OPENCODE_TUI_CONFIG: tui,
-    OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_DEFAULT_PLUGINS: "1", OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_EXTERNAL_SKILLS: "1", OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1" }
+    OPENCODE_DISABLE_AUTOUPDATE: "1", OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_DEFAULT_PLUGINS: "1", OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_EXTERNAL_SKILLS: "1", OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1" }
   await runtime.start("-d", "-s", "w4", "-x", "160", "-y", "40", "-c", project, "env", ...Object.entries(env).map(([k, v]) => `${k}=${v}`), host, project, "--prompt", "Run the isolated W4 notification fixture.")
-  if (scenario === "baseline") {
+  if (baselineScenario) {
     await until(async s => s.includes("Permission required") && (await data()).events.some(e => e.type === "question.asked"))
     await sleep(500); assert.deepEqual(banners(await data()), [])
     send("F6"); await until(async () => (await data()).baselineRead)
     await sleep(500); assert.deepEqual(banners(await data()), [])
     send("Enter")
+    if (scenario === "baseline-permission") {
+      await until(async s => s.includes("Permission required") && banners(await data()).some(b => b.args.at(-1) === "Session needs attention"))
+      assert.equal(banners(await data()).filter(b => b.args.at(-1) === "Session needs attention").length, 1)
+      assert.equal((await data()).events.filter(e => e.type === "permission.replied").length, 1)
+      send("Enter")
+    }
     await until(async s => s.includes("W4 controlled question") && banners(await data()).some(b => b.args.at(-1) === "Agent has a question"))
     assert.equal(banners(await data()).filter(b => b.args.at(-1) === "Agent has a question").length, 1)
+    assert.equal(reviewCount, 0)
+  } else if (scenario === "question-reconcile") {
+    await until(async s => s.includes("W4 controlled question") && banners(await data()).some(b => b.args.at(-1) === "Agent has a question"))
+    send("Enter")
+    await until(async () => { const d = await data(); return d.completed && d.idles && d.events.some(e => e.type === "question.replied") })
+    // Keep the stale question across multiple healthy polls and final idle checks.
+    await sleep(4500)
+    assert.deepEqual(banners(await data()).map(b => b.args.at(-1)), ["Agent has a question"])
+    const idles = (await data()).idles
+    await writeFile(path.join(temp, "release"), "release")
+    await until(async () => banners(await data()).some(b => b.args.at(-1) === "Session ended"))
+    await sleep(4500)
+    assert.deepEqual(banners(await data()).map(b => b.args.at(-1)), ["Agent has a question", "Session ended"])
+    assert.equal((await data()).idles, idles, "completion recovery requires no extra idle event")
     assert.equal(reviewCount, 0)
   } else if (scenario === "capacity") {
     await until(() => heldReviews.length === count)

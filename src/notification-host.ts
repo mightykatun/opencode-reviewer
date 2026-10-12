@@ -125,6 +125,7 @@ export class NotificationHost {
       for (const id of this.questions.keys()) if (!ids.has(id)) this.resolved("question", id)
       this.admissions()
       this.selectBlockers()
+      this.recheckIdle()
     } catch {
       if (!this.stopped) { this.questionsReady = false; this.selectBlockers() }
     } finally { if (!worker) this.questionRead = false }
@@ -133,21 +134,25 @@ export class NotificationHost {
     if (this.stopped) return
     this.policy.pending(this.blockers())
   }
-  private blockers() {
+  private interactions() {
     const pending = new Map<string, PendingInteraction>()
     const add = (kind: "permission" | "question", id: string, sessionID: string) => {
       if (!this.closed.has(`${kind}:${id}`) && !this.deletedSessions.has(sessionID)) pending.set(`${kind}:${id}`, { kind, id, sessionID })
     }
     for (const view of this.views) add("permission", view.request.id, view.request.sessionID)
     for (const [id, request] of this.permissions) add("permission", id, request.sessionID)
+    for (const request of this.questionSnapshot) add("question", request.id, request.sessionID)
+    for (const [id, request] of this.questions) add("question", id, request.sessionID)
+    return [...pending.values()]
+  }
+  private blockers() {
     // Public list snapshots establish ordering and reconciliation, never births.
-    // Without a healthy baseline an unseen question could be ahead of a fresh one.
-    const unknownPermission = [...pending.values()].some(value => !this.api.state.session.get(value.sessionID))
-    if (this.questionsReady && this.permissionsReady && !unknownPermission) {
-      for (const request of this.questionSnapshot) add("question", request.id, request.sessionID)
-      for (const [id, request] of this.questions) add("question", id, request.sessionID)
-    }
-    return notificationBlockers(new Set(this.roots.keys()), pending.values(), id => this.api.state.session.get(id))
+    // An unseen permission or one with unresolved ancestry can precede any fresh
+    // request. Retain event eligibility while withdrawing all attention delivery.
+    const pending = this.interactions()
+    if (!this.permissionsReady || pending.some(value => value.kind === "permission" && !this.rootOf(value.sessionID))) return new Map()
+    return notificationBlockers(new Set(this.roots.keys()), pending.filter(value => value.kind === "permission" || this.questionsReady),
+      id => this.api.state.session.get(id))
   }
   private rootOf(id: string): string | undefined {
     const seen = new Set<string>()
@@ -262,11 +267,12 @@ export class NotificationHost {
     for (const request of this.permissions.values()) if (request.target) {
       request.target.title = this.api.state.session.get(request.target.root)?.title ?? uiText.notifications.fallbackSession
     }
-    this.policy.snapshot(views, this.blockers())
+    this.policy.snapshot(views, this.blockers(), this.permissionsReady)
     for (const [id, request] of this.permissions) this.admit("permission", id, request)
     const pending = new Set(views.map(v => v.request.id))
-    for (const [id] of this.permissions) if (!pending.has(id)) this.resolved("permission", id)
+    if (this.permissionsReady) for (const [id] of this.permissions) if (!pending.has(id)) this.resolved("permission", id)
     this.selectBlockers()
+    if (permissionHealthy === true) this.recheckIdle()
   }
   fact(fact: ApprovalFact) {
     if (this.stopped) return
@@ -293,6 +299,7 @@ export class NotificationHost {
     this.closed.add(key)
     this.policy.resolved(kind, id)
     this.selectBlockers()
+    this.recheckIdle()
   }
   private message(message: Message) {
     if (this.stopped) return
@@ -313,6 +320,12 @@ export class NotificationHost {
       if (message.error?.name === "MessageAbortedError") root.cancelled = true
     }
   }
+  private recheckIdle() {
+    // Healthy reconciliation can be the only observation of a missed reply.
+    // Reuse final-message, cancellation and turn-dedup guards, never synthesize a
+    // completed turn from disappearance. Include baseline-only child blockers.
+    for (const id of this.roots.keys()) this.idle(id)
+  }
   private idle(id: string) {
     const root = this.roots.get(id)
     if (!root || this.stopped) return
@@ -321,14 +334,14 @@ export class NotificationHost {
     // final message state; repeated idle/status events coalesce into one check.
     root.idle = this.clock.after(100, () => {
       root.idle = undefined
-      if (this.stopped || this.roots.get(id) !== root || this.api.state.session.status(id)?.type !== "idle") return
+      if (this.stopped || this.api.lifecycle.signal.aborted || this.roots.get(id) !== root || this.api.state.session.status(id)?.type !== "idle") return
       if (root.cancelled) return
+      if (!this.permissionsReady || !this.questionsReady) return
       const messages = this.api.state.session.messages(id)
       const assistant = messages.findLast(m => m.role === "assistant" && !m.summary && m.parentID === root.user)
       if (assistant?.role === "assistant") root.assistant = assistant
       if (root.assistant?.error?.name === "MessageAbortedError" || root.error?.name === "MessageAbortedError") return
-      if (this.views.some(v => this.rootOf(v.request.sessionID) === id)
-        || [...this.questions.values()].some(q => this.rootOf(q.sessionID) === id)
+      if (this.interactions().some(value => { const root = this.rootOf(value.sessionID); return !root || root === id })
         || this.api.state.session.question(id).length || this.api.state.session.permission(id).length) return
       const target = { root: id, sessionID: id, title: this.api.state.session.get(id)?.title ?? uiText.notifications.fallbackSession }
       const message = root.assistant

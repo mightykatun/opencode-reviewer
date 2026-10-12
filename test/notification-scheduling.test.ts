@@ -64,6 +64,10 @@ test("bounded priority rotates roots and services a routine item after eight act
 
 test("sound preparation reserves two slots before deferred callbacks and retains them after timeout", async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] })
+  let now = 0
+  // Deadlines use monotonic absolute time as well as timers. Keep both clocks
+  // aligned, including exact expiry and the replacement preparation's budget.
+  t.mock.method(performance, "now", () => now)
   const f = transport(), writes: (() => void)[] = []
   const sound = { format: "wav" as const, data: fixtureWav().toString("base64") }
   const audio = new NotificationAudio(f.raw, undefined, { attention: sound, unsafe: sound, question: sound }, {
@@ -74,7 +78,7 @@ test("sound preparation reserves two slots before deferred callbacks and retains
   const waits = [audio.ready("attention", signal), audio.ready("unsafe", signal), audio.ready("question", signal)]
   for (let i = 0; i < 20 && writes.length < 2; i++) await settle()
   assert.equal(writes.length, 2)
-  t.mock.timers.tick(2000); await settle()
+  now = 2000; t.mock.timers.tick(2000); await settle()
   assert.equal(await waits[0], false); assert.equal(await waits[1], false)
   assert.equal(writes.length, 2, "timed-out writes still own preparation slots")
   writes[0]!()
