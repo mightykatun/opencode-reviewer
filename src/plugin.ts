@@ -47,7 +47,7 @@ export function withFileAccess(fileIO: FileIO) { return createPlugin({ fileIO })
 export function withDiagnostics(observer: DiagnosticObserver) { return createPlugin({ observer }) }
 export function withHistoryRenderProbe(historyProbe: HistoryRenderProbe, observer?: DiagnosticObserver) { return createPlugin({ historyProbe, observer }) }
 export function withHistoryObservations(observe: HistoryRenderProbe["observe"], observer?: DiagnosticObserver,
-  notifications?: NotificationBackendFactory) { return createPlugin({ historyProbe: { observe }, observer, notifications }) }
+  notifications?: NotificationBackendFactory, setup?: PluginSetupObserver) { return createPlugin({ historyProbe: { observe }, observer, notifications }, setup) }
 export function withNotifications(notifications: NotificationBackendFactory) { return createPlugin({ notifications }) }
 export function withNotificationProcesses(factory: () => NotificationProcesses) {
   return withNotifications((click, config) => new LinuxNotifications(config, click, factory()))

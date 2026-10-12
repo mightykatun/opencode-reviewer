@@ -47,7 +47,8 @@ export const runtimeInventory = {
   "smoke-v2-companion-package.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux", "npm-pack", "tar", "source"] }),
   "smoke-v2-lifecycle.mjs": host(["default"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-invocation.mjs": host(["default", "review"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
-  "smoke-v2-review.mjs": host(["advisory", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
+  "smoke-v2-review.mjs": host(["advisory", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant", "normal-history", "normal-history-cover", "fast-history-cover", "fast-notifications",
+    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete"], [], { hostVersion: "opencode v2.0.26", requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
   "smoke-v2-sidebar-state.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux"] }),
   "smoke-style-retirement.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux", "bundle", "babel"] }),
   "smoke-approval-recovery.mjs": host(["read-error", "read-timeout", "correction-after", "correction-before", "transport-after", "transport-before"], [], {
@@ -132,6 +133,9 @@ export const runtimeProfiles = {
     ["smoke-v2-root-presentation.mjs", "mouse-on"],
     ["smoke-v2-root-presentation.mjs", "mouse-off"],
     ["smoke-v2-native-queue.mjs"],
+    ...["normal-mouse-off", "normal-cancel", "fast-descendant", "normal-history", "normal-history-cover",
+      "fast-history-cover", "fast-notifications", "normal-hide", "normal-dialog", "normal-resize", "fast-dialog",
+      "normal-hidden-complete"].map(scenario => ["smoke-v2-review.mjs", scenario]),
   ],
   "ci-v1": [
     ["smoke-history-lifecycle.mjs", "auto-shell"],
@@ -156,6 +160,13 @@ export const runtimeProfiles = {
     ["smoke-notification-w4.mjs", "capacity"],
   ],
 }
+
+// Acceptance expands current CI with every production review scenario without
+// enrolling unverified additions into CI. Canonical IDs deduplicate exact cases.
+runtimeProfiles["v2-acceptance"] = [...new Map([
+  ...runtimeProfiles.ci,
+  ...runtimeInventory["smoke-v2-review.mjs"].scenarios.map(scenario => ["smoke-v2-review.mjs", scenario]),
+].map(([file, ...args]) => [runtimePlan(file, args).id, [file, ...args]])).values()]
 
 export function profilePlan(name) {
   assert.ok(Object.hasOwn(runtimeProfiles, name), `Unknown runtime profile: ${name}`)

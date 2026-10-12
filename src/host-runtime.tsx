@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { CliRenderEvents, type BoxRenderable, type Renderable } from "@opentui/core"
-import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from "solid-js"
+import { CliRenderEvents } from "@opentui/core"
+import { createEffect, createMemo, createSignal, Show, untrack } from "solid-js"
 import path from "node:path"
 import { Controller, visibleReview, type View } from "./controller.js"
 import { hostPermissionTransport } from "./host-permissions.js"
@@ -15,12 +15,22 @@ import type { PluginLifecycle } from "./plugin-lifecycle.js"
 import type { ReviewPresentation } from "./review-presentation.js"
 import { uiText } from "./ui-text.js"
 import { sameLocation } from "./companion-protocol.js"
-import { HostReviewPanel, type HostPanelBounds, type HostSidebarAnchor } from "./host-review-panel.js"
+import { HostReviewPanel } from "./host-review-panel.js"
+import { setupHostHistory, setupHostHistoryOnly } from "./host-history-runtime.js"
+import { setupHostNotifications } from "./host-notifications.js"
+import { setupHostSidebar } from "./host-sidebar.js"
+import { hostPricingLookup } from "./host-pricing.js"
+import type { PricingLookup } from "./usage.js"
+import { setupHostNotificationOnly } from "./host-notification-runtime.js"
 
 /** One scope-pinned controller. A replaced companion never adopts old evidence. */
 export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle) {
   const config = state.config, companion = state.companion
-  if (!config || !companion) return
+  if (!config || !companion) {
+    const standalone = setupHostHistoryOnly(ctx, state, life)
+    setupHostNotificationOnly(ctx, state, life, standalone.records)
+    return
+  }
   const scope = { epoch: companion.epoch, location: companion.location }
   const transport = hostPermissionTransport(ctx.client, scope)
   const snapshots = new Map<string, HostRequestSnapshot>()
@@ -31,7 +41,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     void work.then(() => reads.delete(work), () => reads.delete(work))
     return work
   }
-  life.addCleanup(() => Promise.allSettled([...reads]).then(() => {}))
+  life.addCleanup(async () => { while (reads.size) await Promise.allSettled([...reads]) })
   const routes = new RouteSessions(id => ctx.data.session.get(id))
   const store = new SessionModeStore(path.join(state.stateRoot, "session-mode-v2"), JSON.stringify(scope.location))
   const modes = new SessionModes(store, async (id, signal) => {
@@ -66,14 +76,62 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     proof = getter
     return () => { if (proof === getter) proof = () => ({ state: "lost" }) }
   }
+  const { sidebar, geometry } = setupHostSidebar(ctx, life, rootRoute, () => controller.presented({ state: "lost" }))
+  const records = setupHostHistory(ctx, state, life, { rootRoute, sidebarOwner: sidebar, sidebarGeometry: geometry,
+    onPresented: () => controller.presented(proof()) })
+  let cancelReveal = () => {}
+  life.addCleanup(() => cancelReveal())
+  const notifications = setupHostNotifications(ctx, state, { signal: life.signal,
+    resolveRoot: (id, signal) => records.history.root(id, signal), nativeFront: front,
+    openHistory: (root, target, lease) => {
+      cancelReveal()
+      records.browser.close()
+      if (!lease.current() || controller.retained(root, target)) return
+      const invalidate = () => {
+        const view = records.state(), selected = view.selection?.record?.context
+        if (!view.open || (selected?.permission === target.permission && selected.session === target.session)) records.browser.close()
+      }
+      lease.signal.addEventListener("abort", invalidate, { once: true })
+      records.browser.openPermission(root, target, () => {
+        if (!lease.current()) { records.browser.close(); return }
+        cancelReveal()
+        const stop = () => {
+          clearTimeout(timeout)
+          ctx.renderer.off(CliRenderEvents.FRAME, reveal)
+          lease.signal.removeEventListener("abort", stop)
+          if (cancelReveal === stop) cancelReveal = () => {}
+        }
+        const reveal = () => {
+          if (!lease.current()) { stop(); return }
+          if (rootRoute() !== root) return
+          // A real root FRAME distinguishes a mounted sidebar from an absent one.
+          // Only this explicit approval-notification action may reveal it.
+          if (!sidebar() && ctx.keymap.commands().some(command => command.id === "session.sidebar.toggle"))
+            ctx.keymap.dispatch("session.sidebar.toggle")
+          stop()
+        }
+        const timeout = setTimeout(stop, 5000)
+        cancelReveal = stop
+        lease.signal.addEventListener("abort", stop, { once: true })
+        ctx.renderer.on(CliRenderEvents.FRAME, reveal)
+        ctx.renderer.requestRender()
+      })
+    },
+  })
   const controller = new Controller<HostRequest>((request, signal, identified, onProgress, observation) => {
     const snapshot = snapshots.get(request.id)
     if (!snapshot) return Promise.resolve(null)
+    let pricing: PricingLookup | undefined
+    try { pricing = hostPricingLookup(config.baseURL, ctx.data.location.model.list(scope.location), ctx.data.location.provider.list(scope.location)) }
+    catch { /* Missing/failed optional pricing cannot change the review. */ }
     return evaluateHostReview(ctx.client, snapshot, config, state.prompts, signal, identified,
-      { onProgress, observation, onDiagnostics: state.dependencies.observer })
-  }, setViews, {
+      { onProgress, observation, pricing, onDiagnostics: state.dependencies.observer,
+        observeEvidence: evidence => observation ? records.history.observation(request, evidence.kind, config, observation) : undefined })
+  }, values => { setViews(values); notifications?.snapshot(controller.pendingViews) }, {
     reviewOptions: config, modes, session: id => routes.get(id), allowHiddenRoute: false,
     nativeFront: root => front(root),
+    onLifecycle: records.history.lifecycle,
+    onApproval: fact => { records.history.approval(fact); notifications?.approval(fact) },
     candidate: request => !!request.source && ((request.action === "shell" && config.reviewBash)
       || (request.action === "edit" && config.reviewEdits) || (request.action === "external_directory" && config.reviewExternalDirectories)
       || (request.action === "skill" && config.reviewSkills) || config.reviewMcp || config.reviewCustomTools),
@@ -90,6 +148,39 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   let events = 0
   let disconnected = false
   const revision = () => controller.revision + events
+  let permissionHealthy = false, formHealthy = false
+  const notificationSessions = new Set<string>()
+  const notificationSnapshot = () => notifications?.snapshot(controller.pendingViews, permissionHealthy && formHealthy)
+  // Forms are optional observer evidence. Their failures must never hold up
+  // permission admission or an otherwise eligible automatic reply.
+  const formRefresh = notifications ? new PendingRefresh<never>({ get revision() { return revision() },
+    reconcile: notificationSnapshot,
+  }, signal => owned((async () => {
+    signal.throwIfAborted()
+    const route = ctx.ui.router.current()
+    const sessions = new Set([...notificationSessions, ...controller.pendingViews.map(view => view.request.sessionID),
+      ...(route.type === "session" ? [route.sessionID] : [])])
+    const ids = new Set<string>()
+    for (const id of sessions) {
+      signal.throwIfAborted()
+      const root = await records.history.root(id, signal)
+      signal.throwIfAborted()
+      ids.add(root)
+      for (const member of ctx.data.session.family(root)) ids.add(member)
+      if (ids.size > 16384) throw Error("Native notification family unavailable")
+    }
+    for (const id of ids) {
+      signal.throwIfAborted()
+      await ctx.data.session.sync(id)
+      signal.throwIfAborted()
+      await ctx.data.session.form.sync(id)
+    }
+    signal.throwIfAborted()
+    await ctx.data.session.form.sync("global", scope.location)
+    signal.throwIfAborted()
+    return []
+  })()), life.signal, healthy => { formHealthy = healthy; notificationSnapshot() }) : undefined
+  life.addCleanup(() => formRefresh?.dispose())
   const refresh = new PendingRefresh<HostRequestSnapshot>({ get revision() { return revision() },
     reconcile(requests, revision) {
       if (controller.revision + events !== revision) return
@@ -103,25 +194,35 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
         for (const id of eventOwners.keys()) if (!snapshots.has(id) && !live.has(id)) eventOwners.delete(id)
       }
       controller.reconcile(requests.map(value => value.request), controller.revision)
+      notificationSnapshot()
     },
-  }, async signal => {
+  }, signal => owned((async () => {
+    signal.throwIfAborted()
     const all = await owned(transport.listScope(signal))
     // Public native caches must be refreshed as well as the server snapshot.
     const ids = new Set([...all.map(value => value.request.sessionID), ...controller.pendingViews.map(value => value.request.sessionID)])
     for (const id of [...ids]) {
+      signal.throwIfAborted()
       const root = await modes.root(id, signal)
+      signal.throwIfAborted()
       ids.add(root)
       for (const member of ctx.data.session.family(root)) ids.add(member)
       if (ids.size > 16384) throw Error("Native permission family unavailable")
     }
     for (const id of ids) {
+      signal.throwIfAborted()
       await owned(ctx.data.session.sync(id))
+      signal.throwIfAborted()
       ctx.data.session.permission.invalidate(id)
       await owned(ctx.data.session.permission.sync(id))
       signal.throwIfAborted()
     }
     return all
-  }, life.signal)
+  })()), life.signal, healthy => {
+    permissionHealthy = healthy
+    notificationSnapshot()
+    if (healthy) void formRefresh?.refresh()
+  })
   const off = ctx.data.listen(({ details: event }) => {
     if (event.type === "server.connected") {
       // Native caches can follow a new connection while the captured client still
@@ -129,76 +230,74 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       disconnected = true
       events++
       refresh.dispose()
+      formRefresh?.dispose()
       setViews([])
+      records.revoke()
+      void notifications?.dispose()
       void controller.dispose()
       return
     }
     if (disconnected) return
     if (event.location && !sameLocation(event.location, scope.location)) return
+    const notificationSession = event.type === "form.created" ? event.data.form.sessionID
+      : "sessionID" in event.data ? event.data.sessionID : undefined
+    if (event.type === "session.deleted") notificationSessions.delete(event.data.sessionID)
+    else if (notifications && typeof notificationSession === "string" && notificationSession !== "global"
+      && (notificationSessions.has(notificationSession) || notificationSessions.size < 1024)) notificationSessions.add(notificationSession)
+    notifications?.event(event)
     if (event.type === "permission.asked") {
       events++
       // Admission uses the fresh scoped HTTP snapshot, not event origin guesses.
       void refresh.refresh()
     } else if (event.type === "permission.replied") {
       events++
-      if (eventOwners.get(event.data.requestID) === event.data.sessionID) controller.permissionReplied({
-        sessionID: event.data.sessionID, requestID: event.data.requestID, decision: event.data.reply,
-      })
+      if (eventOwners.get(event.data.requestID) === event.data.sessionID) {
+        try { records.history.reply(event.data) } catch {}
+        controller.permissionReplied({ sessionID: event.data.sessionID, requestID: event.data.requestID, decision: event.data.reply })
+      }
       eventOwners.delete(event.data.requestID)
       void refresh.refresh()
     } else if (event.type === "session.deleted") {
       events++
       if (!routes.get(event.data.sessionID)) return
       routes.deleted(event.data.sessionID)
+      modes.deleted(event.data.sessionID)
+      records.invalidateSession(event.data.sessionID)
       controller.deleted(event.data.sessionID)
       void refresh.refresh()
-    } else if (event.type.startsWith("session.execution.")) { events++; void refresh.refresh() }
+    } else if (event.type === "session.step.failed" && event.data.error.type === "aborted") {
+      try { records.history.interrupted({ sessionID: event.data.sessionID, assistantID: event.data.assistantMessageID }) } catch {}
+    } else if (event.type.startsWith("session.execution.") || event.type.startsWith("form.")) {
+      events++; void refresh.refresh(); void formRefresh?.refresh()
+    }
   })
   life.addCleanup(off)
-  life.addCleanup(() => { refresh.dispose(); return controller.dispose() })
+  life.addCleanup(() => { const at = performance.now(); refresh.dispose(); return records.dispose(controller.dispose(), at) })
   life.addCleanup(() => modes.flush())
+  life.addCleanup(() => notifications?.dispose())
   const timer = setInterval(() => { void refresh.refresh() }, 2000)
   life.addCleanup(() => clearInterval(timer))
-  const [sidebar, setSidebar] = createSignal<HostSidebarAnchor>()
-  const [geometry, setGeometry] = createSignal<HostPanelBounds | undefined>(undefined, { equals: (a, b) => a?.x === b?.x && a?.y === b?.y
-    && a?.width === b?.width && a?.height === b?.height })
-  life.addCleanup(ctx.ui.slot({ prepend: "sidebar.content", render: input => {
-    let node: BoxRenderable | undefined
-    const owner = Symbol("reviewer.sidebar")
-    createEffect(() => { input.sessionID; if (node) setSidebar({ owner, sessionID: input.sessionID, node }) })
-    onCleanup(() => { if (sidebar()?.owner === owner) { setSidebar(undefined); setGeometry(undefined); controller.presented({ state: "lost" }) } })
-    return <box ref={(value: BoxRenderable) => { node = value; setSidebar({ owner, sessionID: input.sessionID, node }) }} width="100%" height={1} flexShrink={0} />
-  } }))
   life.addCleanup(ctx.ui.slot({ append: "app", render: () => {
     const selected = createMemo(select)
+    createEffect(() => {
+      const route = ctx.ui.router.current()
+      const session = route.type === "session" ? route.sessionID : undefined
+      untrack(() => { notifications?.routeChanged(); notifications?.visit(session); void formRefresh?.refresh() })
+    })
     createEffect(() => { rootRoute(); sidebar(); ctx.keymap.mode.current(); untrack(() => controller.presented(proof())) })
     return <box position="absolute" left={geometry()?.x ?? 0} top={geometry()?.y ?? 0}
-      width={geometry()?.width ?? 0} height={geometry()?.height ?? 0} zIndex={1} visible={!!rootRoute() && !!selected()}>
+      width={geometry()?.width ?? 0} height={geometry()?.height ?? 0} zIndex={1} visible={!!rootRoute() && (!!selected() || records.state().open)}>
       <Show when={rootRoute() && selected()?.request.id} keyed>{id => {
       const initial = selected()!
       return <HostReviewPanel positionedByParent
       context={ctx} id={id} view={() => views().find(value => value.request.id === id) ?? initial} select={select} rootSession={rootRoute}
       sidebarOwner={sidebar} sidebarGeometry={geometry} config={config}
       historyProbe={state.dependencies.historyProbe}
+      historyCover={records.cover} lifetimeText={records.lifetimeText}
       onApprove={id => controller.approveNow(id)} onCancel={id => controller.cancelAutoApproval(id)}
-      registerPresentation={registerPresentation} onPresented={value => controller.presented(value)} />}}</Show></box>
+      registerPresentation={registerPresentation} onPresented={value => controller.presented(value)} />}}</Show>
+      {records.render()}</box>
   } }))
-  const frame = () => {
-    const current = sidebar()
-    let node: Renderable | undefined = current?.node
-    let region: Renderable | undefined
-    // Public renderable ancestry provides the actual sidebar frame, including tabs.
-    // Stop before leaving the right-hand native sidebar, never infer visibility.
-    for (let depth = 0; node && depth < 16; depth++, node = node.parent ?? undefined) {
-      if (node.width >= 34 && node.width <= 42 && node.x >= ctx.renderer.width / 2
-        && node.y >= 0 && node.y + node.height <= ctx.renderer.height && !node.isDestroyed && node.visible) region = node
-    }
-    if (current && region && current.node !== region) setSidebar({ ...current, node: region })
-    const value = rootRoute() && region ? { x: region.x, y: region.y, width: region.width, height: region.height } : undefined
-    setGeometry(value)
-  }
-  ctx.renderer.on(CliRenderEvents.FRAME, frame)
-  life.addCleanup(() => { ctx.renderer.off(CliRenderEvents.FRAME, frame) })
   if (config.autoApprove) {
     const paint = setInterval(() => { if (select()) ctx.renderer.requestRender() }, 100)
     life.addCleanup(() => clearInterval(paint))
@@ -210,6 +309,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     if (route.type !== "session") return
     try {
       const root = await modes.root(route.sessionID, life.signal)
+      if (enabled) await modes.load(root, life.signal)
       if (generation !== modeCommand || life.signal.aborted) return
       const changed = modes.enabled(root) !== enabled
       const saving = modes.set(root, enabled)
@@ -228,7 +328,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       slash: { name: "reviewer-disable" }, run: () => switchMode(false) },
   ] }))
   void refresh.refresh()
-  return { controller, views, front, routes, modes, refresh, scope,
+  return { controller, views, front, routes, modes, refresh, scope, records, notifications,
     registerPresentation, presentation: () => proof(),
   }
 }

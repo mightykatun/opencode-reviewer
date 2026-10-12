@@ -29,6 +29,17 @@ test("V2 panel needs measured anchor bounds and a fresh real frame, not a timer 
   assert.equal(proof.state(value, true).state, "visible")
 })
 
+test("only normal mode can use independently proved history cover, still requiring root, final paint and native priority", () => {
+  const value = { ...input(), covered: true, hitTest: () => 999 }, proof = new HostPanelPresentationProof()
+  assert.equal(proof.state(value, true).state, "visible")
+  assert.equal(proof.state({ ...value, covered: false }, true).state, "lost")
+  assert.equal(proof.state({ ...value, fast: true }, true).state, "lost")
+  assert.equal(proof.state({ ...value, finalReady: false }, true).state, "pending")
+  assert.equal(proof.state({ ...value, selected: undefined }, true).state, "lost")
+  assert.equal(proof.state({ ...value, route: { type: "session", sessionID: "child" } }, true).state, "lost")
+  assert.equal(proof.state({ ...value, mode: "modal" }, true).state, "lost")
+})
+
 test("descendant and unrelated routes revoke normal and fast proof without a hidden-route exception", () => {
   for (const fast of [false, true]) for (const route of ["child", "nested", "sibling", "unrelated"]) {
     const value = { ...input(), fast }, proof = new HostPanelPresentationProof()

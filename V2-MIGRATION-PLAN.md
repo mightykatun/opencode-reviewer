@@ -1,6 +1,6 @@
 # OpenCode V2 migration plan
 
-Status: Phases 1-2 committed; Phase 3 production advisory, normal and fast positives verified. Negative presentation gates and history/notification migration remain open.
+Status: W7 scoped V2 migration implemented and verified for stock 2.0.26; version 2.0.0 prepared locally. Historical full-parity proposals and explicitly unverified expanded cases below are not completion claims. No publication or push performed.
 Prepared: 2026-10-12.
 Revised: 2026-10-12, following the user's requirement that upstream changes are unavailable.
 Baseline: `v1.0.2` (`7cd1e561aea594ab9c7a99a32f30568579098747`), the final
@@ -28,30 +28,30 @@ Current execution tasks (resumed 2026-10-12; completed reading gates retained):
   - [x] Verify MCP normalization collision, metadata-identical replacement and native-looking alias execution.
   - [x] Verify retained mappings across public registration reload/disposal; reuse the recorded shadow-shell negative control.
   - [x] User accepted the native-tool installation trust assumption.
-  - [ ] Resolve any additional MCP mapping/skill snapshot restrictions separately.
+  - [x] Dispose additional mapping/snapshot restrictions by keeping unsupported MCP/custom and unavailable mandatory skill evidence manual, without new trust assumptions.
 - [x] W3 disposition: continuously observed direct evidence; missing mandatory evidence stays manual, including unproven skill instructions.
   - [x] Probe concurrent late shell rewrites, skill catalog reload and continuously observed moved-session location.
   - [x] Probe exact pending edit preview and the earlier external-directory stage.
   - [x] Apply the user's "keep it simple" direction to skills: no extra catalog-mutation assumption or revision-guard subsystem; missing exact main instructions remains manual.
-  - [ ] Resolve immutable final evidence, reconnect/reload recovery and category scope.
+  - [x] Retain exact observed native arguments under the accepted installation contract; unknown categories remain manual and connection replacement closes the controller.
 - [x] W4 disposition: omit unavailable optional delegation; do not introduce an ordered-input substitute.
   - [x] Verify native initial/resumed/nested delegation, tool-only continuation and coalesced steer/synthetic inputs excluding queued follow-up.
-  - [ ] Resolve unproven exact-delegation handling and remaining lifecycle cases.
+  - [x] Apply factual optional-delegation omission and verified installed reload/partial-failure ownership; broader delegation permutations remain separate tests.
 - [x] W5 disposition: synthetic physical path verified; visible-root contract selected, with production acceptance in Phase 3.
   - [x] User selected visible-root presentation for V2 automatic approval.
   - [x] Verify synthetic root Markdown/frame/hit proof and descendant, hide, modal, fullscreen, narrow and mouse-disabled controls.
   - [x] Verify native root queue includes deep descendants and uses root-first/public-family order.
-  - [ ] Verify root physical proof and descendant cancellation/return behavior.
+  - [x] Verify real production root proof, descendant cancellation/return and never-armed hidden completion in the registered acceptance cases.
 - [x] W6 disposition: five-file shared companion selected; retain history without proven deletion ownership.
   - [x] Verify five-file packed shared entrypoint, lazy CLI rendering, scoped RPC and location/CLI lifecycle.
   - [x] Verify typed direct-server absence and read/set initialization-race negative controls.
-  - [ ] Resolve durable lineage and remaining service/connection lifecycle gates.
+  - [x] Retain uncertain history, use indexing without deletion authority and fail closed on connection replacement; no unproven lineage recovery ships.
 - [x] W7: reconcile the scoped production contract below before dependent production work.
-- [ ] Implement and verify Phases 1-6 sequentially against their existing exits.
-- [ ] Keep evidence/checkmarks current and commit verified increments.
+- [x] Implement and verify the W7 scope across Phases 1-6; expanded full-parity proposals remain explicitly separate.
+- [x] Keep evidence/checkmarks current and commit verified increments.
   - [x] Commit the mapping/effective-evidence/root-proof increment (`f847799`).
   - [x] Verify native queue, edit previews, delegation subsets and packed companion; 118 helper tests, fixture syntax and diff checks pass.
-- [ ] Escalate unresolved gates with Expected/Found/Impact/Options.
+- [x] Disposition stock-host limitations through W7 and document remaining verification limits, without claiming unsupported parity.
 
 The task-list and Edit tools are not exposed in this session. This hierarchical
 tracker is maintained with the available patch tool instead.
@@ -133,7 +133,7 @@ coverage. Implement the following selected scope:
 - [x] 1. Read the complete plan and existing completion state.
 - [x] 2. Read referenced implementation, fixture, package and workflow files.
 - [x] 3. Derive ordered implementation tasks and acceptance gates.
-- [ ] 4. Implement sequentially and commit verified increments.
+- [x] 4. Implement sequentially and commit verified W7 increments.
   - [x] Phase 0: pin and probe public host capabilities; resolve the W7 scoped architecture.
     - [x] Inspect exact installed host and released package contracts.
     - [x] Verify direct native request reads/reply, options and unload cleanup.
@@ -147,11 +147,11 @@ coverage. Implement the following selected scope:
     - [x] Record findings and scope unresolved mandatory evidence to manual handling.
   - [x] Phase 1: V2 entrypoint, package, lifecycle shell and local state/connection scope.
   - [x] Phase 2: W7 scoped host/evidence adapters; actual write confirmation remains a Phase 3 integration gate.
-  - [ ] Phase 3: controller, physical presentation and normal/fast visible-root approval.
-  - [ ] Phase 4: persistence, accounting, modes and notifications.
-  - [ ] Phase 5: fixtures/inventory/CI updated alongside their features.
-  - [ ] Phase 6: documentation and installed-archive verification.
-- [ ] 5. Verify each phase against its exit criteria before proceeding.
+  - [x] Phase 3: controller, physical presentation and registered normal/fast visible-root acceptance.
+  - [x] Phase 4: W7 persistence/accounting/modes/notification integration and registered acceptance, with broader matrix limits below.
+  - [x] Phase 5: fixtures/inventory/CI updated alongside their features.
+  - [x] Phase 6: documentation and installed-archive verification.
+- [x] 5. Verify the selected scope of each phase, recording original broader exit proposals separately.
 - [x] 6. Record completed items and concrete evidence incrementally.
 - [x] 7. Escalate any unresolved mismatch with expected/found/impact/options.
 
@@ -760,14 +760,15 @@ Phase 1 implementation tracker:
 - [x] Verify reproducible five-file archive and V1/V2 archive validation policy.
 - [x] Verify the actual installed archive on pinned V2: default package loading, scoped RPC, repeated reload and partial failure.
 - [x] Verify custom prompt startup snapshot and built-in per-file fallback in the installed archive.
-- [ ] Verify worker cleanup and injected dependency behavior when those consumers are connected in Phases 2-4.
+- [x] Verify connected worker/accounting shutdown in source tests and installed injected notification-backend ownership/disposal in Phase 4.
 - [x] Finish Phase 1 shell verification before Phase 2 and commit as `070e6ad`.
 
-Implementation currently uses `src/plugin.ts`, `src/cli-plugin.ts`,
+The Phase 1 increment used `src/plugin.ts`, `src/cli-plugin.ts`,
 `src/companion.ts`, `src/companion-protocol.ts` and `src/plugin-lifecycle.ts`.
-`src/tui.tsx` and its V1 source tests remain migration inputs while the replacement
-entrypoint is only a lifecycle shell. The shell does not yet dispatch reviews or
-approval writes. Existing V1 controller test successes do not prove V2 behavior.
+`src/tui.tsx` and its V1 source tests remain historical migration inputs. At that
+increment, the replacement entrypoint was only a lifecycle shell and dispatched no
+reviews or approval writes. Later production integration is recorded in Phases 3-4;
+existing V1 controller test successes alone still do not prove V2 behavior.
 
 OpenTUI 0.5.17 publishes exact Solid 1.9.12 peers while the pinned host uses 1.9.15;
 scoped npm overrides select the host's single Solid runtime. Its published Node
@@ -919,15 +920,15 @@ Preparation tracker:
 - [x] Verify the advisory evaluator in the installed archive (`runtime-run-xYACm1`, `v2-invocation-kv2Dqr`): one exact native evidence POST and validated assessment, zero permission replies/execution.
 - [x] Connect native pending/cache reconciliation, mode gating and the stable production UI.
 - [x] Add native actual-dispatch/confirmed-resolution semantics, distinct from the legacy `Promise<void>` writer.
-- [ ] Pass the production normal/fast presentation and cancellation/retention acceptance cases below.
+- [x] Pass the registered production normal/fast presentation and cancellation/retention acceptance cases; additional family/fullscreen permutations remain separate.
 
-Active integration work (not yet a completed host gate): `host-runtime.tsx`
+The integration in `host-runtime.tsx`
 connects scoped location snapshots, native cache invalidation/sync, conversation
 mode and the existing generic controller. `host-queue.ts` selects root-first public
 family/cache order, retaining disabled and deep-descendant blockers. Event revisions
 discard stale snapshots before admission. Companion replacement fails closed rather
-than adopting old evidence. Production UI and native dispatch/confirmation are being
-connected separately; their source changes are not a runtime pass. Adapter-only
+than adopting old evidence. Production UI and native dispatch/confirmation now pass
+the installed cases listed below. Adapter-only
 fixtures use an explicit embedding seam so they continue testing readers without
 activating a second controller.
 
@@ -943,7 +944,7 @@ Production integration positives now pass on pinned 2.0.26:
 These are real installed production controller/UI runs, not the earlier evaluator
 seam. Positive approval fixtures explicitly configure mouse capture in isolated
 CLI settings; production never enables it or forces the sidebar. Negative physical-
-presentation/cancellation/descendant cases remain open. The full source aggregate
+presentation/cancellation/descendant cases subsequently passed as recorded below. The full source aggregate
 passed 1,436 tests with `--test-concurrency=2`; the earlier default-concurrency run
 hit existing tokenizer/history timing assertions, both passing unchanged in focused
 reruns. No timing assertions or discovery budgets were weakened.
@@ -970,9 +971,11 @@ Source tests now use two concurrent files, without changing production time budg
 The parent-cancellation evidence fixture now explicitly aborts after actual I/O
 acquisition, avoiding a race with the legitimate optional-file sub-budget timeout.
 
-Normal/fast production history-cover integration, native multi-terminal handling,
-additional resize/modal/family permutations, full history/statistics and notification
-host acceptance remain open. A `server.connected` event closes this running
+Normal/fast production history cover, history/statistics, approval notifications,
+explicit sidebar hide, stock command-palette cover, clipping resize and never-armed
+hidden completion now pass in the 22-case acceptance run recorded below. Native
+multi-terminal, permission-fullscreen and additional family permutations remain
+unverified. A `server.connected` event closes this running
 controller rather than mixing a captured old client with newly connected native
 caches. No reconnect/deletion authority is inferred from a location or epoch.
 
@@ -1032,6 +1035,39 @@ a write; both normal and fast descendant-route approval remain blocked.
 
 Files: `src/history-*.ts`, `session-mode*.ts`, `usage.ts`, `lifetime-*.ts*`,
 `notification-host.ts`, `notification-order.ts` and notification policy/backend.
+
+Implemented W7 integration:
+
+- [x] Native request-generic accounting with exact assistant interruption and
+  conservative native reply attribution; accepted bodies persist only after
+  qualifying resolution, independently of per-POST usage and confirmed approvals.
+- [x] Existing SQLite worker, precomputed totals and absolute V2 directory index;
+  preserve V1 rows/legacy aggregates and retain unproven deletions without maintenance.
+- [x] Stable root-only history sibling, native statistics dialog and independent
+  history/statistics initialization when reviewer configuration or companion is absent.
+- [x] Public native model/provider pricing with exact endpoint/model ownership,
+  validated context tiers and unknown-cost preservation; OpenRouter behavior unchanged.
+- [x] Native permission/form/execution notification bridge, event-birth eligibility,
+  native queue ownership, confirmed approval and leased exact history clicks.
+- [x] Isolate optional form reads from permission admission; own whole refresh
+  transactions through cancellation and actual settlement.
+- [x] Preserve manual attention when review configuration or the companion is
+  unavailable, without model calls, approval writes or another app surface.
+- [x] Retain the earliest unresolved notification visit across ancestry failure
+  or saturated read slots; retry on healthy publications without baseline replay.
+- [x] Real installed history/statistics acceptance:
+  `.runtime/runtime-run-agQkbo/results.json` (`normal-history`).
+- [x] Real installed fast approval notification before EOF and exact saved-history
+  click: `.runtime/runtime-run-EOZiju/results.json` (`fast-notifications`), with only
+  desktop I/O injected. No GNOME/audio acceptance is claimed.
+- [x] Real fast history-cover negative and fresh-root Escape acceptance:
+  `.runtime/runtime-run-i00ShF/results.json` (`fast-history-cover`).
+
+The original broader exit matrix below remains a record of proposed full parity,
+not a claim that these exact installed cases cover concurrent native terminals,
+all form/turn permutations, remote-server reconnection or real desktop playback.
+W7 deliberately retains uncertain history instead of shipping unproven offline
+deletion reconciliation, and fails closed on connection replacement.
 
 - Preserve SQLite history and precomputed totals. The guide's `ctx.storage`
   server API and CLI `context.storage.store/memory` APIs are distinct; durable JSON
@@ -1136,9 +1172,11 @@ node scripts/test-runtime.mjs --profile ci
 node scripts/test-runtime.mjs --profile f34
 ```
 
-These profile names exist today, but their current production fixtures target V1.
-The implementation agent must port/register their V2 invocations before these
-commands establish V2 coverage. Required coverage includes:
+`ci` now selects pinned V2 lifecycle, evidence and production reviewer cases,
+with explicitly classified synthetic presentation/queue probes. `v2-acceptance`
+expands that selection to all registered production V2 review scenarios. Historical
+`ci-v1`, `f34` and `w6-*` profiles still require their separate V1 build/host and
+cannot establish V2 coverage. The original broader proposed matrix follows:
 
 | Area | Required acceptance cases |
 | --- | --- |
@@ -1167,20 +1205,67 @@ playback or focus behavior.
 
 - [x] Exact V2 host/client/plugin/runtime versions and phase-0 findings recorded.
 - [x] No-upstream constraint and blocker-by-blocker stock-host plan recorded.
-- [ ] W1-W7 verified/disposed with explicit architecture and behavior decisions.
-- [ ] Mandatory evidence, location and delegation questions resolved with public APIs.
-- [ ] CLI-only or documented companion architecture reconciled with package policy.
-- [ ] Production imports and active fixtures no longer rely on V1 API shapes.
-- [ ] Pending-request review remains advisory/once-only with unchanged model transport.
-- [ ] Real V2 normal/fast and physical-coverage cases pass under the approved
+- [x] W1-W7 scoped architecture/evidence dispositions recorded, without counting unexecuted probes as passes.
+- [x] Mandatory native evidence/location verified; unsupported mandatory evidence stays manual and unavailable optional delegation is omitted factually.
+- [x] Documented companion architecture reconciled with the five-file package policy.
+- [x] Distributed entrypoint and active V2 fixtures use native APIs; V1 source/fixtures remain separately classified historical inputs.
+- [x] Pending-request review remains advisory/once-only with unchanged model transport.
+- [x] Registered real V2 normal/fast and physical-coverage cases pass under the approved
   visible-root contract, accurately documenting the V1 F34 behavior difference.
-- [ ] Existing history/totals and mode semantics survive migration and server changes.
-- [ ] V2 notifications, forms and execution outcomes pass queue/reconnect tests.
-- [ ] Installed-package and CI/release-policy checks pass on the selected host.
-- [ ] README and maintainer guidance describe the implemented, verified V2 contract.
+- [x] Existing SQL/precomputed totals retained, independent history/modes tested and installed history/statistics verified; no guessed server continuity or deletion authority.
+- [x] Native notification/form/turn queue and reconnect source tests pass, with installed confirmed-approval and leased-history-click acceptance; broader host permutations remain below.
+- [x] Installed-package and exact CI selection pass locally on the selected host; release-policy/package checks pass without publication.
+- [x] README and maintainer guidance describe the implemented, verified W7 V2 contract and its limits.
 
 For each completed phase, the implementation agent should add its commit ID, exact
 test invocations/artifact paths, and any unresolved capability. A missing public
 API is a named stock-host limitation with a minimal reproduction. Resolve it through
 a verified public workaround or an explicit scope decision, never an inferred
 identity, an unsupported completion claim or a hidden upstream dependency.
+
+### Scoped completion evidence
+
+The approved W7 adaptation is implemented. The original full-parity matrix and
+historical investigation checkboxes above remain visible rather than being counted
+as executed tests. Unsupported skill/MCP/custom evidence and ambiguously linked
+Code Mode calls stay manual; optional unproven delegation is omitted factually;
+uncertain history is retained; connection replacement closes the old controller.
+
+- Prior verified production-controller increment: `152ffbd`.
+- Final source aggregate: `npm test`, **1,511 passed**, two concurrent files;
+  `npm run typecheck` passes. No production deadline or timing assertion was relaxed.
+- `npm run test:helpers`: **121 passed**, including the active-policy sparse checkout
+  and exact CI/acceptance selection. `npm run test:runtime-cleanup`: **8 passed**.
+- `npm run check:package`: reproducible SHA-256
+  `b9811bd6470d870a5bdb38250a31af26d4ea8283624f544d119d68f84fd46110`;
+  exactly five archive files, 2,244,305 bytes unpacked.
+- `node --test test/release-artifact-smoke.test.mjs test/npm-cli-smoke.test.mjs`:
+  **9 passed** on npm 12.2.0, with publication/crypto/network boundaries offline.
+- Pinned-host run:
+  `OPENCODE_BIN=/tmp/opencode/reviewer-host-2.0.26/node_modules/@opencode/cli-linux-x64/bin/opencode node scripts/test-runtime.mjs --profile v2-acceptance`.
+  **22 passed**, 19 production-host and three explicitly synthetic cases, serial,
+  503.9 seconds. Results: `.runtime/runtime-run-DjySY1/results.json`.
+  `ci` now selects those exact verified cases; PR host installation/hash and the
+  read-only release-policy boundary remain unchanged.
+- After the final observer deletion-membership fix and reproducible rebuild,
+  `smoke-v2-review.mjs fast-notifications` passes again on the final archive at
+  `.runtime/runtime-run-WthyDm/results.json`. Its source regression also passes in
+  the final 1,511-test aggregate. The earlier 22-case run is not relabeled as a
+  second full-matrix run on those rebuilt bytes.
+- The advisory fixture independently observes the exact native aborted assistant
+  identity, verifies no report body while unresolved, then verifies a Cancelled
+  report with zero approvals/execution. It does not reinterpret interruption as
+  manual approval. History-cover SQL checks preserve the first entry's actual
+  chronological rank `1/2`, exact identity and body after the second report arrives.
+- Both manifests are prepared as `2.0.0`; README describes the server companion plus
+  global CLI setup, exact supported host and conservative category/route behavior.
+  Bundled theme attribution and maintainer guidance are updated.
+
+Verification limits: no complete historical V1 matrix, real GNOME focus/audio,
+live-model judgment/provider latency, concurrent native terminals, all native
+form/turn/fullscreen/family permutations or competing-newer-entry notification click
+is claimed. Queue/form/turn/reconnect and unavailable-review behavior have focused
+source tests; the installed notification case injects only the desktop boundary.
+No legacy offline deletion maintenance or guessed reconnect ownership ships.
+Publishing/tagging/pushing remains a separate authorized action. The pre-existing
+`AUDIT.md` deletion is not part of the migration commit.

@@ -1,5 +1,5 @@
 import type { PermissionRequest, Message } from "@opencode-ai/sdk/v2"
-import type { ApprovalFact, ReviewLifecycleFact } from "./controller.js"
+import type { ApprovalFact, RequestIdentity, ReviewLifecycleFact } from "./controller.js"
 import type { Config } from "./config.js"
 import type { ReviewKind, ReviewObservation } from "./types.js"
 import type { HistoryEvent, HistoryOutcome, HistoryPayload, HistoryReview, HistoryScope } from "./history-records.js"
@@ -24,12 +24,17 @@ interface Dispatch { context: HistoryReview; approval: string; automatic: boolea
 interface EarlyReview { context: HistoryReview; confirmed?: "auto" | "manual"; reply?: Candidate["reply"] }
 const category = (kind: ReviewKind): HistoryReview["category"] => kind === "shell" ? "bash"
   : kind === "external-directory" ? "external_directory" : kind
+type AssistantSource<R extends RequestIdentity> = (request: R) => string | undefined
+const legacyAssistant = (request: RequestIdentity): string | undefined => {
+  const legacy = (value: RequestIdentity): value is PermissionRequest => "permission" in value && typeof value.permission === "string"
+  return legacy(request) ? request.tool?.messageID : undefined
+}
 
 /** Data-only observers. Report bodies live here until a qualifying resolution.
  * A bounded resolution window can observe a remote acknowledgement. Its expiry is
  * omission, never evidence that no other client submitted an automatic write.
  */
-export class HistoryCoordinator {
+export class HistoryCoordinator<R extends RequestIdentity = PermissionRequest> {
   private candidates = new Map<string, Candidate>()
   private dispatches = new Map<string, Dispatch>()
   private early = new Map<string, EarlyReview>()
@@ -39,9 +44,12 @@ export class HistoryCoordinator {
   private timer?: ReturnType<typeof setTimeout>
   private abort = new AbortController()
   private unsubscribe: () => void
+  private assistant: AssistantSource<R>
   constructor(readonly scope: string, private store: Store,
     private ancestry: AncestryReader,
-    private now: () => number = Date.now) {
+    private now: () => number = Date.now,
+    ...source: [assistant?: AssistantSource<R>] & (R extends PermissionRequest ? unknown : [assistant: AssistantSource<R>])) {
+    this.assistant = source[0] ?? legacyAssistant
     this.unsubscribe = store.onCommit(() => this.poll())
   }
   /** History browsing uses ancestry only, even with invalid/disabled review mode. */
@@ -49,7 +57,7 @@ export class HistoryCoordinator {
   private admit(event: HistoryEvent) {
     try { return this.store.admit(event) } catch { return false }
   }
-  observation(request: PermissionRequest, kind: ReviewKind, config: Config, execution: { review: string; root?: string }): ReviewObservation {
+  observation(request: R, kind: ReviewKind, config: Config, execution: { review: string; root?: string }): ReviewObservation {
     const context: HistoryReview | undefined = execution.root ? { scope: this.scope, root: execution.root,
       session: request.sessionID, permission: request.id, review: execution.review, category: category(kind),
       configuredModel: config.model, provider: config.baseURL } : undefined
@@ -65,7 +73,7 @@ export class HistoryCoordinator {
         ...(event.usage ? { usage: event.usage } : {}), ...(event.reportedModel ? { reportedModel: event.reportedModel } : {}) })
     } }
   }
-  lifecycle = (fact: ReviewLifecycleFact) => {
+  lifecycle = (fact: ReviewLifecycleFact<R>) => {
     if (this.stopped) return
     const id = fact.request.id
     if (fact.type === "accepted") {
@@ -80,7 +88,7 @@ export class HistoryCoordinator {
       const early = this.early.get(id)
       const confirmed = early?.context.review === fact.review ? early.confirmed : undefined
       const candidate: Candidate = { context, payload: { ...accepted, desc: fact.result.desc,
-        ...(fact.result.usage ? { usage: { ...fact.result.usage } } : {}) }, message: fact.request.tool?.messageID,
+        ...(fact.result.usage ? { usage: { ...fact.result.usage } } : {}) }, message: this.assistant(fact.request),
         cancelled: old?.cancelled ?? false, interrupted: old?.interrupted ?? false, removed: !!confirmed,
         dispatched: old?.dispatched ?? false, confirmed: confirmed ?? old?.confirmed,
         ...(early?.context.review === fact.review && early.reply ? { reply: early.reply } : {}) }
@@ -122,12 +130,16 @@ export class HistoryCoordinator {
   /** Exact assistant-message link plus later permission removal, never root idle. */
   message(message: Message) {
     if (this.stopped || message.role !== "assistant" || message.error?.name !== "MessageAbortedError") return
-    for (const c of this.candidates.values()) if (c.context.session === message.sessionID && c.message === message.id) {
+    this.interrupted({ sessionID: message.sessionID, assistantID: message.id })
+  }
+  interrupted(identity: { sessionID: string; assistantID: string }) {
+    if (this.stopped) return
+    for (const c of this.candidates.values()) if (c.context.session === identity.sessionID && c.message === identity.assistantID) {
       c.interrupted = true
       if (c.removed) this.finishKnown(c)
     }
   }
-  approval = (fact: ApprovalFact) => {
+  approval = (fact: ApprovalFact<R>) => {
     if (this.stopped || !fact.approval || !fact.review) return
     const c = this.candidates.get(fact.request.id)
     const early = this.early.get(fact.request.id)

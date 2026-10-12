@@ -7,6 +7,7 @@ import { FileAccess, type FileIO } from "../src/file-access.js"
 import { parseConfig } from "../src/config.js"
 import { readHostInvocation, snapshotRequest } from "../src/host-request.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
+import type { ReviewAttemptEvent } from "../src/types.js"
 
 const scope = { epoch: "10000000-1000-4000-8000-100000000000", location: { directory: "/server/project" } }
 const project = { id: "project", directory: "/server", canonical: "/server" }
@@ -19,7 +20,7 @@ function fixture() {
   const snapshot = snapshotRequest(raw, scope)!
   const invocation = readHostInvocation({ sessionID: "session", assistantID: "assistant", callID: "call", tool: "write", input, ...scope, project })!
   const calls: string[] = [], posts: any[] = []
-  const state = { missing: false, response: '{"safe":true,"desc":"A bounded isolated text replacement."}' }
+  const state = { missing: false, invalidEvidence: false, response: '{"safe":true,"desc":"A bounded isolated text replacement."}' }
   const io = new FileAccess({ open: async () => { throw Error("Edits must not read files") }, realpath: async () => { throw Error("Edits must not resolve files") } } as unknown as FileIO)
   const client = {
     rpc: () => ({
@@ -27,7 +28,9 @@ function fixture() {
       invocation: async () => { calls.push("invocation"); return state.missing ? null : { request: raw, invocation } },
       evidence: async (query: any, { signal }: { signal: AbortSignal }) => {
         calls.push("evidence")
-        return { request: raw, invocation, result: await collectHostOperation({ snapshot, invocation }, query.options, signal, io) }
+        const result = await collectHostOperation({ snapshot, invocation }, query.options, signal, io)
+        return { request: raw, invocation, result: state.invalidEvidence && result.status === "ready"
+          ? { ...result, evidence: { ...result.evidence, kind: "shell" } } : result }
       },
     }),
     session: { get: async () => ({ id: "session", projectID: project.id, location: scope.location }),
@@ -70,13 +73,62 @@ test("disabled or missed-capture native evidence cannot identify or dispatch a r
   for (const missing of [false, true]) {
     const f = fixture()
     f.state.missing = missing
-    let identified = false
+    let identified = false, observed = false
     assert.equal(await evaluateHostReview(f.client, f.snapshot, { ...config(), reviewEdits: missing }, BUILTIN_PROMPTS,
-      new AbortController().signal, () => { identified = true }, { fetcher: f.fetcher }), null)
+      new AbortController().signal, () => { identified = true }, { fetcher: f.fetcher,
+        observeEvidence: () => { observed = true; return { review: "must-not-exist" } } }), null)
     assert.equal(identified, false)
+    assert.equal(observed, false)
     assert.equal(f.posts.length, 0)
   }
 })
+
+test("native accounting observation is created after ready evidence validation and keeps exact execution identity", async () => {
+  const f = fixture(), attempts: ReviewAttemptEvent[] = []
+  const result = await evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, new AbortController().signal,
+    () => { f.calls.push("identified") }, { fetcher: f.fetcher, observeEvidence: evidence => {
+      f.calls.push("observation")
+      assert.equal(evidence.kind, "edit")
+      assert.deepEqual(evidence.permission.source, { assistantID: "assistant", id: "call" })
+      assert.equal(evidence.userPrompt, "Update the isolated target.txt")
+      return { review: "controller-execution", observe: event => { attempts.push(event) } }
+    } })
+  assert.deepEqual(f.calls, ["invocation", "evidence", "identified", "observation", "POST"])
+  assert.equal(result?.metadata?.review, "controller-execution")
+  assert.equal(result?.metadata?.kind, "edit")
+  assert.deepEqual(attempts.map(event => [event.type, event.review]), [
+    ["dispatched", "controller-execution"], ["finalized", "controller-execution"],
+  ])
+  assert.equal(f.posts[0].messages.some((message: any) => message.content.includes("controller-execution")), false)
+})
+
+test("invalid native evidence never creates an accounting observation", async () => {
+  const f = fixture()
+  f.state.invalidEvidence = true
+  let observed = false, identified = false
+  const result = await evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, new AbortController().signal,
+    () => { identified = true }, { fetcher: f.fetcher, observeEvidence: () => { observed = true; return { review: "invalid" } } })
+  assert.equal(result, null)
+  assert.equal(identified, false)
+  assert.equal(observed, false)
+  assert.equal(f.posts.length, 0)
+})
+
+for (const behavior of ["factory-throw", "observer-throw", "observer-reject"] as const)
+  test(`native accounting ${behavior} cannot change the assessment`, async () => {
+    const f = fixture()
+    const result = await evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, new AbortController().signal,
+      () => {}, { fetcher: f.fetcher, observeEvidence: () => {
+        if (behavior === "factory-throw") throw Error("observational setup failure")
+        return { review: "execution", observe: () => {
+          if (behavior === "observer-throw") throw Error("observational delivery failure")
+          return Promise.reject(Error("observational delivery failure"))
+        } }
+      } })
+    assert.equal(result?.safe, true)
+    assert.equal(result?.desc, "A bounded isolated text replacement.")
+    assert.equal(f.posts.length, 1)
+  })
 
 test("native format correction retains byte-exact initial evidence and the failed assessment", async () => {
   const f = fixture()

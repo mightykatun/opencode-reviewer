@@ -19,8 +19,10 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  foundation and production core cases from PR CI, including explicitly classified
-  synthetic probes; these are not full UI/history/notification acceptance. `--profile ci-v1` retains the
+  verified 22-case production/foundation selection from PR CI, including history,
+  statistics, approval notifications and explicitly classified synthetic probes.
+  `--profile v2-acceptance` currently selects the same cases. Neither proves the
+  complete historical V1 matrix or real desktop/audio acceptance. `--profile ci-v1` retains the
   historical V1 selection and needs its separate host/build. `npm run test:runtime` and
   `npm run test:runtime-permissions` retain their original family subsets.
   All runtime commands require a prior build; none implicitly rebuilds.
@@ -62,7 +64,29 @@
   discovery and history-watchdog tests should not compete with dozens of workers.
   Preserve their actual budgets and assertions rather than increasing time limits.
 
-### Focused host checks (build first)
+### Focused V2 host checks (build first)
+
+Set `OPENCODE_BIN` to the pinned stock 2.0.26 binary, not a newer PATH installation.
+All commands below use the installed five-file archive and production runtime.
+
+| Area | Command |
+| --- | --- |
+| Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
+| Saved history and statistics | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history` |
+| Normal-only history cover | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-cover` / `fast-history-cover` |
+| Approval notification and exact history click | `node scripts/test-runtime.mjs smoke-v2-review.mjs fast-notifications` |
+| Descendant cancellation / hidden fast response | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-descendant` / `fast-descendant` |
+| Mouse-disabled / Cancel | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-mouse-off` / `normal-cancel` |
+
+The notification case injects only the desktop backend. It does not prove actual
+audio playback, GNOME focus or live-provider judgment. History fixtures use a new
+private state directory under sticky `/tmp` because `/tmp/opencode` can be group
+writable; never weaken SQLite ancestor checks or chmod existing user directories.
+
+### Historical V1 host checks
+
+The following fixtures require the separate V1 host/build and are migration inputs,
+not acceptance evidence for the distributed V2 archive.
 
 | Area | Command |
 | --- | --- |
@@ -92,12 +116,12 @@
 
 ## Host and build boundaries
 
-- Migration in progress: the shared V2 lifecycle entrypoint targets local Linux
+- The shared V2 lifecycle entrypoint targets local Linux
   OpenCode **2.0.26** using pinned `@opencode/plugin`, `@opencode/client` and
   `@opencode/theme`. OpenTUI is 0.5.17 and Solid is 1.9.15, matching the host.
   The V1 implementation and fixtures remain migration inputs, targeting 1.18.35;
   do not count their source-test successes as V2 runtime verification. Check
-  `V2-MIGRATION-PLAN.md` for the active phase and exact completed host checks.
+  `V2-MIGRATION-PLAN.md` for exact completed host checks and acceptance limits.
   Use public APIs/slots, never private UI imports or native approval-dialog patches.
 - Package and plugin ID are `opencode-reviewer`. `src/tui.tsx` exports the default
   legacy `{ id, tui }` module. The build now starts at `src/plugin.ts`; its shared
@@ -108,7 +132,9 @@
   restart; config/custom prompt changes require restart.
 - `scripts/build.mjs` uses Solid's **universal OpenTUI** JSX transform, not React or
   Solid DOM. TypeScript only checks types. The ESM bundle leaves Solid/OpenTUI/OpenCode
-  external and embeds prompts, sounds, the MP3 decoder and a CJS history worker.
+  external and embeds prompts, sounds, the MP3 decoder, the pinned theme helper
+  and a CJS history worker. Terminal code is an opaque base64 CJS payload loaded
+  only in the CLI role, with fixed public-module mappings and bundled sounds.
 - Preserve exactly five package files: `dist/tui.js`, `package.json`, `README.md`,
   `LICENSE`, `THIRD_PARTY_NOTICES.md`. `dist/` is generated and ignored. `npm pack`
   rebuilds via `prepack`; verified CI packing uses `--ignore-scripts`.
@@ -145,7 +171,8 @@
   priority checks and once-only writes. Retained responses may finish while hidden.
   Normal production-history cover remains a separate root-scoped physical-proof
   exception; fast mode gains no history-cover exception. Do not force mouse/sidebar
-  visibility. The V2 presentation test gate remains open until actually verified.
+  visibility. The registered production presentation cases pass; additional
+  native fullscreen/family/multi-terminal permutations remain separate acceptance.
 
 ### Approved V2 migration evidence direction
 
@@ -169,7 +196,34 @@
   operation evidence. Exact live deletion events require proven connection/scope;
   a random storage token, pathname or bare 404 is never deletion authority.
 
-### Current V1 implementation
+### Current V2 runtime
+
+- Start at `src/plugin.ts`: `server-plugin.ts` captures exact direct invocation
+  evidence; `cli-plugin.ts` validates options and the companion handshake;
+  `host-runtime.tsx` connects the generic controller to native queues and slots.
+  Evidence uses `host-evaluate.ts` and the `host-*-context.ts` collectors.
+- `host-permissions.ts` allows only scoped native `once` replies. Dispatch,
+  acknowledgement and matching native resolution are distinct facts. Uncertain
+  writes stay manual and are never retried. Reconnect closes the old controller;
+  restart/reload is required rather than mixing old clients with new caches.
+- `host-history-runtime.tsx` owns the indexed worker, history, totals and shutdown.
+  History/statistics also initialize when review configuration or the companion is
+  unavailable. The absolute V2 namespace is an index, not deletion authority.
+  Keep old rows/totals untouched and do not enable legacy offline maintenance.
+- `host-notifications.ts` uses the generic policy and Linux backend. Event births,
+  native family/form ordering and confirmed automatic success govern delivery.
+  Snapshot reconciliation is silent. Clicks carry the original request identity,
+  suppress history while its fast report remains unfinished and select only its
+  exact saved entry. Only an explicit click may reveal an actually absent sidebar.
+  `host-notification-runtime.ts` keeps manual attention active when review configuration
+  or the companion is unavailable, without a second UI surface, model calls or replies.
+  Optional form reads must stay outside permission admission; own their complete
+  transactions through abort/settlement, and fail notification health closed on errors.
+- `host-sidebar.tsx` measures native FRAME geometry; `host-review-panel.tsx` and
+  `host-history-view.tsx` prove actual hit ownership. One stable app surface contains
+  live/history siblings. Normal physical history cover is not a fast exception.
+
+### Historical V1 implementation and shared invariants
 
 - Start at `src/tui.tsx`: `controller.ts` owns lifecycle/visibility, `session-mode.ts`
   gates work before enrichment, `evaluate.ts` dispatches through `classification.ts`

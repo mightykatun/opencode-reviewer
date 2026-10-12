@@ -83,6 +83,19 @@ test("a multi-scenario fixture can retain its default while explicitly selecting
   assert.throws(() => runtimePlan("smoke-v2-invocation.mjs", ["unsupported"]), /Unknown scenario/)
 })
 
+test("V2 acceptance includes each production review case exactly once and retains explicit synthetic classifications", () => {
+  const cases = profilePlan("v2-acceptance")
+  assert.equal(cases.length, new Set(cases.map(value => value.id)).size)
+  const reviews = cases.filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs")
+  assert.deepEqual(reviews.map(value => value.scenario).sort(), [...runtimeInventory["smoke-v2-review.mjs"].scenarios].sort())
+  assert.ok(reviews.every(value => value.classification === "production-host"))
+  assert.ok(cases.every(value => value.hostVersion === "opencode v2.0.26" && value.hosts <= 2))
+  assert.deepEqual(profilePlan("ci").map(value => value.id).sort(), cases.map(value => value.id).sort(),
+    "Current CI contains the exact locally verified acceptance selection")
+  for (const id of ["smoke-v2-root-presentation/mouse-on", "smoke-v2-root-presentation/mouse-off", "smoke-v2-native-queue/default"])
+    assert.equal(cases.find(value => value.id === id)?.classification, "synthetic-host")
+})
+
 test("listing and all profile planning work with no host, fixture directory, or bundle access", () => {
   const runner = new URL("../scripts/test-runtime.mjs", import.meta.url).pathname
   const env = { PATH: "", HOME: "/missing-fixture-home", OPENCODE_BIN: "/missing-opencode" }

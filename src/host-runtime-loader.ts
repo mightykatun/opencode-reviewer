@@ -2,6 +2,7 @@ import { createRequire, isBuiltin } from "node:module"
 import type { setupHostRuntime } from "./host-runtime.js"
 
 declare const __HOST_RUNTIME__: string
+declare const __REVIEW_SOUNDS__: unknown
 
 type HostRuntime = { setupHostRuntime: typeof setupHostRuntime }
 let runtime: Promise<HostRuntime> | undefined
@@ -28,7 +29,7 @@ export function loadHostRuntime(): Promise<HostRuntime> {
     // Keep embedded source opaque to host import rewriting. Only the real
     // public imports above are resolved by the host, not string data in our CJS.
     const source = Buffer.from(__HOST_RUNTIME__, "base64").toString("utf8")
-    new Function("require", "module", "exports", source)(require, module, module.exports)
+    new Function("require", "module", "exports", "__REVIEWER_BUNDLED_SOUNDS__", source)(require, module, module.exports, __REVIEW_SOUNDS__)
     if (typeof module.exports.setupHostRuntime !== "function") throw new Error("Host runtime setup unavailable")
     return module.exports
   })()

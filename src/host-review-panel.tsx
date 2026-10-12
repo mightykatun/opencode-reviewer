@@ -11,6 +11,7 @@ import type { PresentationCheck, ReviewPresentation } from "./review-presentatio
 import { uiText } from "./ui-text.js"
 import { usageText } from "./usage.js"
 import type { HistoryRenderProbe } from "./live-review-panel.js"
+import type { HistoryCover } from "./history-cover.js"
 
 export interface HostPanelBounds { x: number; y: number; width: number; height: number }
 export interface HostSidebarAnchor {
@@ -37,6 +38,7 @@ export interface HostReviewPanelProps {
   animations?: () => boolean
   lifetimeText?: () => string | undefined
   historyProbe?: HistoryRenderProbe
+  historyCover?: HistoryCover
   onApprove(id: string): void | Promise<void>
   onCancel(id: string): void
   registerPresentation(visible: (check?: PresentationCheck) => ReviewPresentation): () => void
@@ -71,6 +73,8 @@ export interface HostPanelProofInput extends ReviewLayout {
   rating?: HostPanelNode
   footer?: HostPanelNode
   finalReady: boolean
+  /** Actual root-scoped production history hit ownership, never logical open. */
+  covered?: boolean
   hitTest(x: number, y: number): number
 }
 
@@ -83,7 +87,8 @@ function validBounds(bounds: HostPanelBounds, width: number, height: number) {
     && bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= width && bounds.y + bounds.height <= height
 }
 
-/** No route exception, inferred visibility, timer-generated paint, or history cover.
+/** No route exception, inferred visibility or timer-generated paint. Only normal
+ * mode accepts independently proved production history ownership at its probes.
  * Every gate is rechecked synchronously; only FRAME can renew geometry proof. */
 export class HostPanelPresentationProof {
   private geometry = new ReviewGeometryProof()
@@ -105,7 +110,7 @@ export class HostPanelPresentationProof {
     if (layout === "lost") return lost()
     if (layout === "pending") return pending()
     const probes = [input.heading, input.fast ? input.rating : input.footer]
-    if (!probes.every(node => {
+    const ownsProbes = probes.every(node => {
       if (!node || node.isDestroyed || !node.visible || node.width < 2 || node.height < 1) return false
       // Normal footer padding retains ownership across Checking -> Allowing
       // button replacement before the next layout. Fast probes its status row.
@@ -113,7 +118,8 @@ export class HostPanelPresentationProof {
       // The transparent footer's interior padding is painted by its enclosing
       // panel. Preserve that real owner during initial/Checking branch handoffs.
       return hostPanelOwnsHit(panel, hit) && (node === input.footer || hostPanelOwnsHit(node, hit))
-    })) return lost()
+    })
+    if (!ownsProbes && (input.fast || !input.covered)) return lost()
     if (frame) this.painted = { root, id: input.id, anchor: anchor.node, owner: anchor.owner, bounds: { ...bounds }, finalReady: input.finalReady }
     const painted = this.painted
     if (!painted || painted.root !== root || painted.id !== input.id || painted.anchor !== anchor.node
@@ -222,6 +228,9 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
     if (paintedAssessment && paintedAssessment === assessment && readyAssessment !== assessment
       && description && !description.isDestroyed && description.getChildrenCount() && highlightingComplete(description)) readyAssessment = assessment
     const anchor = props.sidebarOwner()
+    const covered = !props.config?.fastMode && !!props.rootSession() && !!heading && !!footer
+      && props.historyCover?.covers(props.rootSession()!, [context.renderer.hitTest(heading.x + 1, heading.y),
+        context.renderer.hitTest(footer.x + 1, footer.y + 1)]) === true
     return proof.state({ width: context.renderer.width, height: context.renderer.height, fast: props.config?.fastMode === true,
       id, request: view().request, selected: props.select()?.request, root: props.rootSession(), route: context.ui.router.current(),
       mode: context.keymap.mode.current(), mouse: context.renderer.useMouse,
@@ -229,6 +238,7 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
       panel: panel as HostPanelNode | undefined, heading: heading as HostPanelNode | undefined,
       rating: ratingRegion as HostPanelNode | undefined, report: scroll, footer: footer as HostPanelNode | undefined,
       finalReady: !!assessment && readyAssessment === assessment && paintedAssessment === assessment,
+      covered,
       hitTest: (x, y) => context.renderer.hitTest(x, y) }, frame)
   }
   if (props.config?.autoApprove) {

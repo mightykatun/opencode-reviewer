@@ -1,9 +1,9 @@
 # V2 capability verification
 
-Status: scoped architecture approved; Phase 1 production lifecycle shell verified.
+Status: W7 scoped V2 migration implemented and verified for stock 2.0.26; version 2.0.0 prepared locally, without publication or push.
 Native Code Mode, trusted native-tool installation, visible-root automation, shared
 companion setup, optional delegation omissions and uncertain-history retention are
-selected. See the plan's W7 contract. Remaining production acceptance gates are open;
+selected. See the plan's W7 contract. Broader full-parity acceptance remains unclaimed;
 synthetic probes do not establish a completed migration.
 
 ## Phase 1 installed production archive
@@ -165,9 +165,70 @@ event stream cannot authorize work through an old captured client.
 
 Aggregate checks pass 1,460 source tests, 120 helpers and nine built-package/npm CLI
 checks. Bundle SHA-256: `109dacf743f65ca902b059a7c1ddef6db47c5b509bca8a801df2aedf0375285d`.
-History/statistics components and accounting adapters have source preparation tests
-only; they are not yet activated in production. History-cover, notifications,
-additional native-family/modal/resize and multi-terminal gates remain open.
+At that increment, history/statistics components and accounting adapters had source
+preparation tests only. The integration evidence below supersedes that activation
+status, without claiming the complete historical V1 acceptance matrix.
+
+## Production history, statistics and notification integration
+
+The native runtime now connects the existing indexed SQLite worker and generic
+accounting coordinator to exact native reply/interruption events. Dispatch,
+confirmed approval, accepted final report and per-POST usage remain independent.
+Unresolved report bodies are not persisted. V2 scopes are absolute directory-hash
+indexes, not durable server ownership; V1 rows and precomputed lifetime totals are
+left intact. No legacy offline deletion maintenance is enabled.
+
+Installed `normal-history` passes at `.runtime/runtime-run-agQkbo/results.json`:
+one actual native execution/once reply, no body before resolution, one exact saved
+report and aggregate contributions, root-only history browsing and native
+Lifetime/Conversation statistics with keyboard scope switching. History/statistics
+initialize independently of valid reviewer configuration and companion availability;
+those unavailable-review paths additionally have focused source tests.
+
+Installed `fast-notifications` passes at
+`.runtime/runtime-run-EOZiju/results.json`: confirmed approval delivers its banner
+before held SSE EOF; clicking while the report is retained does not replace it with
+history; after final save, the click selects that exact permission/session entry.
+Only the desktop backend is injected. This does not establish actual GNOME focus,
+audio playback or selection against a competing newer entry.
+
+Installed `fast-history-cover` passes at
+`.runtime/runtime-run-i00ShF/results.json`: a second genuine request remains pending
+through both parsed Safe preview and validated EOF under actual production history.
+Real Escape and fresh root paint then permit exactly one second write/execution.
+Independent SQLite inspection verifies two reports and exact aggregate counts.
+
+History uses one stable sibling overlay and real native heading/footer hit ownership.
+The persistent FRAME listener refreshes history proof before live-panel listeners;
+logical open state, resize invalidation and remembered paint cannot grant cover.
+Optional form reconciliation is isolated from permission admission, and actual
+refresh transactions remain owned through shutdown and noncooperative settlement.
+The unavailable-review notification runtime keeps ordinary manual attention active
+without acquiring a controller, evaluator, permission writer or another app slot.
+Visit-registration failures retain their original event boundary and retry when
+healthy reconciliation returns. Exact deletion removes observer refresh membership,
+without using that volatile cleanup as authority to delete saved reports.
+
+Source/type/helper/build checks pass (`npm run check`: 1,510 source tests and 120
+helpers). After the deletion-membership and inventory regressions, typecheck passes,
+the full `npm test` aggregate passes 1,511 and `npm run test:helpers` passes 121.
+Nine actual built-artifact/npm 12.2.0 tests and eight supervisor-isolation checks
+also pass. The final `v2-acceptance` run passes all 22 cases (19 production-host,
+three explicitly synthetic) in 503.9 seconds at
+`.runtime/runtime-run-DjySY1/results.json`. This adds real normal history cover,
+hide/palette/clipping-resize cancellation, fast palette exclusion/return and
+never-armed hidden normal completion/first root eligibility to the earlier cases.
+CI now selects that exact verified set.
+
+The final observer deletion-membership fix has a focused regression in the 1,511
+source-test aggregate. After the final reproducible rebuild, its relevant installed
+`fast-notifications` case passes again at `.runtime/runtime-run-WthyDm/results.json`.
+The final bundle reproduces as SHA-256
+`b9811bd6470d870a5bdb38250a31af26d4ea8283624f544d119d68f84fd46110`,
+with exactly five archive files (2,244,305 bytes unpacked). The original 22-case run
+is not claimed as a second full run on these rebuilt bytes. Expanded native
+fullscreen/family/multi-terminal, real desktop and competing-newer notification-click
+acceptance remain explicitly unverified in the plan.
 
 ## Selected research target
 

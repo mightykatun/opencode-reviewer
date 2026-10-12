@@ -1,11 +1,8 @@
 # OpenCode Reviewer
 
-> ⚠️ **NOT v2 COMPATIBLE YET**
-> 
-> I recommend not upgrading opencode to v2 yet as many things are still unstable
-
-Reviews pending permissions in the [OpenCode](https://github.com/anomalyco/opencode) sidebar using a separate LLM. Covers
-shell commands, file edits, skill loading, MCP calls, custom tools, and external-directory access.
+Reviews pending permissions in the [OpenCode](https://github.com/anomalyco/opencode) sidebar using a separate LLM. Reviews
+native shell commands, file edits, and external-directory access. Skill, MCP and
+custom-tool requests currently remain manual.
 Supports streaming explanations, saved report history, auto-approval, and Linux
 desktop notifications with distinct sounds.
 
@@ -17,21 +14,23 @@ This plugin is meant to enable you to run sessions with less frequent input in a
 
 ![](./assets/recording.gif)
 
-Verified with OpenCode 1.19.0 on Linux. Version **1.0.2** is the final release
-compatible with OpenCode V1.
+Verified core advisory, normal and fast approval flows with stock OpenCode 2.0.26
+on Linux.
 
 ## Install and config
 
-Add this entry to `~/.config/opencode/tui.json` or `.opencode/tui.json`.
-OpenCode installs the [npm package](https://www.npmjs.com/package/opencode-reviewer).
+Add this entry to the global `~/.config/opencode/cli.json`, or
+`$XDG_CONFIG_HOME/opencode/cli.json` when `XDG_CONFIG_HOME` is set.
+There is no project-local CLI configuration. OpenCode loads the
+[npm package](https://www.npmjs.com/package/opencode-reviewer) from this entry.
 
 ```json
 {
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": [
-    [
-      "opencode-reviewer@1.0.2",
-      {
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": [
+    {
+      "package": "opencode-reviewer@2.0.0",
+      "options": {
         "baseURL": "https://openrouter.ai/api/v1",
         "model": "your-model",
         "apiKey": "your-api-key",
@@ -66,7 +65,7 @@ OpenCode installs the [npm package](https://www.npmjs.com/package/opencode-revie
         "maxFiles": 6,
         "maxEvidenceBytes": 131072
       }
-    ]
+    }
   ]
 }
 ```
@@ -82,13 +81,33 @@ endpoint. Remove `instructions` to use the built-in prompts and
 
 The connection, credential and directory values above are examples, not defaults.
 All boolean, numeric and per-type notification values shown are the defaults.
-Restart OpenCode after changing configuration. Reviews run when OpenCode asks for
-permission, so set the relevant rules to `ask` in `opencode.json`. Existing `allow`
-rules skip review.
+Restart OpenCode after changing reviewer configuration. Also load the server
+companion in `opencode.json`, globally or in the project. Keep permission rules
+only in this server configuration, not in `cli.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-reviewer@2.0.0"],
+  "permissions": [
+    { "action": "shell", "resource": "*", "effect": "ask" },
+    { "action": "edit", "resource": "*", "effect": "ask" },
+    { "action": "skill", "resource": "*", "effect": "ask" },
+    { "action": "external_directory", "resource": "*", "effect": "ask" }
+  ]
+}
+```
+
+Merge these entries with your existing configuration. Rules are ordered; the last
+matching rule wins. Reviews run only when OpenCode asks for permission. Existing
+`allow` rules and native autoaccept skip review. See OpenCode's
+[server config](https://opencode.ai/v2/docs/config),
+[CLI config](https://opencode.ai/v2/docs/cli/config) and
+[CLI plugins](https://opencode.ai/v2/docs/build/plugins/cli) guides.
 
 ## Options reference
 
-These are options inside the plugin's configuration object in `tui.json`.
+These are options inside the plugin's `options` object in global `cli.json`.
 Defaults apply only to omitted options; `null` is invalid. Boolean and integer
 options require JSON booleans and numbers, not quoted strings. Integer ranges are
 inclusive, fractions are invalid, and the maximum safe integer is
@@ -102,13 +121,13 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `apiKeyEnv` | string | Unset | Environment-variable name matching `[A-Za-z_][A-Za-z_0-9]*`. Without an inline key, its value must be set and nonblank when a review runs. Omit both key options for no Authorization header. |
 | `instructions` | string | Unset (built-ins) | Absolute, NUL-free directory path containing overrides for the [prompt templates](https://github.com/mightykatun/opencode-reviewer/tree/main/prompts), not inline instructions. Missing named files use built-ins; supplied files must be readable, regular, non-symlink, nonempty UTF-8 text up to 64 KiB. Fixed contracts cannot be overridden. |
 | `stream` | boolean | `false` | Request SSE and show provisional rating/text updates. Normal automatic approval waits for a completed, validated report; fast mode can approve on an early Safe rating. Presentation rules are described below. |
-| `reviewBash` | boolean | `true` | Review native shell-command permissions. |
-| `reviewEdits` | boolean | `true` | Review native `edit`, `write` and `apply_patch` permissions. |
-| `reviewSkills` | boolean | `true` | Review native skill-load permissions for dangerous guidance and relevance to the current task. Supplies the host's skill instructions and bounded, directly referenced supporting files within the skill directory. |
-| `reviewMcp` | boolean | `false` | Review identifiable MCP tool and resource permissions. |
-| `reviewCustomTools` | boolean | `false` | Review permissions requested by registered custom tools. |
+| `reviewBash` | boolean | `true` | Review native `shell` permissions. The option keeps its existing name. |
+| `reviewEdits` | boolean | `true` | Review native `edit`, `write` and `patch` tools, which use the `edit` permission action. |
+| `reviewSkills` | boolean | `true` | Skill-review category switch. Exact mandatory skill instructions are currently unavailable to the V2 collector, so these requests remain manual. |
+| `reviewMcp` | boolean | `false` | MCP-review category switch. V2 MCP collection is currently unsupported; enabling this does not supply missing origin/catalog evidence or permit automatic approval. |
+| `reviewCustomTools` | boolean | `false` | Custom-tool review category switch. V2 custom-tool collection is currently unsupported; these requests remain manual. |
 | `reviewExternalDirectories` | boolean | `false` | Review directory access independently of operation-review switches. Directory approval can resume the operation without another prompt. |
-| `autoApprove` | boolean | `false` | Allow Safe reviews once automatically. Normally waits for completion, validation and the countdown. Root-view rendering is required, including behind report history; same-conversation subagent browsing permits hidden approval. |
+| `autoApprove` | boolean | `false` | Allow Safe reviews once automatically. Normally waits for completion, validation and the countdown. Requires the top-level conversation and physical presentation proof; subagent browsing never permits automatic approval. Normal-mode report-history cover has a separate physical-proof exception. |
 | `fastMode` | boolean | `false` | Requires `autoApprove: true`. Approve an eligible, front-of-queue request as soon as a Safe rating is parsed, bypassing the countdown. Respects `stream`; with `stream: false`, waits for the complete validated response. Finish the report and save it in the background after approval. |
 | `extraCareful` | boolean | `true` | Include extra-careful guidance when `autoApprove` is enabled. Setting `false` omits that guidance without disabling automatic approval. |
 | `autoApproveDelaySeconds` | integer | `15` | `0`–`3600` seconds. Positive values include an extra 200 ms initial grace; `0` skips the wait but keeps the other approval checks. Ignored in fast mode. |
@@ -120,8 +139,8 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `formatRetries` | integer | `1` | `0`–`100` additional assessment-format correction attempts. `0` disables format corrections, not independent transport recovery. |
 | `maxOutputTokens` | integer | `4096` | `1` through the maximum safe integer. Sent as `max_tokens` on every reviewer POST, including retries/corrections. Your provider/model enforces its supported output limit. |
 | `timeoutMs` | integer | `30000` | `1`–`3600000` milliseconds shared across evidence collection, HTTP requests, retries and corrections; not a fresh budget per POST. |
-| `maxFiles` | integer | `6` | `1`–`1000` distinct file candidates per shell/edit/skill review, including unavailable candidates. Skill reviews count the main instructions as one file. |
-| `maxEvidenceBytes` | integer | `131072` | `1`–`16777216` bytes for command/source content, edit diffs or category-specific JSON evidence. Skill reviews share this budget between mandatory skill JSON and UTF-8 supporting-file content. Optional items are omitted whole; oversized mandatory evidence fails analysis. This is not a cap on the full prompt or HTTP request. |
+| `maxFiles` | integer | `6` | `1`–`1000` distinct file candidates per shell/edit review, including unavailable candidates. |
+| `maxEvidenceBytes` | integer | `131072` | `1`–`16777216` bytes for command/source content, edit diffs or category-specific JSON evidence. Optional items are omitted whole; oversized mandatory evidence fails analysis. This is not a cap on the full prompt or HTTP request. |
 
 Notification channels are independent: `banner: false, sound: true` is sound-only;
 `banner: true, sound: false` is banner-only; both `false` disable that type.
@@ -137,45 +156,46 @@ Markdown and scrolling. If the sidebar is hidden, use OpenCode's Show sidebar
 command.
 
 The reviewer side panel appears only in the top-level conversation. Browsing its
-subagents, including nested subagents, hides the panel while reviews and both normal
-and fast automatic approvals continue. Countdown deadlines stay the same, and new
-Safe reviews can become eligible while hidden. Return to the top-level conversation
-to see the current report or browse saved history.
+subagents, including nested subagents, hides the panel and prevents both normal
+and fast automatic approvals. Reviews may finish while hidden. A Safe report that
+has never started a normal countdown may first become eligible after returning to
+the root and receiving real presentation proof, with a fresh countdown. Leaving
+the root after a countdown starts permanently makes that request manual for the
+running controller, even after returning or disabling/re-enabling review.
 
-On the top-level route, automatic approval requires mouse tracking for the host's
-painted-panel ownership checks. With mouse tracking disabled there, reports remain
-available for manual review.
+Automatic approval requires mouse tracking for the host's painted-panel ownership
+checks. With mouse tracking disabled, reports remain available for manual review.
+The plugin never enables mouse tracking. It preserves sidebar visibility except
+after an explicit approval-notification click, when a root frame confirms the
+sidebar is absent before revealing it.
 
-Skill-load review is enabled by default; set `skill` permissions to `ask` in
-`opencode.json` to receive reviews. Its prompt requires both bounded risk and clear
-relevance to the current work. A harmless but irrelevant skill is rated Unsafe.
-The reviewer receives the exact main instructions from the host's skill catalog,
-plus bounded snapshots of directly referenced local files within the skill directory.
-It does not execute scripts, follow references in supporting files, expand directory
-listings, fetch external URLs, or read supporting files outside that directory.
-Built-in skills without a local directory receive instruction-only review.
-Customize this guidance with `SKILL-REVIEW-PROMPT.md` in your prompt directory.
+The category switches are retained, but the current V2 collectors do not support
+skill, MCP or custom-tool reviews. Missing mandatory skill instructions and unproven
+MCP/custom origin or catalog evidence leave these requests manual, not Safe.
 
-For every review category, subagent requests include the latest immediate delegation
-linked to the requesting assistant invocation, alongside the genuine root-user prompt.
-Resumed subagents use the current delegation; nested subagents include only their
-immediate delegation. Missing or over-64-KiB delegation text is noted rather than
-replaced with an older task. Both prompts are context for the reviewer, not instructions
-that can override its review contract.
+Native Code Mode and its tool search remain enabled. Exactly linked native calls
+can be reviewed; ambiguously linked nested calls remain manual. The plugin assumes
+installed plugins preserve native tool meanings, do not replace or alias native
+executors, and do not rewrite commands after evidence capture.
+
+Subagent requests carry the genuine latest root-user prompt. Exact immediate
+delegation is currently unavailable through the supported V2 evidence path and is
+factually omitted, not guessed from older tasks, sibling requests or queued follow-ups.
+Optional context omissions do not alone prevent review when mandatory operation
+evidence is verified. Context cannot override the review contract.
 
 With streaming enabled, Evaluating and its spinner disappear when a rating arrives.
 The rating remains provisional until the full response is validated. A retry
 clears the preview and restores the loading indicator. Normal auto-approval
-starts only after the full response is validated and rendered, except that rendering
-is not required while the panel is intentionally hidden by same-conversation
-subagent browsing.
+starts only after the full response is validated and rendered on the top-level
+conversation, with matching physical presentation proof.
 
 With `autoApprove: true` and `fastMode: true`, a parsed Safe rating approves the
 current eligible permission immediately, without a countdown or waiting for the
-rest of a streamed report. Same-conversation subagent browsing also permits fast
-approval while the panel is hidden. Explicit sidebar hiding, covering dialogs and
-report history prevent fast approval. Without streaming, fast mode waits for the
-full validated response and then skips the countdown.
+rest of a streamed report. It still requires native front-of-queue ownership and
+physical presentation on the top-level conversation. Subagent browsing, explicit
+sidebar hiding, covering dialogs and report history prevent fast approval. Without
+streaming, fast mode waits for the full validated response and then skips the countdown.
 
 After confirmed fast approval, the live panel shows **Auto-approved; finishing
 report…** and stays ahead of newer requests until its report finishes. Hiding the
@@ -199,10 +219,10 @@ provider charges, and unreported usage remains unknown.
 
 During an auto-approval countdown, click the countdown to allow once immediately,
 or Cancel to leave the request manual. Hiding or covering the panel also cancels
-that request's countdown, except when covered by this plugin's report history or
-intentionally hidden while browsing the same conversation's subagents. Switching
-to an unrelated conversation still cancels it. Returning cannot revive a canceled
-request.
+that request's countdown, except for this plugin's physically proven report-history
+cover on the root route. Browsing any subagent or switching conversations cancels it.
+Returning, remounting or re-enabling cannot revive a canceled request. An uncertain
+approval write also remains manual and is never retried.
 Cancel before using native Allow always or rejection
 forms; those forms alone do not stop the countdown.
 Positive countdowns add a 200 ms initial grace and then update on remaining-time
@@ -212,6 +232,10 @@ boundaries. A zero-second setting still approves without that grace.
 descendants. The setting is saved for resume. Both commands are also in the command
 palette. Disabling stops unapproved reviews and countdowns while native permission
 controls remain available. Already-approved fast-mode reports finish in the background.
+
+After a server reconnect or companion replacement, the old controller stops reviews
+and automatic replies until the plugin is reloaded or OpenCode is restarted. It does
+not mix old permission caches with a new connection.
 
 ### Report history
 
@@ -231,19 +255,20 @@ native Allow once replies whose submitting client cannot be identified. History
 keeps the latest completed report, which can differ from the report that caused
 approval in another window.
 
-History can cover an ongoing review without stopping its countdown. A newly
-completed Safe review can also start its countdown beneath history after its full
-report is rendered. Native dialogs, including the command palette, still cancel an
-active countdown; opening history afterward cannot restart it. Browsing saved
-reports never approves a request or replays notifications.
+Normal-mode history cover preserves an ongoing countdown only on
+the root route, with physical proof of the history heading/footer and rendered
+report. A newly completed Safe review may become eligible under that same proof.
+Native dialogs, including the command palette, still cancel an active countdown;
+opening history afterward cannot restart it. Fast mode has no history-cover
+exception. Browsing saved reports never approves a request or replays notifications.
 
 Reports are saved only after a qualifying permission resolution. Saved reports
 can contain private text and are retained in OpenCode's local state directory
-until their conversation is deleted. Deleting a root removes its descendants'
-details; deletion missed while OpenCode was closed is reconciled when that host
-scope is visited again. Windows using the same state directory share this history,
-partitioned by host directory and root conversation. Uncommitted reports can be
-lost on shutdown or prolonged storage failure.
+unless deletion ownership is proven. A conversation deletion does not authorize
+purging reports without proven server/scope ownership. Uncertain offline deletions
+retain history; a missing list entry or bare 404 is not enough. Windows using the
+same state directory share this history, partitioned by host directory and root
+conversation. Uncommitted reports can be lost on shutdown or prolonged storage failure.
 
 ### Usage totals
 
@@ -253,8 +278,8 @@ views. Use Tab or click a scope to switch. The dialog opens on Lifetime;
 Conversation uses the session selected when opened, resolving its root and all
 descendants, including subagents, within the current host-directory scope.
 Opening from a descendant shows the same combined conversation totals.
-OpenRouter
-costs use reported charges; other endpoints use available catalog estimates.
+Statistics remain available with review disabled or invalid reviewer configuration.
+OpenRouter costs use reported charges; other endpoints use available catalog estimates.
 Received usage counts even if a review fails or is interrupted. Unreported charges
 are missing from the totals.
 
@@ -349,8 +374,8 @@ interaction per root conversation repeats: permissions precede questions, with
 the host's session/request ordering. Queued interactions stay silent. Handoff sends
 the next eligible request's initial notification, then waits a full interval before
 its first reminder. Independent visited conversations
-can each remind. The supported host presents input for roots and direct children;
-deeper descendants cannot become a native root-input notification or reminder target.
+can each remind. The supported V2 host's root input queue includes the full descendant
+family, root first and then the host's public family order.
 
 Answering/dismissing a question in OpenCode, resolving a permission, deleting its
 session or closing the plugin stops its reminders. Closing/clicking a desktop
@@ -362,7 +387,7 @@ Notifications cover conversations visited in this terminal and their descendants
 Existing pending requests at startup/resume are not replayed or reminded, but still
 participate in queue ordering. Clicking can select
 the originating GNOME Terminal tab and root conversation. Native input prompts
-cover root/direct-child requests in the supported host. Open dialogs are
+cover the root and its full descendant family in the supported host. Open dialogs are
 left intact; other terminals still receive banners and sounds. Desktop policies
 control expiry/history and whether activation actually brings a window forward.
 Clicking **Reviewer approved a permission** opens that permission's unfinished
@@ -406,7 +431,7 @@ Use Node.js 24.15.0+ within 24.x, or 22.22.2+ within 22.x, and npm.
 Run `npm ci --ignore-scripts`, then `npm run check` for typechecking, source tests,
 pure-helper tests and the build. `npm run test:helpers` runs the helper checks
 without building or starting OpenCode. Pull-request CI checks both Node versions
-and runs a separate representative Linux OpenCode 1.18.35 fixture profile.
+and runs a separate representative Linux OpenCode 2.0.26 fixture profile.
 After building, run `node scripts/test-runtime.mjs --profile ci` for that same
 profile. Use `node scripts/test-runtime.mjs --list` for the complete runtime
 inventory or `node scripts/test-runtime.mjs --plan --profile ci` for a
