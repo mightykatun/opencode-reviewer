@@ -185,7 +185,9 @@ async function reviewerSetup(ctx) {
         record.owned++
         record.events.push({ type: "show", id, at: performance.now(),
           message: JSON.parse(JSON.stringify(message)), native: nativeSnapshot(ctx, message.sessionID) })
-        await save(); await publisher.flush()
+        // Dispatch acknowledgement must not wait for fixture observation I/O.
+        // The publisher still owns these writes through final flush/disposal.
+        void save()
         return { close, closed: settled, dispatched: Promise.resolve() }
       },
       async dispose() {

@@ -104,3 +104,37 @@ test("notification monitor reload repeats an aborted read without replaying side
   assert.equal(memory.sequence, 1)
   assert.deepEqual(memory.record.replies[1].value, { data: [] })
 })
+
+test("notification fixture acknowledges dispatch before held observation writes, which disposal still owns", async () => {
+  const text = await readFile(new URL("../scripts/smoke-v2-notifications.mjs", import.meta.url), "utf8")
+  const ast = parseSync(text, { sourceType: "module", babelrc: false, configFile: false })
+  const setupNode = ast.program.body.find(node => node.type === "FunctionDeclaration" && node.id.name === "reviewerSetup")
+  const held = deferred(), snapshots = []
+  let hold = false, backend, closed = false
+  const publisher = () => ({ publish(record) {
+    snapshots.push(structuredClone(record))
+    return hold ? held.promise : Promise.resolve()
+  }, flush: () => hold ? held.promise : Promise.resolve(), close: async () => { closed = true } })
+  const production = { withHistoryObservations(_history, _options, factory) { return {
+    async setup() { backend = factory(() => {}, { notifications: {} }); return () => backend.dispose() },
+  } } }
+  const setup = new Function("observationPublisher", "fixture", "readObservation", "production", "nativeSnapshot", "assert",
+    `${text.slice(setupNode.start, setupNode.end)}\nreturn reviewerSetup`)(publisher,
+    { notifications: { main: "observation" }, setupControl: "control" }, async () => ({ phase: "main" }), production, () => ({}), assert)
+  const stop = await setup({})
+  hold = true
+  const abort = new AbortController()
+  const handle = await backend.show({ kind: "attention", sessionID: "fixture" }, abort.signal)
+  await handle.dispatched
+  assert.equal(snapshots.at(-1).events.filter(event => event.type === "show").length, 1)
+  let settled = false
+  const stopping = stop().then(() => { settled = true })
+  await Promise.resolve()
+  assert.equal(settled, false, "cleanup retains the actual observation write")
+  assert.equal(closed, false)
+  held.resolve()
+  await stopping
+  assert.equal(closed, true)
+  assert.equal(snapshots.at(-1).cleaned, true)
+  assert.equal(snapshots.at(-1).owned, 0)
+})
