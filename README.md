@@ -3,8 +3,8 @@
 Reviews pending permissions in the [OpenCode](https://github.com/anomalyco/opencode) sidebar using a separate LLM. Reviews
 native shell commands, file edits, and external-directory access. Skill, MCP and
 custom-tool requests currently remain manual.
-Supports streaming explanations, saved report history, auto-approval, and Linux
-desktop notifications with distinct sounds.
+Supports streaming explanations, saved report history and stats, auto-approval, and Linux
+desktop notifications (Gnome) with distinct sounds.
 
 This plugin is meant to enable you to run sessions with less frequent input in a safer way. Also giving the reviewer context of specific files the agent might want to run/see/... The review prompts are freely configurable, so you can determine the reviewers behavior very accurately.
 
@@ -29,7 +29,7 @@ There is no project-local CLI configuration. OpenCode loads the
   "$schema": "https://opencode.ai/v2/cli.json",
   "plugins": [
     {
-      "package": "opencode-reviewer@2.0.1",
+      "package": "opencode-reviewer@latest",
       "options": {
         "baseURL": "https://openrouter.ai/api/v1",
         "model": "your-model",
@@ -79,28 +79,18 @@ launching OpenCode. The inline key takes precedence. Omit both for an unauthenti
 endpoint. Remove `instructions` to use the built-in prompts and
 `notificationSoundDirectory` to use the bundled sounds.
 
-The connection, credential and directory values above are examples, not defaults.
-All boolean, numeric and per-type notification values shown are the defaults.
-Restart OpenCode after changing reviewer configuration. Also load the server
-companion in `opencode.json`, globally or in the project. Keep permission rules
-only in this server configuration, not in `cli.json`:
+You also need to edit `opencode.json`, as the plugin needs to be informed of states
+that are not exposed by TUI APIs:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-reviewer@2.0.1"],
-  "permissions": [
-    { "action": "shell", "resource": "*", "effect": "ask" },
-    { "action": "edit", "resource": "*", "effect": "ask" },
-    { "action": "skill", "resource": "*", "effect": "ask" },
-    { "action": "external_directory", "resource": "*", "effect": "ask" }
-  ]
+  "plugins": ["opencode-reviewer@latest"],
 }
 ```
 
-Merge these entries with your existing configuration. Rules are ordered and the last
-matching rule wins. Reviews run only when OpenCode asks for permission. Existing
-`allow` rules and native autoaccept skip review. See OpenCode's
+### Opencode docs
+
 [server config](https://opencode.ai/v2/docs/config),
 [CLI config](https://opencode.ai/v2/docs/cli/config) and
 [CLI plugins](https://opencode.ai/v2/docs/build/plugins/cli) guides.
@@ -142,10 +132,10 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `maxFiles` | integer | `6` | `1`–`1000` distinct file candidates per shell/edit review, including unavailable candidates. |
 | `maxEvidenceBytes` | integer | `131072` | `1`–`16777216` bytes for command/source content, edit diffs or category-specific JSON evidence. Optional items are omitted whole; oversized mandatory evidence fails analysis. This is not a cap on the full prompt or HTTP request. |
 
-Notification channels are independent: `banner: false, sound: true` is sound-only;
-`banner: true, sound: false` is banner-only; both `false` disable that type.
+Notification channels are independent: `banner: false, sound: true` is sound-only,
+`banner: true, sound: false` is banner-only, both `false` disable that type.
 `notify` and `notifySound` take precedence. Invalid notification settings disable
-notification work without invalidating otherwise valid review settings.
+notification.
 
 My LLMs insist on writing a bunch of useless text to my README, so I collapsed them here in case anyone wants to inflict themselves (or more likely their agent) the pain of reading it.
 
