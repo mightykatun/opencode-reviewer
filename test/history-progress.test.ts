@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite"
 import { setImmediate as settle } from "node:timers/promises"
 import { HistorySQL, type HistoryResult } from "../src/history-schema.js"
 import { HistoryStore, type HistoryTransport } from "../src/history-store.js"
-import { HistoryMaintenance } from "../src/history-maintenance.js"
+import { HistoryCoordinator } from "../src/history-coordinator.js"
 import { HistoryRefresh } from "../src/history-refresh.js"
 import { HistoryController } from "../src/history-controller.js"
 import { encodeEvent, type HistoryEvent, type HistoryQuery, type HistoryReview } from "../src/history-records.js"
@@ -12,8 +12,6 @@ import { encodeEvent, type HistoryEvent, type HistoryQuery, type HistoryReview }
 const scope = "/project"
 const context: HistoryReview = { scope, root: "root", session: "root", permission: "p", review: "r",
   category: "bash", configuredModel: "fixture", provider: "https://fixture.invalid" }
-const present = (id: string) => ({ response: { status: 200 }, data: { id } })
-const missing = (id: string) => ({ response: { status: 404 }, error: { name: "NotFoundError", data: { message: `Session not found: ${id}` } } })
 const resolved = (c = context): HistoryEvent => ({ type: "permissionResolved", context: c, at: 10,
   outcome: "manual", payload: { safe: true, completedAt: 10, desc: "Saved report" } })
 const usage = (n: number): HistoryEvent => ({ type: "attemptFinalized", context, at: n + 20, attempt: `a${n}`,
@@ -51,94 +49,6 @@ function fixture(t: TestContext) {
   t.after(async () => { await store.dispose(); sql.close() })
   return { ...f, store, hooks: f }
 }
-
-for (const { latency, idle } of [{ latency: 0, idle: false }, { latency: 1, idle: false }, { latency: 1, idle: true }])
-  test(`scheduled 1,000-session recovery with ${latency}ms host reads${idle ? " from an idle timer" : ""} restores notification history before its deadline`, async t => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 0 })
-  const f = fixture(t)
-  for (let n = 0; n < 1000; n++) f.seed(resolved({ ...context, root: `root${n}`, session: `root${n}`, permission: `p${n}`, review: `r${n}` }))
-  const ordered = f.sql.db.prepare("SELECT session FROM sessions ORDER BY id").all().map(row => row.session as string)
-  const absent = new Set(ordered.slice(-10)), calls: { id: string; at: number }[] = []
-  let active = 0, maximum = 0, readyAt: number | undefined
-  const m = new HistoryMaintenance(scope, f.store, async id => {
-    maximum = Math.max(maximum, ++active); calls.push({ id, at: Date.now() })
-    try {
-      if (latency) await new Promise(resolve => setTimeout(resolve, latency))
-      return absent.has(id) ? missing(id) : present(id)
-    } finally { active-- }
-  }, undefined, Date.now)
-  const browser = new HistoryController(scope, f.store, async id => id, state => {
-    if (state.status === "ready") readyAt = Date.now()
-  })
-  t.after(() => { m.dispose(); browser.dispose() })
-  if (idle) m.start()
-  f.store.markMaintenanceDirty()
-  const selected = ordered[0]!
-  browser.openPermission(selected, { session: selected, permission: `p${selected.slice(4)}` }, () => {})
-  if (!idle) m.start()
-  await settle()
-  // Drive the actual scheduled runner, including all inter-batch delays, not step().
-  const bound = idle ? 5000 : 3000
-  while (readyAt === undefined && Date.now() < bound) { t.mock.timers.tick(1); await settle() }
-  assert.equal(f.store.maintenanceDirty, false)
-  assert.equal(browser.state.status, "ready")
-  assert.ok(readyAt !== undefined && readyAt < bound, `availability: ${readyAt}ms`)
-  assert.equal(calls.length, 1990, "cleanup keeps its cursor; one complete healthy confirmation pass follows")
-  assert.equal(maximum, 1); assert.equal(f.maximum(), 1)
-  const pages = f.queries.filter(q => q.type === "sessions")
-  assert.equal(pages.filter(q => q.after === undefined).length, 2, "own deletions never restart the current scan")
-  assert.ok(pages.every(q => q.limit === 100))
-  let burst = 0, longest = 0, last = -100
-  for (const call of calls) {
-    burst = call.at - last > latency ? 1 : burst + 1
-    longest = Math.max(longest, burst); last = call.at
-  }
-  assert.ok(longest <= (latency ? 50 : 100), `bounded batch: ${longest} rows`)
-  assert.equal(f.store.pendingOperations, 0)
-  t.diagnostic(`1,000 roots, 10 absent: ready at ${readyAt}ms, ${calls.length} host reads, max batch ${longest}`)
-})
-
-test("an external dirty revision during an owned host read discards absence and restarts at the beginning", async t => {
-  const f = fixture(t); f.seed(resolved())
-  const held = deferred<unknown>(), started = deferred<void>(); let calls = 0
-  const m = new HistoryMaintenance(scope, f.store, async id => {
-    if (++calls === 1) { started.resolve(); return held.promise }
-    return present(id)
-  })
-  t.after(() => m.dispose())
-  f.store.markMaintenanceDirty()
-  const first = m.step(); await started.promise
-  f.store.markMaintenanceDirty(); await m.step()
-  held.resolve(missing("root")); await first
-  assert.equal(calls, 1); assert.equal(f.store.pendingOperations, 0)
-  assert.equal(f.store.maintenanceDirty, true)
-  await m.step()
-  assert.equal(f.store.maintenanceDirty, false)
-  const pages = f.queries.filter(q => q.type === "sessions")
-  assert.deepEqual(pages.slice(0, 2).map(q => q.after), [undefined, undefined])
-  assert.ok(pages[2]!.after)
-  assert.equal((f.sql.query({ type: "history", scope, root: "root" }) as any).total, 1)
-})
-
-test("unknown root metadata and a bare 404 keep dirty recovery blocked until exact root-first reconciliation", async t => {
-  const f = fixture(t); f.seed(resolved({ ...context, session: "child" }))
-  let healthy = false
-  const calls: string[] = []
-  const m = new HistoryMaintenance(scope, f.store, async id => {
-    calls.push(id)
-    return healthy ? id === "root" ? present(id) : missing(id) : { response: { status: 404 } }
-  })
-  t.after(() => m.dispose())
-  f.store.markMaintenanceDirty()
-  for (let n = 0; n < 3; n++) await m.step()
-  assert.equal(f.store.maintenanceDirty, true); assert.deepEqual(calls, ["root", "root", "root"])
-  await assert.rejects(f.store.query({ type: "history", scope, root: "root" }))
-  healthy = true
-  for (let n = 0; n < 5 && f.store.maintenanceDirty; n++) { await m.step(); await settle() }
-  assert.equal(f.store.maintenanceDirty, false)
-  assert.deepEqual(calls.slice(3), ["root", "child"])
-  assert.equal((await f.store.query({ type: "history", scope, root: "root" }) as any).total, 0)
-})
 
 for (const pattern of ["burst", "continuous"] as const) for (const type of ["history", "totals"] as const)
   test(`${type} publishes useful same-selection snapshots during ${pattern} writes before the FIFO drains`, async t => {
@@ -189,8 +99,8 @@ test("an exact notification history target opens before an ordinary write backlo
   assert.equal(browser.state.selection?.record?.context.permission, "p")
 })
 
-test("maintenance and a queued destructive commit never publish the captured pre-deletion report", async t => {
-  const f = fixture(t); f.seed(resolved())
+for (const session of ["root", "child"]) test(`known live ${session} deletion and a queued destructive commit never publish the captured pre-deletion report`, async t => {
+  const f = fixture(t); f.seed(resolved({ ...context, session }))
   const captured = deferred<void>(), release = deferred<void>()
   let hold = true
   f.hooks.after = async message => {
@@ -202,19 +112,24 @@ test("maintenance and a queued destructive commit never publish the captured pre
   const browser = new HistoryController(scope, f.store, async () => "root", state => {
     if (state.status === "ready" && state.selection?.record) ready.push(state.selection.record.payload.desc)
   })
-  const m = new HistoryMaintenance(scope, f.store, async id => missing(id))
-  t.after(() => { release.resolve(); browser.dispose(); m.dispose() })
+  const history = new HistoryCoordinator(scope, f.store, async () => "root", () => 20)
+  t.after(() => { release.resolve(); browser.dispose(); history.dispose() })
   browser.open("root"); await captured.promise
-  // This is the production deletion protocol: dirty before admission, then a
-  // complete healthy maintenance pass before the history gate can reopen.
-  f.store.markMaintenanceDirty()
-  assert.equal(f.store.admit({ type: "sessionDeleted", context: { scope, root: "root", session: "root" }, at: 20 }), true)
+  // Exact live deletion with already-known scope/root ownership, not offline
+  // authority inferred from a location index or a missing-session response.
+  browser.deleted(session)
+  history.deleted({ scope, root: "root", session })
+  assert.equal(browser.state.selection?.record, undefined)
   release.resolve(); await settle()
-  assert.deepEqual(ready, []); assert.equal(browser.state.status, "loading")
-  await m.step(); await settle()
+  while (f.store.pendingOperations) await settle()
+  await settle()
   assert.equal(f.store.maintenanceDirty, false)
-  assert.equal(browser.state.open, false)
+  assert.equal(browser.state.open, session !== "root")
+  if (session !== "root") { assert.equal(browser.state.status, "ready"); assert.equal(browser.state.selection?.total, 0) }
   assert.deepEqual(ready, [])
+  const stored = await f.store.query({ type: "history", scope, root: "root" })
+  assert.equal("total" in stored && stored.total, 0)
+  assert.equal("deleted" in stored && !!stored.deleted, session === "root")
 })
 
 for (const action of ["navigate", "dispose"] as const) test(`${action} remains a hard invalidation while commits are soft`, async t => {

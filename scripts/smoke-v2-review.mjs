@@ -5,7 +5,7 @@
 // normal-route-wait, normal-decision, fast-decision,
 // normal-history / normal-history-default-home (actual saved report, browsing and native statistics dialog),
 // normal-history-cover / fast-history-cover (two genuine native requests in one root),
-// normal-history-keyboard-mouse-off (two actual saved reports, mouse-off keys and no approval cover),
+// normal-history-keyboard-mouse-off (two actual saved reports and real mouse-off keyboard browsing),
 // fast-notifications (injected desktop boundary, retained/live and exact history clicks).
 // normal-edit / normal-directory-edit (one native write; distinct directory/edit stages).
 // Build first. Do not execute a host until the main session grants approval.
@@ -190,7 +190,7 @@ async function observedReviewerSetup(ctx) {
   const notifications = reviewerPaths.notifications ? observationPublisher(reviewerPaths.notifications) : undefined
   const abort = new AbortController(), handles = new Map()
   const attention = { events: [], errors: [], replies: {}, owned: 0, disposed: false, cleaned: false, historyCalls: [] }
-  let injectionClick, records, queryCover, notificationSequence = 0
+  let injectionClick, records, notificationSequence = 0
   const saveNotifications = () => {
     if (records) {
       const state = records.state()
@@ -200,20 +200,15 @@ async function observedReviewerSetup(ctx) {
     return notifications?.publish(attention)
   }
   const saveStorage = () => {
-    if (reviewerPaths.historyCover && records) {
+    if (reviewerPaths.historyInput && records) {
       const state = records.state()
       facts.history = { open: state.open, status: state.status, entry: state.selection?.entry,
         rank: state.selection?.rank, total: state.selection?.total, context: state.selection?.record?.context }
-      if (reviewerPaths.keyboardMouseOff) {
-        facts.history.scroll = records.browser.scroll
-        // Read-only query with the exact heading/footer hits previously proven by
-        // production. No new owner, hit IDs, FRAME or painted state is supplied.
-        if (!ctx.renderer.useMouse && state.open && state.status === "ready" && facts.provenCover?.hits) {
-          facts.keyboardCover = { frame: ctx.renderer.frameId, mode: ctx.keymap.mode.current(), mouse: ctx.renderer.useMouse,
-            session: state.selection.record.context.root, hits: [...facts.provenCover.hits],
-            result: queryCover(state.selection.record.context.root, facts.provenCover.hits) }
-        }
-      }
+      if (reviewerPaths.keyboardMouseOff) facts.history.scroll = records.browser.scroll
+      // Read only the mounted production view's genuine FRAME/input proof.
+      // No listener, hit owner, painted state or approval gate is installed here.
+      facts.historyInput = { frame: ctx.renderer.frameId, mode: ctx.keymap.mode.current(), mouse: ctx.renderer.useMouse,
+        session: state.selection?.record?.context.root, keyboard: records.historyInput.interactive() }
     }
     return storage.publish(facts)
   }
@@ -258,19 +253,7 @@ async function observedReviewerSetup(ctx) {
     const runtime = ready.state.runtime?.records
     if (!runtime) return
     records = runtime
-    if (reviewerPaths.historyCover) {
-      // Observe only the existing production query and its actual hit IDs. Never
-      // mount an owner, synthesize FRAME, call beginFrame or substitute a result.
-      const covers = runtime.cover.covers.bind(runtime.cover)
-      queryCover = covers
-      runtime.cover.covers = (session, hits) => {
-        const result = covers(session, hits)
-        facts.cover = { session, hits: [...hits], result }
-        if (reviewerPaths.keyboardMouseOff && result) facts.provenCover = { session, hits: [...hits] }
-        void saveStorage()
-        return result
-      }
-    }
+    if (reviewerPaths.historyInput && !runtime.historyInput) throw Error("Installed history input observation seam unavailable")
     if (notifications) {
       for (const method of ["open", "openPermission"]) {
         const original = runtime.browser[method].bind(runtime.browser)
@@ -296,7 +279,7 @@ async function observedReviewerSetup(ctx) {
   }).setup(ctx)
   // Independent monitor has no production imports. Clicks arrive only through
   // this separate explicit driver control, never from observation or approval.
-   const loop = notifications || reviewerPaths.historyCover ? (async () => {
+   const loop = notifications || reviewerPaths.historyInput ? (async () => {
     while (!abort.signal.aborted) {
        const command = notifications ? await readObservation(reviewerPaths.notificationControl, { optional: true }) : undefined
       if (command && command.sequence > notificationSequence) {
@@ -312,7 +295,7 @@ async function observedReviewerSetup(ctx) {
         attention.replies[notificationSequence] = { id: command.id, current }
       }
        if (notifications) { await saveNotifications(); await notifications.flush() }
-       if (reviewerPaths.historyCover) { await saveStorage(); await storage.flush() }
+       if (reviewerPaths.historyInput) { await saveStorage(); await storage.flush() }
       await sleep(40, undefined, { signal: abort.signal })
     }
   })().catch(error => {
@@ -406,7 +389,7 @@ const prompt = editCase ? `Use native write once to replace ${writeTarget} with 
 const script = 'from pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write("V2_REVIEW_EXECUTED\\n")\nprint("V2_REVIEW_EXECUTED")\n'
 const description = "V2 local marker report.\n\nThe script writes one isolated marker."
 // Only the second keyboard-case response is long. The first genuine report keeps
-// all existing history-cover text/metadata and selected-original assertions intact.
+// all existing saved-history text/metadata and selected-original assertions intact.
 const keyboardDescription = description + "\n\n" + Array.from({ length: 80 }, (_, index) =>
   `Keyboard scroll line ${String(index + 1).padStart(2, "0")}: one isolated marker.`).join("\n\n")
 const reportDescription = index => editCase ? editDescriptions[index - 1] : keyboardMouseOffCase && index === 2 ? keyboardDescription : description
@@ -818,9 +801,9 @@ const limits = [
       : dialogCase ? "Stock command.palette.show owns a real native modal. Normal and fast automatic replies proceed underneath it without closing it; final report and usage are verified in SQLite. No other modal-family acceptance."
       : visibilityLoss ? "One actual normal countdown continues through native sidebar hide or a real 160x8 tmux window. A single native once reply and saved report occur without restoring presentation first. No other geometry-family acceptance."
       : hiddenComplete ? "A never-displayed normal report completes on a real child route and approves after its delay without returning to root. SQLite verifies the saved report and aggregates. No descendant-owned permission queue acceptance."
-      : keyboardMouseOffCase ? "Reuse normal-history-cover's two real automatic requests with configured mouse on, then disable mouse via its public setter only after both entries save and no request is pending. Real palette/history input, exact two-entry Left/Right selection and Up/Down/Page scroll use the long second fixed reviewer response. Mouse-off production cover queries reject previously proven heading/footer hits. No new approval eligibility, synthesized paint/hits, statistics dialog or multi-client acceptance."
+      : keyboardMouseOffCase ? "Two real automatic requests with configured mouse on, then disable mouse via its public setter only after both entries save and no request is pending. Real palette/history input, exact two-entry Left/Right selection and Up/Down/PageUp/PageDown scroll use the long second fixed reviewer response. The mounted production history view proves mouse-off keyboard ownership only after genuine native FRAME geometry. Input ownership is independent of approval. No synthesized paint/hits, statistics dialog or multi-client acceptance."
       : coverCase ? "Two real root-owned native shell permissions, two real reviewer POSTs and worker-saved validated automatic entries. Public production history stays selected on the first entry while normal or fast automatic approval proceeds. No descendant-owned queue, offline deletion, statistics dialog, notification or multi-client acceptance."
-     : historyCase ? "History/statistics acceptance is one actual automatic saved entry and its real read-only SQLite aggregates, public command browsing and native dialog. Child history invocation is disabled; root return explicitly reopens the same saved entry. No production history-cover approval, offline deletion, multiple entries or multi-client acceptance."
+     : historyCase ? "History/statistics acceptance is one actual automatic saved entry and its real read-only SQLite aggregates, public command browsing and native dialog. Child history invocation is disabled; root return explicitly reopens the same saved entry. No approval while browsing history, offline deletion, multiple entries or multi-client acceptance."
     : notificationCase ? "Production host with an injected desktop boundary only: one actual fast native approval, retained SSE response, approved banner and lease-based simulated clicks, including revealing a deliberately hidden native sidebar for the retained report. No real GNOME activation, desktop processes, audio, live-provider latency, advisory/unsafe attention, reminders or multi-request queue acceptance. Exact-key history selection is observed without a competing newer entry; multi-entry not-latest behavior is not accepted by this single-entry fixture."
       : "No production history browsing, statistics UI or notification acceptance in this scenario. Advisory native interruption is not treated as exact manual attribution.",
 ]
@@ -890,7 +873,7 @@ try {
           assert.equal(evidence.project.directory, project)
           assert.equal(evidence.permission.action, "shell")
           assert.deepEqual(evidence.permission.resources, [toolCall.input.command])
-          assert.equal(evidence.permission.type, undefined, "No fabricated V1 permission")
+          assert.equal(evidence.permission.type, undefined, "No fabricated native permission type")
           assert.equal(evidence.files.length, 1)
           assert.equal(evidence.files[0].status, "captured")
           assert.equal(evidence.files[0].contents, script)
@@ -960,7 +943,7 @@ try {
     + '\nimport {setTimeout as sleep} from "node:timers/promises"\n'
     + `\nimport * as production from ${JSON.stringify(pathToFileURL(path.join(installed, "dist/tui.js")).href)}\n`
      + `\nconst reviewerPaths=${JSON.stringify({ presentation: presentationPath, storage: path.join(artifacts, "storage-observations.json"),
-         ...(notificationCase ? { notifications: notificationPath, notificationControl: notificationControlPath } : {}), historyCover: coverCase,
+         ...(notificationCase ? { notifications: notificationPath, notificationControl: notificationControlPath } : {}), historyInput: coverCase,
           keyboardMouseOff: keyboardMouseOffCase, editCase })}\n`
      + observedReviewerSetup + '\nexport default {id:"opencode-reviewer",setup:observedReviewerSetup}\n'
     : archived))
@@ -1470,13 +1453,22 @@ try {
      }
      await publish(path.join(artifacts, "history-saved-first.json"), historyEvidence)
      await openHistory()
-     await until("history observer selects the first actual saved entry", async record => {
-       try { return await selectedOriginal(record, capture()) } catch { return false }
-     }, 15000)
+      const firstHistory = await until("history observer selects the first actual saved entry with real keyboard ownership", async record => {
+        try {
+          const facts = await selectedOriginal(record, capture())
+          assert.equal(facts.historyInput.keyboard, true)
+          assert.equal(facts.historyInput.session, sessionID)
+          assert.equal(facts.historyInput.mode, "base")
+          assert.equal(facts.historyInput.mouse, true)
+          assert.ok(Number.isInteger(facts.historyInput.frame) && facts.historyInput.frame > 0)
+          return facts
+        } catch { return false }
+      }, 15000)
      await saveCapture("history-cover-first-open")
      const firstReplies = (await observations()).replied
      await negativeWindow("first saved report is selected before the second prompt exists", [], firstReplies, markerLine, 1, 1500, selectedOriginal)
-     await phase("first-saved-history-painted", { request: requests[0], entry: historyEvidence.rows[0].id })
+      await phase("first-saved-history-painted", { request: requests[0], entry: historyEvidence.rows[0].id,
+        historyInput: firstHistory.historyInput })
      // Same genuine text, script and root. Reused tool-call IDs are disambiguated
      // by the actual new assistant message and native permission source triple.
      mainResponse = undefined; reviewResponse = undefined; reviewCompleted = false
@@ -1528,7 +1520,7 @@ try {
        assert.deepEqual(value.rows, coverEvidence.first.rows)
        assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 3)
      }
-     await negativeWindow("second review is never armed before history already covers it", [request], firstReplies, markerLine, 2, 1500, unchangedFirst)
+      await negativeWindow("second held review has no approval while saved history remains selected", [request], firstReplies, markerLine, 2, 1500, unchangedFirst)
       if (fast) {
         allowedReplies = 2
         sse(reviewResponse, '{"safe":true,"desc":' + JSON.stringify(description).slice(0, -1))
@@ -1547,17 +1539,20 @@ try {
         await saveCapture("history-cover-fast-final")
      } else {
        finishReview()
-       coverEvidence.coverProof = await until("real production heading/footer cover and completed normal countdown FRAME", async record => {
-         const value = await presentation(), facts = await selectedOriginal(record, capture())
-         if (value?.stage !== "frame" || value.selected !== request.id || value.root !== sessionID
-           || !value.physical || !value.final || !value.finalReady || value.auto !== "countdown" || !facts.cover?.result) return false
-         assert.equal(facts.cover.session, sessionID)
-         assert.equal(facts.cover.hits.length, 2)
-         assert.ok(facts.cover.hits.every(hit => Number.isInteger(hit) && hit > 0))
-         assert.deepEqual(facts.cover.hits, [value.hits[0], value.hits[2]], "Actual native heading and footer hit owners, not logical history-open")
-         return { frame: value, cover: facts.cover, history: facts.history }
-       }, 15000)
-       await phase("second-normal-countdown-under-actual-history-cover", { proof: coverEvidence.coverProof })
+        coverEvidence.countdown = await until("completed normal countdown FRAME behind history with actual keyboard ownership", async record => {
+          const value = await presentation(), facts = await selectedOriginal(record, capture())
+          if (value?.stage !== "frame" || value.selected !== request.id || value.root !== sessionID
+            || value.physical !== false || !value.final || !value.finalReady || value.auto !== "countdown"
+            || facts.historyInput?.keyboard !== true) return false
+          assert.equal(value.mouse, true)
+          assert.equal(value.mode, "base")
+          assert.equal(facts.historyInput.session, sessionID)
+          assert.equal(facts.historyInput.mouse, true)
+          assert.equal(facts.historyInput.mode, "base")
+          assert.ok(Number.isInteger(facts.historyInput.frame) && facts.historyInput.frame > 0)
+          return { frame: value, historyInput: facts.historyInput, history: facts.history }
+        }, 15000)
+        await phase("second-normal-countdown-behind-history-independent-of-input-ownership", { proof: coverEvidence.countdown })
        await saveCapture("history-cover-normal-countdown")
        await negativeWindow("normal second countdown stays pending under production history", [request], firstReplies, markerLine, 2, 1500, unchangedFirst)
        allowedReplies = 2
@@ -1596,28 +1591,34 @@ try {
         assert.deepEqual(await command({ type: "pending", sessionID }), [])
         assert.deepEqual(await command({ type: "mouse", value: false, sessionID }), { mouse: false })
         coverEvidence.keyboard = { beforeMouseDisable: before, selection: [], scrolling: [] }
-        // A real native palette open/close paints fresh frames without remounting
-        // history. Reject the same actual heading/footer hits that covered request
-        // two, rather than obtaining false from mismatched post-remount hit IDs.
+         // A real native palette open/close invalidates input ownership, then
+         // requires fresh root FRAME geometry without remounting history.
         await nativePresentationCommand("command.palette.show")
-        const paletteFrame = await until("mouse-off native palette paints a real modal frame", record =>
-          record?.mouse === false && record.mode === "modal" && record.frame?.id > before.id
-            && capture().includes("Commands") && record.frame, 15000)
+         const paletteFrame = await until("mouse-off native palette paints a real modal frame and revokes history input", async record => {
+           if (record?.mouse !== false || record.mode !== "modal" || record.frame?.mode !== "modal"
+             || !(record.frame?.id > before.id) || !capture().includes("Commands")) return false
+           const facts = await coverState(), input = facts.historyInput
+           if (!input || input.mode !== "modal" || input.frame <= before.id || input.keyboard !== false) return false
+           assert.equal(input.mouse, false)
+           return record.frame
+         }, 15000)
         runtime.tmux("send-keys", "-t", "v2-review", "Escape")
-        coverEvidence.keyboard.noCover = await until("same history owner rejects formerly proven approval hits after mouse-off root paint", async record => {
-          if (record?.mode !== "base" || !(record.frame?.id > paletteFrame.id) || capture().includes("Commands")) return false
-          const facts = await selectedOriginal(record, capture(), 2), proof = facts.keyboardCover
-          if (!proof || proof.frame <= paletteFrame.id || proof.mode !== "base") return false
-          assert.equal(proof.mouse, false)
-          assert.equal(proof.result, false, "Keyboard presentation never grants automatic approval cover")
-          assert.deepEqual(proof.hits, coverEvidence.coverProof.cover.hits, "Only genuine previously proven heading/footer hit IDs")
-          return proof
-        }, 15000)
-        await saveCapture("history-keyboard-mouse-off-no-cover")
+         coverEvidence.keyboard.input = await until("actual mouse-off history keyboard ownership after a fresh native root FRAME", async record => {
+           if (record?.mouse !== false || record.mode !== "base" || record.frame?.mode !== "base"
+             || !(record.frame?.id > paletteFrame.id) || capture().includes("Commands")) return false
+           const facts = await selectedOriginal(record, capture(), 2), proof = facts.historyInput
+           if (!proof || proof.frame <= paletteFrame.id || proof.mode !== "base" || proof.keyboard !== true) return false
+           assert.equal(proof.mouse, false)
+           assert.equal(proof.session, sessionID)
+           return proof
+         }, 15000)
+         await saveCapture("history-keyboard-mouse-off-input")
         const stableKeyboard = async (record, screen) => {
           assert.deepEqual(record.route, { type: "session", sessionID })
-          assert.equal(record.mouse, false, "Production preserves the explicit mouse-off user control")
-          assert.equal(record.mode, "base")
+           assert.equal(record.mouse, false, "Production preserves the explicit mouse-off user control")
+           assert.equal(record.mode, "base")
+           assert.equal(record.frame?.mode, "base")
+           assert.ok(record.frame?.id > paletteFrame.id, "A genuine restored native FRAME precedes keyboard browsing")
           assert.match(screen, /Analysis history/)
           assert.match(screen, /✓ Safe/)
           assert.match(screen, /Auto approved/)
@@ -1626,9 +1627,11 @@ try {
           assert.equal(facts.history.open, true)
           assert.equal(facts.history.status, "ready")
           assert.equal(facts.history.total, 2)
-          assert.equal(facts.keyboardCover.mouse, false)
-          assert.equal(facts.keyboardCover.result, false)
-          assert.ok(facts.keyboardCover.frame > paletteFrame.id)
+           assert.equal(facts.historyInput.mouse, false)
+           assert.equal(facts.historyInput.mode, "base")
+           assert.equal(facts.historyInput.session, sessionID)
+           assert.equal(facts.historyInput.keyboard, true, "Actual production history owns keyboard input")
+           assert.ok(facts.historyInput.frame > paletteFrame.id)
           assert.deepEqual(await savedPair(), coverEvidence.pair, "Keyboard browsing never rewrites either report or accounting")
           assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 4)
           return facts.history
@@ -1699,8 +1702,9 @@ try {
         await until("mouse-off history closes through actual Escape", record => record?.mode === "base" && !capture().includes("Analysis history"))
         await negativeWindow("closed mouse-off history cannot replay either once reply or execution", [], replies, markerLine.repeat(2), 2,
           1500, async (record, screen) => {
-            assert.equal(record.mouse, false)
-            assert.doesNotMatch(screen, /Analysis history|Permission analysis/)
+             assert.equal(record.mouse, false)
+             assert.doesNotMatch(screen, /Analysis history|Permission analysis/)
+             assert.equal((await coverState()).historyInput.keyboard, false, "Closed history no longer owns keyboard input")
             assert.deepEqual(await savedPair(), coverEvidence.pair)
             assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 4)
           })

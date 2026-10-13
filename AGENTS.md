@@ -13,18 +13,18 @@
   npm run check:package  # two builds, reproducibility and actual archive checks
   ```
 
-- Focus a source test with `npx tsx --test test/context.test.ts`; filter with
-  `npx tsx --test --test-name-pattern='missing invocation path' test/context.test.ts`.
+- Focus a source test with `npx tsx --test test/host-context.test.ts`; filter with
+  `npx tsx --test --test-name-pattern='latest empty/attachment user' test/host-context.test.ts`.
   `npm test` covers only `test/*.test.ts`. Add pure `.mjs` tests to
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
   33-case production/foundation selection from PR CI, including history,
   statistics, approval notifications and explicitly classified synthetic probes.
-  `--profile v2-acceptance` currently selects the same cases. Neither proves the
-  complete historical V1 matrix or real desktop/audio acceptance. `--profile ci-v1` retains the
-  historical V1 selection and needs its separate host/build. `npm run test:runtime` and
-  `npm run test:runtime-permissions` retain their original family subsets.
+  `npm run test:runtime` selects `--profile v2-acceptance`, which currently selects
+  the same cases. These profiles do not prove real desktop/audio acceptance.
+  `npm run test:runtime-permissions` selects `--profile v2-permissions` for V2
+  invocation/evidence and native edit/outside-directory continuation cases.
   All runtime commands require a prior build; none implicitly rebuilds.
   Documentation-only changes need reference/format review, not runtime tests.
 - Host fixtures require Linux, Git, Python 3, tmux and `opencode` on PATH;
@@ -38,7 +38,7 @@
   flags, valid-combination rules, prerequisites, and classifications.
   `node scripts/test-runtime.mjs --plan --profile ci` plans without OpenCode,
   tmux, a bundle, or fixture creation. Select one case with
-  `node scripts/test-runtime.mjs smoke-streaming.mjs complete --stats`.
+  `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history`.
   The runner executes serially and reserves a repository-local runner lock;
   some fixtures themselves use two hosts. Do not run another host alongside it.
   An interrupted runner removes its lock; after SIGKILL, verify the recorded owner
@@ -47,8 +47,7 @@
   entrypoints/scenarios/flags must be registered and consume `runtimeArguments`.
   Normal helper checks enforce discovery and flag completeness. Profiles select
   exact combinations, not the Cartesian product of flags. Synthetic host probes,
-  interactive desktop checks, historical replays, and helpers are separately
-  classified. `audit-usage-history.mjs` requires the actual local `v0.7.0` tag.
+  interactive desktop checks and helpers are separately classified.
 - Use `smoke-observations.mjs` for fixture snapshot/control JSON: one serialized,
   coalesced atomic publisher per destination, explicit final flush/close, and
   `readObservation` for useful cross-process errors. Give concurrent hosts distinct
@@ -87,41 +86,13 @@ All commands below use the installed five-file archive and production runtime.
 | Home/dashboard/unrelated route waiting | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-route-wait` |
 | Native decision waiting without cancellation | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-decision` / `fast-decision` |
 
-The notification case injects only the desktop backend. It does not prove actual
-audio playback, GNOME focus or live-provider judgment. History fixtures use a new
-private state directory under sticky `/tmp` because `/tmp/opencode` can be group
-writable; never weaken SQLite ancestor checks or chmod existing user directories.
-
-### Historical V1 host checks
-
-The following fixtures require the separate V1 host/build and are migration inputs,
-not acceptance evidence for the distributed V2 archive.
-
-| Area | Command |
-| --- | --- |
-| Basic review / automatic approval | `node scripts/smoke.mjs external` / `node scripts/smoke.mjs auto-shell` |
-| Stream completion, usage and rendering | `node scripts/smoke-streaming.mjs complete --stats` |
-| Truncation and exact-request retry | `node scripts/smoke-streaming.mjs truncated --static --stats` |
-| MCP / directory-to-edit stages | `node scripts/smoke-permissions.mjs mcp --auto --correction --stream --stats` / `node scripts/smoke-permissions.mjs external-edit --auto --stream --stats` |
-| Conversation enable/disable | `node scripts/smoke-session-mode.mjs` |
-| Production history storage / browsing | `node scripts/smoke-history-storage.mjs` / `node scripts/smoke-history.mjs browse` |
-| Approval behind production history | `node scripts/smoke-history-auto.mjs covered` |
-| Approval-notification history selection | `node scripts/smoke-history-auto.mjs notification` |
-| Fast approval, retained streams and live/history clicks | `node scripts/smoke-fast-mode.mjs complete` |
-| Root-only display and normal/fast approval during subagent browsing | `node scripts/test-runtime.mjs --profile f34` |
-| Native skills / resumed subagent context | `node scripts/smoke-skills.mjs root` / `node scripts/smoke-skills.mjs subagent` |
-| Offline deletion reconciliation | `node scripts/smoke-history-maintenance.mjs` |
-| Conversation/lifetime statistics | `node scripts/smoke-statistics.mjs` |
-| Notification queue | `node scripts/smoke-notification-queue.mjs main --stream` |
-
-- Read each fixture's scenario/flag parsing for other cases. `smoke.mjs` and
-  `smoke-permissions.mjs` support `--plan` without a host or bundle. For
-  `external-edit`, `--disabled` disables directory review, not edit review;
-  `--held` applies to the first enabled stage.
-- Generic fixtures disable notifications. Notification fixtures isolate process I/O;
-  they do not prove audible playback, GNOME focus, live-model judgment or provider
-  latency. `npx tsx scripts/smoke-notification-desktop.ts --sounds` is an actual
-  local playback check. Report exact fixture runs rather than full-matrix coverage.
+Notification fixtures isolate process I/O and inject the desktop backend. They do
+not prove actual audio playback, GNOME focus, live-provider judgment or provider
+latency. `npx tsx scripts/smoke-notification-desktop.ts --sounds` is an actual local
+playback check. Report exact fixture runs rather than full-matrix coverage.
+History fixtures use a new private state directory under sticky `/tmp` because
+`/tmp/opencode` can be group writable; never weaken SQLite ancestor checks or chmod
+existing user directories.
 
 ## Host and build boundaries
 
@@ -133,14 +104,9 @@ not acceptance evidence for the distributed V2 archive.
   remain separate from runtime activation. Development uses pinned
   `@opencode/plugin`, `@opencode/client` and
   `@opencode/theme`. OpenTUI is 0.5.17 and Solid is 1.9.15, matching the host.
-  The V1 implementation and fixtures remain migration inputs, targeting 1.18.35;
-  do not count their source-test successes as V2 runtime verification. Check
-  the archived plan with `git show 181245e:V2-MIGRATION-PLAN.md` for exact
-  completed host checks and acceptance limits.
   Use public APIs/slots, never private UI imports or native approval-dialog patches.
-- Package and plugin ID are `opencode-reviewer`. `src/tui.tsx` exports the default
-  legacy `{ id, tui }` module. The build now starts at `src/plugin.ts`; its shared
-  V2 setup selects companion/CLI lifecycle without eager terminal runtime imports.
+- Package and plugin ID are `opencode-reviewer`. The build starts at `src/plugin.ts`;
+  its shared V2 setup selects companion/CLI lifecycle without eager terminal runtime imports.
   Package exports `.`, `./server` and `./tui` all point to `dist/tui.js`.
   V2 setup uses server `opencode.json` plus global `cli.json`, with permission rules
   only in `opencode.json`. Source/built-in prompt changes require build plus host
@@ -165,19 +131,17 @@ not acceptance evidence for the distributed V2 archive.
 
 ## Execution flow and invariants
 
-### Approved V2 same-conversation automation contract
+### Same-conversation automation
 
 - On 2026-10-13 the user replaced V2 visible-root approval with same-conversation
   automation, without an additional opt-in. Panel display remains root-only, but
   normal and fast approval need no report paint, hit ownership, mouse or sidebar.
   Known same-root descendants, selectors/dialogs, session panels and history do not
   gate approval. Home/dashboard/unrelated or unknown routes wait, never cancel.
-  The archived visible-root migration checks and historical V1/F34 behavior remain
-  historical evidence, not the current V2 automation contract.
 - Stock V2's root native queue includes the full descendant family, root first and
-  then public family order. Use actual native ownership, not V1's direct-child
-  limitation or event-arrival order. Reconcile native permission caches after
-  interruption; fresh server reads alone do not refresh a stale native prompt.
+  then public family order. Use actual native ownership, not event-arrival order.
+  Reconcile native permission caches after interruption; fresh server reads alone
+  do not refresh a stale native prompt.
 - Started normal countdowns retain their original monotonic deadline through UI,
   native-priority and pre-write read/cache waits. Expired waits resume without a
   fresh delay. Never-armed requests start a full countdown when their conversation
@@ -192,11 +156,11 @@ not acceptance evidence for the distributed V2 archive.
 - Preserve fast preview/full-response behavior, no countdown, fresh identity/native
   priority checks and once-only writes. Retained responses may finish while hidden.
   Hidden reports save through ordinary qualifying history resolution, with no UI
-  dependency. Production history is no longer a separate approval exception in V2.
+  dependency. Browsing production history does not gate approval.
   Do not force mouse/sidebar visibility or fabricate presentation proof. Additional
   native fullscreen/family/multi-terminal permutations remain separate acceptance.
 
-### Approved V2 migration evidence direction
+### Evidence admission
 
 - The user selected native Code Mode on 2026-10-12. Do not ship the investigated
   direct-tool transform or remove native Code Mode search. Exact direct-call
@@ -206,8 +170,8 @@ not acceptance evidence for the distributed V2 archive.
   native tool meanings, do not replace/alias native executors, and do not rewrite
   commands after evidence capture. This is an installation assumption, not public
   host provenance or an enforceable registry seal. Preserve exact scope, source,
-  native-priority, same-conversation eligibility and once-only write checks. Additional skill/MCP
-  snapshot/mapping assumptions require their own disposition in the migration plan.
+  native-priority, same-conversation eligibility and once-only write checks. Do not
+  extend this assumption to unavailable skill/MCP/custom origin or catalog evidence.
 - When asked about extra skill-catalog mutation assumptions, the user said "keep
   it simple". Keep requests manual when exact mandatory skill instructions are
   unavailable; do not add a speculative catalog revision-guard subsystem or assume
@@ -220,18 +184,31 @@ not acceptance evidence for the distributed V2 archive.
 
 ### Current V2 runtime
 
-- Start at `src/plugin.ts`: `server-plugin.ts` captures exact direct invocation
+- Start at `src/plugin.ts`: the server companion captures exact direct invocation
   evidence; `cli-plugin.ts` validates options and the companion handshake;
   `host-runtime.tsx` connects the generic controller to native queues and slots.
-  Evidence uses `host-evaluate.ts` and the `host-*-context.ts` collectors.
+  `host-evaluate.ts` uses `host-evidence-reader.ts` and `host-reader.ts` to bind exact
+  requests/invocations, `host-evidence.ts` for server-only operation collection and
+  `host-context.ts` for public conversation context.
+- `controller.ts` owns V2 request lifecycle, evaluation, cancellation and approval;
+  `session-mode.ts` gates work before enrichment, and `host-mode-commands.ts`
+  registers local native palette/slash commands. `reviewer.ts` owns model transport.
+  Defaults/validation live in `config.ts`; `host-types.ts` defines native requests,
+  invocation snapshots and scope, and `types.ts` defines shared review data.
+  `embedding-types.ts` defines opt-in UI observations and notification backend seams,
+  never approval overrides or configuration options.
 - `host-permissions.ts` allows only scoped native `once` replies. Dispatch,
-  acknowledgement and matching native resolution are distinct facts. Uncertain
-  writes stay manual and are never retried. Reconnect closes the old controller;
+  acknowledgement and matching native resolution are distinct facts. Confirmation
+  requires both the native acknowledgement and exact scoped resolution, not a keypress,
+  vanished prompt or successful submission alone. Uncertain writes stay manual and
+  are never retried. Reconnect closes the old controller;
   restart/reload is required rather than mixing old clients with new caches.
 - `host-history-runtime.tsx` owns the indexed worker, history, totals and shutdown.
   History/statistics also initialize when review configuration or the companion is
   unavailable. The absolute V2 namespace is an index, not deletion authority.
-  Keep old rows/totals untouched and do not enable legacy offline maintenance.
+  Known live deletions invalidate volatile facts only; persistent deletion is not
+  enabled. Keep old rows/totals untouched; offline absence without ownership proof
+  never authorizes deletion.
 - `host-notifications.ts` uses the generic policy and Linux backend. Event births,
   native family/form ordering and confirmed automatic success govern delivery.
   Snapshot reconciliation is silent. Clicks carry the original request identity,
@@ -246,100 +223,83 @@ not acceptance evidence for the distributed V2 archive.
   not V2 approval eligibility. `host-approval-ready.ts` owns the public native
   decision/same-conversation gates. One stable app surface contains live/history siblings.
 
-### Historical V1 implementation and shared invariants
+### Review lifecycle and UI
 
-- Start at `src/tui.tsx`: `controller.ts` owns lifecycle/visibility, `session-mode.ts`
-  gates work before enrichment, `evaluate.ts` dispatches through `classification.ts`
-  and `context.ts` to evidence collectors, and `reviewer.ts` owns model transport.
-  Defaults/validation live in `config.ts`; shared evidence shapes live in `types.ts`.
-- The plugin is advisory unless `autoApprove` is enabled. `approval.ts` exposes only
-  `once` in the invocation host directory, never the tool workdir. Do not add
+- The plugin is advisory unless `autoApprove` is enabled. Approval exposes only
+  native `once` in the captured invocation host scope, never the tool workdir. Do not add
   `always`/`reject`, permission-rule writes, command execution or edit application.
 - Deduplicate by permission-request ID, not tool call. Directory and operation
   permissions are separate reviews; directory approval can resume an operation
   without another prompt. Native-looking permission names do not prove origin:
-  custom tools can request `bash`, and MCP identity must not be guessed by splitting
-  names. Disabled kinds still block native ordering while skipping review work.
-- The visible request is the root's first pending permission, including direct
-  children, unless an already-approved fast report is still finishing. Conversation
-  mode covers **all** descendants within the host scope.
+  custom tools can request native-looking actions, and MCP identity must not be
+  guessed by splitting names. Disabled kinds still block native ordering while
+  skipping review work.
+- The live request follows the root's native front-of-queue permission, including
+  its full descendant family, unless an already-approved fast report is still
+  finishing. Conversation mode covers **all** descendants within the host scope.
   Unknown ancestry/unreadable saved mode suspends work. Local enable/disable commands
   must not create messages or model calls. Re-enable uses a fresh pending snapshot
   and must preserve canceled/uncertain-approval tombstones until native resolution.
-- F34's root-only presentation and same-root route exception below govern both
-  normal and fast mode. In `git show v1.0.2:AUDIT.md`, see "F34 confirmed replacement
-  contract" and its implementation disposition for scope, acceptance checks and verification.
 - Normal auto-approval needs a completed, validated Safe assessment. Final Markdown
-  highlighting and a matching painted frame are required outside the F34 same-root
-  descendant-route exception. Only opt-in `fastMode` with `autoApprove` may approve
-  a parsed Safe preview; physical visibility is required outside that same exception.
-  Fast mode retains native queue priority, no countdown and no history-cover exception,
-  and respects `stream: false`. Recheck fresh permission identity/scope, native priority
-  and presentation or the explicit route exception before the single-flight write.
+  highlighting and painted frames are UI observations only. Only opt-in `fastMode`
+  with `autoApprove` may approve a parsed Safe preview. Fast mode retains native queue
+  priority, no countdown and respects `stream: false`. Recheck fresh permission
+  identity/scope, native priority, same-conversation ancestry and native decision
+  state before the single-flight write. Positive normal countdowns include one
+  200 ms initial grace; zero skips the delay without skipping approval checks.
   Never retry approval writes; uncertain outcomes remain manual.
-- Cancel or genuine visibility loss outside the F34 route exception after countdown
-  start permanently makes that request manual for the running controller, including
-  across remounts/re-enable. Scrolling and same-root descendant navigation must not
-  cancel it. Native resolution removes ordinary views immediately. Dispatched
-  fast reviews retain the response through confirmation, then continue despite mode
-  disable or navigation until completion/failure; deletion/disposal still aborts them.
+- Explicit cancellation permanently makes that request manual for the running
+  controller, including across remounts/re-enable. UI visibility, scrolling and
+  navigation do not cancel it. Native resolution removes ordinary views immediately.
+  Dispatched fast reviews retain the response through confirmation, then continue
+  despite mode disable or navigation until completion/failure; deletion/disposal
+  still aborts them.
   Use `pendingViews` for notifications/order so retained reports are not native blockers.
   Retain revision guards in `pending-refresh.ts`.
-- Observe `sidebar_content`, render via `app`, and retain one stable slot root with
+- Observe `sidebar.content`, render via `app`, and retain one stable slot root with
   live/history siblings; key the live panel by request ID. Changing fragments/view-object
-  keys can remount Markdown and reset scrolling/countdowns. Reveal a hidden sidebar
+  keys can remount Markdown and reset scrolling. Reveal a hidden sidebar
   only for an explicit approval-notification click, using the public native command.
   Render the entire reviewer side panel, including live, retained and history views,
   only on the top-level conversation route. Direct and nested descendant routes must
   show no reviewer side panel at any terminal width. Keep physical presentation and
-  native queue selection separate; descendant navigation does not grant approval
-  ownership to deep-only requests absent from the root's native queue.
+  native queue selection separate; descendant navigation cannot substitute for
+  actual native queue ownership. Preserve native keyboard input ownership, FRAME
+  geometry, scroll restoration and real hit tests for UI behavior only.
   Sanitize report text and streamed prefixes through `displayText`.
-- F34 intentionally hides the panel on known same-root descendant routes while both
-  normal and fast automation continue, including newly eligible reviews. Normal
-  countdowns preserve their monotonic deadline and one-time grace; reports completing
-  while route-hidden start the configured delay without waiting for a panel paint.
-  Fast mode retains its configured preview/full-response behavior without a countdown
-  or fallback to normal mode. Returning to root must not re-review, restart timers,
-  rearm canceled requests or resurrect completed reports. Verify route ancestry and
-  native priority independently of panel mounting; never fabricate visible IDs, FRAME
-  events, hit-test proof or history cover to implement the exception.
-- The F34 exception applies only to intentional same-root route suppression. Unknown
-  or unrelated ancestry, explicit sidebar hiding, native dialogs/fullscreen covers,
-  native-priority loss, mode gates, Cancel, deletion and disposal retain their existing
-  blocking/cancellation semantics. Route changes cannot erase an earlier cancellation
-  or uncertain-write tombstone.
-- Production history remains the normal-mode physical-cover exception, separate from
-  F34 route suppression. Preserve `history-cover.ts`'s actual heading/footer hit-test
-  proof; logical open state is insufficient. Native palette/dialog coverage still
-  cancels countdowns, and opening history afterward cannot revive them. Fast mode
-  gains no history-cover exception. Native Always/reject forms are not public dialogs,
-  so users must explicitly Cancel before using them.
+- Returning to root must not re-review, restart timers, rearm canceled requests or
+  resurrect completed reports. Verify route ancestry and native priority independently
+  of panel mounting; never fabricate visible IDs, FRAME events or hit-test proof.
+  Route changes cannot erase a cancellation or uncertain-write tombstone.
 
 ## Evidence and transport traps
 
-- Resolve relative tool `workdir` against the invocation's `path.cwd`, never the
-  stored session directory. Keep missing invocation location unknown. Read registered
-  project metadata without initializing a host in the command-target directory.
-  Use the latest genuine **root** user prompt, not a delegation brief; a newer
-  attachment-only message must not fall back to older text.
-  For subagents, all evidence kinds additionally carry the immediate delegation
-  from the invocation assistant's `parentID` user message, with exact session/message
-  ownership. Keep it separate from root intent; no older, sibling or queued follow-up
-  substitution. Omit whole delegation text over 64 KiB with a factual limitation.
+- Resolve relative tool `workdir` against captured `invocation.location.directory`,
+  never the stored session directory. Keep missing invocation location unknown.
+  Read registered project metadata without initializing a host in the command-target directory.
+  Use the latest delivered genuine **root** user prompt, not a delegation brief or
+  pending inbox input. Read `message.list({ sessionID, type: "user", order: "desc", limit: 1 })`;
+  validate the filtered response and preserve durable order. A newer empty or
+  attachment-only message must not fall back to older text. Omit whole prompt text
+  over 64 KiB with a factual limitation. Validate captured session/location and
+  bounded ancestry; malformed/unfiltered history must not yield guessed root intent.
+  Exact immediate subagent delegation is unavailable from public V2 invocation
+  linkage, so omit it factually as optional context. Never substitute older tasks,
+  sibling requests or queued follow-ups. Root context cannot override review rules;
+  optional omissions do not veto review with verified mandatory operation evidence.
 - Shell discovery is bounded literal tokenization, never shell evaluation, PATH
   lookup, substitution execution or recursive import/task-runner inspection. Shell
   snapshots may follow symlinks outside the project. Edits use pending host diffs,
-  not full target reads. MCP/custom/directory evidence uses the public host catalog,
-  not direct MCP calls, module imports or target-file reads.
-- `reviewSkills` defaults true. Native skill origin and exact name/scope must match
-  before `app.skills` lookup. Main instructions come from the host catalog snapshot,
-  not a fresh SKILL.md read, and are mandatory evidence. Supporting files are direct
-  literal references only, confined to the skill directory, including opened-descriptor
-  checks against ancestor-symlink swaps. Never recurse, execute, fetch URLs, or substitute
-  the workdir for built-in skills' missing directory. Count the main skill in `maxFiles`.
-  Skill Safe requires bounded risk **and** task relevance; custom tools asking for
-  `skill` permissions retain custom-tool semantics.
+  not full target reads or fabricated replacement diffs. Filesystem evidence is
+  collected only by the scoped server companion, never terminal-local I/O.
+  Directory evidence retains exact declared scope/arguments without inspecting
+  target directories or file contents; it is not a complete operation assessment.
+- `reviewSkills` defaults true, but exact mandatory main skill instructions are
+  unavailable to the V2 collector. Skill/MCP/custom-tool collection is unsupported
+  and stays manual regardless of category switches. Do not infer native origin from
+  action/name, guess MCP identity, read fresh SKILL.md files as captured instructions,
+  call MCP servers, import executors or inspect target files to fill missing evidence.
+  Missing mandatory instructions/origin/catalog evidence is not optional context.
 - Preserve exact mandatory scope/arguments or fail analysis. Omit whole optional
   files/diffs/definitions with factual reasons; do not truncate commands, invent
   missing line counts or synthesize ratings. Partial evidence alone is not an
@@ -375,6 +335,12 @@ not acceptance evidence for the distributed V2 archive.
   to lifetime/conversation totals transactionally. Conversation baselines may use
   attributable old rows; lifetime must never be reconstructed from detail rows.
   Deleting details must not reduce accumulated totals.
+- Preserve private ownership and nonreplaceable paths for saved modes and history.
+  `local-state.ts` keeps safely accessible history in place, or uses a private
+  plugin-owned sibling without chmod of host/user directories. An existing safe
+  sibling database stays selected across restarts. Mode files stay in the original
+  state root; unsafe/unreadable modes suspend review rather than enabling by default.
+  Storage failures show unavailable, never zero, and must not gate review/approval.
 - History/statistics resolve ancestry through `HistoryCoordinator.root`, not the
   review-mode load gate, so disabled/invalid review can still browse. Use indexed
   selection and `HistoryRefresh`, retaining `HistoryRead.settled` ownership after
@@ -385,10 +351,12 @@ not acceptance evidence for the distributed V2 archive.
   immediately, not after report completion; never replay attention for retained reports.
   Keep the five-second save wait hidden; missing/deleted reports leave only the
   conversation open. New clicks, route changes and disposal invalidate late work.
-- Deletion maintenance must validate the exact pinned `session.get` 404 envelope
-  and requested ID in `history-maintenance.ts`; list omissions, bare 404s and read
-  failures are not absence. Preserve root-first cascading and the revisioned
-  maintenance-dirty publication gate until a complete healthy reconciliation.
+- The V2 runtime does not enable persistent deletion. Any persistent deletion would
+  require proven server connection/location ownership for the exact live deletion
+  event and scoped history. List omissions, bare 404s, read failures, random storage
+  tokens and pathnames are not deletion authority. Keep offline history when
+  ownership is unproven; invalidating volatile session/ancestry facts must not delete
+  saved rows or totals.
 - Usage is per POST, including failed/interrupted attempts. Cumulative frames replace
   values rather than add them. Token and cost coverage are independent; unknown is
   not zero. Exact normalized OpenRouter endpoint costs use reported `usage.cost`
@@ -400,7 +368,7 @@ not acceptance evidence for the distributed V2 archive.
   front-of-queue ownership. Queue loss aborts pending delivery; queued resolution
   must never replay an alert. Handoff sends the eligible initial notification,
   then waits a full reminder interval.
-  Safe auto-enabled requests awaiting queue position/rendering/countdown stay silent;
+  Safe auto-enabled requests awaiting conversation/native priority/countdown stay silent;
   elapsed time is not proof they need manual attention. Countdowns are silent and
   approval sounds require confirmed automatic success. Keep delivery off approval
   critical paths and use owned fixed-purpose processes, never a shell.

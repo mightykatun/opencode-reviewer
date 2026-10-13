@@ -4,9 +4,9 @@ import timers, { setImmediate as settle } from "node:timers/promises"
 import { parseConfig } from "../src/config.js"
 import { review } from "../src/reviewer.js"
 import { withDeadline } from "../src/deadline.js"
-import type { Evidence } from "../src/types.js"
+import { shellEvidence } from "./review-fixtures.js"
 
-const evidence: Evidence = { kind: "shell", command: "pwd", cwd: "/fixture", userPrompt: "Show cwd", files: [], limitations: [] }
+const evidence = shellEvidence()
 const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", timeoutMs: 5000, formatRetries: 0 })
 const success = () => Response.json({ choices: [{ message: { content: '{"safe":true,"desc":"Recovered."}' } }] })
 

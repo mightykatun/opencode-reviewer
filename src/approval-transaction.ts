@@ -4,7 +4,6 @@ import type { NativeApprovalTransport } from "./host-permissions.js"
 import type { ApprovalFact, NativePermissionReply, RequestIdentity } from "./controller.js"
 
 export type ApprovalTransactionState = "preparing" | "dispatched" | "acknowledged" | "confirmed" | "uncertain" | "not-sent"
-type Writer<R> = { native: NativeApprovalTransport<R> } | { legacy: { once(request: R, signal: AbortSignal): Promise<void> } }
 interface SubmissionPolicy {
   /** Final synchronous policy check. No observers or publications here. */
   guard(): boolean
@@ -18,8 +17,7 @@ interface SubmissionPolicy {
 
 /** Owns one approval's transport facts, independently of review/view lifetime.
  * The controller owns policy and physical verification reads. Native attribution
- * requires both our local acknowledgement and the first exact native once event.
- * Legacy void writers retain their historical acknowledgement-only contract. */
+ * requires both our local acknowledgement and the first exact native once event. */
 export class ApprovalTransaction<R extends RequestIdentity> {
   readonly approval = randomUUID()
   private current: ApprovalTransactionState = "preparing"
@@ -56,7 +54,7 @@ export class ApprovalTransaction<R extends RequestIdentity> {
   }
 
   /** Read-only deferrals may reuse preparation, but actual dispatch is once-only. */
-  async submit(signal: AbortSignal, writer: Writer<R>, policy: SubmissionPolicy): Promise<void> {
+  async submit(signal: AbortSignal, writer: NativeApprovalTransport<R>, policy: SubmissionPolicy): Promise<void> {
     if (this.sent || this.writing || this.terminal()) throw Error("Approval transaction already settled or submitting")
     this.writing = true
     const forwardAbort = () => {
@@ -86,27 +84,18 @@ export class ApprovalTransaction<R extends RequestIdentity> {
           this.sent = true
           this.current = "dispatched"
           policy.dispatch()
-          if ("native" in writer) queueMicrotask(publishDispatch)
+          queueMicrotask(publishDispatch)
           return true
         }
         try {
           reviewStage(signal, "Approval verification")
           reviewStage(bounded, "Approval acknowledgement")
           if (!policy.guard()) return
-          if ("native" in writer) {
-            const result = await writer.native.once(this.request, bounded, dispatch)
-            if (!this.sent) { this.current = "not-sent"; return }
-            if (result.status !== "submitted" || this.terminal()) throw Error("Native approval acknowledgement uncertain")
-            this.current = "acknowledged"
-            if (await this.event !== "once") throw Error("Native approval reply did not match once")
-          } else {
-            if (!dispatch()) return
-            let response: Promise<void>
-            try { response = writer.legacy.once(this.request, bounded) }
-            finally { publishDispatch() } // A synchronous throw is an uncertain invocation too.
-            await response
-            if (!this.terminal()) this.current = "acknowledged"
-          }
+          const result = await writer.once(this.request, bounded, dispatch)
+          if (!this.sent) { this.current = "not-sent"; return }
+          if (result.status !== "submitted" || this.terminal()) throw Error("Native approval acknowledgement uncertain")
+          this.current = "acknowledged"
+          if (await this.event !== "once") throw Error("Native approval reply did not match once")
           if (!bounded.aborted && this.current === "acknowledged") {
             this.current = "confirmed"
             policy.confirming()

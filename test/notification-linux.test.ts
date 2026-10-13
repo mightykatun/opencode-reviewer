@@ -322,7 +322,7 @@ for (const outcome of ["play", "resolution", "preemption", "deletion", "disposal
   const policy = new NotificationPolicy(config, true, backend)
   t.after(() => policy.dispose())
   const target = { root: "root", sessionID: "root", title: "Fixture" }
-  policy.approved({ id: "p", sessionID: "root", permission: "bash", patterns: [], always: [], metadata: {} }, target)
+  policy.approved({ id: "p", sessionID: "root", action: "shell", resources: [] }, target)
   policy.turn("ended", "turn", { root: "other", sessionID: "other", title: "Other session" })
   const deadline = performance.now() + 2000
   while (played.length < 2 && performance.now() < deadline) await settle()

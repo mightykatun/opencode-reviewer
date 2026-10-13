@@ -6,22 +6,23 @@ import { execFileSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { FileHandle } from "node:fs/promises"
-import type { PermissionRequest, Session } from "@opencode-ai/sdk/v2"
 import { FileAccess, type FileIO } from "../src/file-access.js"
 import { withDeadline, reviewStage } from "../src/deadline.js"
-import { collectEvidence, collectEditEvidence, discover } from "../src/evidence.js"
-import { loadConversationContext, type ContextReader } from "../src/context.js"
-import { evaluateEvidence } from "../src/evaluate.js"
+import { collectEvidence, discover } from "../src/evidence.js"
+import { loadHostConversationContext, type HostContextReader } from "../src/host-context.js"
+import { evaluateHostReview } from "../src/host-evaluate.js"
+import { collectHostEvidence } from "../src/host-evidence.js"
+import { BUILTIN_PROMPTS } from "../src/prompts.js"
+import { ownedReview } from "../src/review-admission.js"
+import { nativeInvocation, nativeClient } from "./review-fixtures.js"
 import { parseConfig } from "../src/config.js"
-import type { EditContext } from "../src/types.js"
 
 const timing = { totalMs: 80, pathMs: 15, captureMs: 25, concurrency: 2 }
 const limits = { maxFiles: 6, maxEvidenceBytes: 131072 }
-// Isolate source-capture ownership after the context loader's launch-path probe,
+// Isolate source-capture ownership after the native collector's launch-path probe,
 // as in the production evaluator. Standalone launch probes are tested separately.
 const input = { command: "cat source", cwd: "/virtual", userPrompt: "Inspect source",
-  execution: { tool: "bash" as const, requestedWorkdir: null, instanceDirectory: "/virtual", instanceWorktree: "/virtual",
-    cwdSource: "assistant.path.cwd" as const, canonicalCwd: "/virtual" } }
+  execution: { canonicalCwd: "/virtual" } }
 const signal = () => new AbortController().signal
 
 test("source parent traversal stays physical even with a lexically normalizing host realpath", async t => {
@@ -336,20 +337,20 @@ test("exact aliases prequalify once while canonical alias promotion captures at 
   }
 })
 
-test("complete edit diffs survive stalled canonicalization with conservative alias accounting", async () => {
+test("native edit diffs never launch filesystem probes, even with a stalled filesystem adapter", async () => {
   const fixture = fakeIO("realpath")
   const access = new FileAccess(fixture.io, timing)
   const diff = "@@ -1 +1 @@\n-before\n+after\n"
-  const context: EditContext = { kind: "edit", tool: "apply_patch", userPrompt: "Update", limitations: [],
-    location: { instanceDirectory: "/virtual", instanceWorktree: "/virtual" },
-    permission: { id: "p", type: "edit", patterns: ["*"], always: ["*"], tool: null,
-      metadata: { files: ["source", "source", "alias", "other"].map((name) => ({ filePath: `/virtual/${name}`, type: "update", patch: diff })) } } }
+  const targets = ["source", "source", "alias", "other"]
+  const context = nativeInvocation("patch", {
+    patchText: "*** Begin Patch\n*** Update File: source\n@@\n-before\n+after\n*** Update File: alias\n@@\n-before\n+after\n*** Update File: other\n@@\n-before\n+after\n*** End Patch",
+  }, { files: targets.map(file => ({ file, status: "modified", patch: diff })) }, "/virtual", targets)
   const s = signal()
-  const result = await collectEditEvidence(context, { ...limits, maxFiles: 2 }, s, access.scope(s))
-  assert.deepEqual(result.changes.map((change) => change.status), ["included", "included", "included", "omitted"])
-  assert.equal(result.changes[0]!.diff, diff)
-  assert.match(result.limitations.join(" "), /timed out.*aliases count separately/)
-  assert.ok(!fixture.calls.includes("open"))
+  const result = await collectHostEvidence(context, { ...parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture" }), ...limits, maxFiles: 2 }, s, access)
+  assert.ok(result.status === "ready" && result.evidence.kind === "edit")
+  assert.deepEqual(result.evidence.changes.map(change => change.status), ["included", "included", "included", "omitted"])
+  assert.equal(result.evidence.changes[0]!.patch, diff)
+  assert.deepEqual(fixture.calls, [])
   fixture.release()
   await settled(() => access.outstanding === 0)
 })
@@ -417,26 +418,29 @@ test("ordinary filesystem failures and special files remain factual omissions", 
   }
 })
 
-test("stalled optional context leaves partial provenance and time for the reviewer", async () => {
-  const late = deferred<Awaited<ReturnType<ContextReader["messages"]>>>()
+test("stalled mandatory native context fails closed and owns late client settlement", async () => {
+  const late = deferred<Awaited<ReturnType<HostContextReader["message"]["list"]>>>()
   let aborted = false
-  const reader: ContextReader = {
-    message: async () => undefined, projects: async () => [],
-    session: async (id) => ({ id, directory: "/virtual", projectID: "p" } as Session),
-    messages: async (_, signal) => { signal.addEventListener("abort", () => { aborted = true }); return late.promise },
+  const reader: HostContextReader = {
+    session: { get: async ({ sessionID }) => ({ id: sessionID, location: { directory: "/virtual" }, projectID: "p" }) as any },
+    message: { list: async (_, options) => { options!.signal!.addEventListener("abort", () => { aborted = true }); return late.promise } },
   }
-  await withDeadline(signal(), 600, async (s) => {
-    const result = await loadConversationContext({ id: "p", sessionID: "root", permission: "bash", patterns: [], always: [], metadata: {} }, reader, s)
-    assert.equal(s.aborted, false)
-    assert.equal(result.session.current?.directory, "/virtual")
-    assert.equal(result.userPrompt, null)
-    assert.match(result.limitations.join(" "), /Conversation context lookup timed out/)
-    assert.equal(aborted, true)
-    const before = JSON.stringify(result)
-    late.resolve([])
-    await sleep(0)
-    assert.equal(JSON.stringify(result), before)
+  let result = false, settled = false
+  const pending = ownedReview(signal(), 600, async s => {
+    await loadHostConversationContext({ sessionID: "root", location: { directory: "/virtual" } }, reader, s)
+    result = true
   })
+  void pending.settled!.then(() => { settled = true })
+  try {
+    await assert.rejects(pending, /timed out/)
+    assert.equal(aborted, true)
+    assert.equal(result, false)
+    assert.equal(settled, false, "expired mandatory context retains its physical client transaction")
+    late.resolve({ data: [], cursor: {} })
+    await pending.settled
+    assert.equal(settled, true)
+    assert.equal(result, false, "late mandatory context cannot publish a result")
+  } finally { late.resolve({ data: [], cursor: {} }); await pending.settled }
 })
 
 for (const outcome of ["slow", "timeout", "cancel"] as const) {
@@ -445,22 +449,15 @@ for (const outcome of ["slow", "timeout", "cancel"] as const) {
     const access = new FileAccess(io.io, timing)
     const parent = new AbortController()
     const entered = deferred<void>()
-    const history = deferred<Awaited<ReturnType<ContextReader["messages"]>>>()
-    const request: PermissionRequest = { id: "p", sessionID: "root", permission: "bash", patterns: ["cat source"],
-      always: [], metadata: {}, tool: { messageID: "m", callID: "c" } }
-    const reader: ContextReader = {
-      message: async () => ({ info: { id: "m", sessionID: "root", role: "assistant", parentID: "user", time: { created: 2 },
-        providerID: "fixture", modelID: "fixture", mode: "build", agent: "build", path: { cwd: "/virtual", root: "/virtual" },
-        cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
-        parts: [{ id: "part", type: "tool", tool: "bash", messageID: "m", sessionID: "root", callID: "c",
-          state: { status: "running", input: { command: "cat source" }, time: { start: 1 } } }] }),
-      toolIDs: async () => ["bash"],
-      session: async id => ({ id, directory: "/origin", projectID: "p" } as Session),
-      messages: async () => { entered.resolve(); return history.promise },
-      projects: async () => [],
-    }
+    const history = deferred<Awaited<ReturnType<HostContextReader["message"]["list"]>>>()
+    const owned = nativeInvocation("shell", { command: "cat source" }, undefined, "/virtual", ["cat source"])
+    const reader = nativeClient(owned, access)
+    reader.message.list = async () => { entered.resolve(); return history.promise }
     const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture" })
-    const pending = withDeadline(parent.signal, 1500, s => evaluateEvidence(request, reader, config, config, "", s, () => {}, access))
+    let evidence: any, posts = 0
+    const pending = withDeadline(parent.signal, 1500, s => evaluateHostReview(reader, owned.snapshot, config, BUILTIN_PROMPTS, s, () => {}, {
+      observeEvidence: value => { evidence = value }, fetcher: async () => { posts++; return Response.json({ choices: [{ message: { content: '{"safe":true,"desc":"Captured."}' } }] }) },
+    }))
     try {
       await entered.promise
       assert.deepEqual(io.calls, [], "conversation context precedes the first filesystem probe")
@@ -468,25 +465,33 @@ for (const outcome of ["slow", "timeout", "cancel"] as const) {
         parent.abort(new Error("native resolution"))
         await assert.rejects(pending, /native resolution/)
         assert.deepEqual(io.calls, [])
+        assert.equal(posts, 0)
         return
       }
       if (outcome === "slow") {
         await sleep(timing.totalMs + 30)
-        history.resolve([])
+        history.resolve({ data: [], cursor: {} })
       }
-      const evidence = await pending
-      assert.ok(evidence?.kind === "shell")
+      if (outcome === "timeout") {
+        await assert.rejects(pending, /timed out/)
+        assert.equal(posts, 0)
+        assert.deepEqual(io.calls, [])
+        return
+      }
+      const result = await pending
+      assert.equal(result?.safe, true)
+      assert.equal(posts, 1)
+      assert.equal(evidence?.kind, "shell")
       assert.equal(evidence.files[0]!.contents, "fixture\n")
       assert.equal(evidence.execution?.canonicalCwd, "/virtual")
       assert.equal(io.calls.filter(call => call === "open").length, 1)
-      if (outcome === "timeout") assert.match(evidence.limitations.join(" "), /Conversation context lookup timed out/)
       const snapshot = JSON.stringify(evidence)
-      history.resolve([])
+      history.resolve({ data: [], cursor: {} })
       await sleep(0)
       assert.equal(JSON.stringify(evidence), snapshot)
     } finally {
       parent.abort()
-      history.resolve([])
+      history.resolve({ data: [], cursor: {} })
       await pending.catch(() => {})
     }
     assert.equal(access.outstanding, 0)

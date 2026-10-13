@@ -1,10 +1,16 @@
-import type { Model, Provider } from "@opencode-ai/sdk/v2"
 import { uiText } from "./ui-text.js"
 import { HISTORY_TEXT_BYTES } from "./history-records.js"
 
 /** Token counts are a pair; cost is independently available. */
 export interface Usage { input?: number; output?: number; cost?: number }
-export type Pricing = Model["cost"]
+export interface PricingRates {
+  input: number
+  output: number
+  cache: { read: number; write: number }
+}
+export interface Pricing extends PricingRates {
+  tiers?: (PricingRates & { tier: { type: "context"; size: number } })[]
+}
 export type PricingLookup = (model: string) => Pricing | undefined
 
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -16,15 +22,6 @@ const reportedModel = (value: unknown): string | undefined => typeof value === "
 const endpoint = (value: unknown) => {
   if (typeof value !== "string") return
   try { return new URL(value).href.replace(/\/+$/, "") } catch { return }
-}
-
-/** Use the host's live catalog, including user pricing overrides, not a stale price table. */
-export function modelPricing(providers: readonly Pick<Provider, "options" | "models">[], baseURL: string, modelID: string): Pricing | undefined {
-  const matches = providers.flatMap((provider) => Object.values(provider.models).filter((model) =>
-    (model.id === modelID || model.api.id === modelID)
-    && endpoint(model.options.baseURL ?? provider.options.baseURL ?? model.api.url) === endpoint(baseURL)))
-  if (!matches.length || matches.some((model) => JSON.stringify(model.cost) !== JSON.stringify(matches[0]!.cost))) return
-  return matches[0]!.cost
 }
 
 export function responseUsage(envelope: unknown, requestedModel: string, pricing?: PricingLookup, baseURL?: string): Usage | undefined {
@@ -55,7 +52,7 @@ function estimatedUsage(body: Record<string, unknown>, requestedModel: string, p
   // Native Anthropic usage is a different contract; do not guess its mapping to prompt_tokens.
   if (!count(cached) || !count(written) || cached + written > result.input
     || usage.cache_creation_input_tokens || usage.cache_read_input_tokens) return result
-  const tiers = prices.tiers ?? (prices.experimentalOver200K ? [{ ...prices.experimentalOver200K, tier: { type: "context" as const, size: 200000 } }] : [])
+  const tiers = prices.tiers ?? []
   const selected = [...tiers].sort((a, b) => b.tier.size - a.tier.size).find((tier) => result.input > tier.tier.size) ?? prices
   if (![selected.input, selected.output, selected.cache.read, selected.cache.write].every(rate)) return result
   const cost = ((result.input - cached - written) * selected.input + result.output * selected.output

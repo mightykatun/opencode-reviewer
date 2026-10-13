@@ -1,4 +1,4 @@
-import type { PermissionRequest } from "@opencode-ai/sdk/v2"
+import type { HostRequest } from "./host-types.js"
 import { uiText } from "./ui-text.js"
 import type { RequestIdentity, View } from "./controller.js"
 import type { NotificationConfig } from "./notification-config.js"
@@ -26,7 +26,7 @@ interface Pending {
 }
 
 /** Absence of a countdown is not evidence of manual-only approval. A completed
- * Safe request can still be waiting for its native queue position or rendering. */
+ * Safe request can still be waiting for its native queue position or conversation. */
 function permissionAttention(view: View<RequestIdentity>, auto: boolean): "attention" | "unsafe" | undefined {
   if (view.status === "identifying" || view.status === "analyzing") return
   const state = view.autoApproval?.status
@@ -43,7 +43,7 @@ function permissionAttention(view: View<RequestIdentity>, auto: boolean): "atten
 }
 
 /** Event policy owns no host reads, desktop processes, permission writes or models. */
-export class NotificationPolicy<R extends RequestIdentity = PermissionRequest> {
+export class NotificationPolicy<R extends RequestIdentity = HostRequest> {
   private permissions = new Map<string, Pending>()
   private questions = new Map<string, Pending>()
   private seen = new Set<string>()
@@ -188,7 +188,7 @@ export class NotificationPolicy<R extends RequestIdentity = PermissionRequest> {
       if (handle?.dispatched) void handle.dispatched.then(attempt, attempt)
       else attempt()
       if (handle?.closed) await handle.closed
-      else if (handle && !banner.abort.signal.aborted) return // legacy embedding owns close/expiry
+      else if (handle && !banner.abort.signal.aborted) return // embedding owns close/expiry
     } catch { attempt(); this.withdraw(banner) }
     this.release(banner)
   }

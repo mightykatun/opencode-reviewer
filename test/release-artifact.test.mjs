@@ -164,22 +164,16 @@ test("package metadata is inspected as data and cannot request project dependenc
   assert.deepEqual(inspectPackageArchive(archiveFixture({ pkg })).pkg, pkg, "lifecycle text is never executed by archive inspection")
 })
 
-test("V2 archives retain five files and require the shared entrypoint while historical V1 archives remain valid", () => {
-  const old = fixturePackage()
-  assert.equal(inspectPackageArchive(archiveFixture({ pkg: old })).pkg.engines.opencode, "1.18.35")
-  const pkg = { ...old, engines: { ...old.engines, opencode: "2.0.26" },
-    exports: { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" } }
+test("V2 archives retain five files and require the current engine contract and shared entrypoint", () => {
+  const pkg = fixturePackage()
   assert.equal(inspectPackageArchive(archiveFixture({ pkg })).files.size, 5)
-  for (const target of [">=2.0.0 <3"]) {
-    const current = { ...pkg, engines: { ...pkg.engines, opencode: target } }
-    assert.equal(inspectPackageArchive(archiveFixture({ pkg: current })).files.size, 5)
-    assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...current, exports: { "./tui": "./dist/tui.js" } } })))
-  }
   for (const exports of [{ "./tui": "./dist/tui.js" }, { ...pkg.exports, "./server": "./dist/server.js" },
     { ...pkg.exports, "./extra": "./dist/tui.js" }])
     assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, exports } })))
-  for (const target of ["2.0.28", ">=2.0.26", "^2.0.26", "2.0.26 || 2.0.28", "2.0.27-beta.1"])
-    assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, engines: { opencode: target } } })), /API generation/)
+  for (const target of [undefined, "1.18.35", "2.0.26", "2.0.28", ">=2.0.26", "^2.0.26", "2.0.26 || 2.0.28", "2.0.27-beta.1"])
+    assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, engines: { ...pkg.engines, opencode: target } } })), /API generation/)
+  for (const target of [undefined, ">=20", "22.22.2", ">=24"])
+    assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, engines: { ...pkg.engines, node: target } } })), /Node runtime engine/)
 })
 
 test("archives reject top-level tags, arbitrary publication config and normalized npm versions", () => {

@@ -1,15 +1,16 @@
 import assert from "node:assert/strict"
 import { test, type TestContext } from "node:test"
 import { setImmediate as turn } from "node:timers/promises"
-import type { AssistantMessage, Session } from "@opencode-ai/sdk/v2"
 import { Controller } from "../src/controller.js"
 import { ownedReview } from "../src/review-admission.js"
-import { evaluateEvidence } from "../src/evaluate.js"
-import type { ContextReader } from "../src/context.js"
+import { evaluateHostReview } from "../src/host-evaluate.js"
 import { FileAccess } from "../src/file-access.js"
 import { parseConfig } from "../src/config.js"
 import { review } from "../src/reviewer.js"
 import { withDeadline } from "../src/deadline.js"
+import { BUILTIN_PROMPTS } from "../src/prompts.js"
+import { nativeClient, nativeInvocation, shellEvidence } from "./review-fixtures.js"
+import { snapshotRequest } from "../src/host-request.js"
 
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void
@@ -23,12 +24,9 @@ function clock(t: TestContext) {
   return async (ms: number) => { now += ms; t.mock.timers.tick(ms); await turn() }
 }
 const config = parseConfig({ baseURL: "https://fixture.invalid/v1", model: "fixture", timeoutMs: 12000 })
-const session = (id: string, parentID?: string): Session => ({ id, parentID, directory: "/fixture", slug: id,
-  projectID: "project", title: id, version: "1", time: { created: 1, updated: 1 } })
-const good = JSON.stringify({ choices: [{ message: { content: '{"safe":true,"desc":"Bounded."}' } }] })
 
-for (const held of ["projects", "session", "delegation"] as const) for (const success of [true, false]) {
-  test(`production evidence retains ${held} after its internal context deadline and ${success ? "successful" : "failed"} review`, async t => {
+for (const held of ["session", "history"] as const) for (const success of [true, false]) {
+  test(`native evidence retains ${held} after its context deadline through ${success ? "successful" : "failed"} late settlement`, async t => {
     const tick = clock(t)
     const operations: ReturnType<typeof deferred<void>>[] = [], signals: AbortSignal[] = []
     let active = 0, maximum = 0, posts = 0
@@ -38,52 +36,44 @@ for (const held of ["projects", "session", "delegation"] as const) for (const su
       maximum = Math.max(maximum, ++active)
       return operation.promise.finally(() => { active-- })
     }
-    const reader: ContextReader = {
-      toolIDs: async () => ["bash"],
-      session: async (id, signal) => {
-        if (held === "session") await hold(signal)
-        return session(id, held === "delegation" && id === "child" ? "root" : undefined)
-      },
-      // When ancestry branches run in parallel, the cooperative root-history
-      // branch ends at cancellation while the delegation branch still owns I/O.
-      messages: async (_id, signal) => held === "delegation" ? new Promise((_, reject) => {
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true })
-      }) : [],
-      message: async (sessionID, messageID, signal) => {
-        if (messageID === "user") { await hold(signal); return undefined }
-        const info: AssistantMessage = { id: messageID, sessionID, role: "assistant", parentID: "user", time: { created: 2 },
-          providerID: "fixture", modelID: "fixture", mode: "build", agent: "build", path: { cwd: "", root: "" },
-          cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }
-        return { info, parts: [{ id: "part", messageID, sessionID, type: "tool", callID: "call", tool: "bash",
-          state: { status: "running", input: { command: "pwd" }, time: { start: 1 } } }] }
-      },
-      projects: async signal => { if (held === "projects") await hold(signal); return [] },
-    }
     const files = new FileAccess()
-    const controller = new Controller((request, parent, identify) => ownedReview(parent, config.timeoutMs, async signal => {
-      const evidence = await evaluateEvidence(request, reader, config, config, "", signal, identify, files)
-      assert.ok(evidence)
-      assert.match(evidence.limitations.join(" "), held === "projects" ? /Project context lookup timed out/ : /Conversation context lookup timed out/)
-      return review(evidence, config, signal, { fetcher: async () => {
+    const controller = new Controller((request, parent, identify) => {
+      const owned = nativeInvocation("shell", { command: "pwd" })
+      const { source, ...rest } = request
+      owned.snapshot = snapshotRequest({ ...rest, source: { type: "tool", messageID: source!.assistantID, id: source!.id } }, owned.snapshot.scope)!
+      const client = nativeClient(owned, files)
+      const get = client.session.get
+      const list = client.message.list
+      if (held === "session") client.session.get = async (input, options) => {
+        await hold(options!.signal!)
+        return get(input, options)
+      }
+      else client.message.list = async (input, options) => {
+        await hold(options!.signal!)
+        return list(input, options)
+      }
+      return evaluateHostReview(client, owned.snapshot, config, BUILTIN_PROMPTS, parent, identify, { fetcher: async () => {
         posts++
-        return success ? new Response(good) : new Response(null, { status: 401 })
+        throw Error("Expired mandatory context cannot reach the reviewer")
       } })
-    }), () => {})
-    for (let i = 0; i < 12; i++) controller.asked({ id: `p${String(i).padStart(2, "0")}`, sessionID: held === "delegation" ? "child" : "root",
-      permission: "bash", patterns: ["pwd"], metadata: {}, always: [], tool: { messageID: "tool-message", callID: "call" } })
+    }, () => {}, { candidate: () => true })
+    for (let i = 0; i < 12; i++) controller.asked({ ...nativeInvocation("shell", { command: "pwd" }).snapshot.request,
+      id: `p${String(i).padStart(2, "0")}` })
     try {
       await turn()
       assert.equal(operations.length, 4)
       await tick(4000)
-      assert.equal(posts, 4, "optional context expiry does not prevent the visible review result")
-      assert.equal(controller.views.filter(view => view.status === (success ? "complete" : "unavailable")).length, 4)
+      assert.equal(posts, 0, "mandatory native context expiry blocks model dispatch")
+      assert.equal(controller.views.filter(view => view.status === "unidentified").length, 4)
       assert.equal(signals.slice(0, 4).every(signal => signal.aborted), true)
       assert.equal(operations.length, 4, `context deadline must not release admission while ${held} is physically pending`)
       assert.equal(maximum, 4)
-      operations[0]!.resolve()
+      if (success) operations[0]!.resolve()
+      else operations[0]!.reject(Error("late private client failure"))
       await turn()
       assert.equal(operations.length, 5, "one physical completion admits exactly one waiting evaluation")
       assert.equal(active, 4)
+      assert.equal(posts, 0)
     } finally {
       const closing = controller.dispose()
       for (const operation of operations) operation.resolve()
@@ -97,8 +87,7 @@ test("raw nested deadlines inherit transport ownership through late headers and 
   const tick = clock(t), fetch = deferred<Response>(), cancel = deferred<void>()
   let canceled = false, settled = false
   const evaluation = ownedReview(new AbortController().signal, 1000, async signal => withDeadline(signal, 20,
-    async bounded => review({ kind: "shell", command: "pwd", cwd: null, userPrompt: null, files: [], limitations: [] }, config, bounded,
-      { fetcher: () => fetch.promise })))
+    async bounded => review(shellEvidence(), config, bounded, { fetcher: () => fetch.promise })))
   const rejected = assert.rejects(evaluation, /timed out/)
   void evaluation.settled!.then(() => { settled = true })
   try {

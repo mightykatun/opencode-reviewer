@@ -3,10 +3,8 @@ import assert from "node:assert/strict"
 import { chmod, link, mkdir, mkdtemp, readdir, readFile, rename, writeFile, rm, symlink, stat } from "node:fs/promises"
 import path from "node:path"
 import { tmpdir } from "node:os"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { setImmediate as settle } from "node:timers/promises"
 import { SessionModes, SessionModeStore, type ModeStore } from "../src/session-mode.js"
-import { sessionModeCommands } from "../src/session-mode-commands.js"
 
 const signal = () => new AbortController().signal
 function deferred<T>() {
@@ -464,95 +462,6 @@ test("failed cleanup and synchronous store errors free read capacity for later r
   for (let i = 0; i < 20; i++) await modes.load("root", signal())
   assert.equal(reads, 21)
   assert.equal(modes.enabled("root"), false)
-})
-
-test("local palette/slash commands capture session, persist, report failures and do nothing on home", async () => {
-  const toasts: { message: string }[] = [], changes: string[] = [], writes: boolean[] = []
-  let route: TuiPluginApi["route"]["current"] = { name: "home" }
-  let fail = false
-  const modes = new SessionModes({ ...memory(), write: async (_, enabled) => { writes.push(enabled); if (fail) throw new Error("private") } },
-    async (id) => ({ id, ...(id === "child" ? { parentID: "root" } : {}) }))
-  type Command = { namespace: string; slashName: string; enabled: () => boolean; run: () => Promise<void> }
-  let commands!: Command[]
-  const unregister = () => {}
-  const api = { route: { get current() { return route } }, lifecycle: { signal: signal() },
-    ui: { toast: (value: { message: string }) => toasts.push(value) },
-    keymap: { registerLayer: (layer: { commands: Command[] }) => { commands = layer.commands; return unregister } } } as unknown as TuiPluginApi
-  assert.equal(sessionModeCommands(api, modes, (root) => changes.push(root)), unregister)
-  assert.deepEqual(commands.map((c) => [c.namespace, c.slashName]), [["palette", "reviewer-enable"], ["palette", "reviewer-disable"]])
-  await commands[0]!.run()
-  assert.equal(commands[0]!.enabled(), false)
-  assert.deepEqual(writes, [])
-  route = { name: "session", params: { sessionID: "child" } }
-  await commands[1]!.run()
-  assert.equal(modes.enabled("root"), false)
-  assert.equal(toasts.at(-1)!.message, "Reviewer disabled for this conversation.")
-  fail = true
-  await commands[0]!.run()
-  assert.equal(modes.enabled("root"), true)
-  assert.deepEqual(changes, ["root", "root"])
-  assert.match(toasts.at(-1)!.message, /enabled locally, but saving failed/)
-  assert.doesNotMatch(JSON.stringify(toasts), /private/)
-})
-
-test("enable cannot bypass corrupt persisted mode", async () => {
-  let writes = 0, changes = 0
-  const modes = new SessionModes({ ...memory(), read: async () => { throw new Error("private record") }, write: async () => { writes++ } }, async (id) => ({ id }))
-  const toasts: { message: string }[] = []
-  let commands!: { run: () => Promise<void> }[]
-  const api = { route: { current: { name: "session", params: { sessionID: "root" } } }, lifecycle: { signal: signal() },
-    ui: { toast: (value: { message: string }) => toasts.push(value) },
-    keymap: { registerLayer: (layer: { commands: typeof commands }) => { commands = layer.commands; return () => {} } } } as unknown as TuiPluginApi
-  sessionModeCommands(api, modes, () => { changes++ })
-  await commands[0]!.run()
-  assert.equal(modes.enabled("root"), false)
-  assert.equal(writes, 0)
-  assert.equal(changes, 0)
-  assert.match(toasts[0]!.message, /saved mode could not be read/)
-})
-
-test("newer root command defeats an older descendant lookup and pending persistence does not delay the local switch", async () => {
-  const lookup = deferred<{ id: string; parentID: string }>()
-  const persistence = deferred<void>()
-  const writes: boolean[] = [], changes: string[] = []
-  const modes = new SessionModes({ ...memory(), write: async (_, enabled) => { writes.push(enabled); await persistence.promise } },
-    async (id) => id === "child" ? lookup.promise : { id })
-  let sessionID = "child"
-  let commands!: { run: () => Promise<void> }[]
-  const api = { route: { get current() { return { name: "session", params: { sessionID } } } }, lifecycle: { signal: signal() },
-    ui: { toast: () => {} }, keymap: { registerLayer: (layer: { commands: typeof commands }) => { commands = layer.commands; return () => {} } } } as unknown as TuiPluginApi
-  sessionModeCommands(api, modes, (root) => changes.push(root))
-  const oldEnable = commands[0]!.run()
-  sessionID = "root"
-  const disable = commands[1]!.run()
-  for (let i = 0; i < 20; i++) await Promise.resolve()
-  assert.equal(modes.enabled("root"), false)
-  assert.deepEqual(changes, ["root"])
-  lookup.resolve({ id: "child", parentID: "root" })
-  await oldEnable
-  assert.deepEqual(writes, [false])
-  persistence.resolve()
-  await disable
-})
-
-test("unchanged Enable still supersedes an older descendant Disable awaiting ancestry", async () => {
-  const lookup = deferred<{ id: string; parentID: string }>()
-  const writes: boolean[] = [], changes: string[] = []
-  const modes = new SessionModes({ ...memory(), write: async (_, enabled) => { writes.push(enabled) } },
-    async id => id === "child" ? lookup.promise : { id })
-  let sessionID = "child"
-  let commands!: { run: () => Promise<void> }[]
-  const api = { route: { get current() { return { name: "session", params: { sessionID } } } }, lifecycle: { signal: signal() },
-    ui: { toast: () => {} }, keymap: { registerLayer: (layer: { commands: typeof commands }) => { commands = layer.commands; return () => {} } } } as unknown as TuiPluginApi
-  sessionModeCommands(api, modes, root => changes.push(root))
-  const disable = commands[1]!.run()
-  sessionID = "root"
-  await commands[0]!.run()
-  lookup.resolve({ id: "child", parentID: "root" })
-  await disable
-  assert.equal(modes.enabled("root"), true)
-  assert.deepEqual(writes, [true])
-  assert.deepEqual(changes, [], "ordering metadata changes without invalidating enabled reviews")
 })
 
 function ancestryFixture(t: import("node:test").TestContext) {

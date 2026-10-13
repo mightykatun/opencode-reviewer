@@ -4,7 +4,6 @@ import { setImmediate as settle } from "node:timers/promises"
 import { Controller, type ApprovalFact, type NativeApproval, type ReviewLifecycleFact } from "../src/controller.js"
 import type { HostRequest } from "../src/host-types.js"
 import type { OnceSubmission } from "../src/host-permissions.js"
-import type { ApprovalPresentation } from "../src/route-approval.js"
 import type { ReviewResult } from "../src/types.js"
 
 const request: HostRequest = Object.freeze({ id: "request", sessionID: "root", action: "shell", resources: Object.freeze(["pwd"]),
@@ -19,17 +18,15 @@ async function fixture(fast = false, held: { preparation?: boolean; acknowledgem
   const preparation = deferred<void>(), acknowledgement = deferred<OnceSubmission>(), assessment = deferred<ReviewResult>()
   if (!held.preparation) preparation.resolve()
   if (!held.acknowledgement) acknowledgement.resolve({ status: "submitted" })
-  let proof: ApprovalPresentation = { state: "visible", id: request.id }, front: string | undefined = request.id
+  let ready = false, front: string | undefined = request.id
   let enabled = true, writes = 0, preparations = 0, reviewSignal!: AbortSignal
   let insideReply: (() => void) | undefined
   let pending: HostRequest[] = [request]
   const facts: ApprovalFact<HostRequest>[] = [], lifecycle: ReviewLifecycleFact<HostRequest>[] = []
   const approval: NativeApproval<HostRequest> = {
     list: async () => pending,
-    visibleID: () => proof.state === "visible" ? proof.id : undefined,
-    presentation: () => proof,
     async once(value, signal, dispatch) {
-      assert.equal(value, request, "host closure receives the admitted native request, not a V1 projection")
+      assert.equal(value, request, "host closure receives the admitted native request without rewriting it")
       preparations++
       await preparation.promise
       if (held.unavailable || signal.aborted) return { status: "unavailable" }
@@ -46,8 +43,7 @@ async function fixture(fast = false, held: { preparation?: boolean; acknowledgem
     progress({ attempt: 0, phase: "streaming", preview: safe })
     return assessment.promise
   }, () => {}, { nativeApproval: approval, candidate: () => true, nativeFront: () => front,
-    // Native approval never inherits the historical hidden-route exception.
-    allowHiddenRoute: true,
+    approvalReady: () => ready,
     modes: { root: async () => "root", load: async () => {}, enabled: () => enabled },
     clock: { now: () => 0, after: () => () => {} },
     reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, fastMode: fast, stream: true, autoApproveDelaySeconds: 15 },
@@ -55,13 +51,13 @@ async function fixture(fast = false, held: { preparation?: boolean; acknowledgem
   })
   controller.asked(request); await settle()
   return { controller, facts, lifecycle, preparation, acknowledgement, assessment,
-    start() { controller.presented(proof); return fast ? Promise.resolve() : controller.approveNow(request.id, true) },
+    start() { ready = true; controller.refreshApprovalEligibility(); return fast ? Promise.resolve() : controller.approveNow(request.id, true) },
     reply(decision = "once", sessionID = request.sessionID, requestID = request.id) {
       if (sessionID === request.sessionID && requestID === request.id) pending = []
       controller.permissionReplied({ sessionID, requestID, decision })
     },
     view: () => controller.views[0], writes: () => writes, preparations: () => preparations, signal: () => reviewSignal,
-    proof(value: ApprovalPresentation) { proof = value; controller.presented(value) },
+    ready(value: boolean) { ready = value; controller.refreshApprovalEligibility() },
     front(value: string | undefined) { front = value },
     disable() { enabled = false; controller.modeChanged("root") },
     insideReply(value: () => void) { insideReply = value },
@@ -104,7 +100,7 @@ for (const fast of [false, true]) {
       assert.equal(f.signal().aborted, false)
       assert.equal(f.view()?.retained, true)
       assert.equal(f.view()?.resolved, true)
-      f.disable(); f.proof({ state: "lost" })
+      f.disable(); f.ready(false)
       assert.equal(f.signal().aborted, false)
       f.assessment.resolve(safe); await settle()
       assert.equal(f.view()?.status, "complete", "completion before ack is retained too")
@@ -120,14 +116,14 @@ for (const fast of [false, true]) {
     assert.equal(f.writes(), 0)
     assert.equal(f.view()?.retained, undefined)
     assert.deepEqual(f.facts.map(fact => [fact.type, fact.result]), [["settled", "not-sent"]])
-    f.controller.presented(request.id); await f.controller.approveNow(request.id, true); await settle()
+    f.controller.refreshApprovalEligibility(); await f.controller.approveNow(request.id, true); await settle()
     assert.equal(f.preparations(), 1, "unavailable waits for reconciliation, not a repeated frame/write loop")
     // An external once event does not supply attribution for an unavailable write.
     f.reply(); await settle()
     assert.equal(f.facts.filter(fact => fact.type === "confirmed").length, 0)
   })
 
-  for (const guard of ["presentation", "priority", "identity", "cancel", "mode"] as const) {
+  for (const guard of ["eligibility", "priority", "identity", "cancel", "mode"] as const) {
     test(`${mode}: ${guard} loss during native preparation blocks actual invocation`, async t => {
       const f = await fixture(fast, { preparation: true }); t.after(() => f.dispose())
       const attempt = f.start(); await settle()
@@ -135,7 +131,7 @@ for (const fast of [false, true]) {
       assert.equal(f.view()?.autoApproval?.status, "checking", "unsent native preparation must retain the Cancel controls")
       assert.equal(f.view()?.retained, undefined, "async preparation is not fast retention")
       assert.equal(f.facts.length, 0)
-      if (guard === "presentation") f.proof({ state: "route-hidden", root: "root", id: request.id })
+      if (guard === "eligibility") f.ready(false)
       if (guard === "priority") f.front("external-blocker")
       if (guard === "identity") f.controller.reconcile([{ ...request, source: { assistantID: "changed", id: "call" } }], f.controller.revision)
       if (guard === "cancel") f.controller.cancelAutoApproval(request.id)
@@ -155,7 +151,7 @@ for (const fast of [false, true]) {
     assert.equal(f.view()?.autoApproval?.status, "failed")
     assert.equal(f.view()?.retained, undefined)
     assert.deepEqual(f.facts.map(fact => [fact.type, fact.result]), [["dispatched", undefined], ["settled", "uncertain"]])
-    f.controller.reconcile([request], f.controller.revision); f.controller.presented(request.id)
+    f.controller.reconcile([request], f.controller.revision); f.controller.refreshApprovalEligibility()
     await f.controller.approveNow(request.id, true); await settle()
     assert.equal(f.writes(), 1)
     f.reply(); await settle()
@@ -243,10 +239,10 @@ test("native Allowing publication happens after actual invocation, never during 
   const publications: { status: string | undefined; calls: number }[] = []
   const controller = new Controller<HostRequest>(async () => safe, views => {
     publications.push({ status: views[0]?.autoApproval?.status, calls })
-  }, { candidate: () => true, allowHiddenRoute: false,
+  }, { candidate: () => true, approvalReady: () => true, nativeFront: () => request.id,
     reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, autoApproveDelaySeconds: 15 },
     clock: { now: () => 0, after: () => () => {} }, nativeApproval: {
-      visibleID: () => request.id, list: async () => [request],
+      list: async () => [request],
       async once(_request, signal, dispatch) {
         await preparation.promise
         if (signal.aborted || !dispatch()) return { status: "unavailable" }
@@ -256,7 +252,7 @@ test("native Allowing publication happens after actual invocation, never during 
     },
   })
   t.after(async () => { preparation.resolve(); acknowledgement.resolve({ status: "uncertain" }); await controller.dispose() })
-  controller.asked(request); await settle(); controller.presented(request.id)
+  controller.asked(request); await settle(); controller.refreshApprovalEligibility()
   const attempt = controller.approveNow(request.id, true); await settle()
   assert.equal(controller.views[0]?.autoApproval?.status, "checking")
   assert.equal(publications.some(value => value.status === "allowing"), false)

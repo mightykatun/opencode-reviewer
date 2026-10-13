@@ -1,18 +1,15 @@
-import type { PermissionRequest } from "@opencode-ai/sdk/v2"
+import type { HostRequest } from "./host-types.js"
 import type { ReviewProgress, ReviewResult, ReviewTiming } from "./types.js"
-import type { Config } from "./config.js"
-import type { ApprovalTransport as LegacyApprovalTransport } from "./approval.js"
+import type { Config, ReviewOptions } from "./config.js"
 import { isDeepStrictEqual } from "node:util"
 import { randomUUID } from "node:crypto"
-import { withDeadline } from "./reviewer.js"
-import { candidateEnabled, type ReviewOptions } from "./classification.js"
+import { withDeadline } from "./deadline.js"
 import type { SessionModeGate } from "./session-mode.js"
 import { SCANNER_INTERVAL_MS } from "./appearance.js"
 import { reviewStage } from "./deadline.js"
 import { uiText } from "./ui-text.js"
 import type { HistoryTarget } from "./history-records.js"
-import type { PresentationCheck } from "./review-presentation.js"
-import { conversationRoot, type ApprovalPresentation, type ApprovalPresentationState } from "./route-approval.js"
+import { conversationRoot } from "./route-approval.js"
 import { ReviewAdmission, type ReviewEvaluation } from "./review-admission.js"
 import type { NativeApprovalTransport } from "./host-permissions.js"
 import { ApprovalTransaction } from "./approval-transaction.js"
@@ -21,7 +18,7 @@ export type AutoApproval = { status: "countdown"; seconds: number } | { status: 
 
 export interface RequestIdentity { readonly id: string; readonly sessionID: string }
 
-export interface View<R extends RequestIdentity = PermissionRequest> {
+export interface View<R extends RequestIdentity = HostRequest> {
   request: R
   status: "identifying" | "unidentified" | "analyzing" | "complete" | "unavailable" | "unrelated" | "suspended"
   assessment?: ReviewResult
@@ -34,9 +31,9 @@ export interface View<R extends RequestIdentity = PermissionRequest> {
   resolved?: boolean
 }
 
-export type Evaluate<R extends RequestIdentity = PermissionRequest> = (request: R, signal: AbortSignal, onIdentified: () => void, onProgress: (progress: ReviewProgress) => void,
+export type Evaluate<R extends RequestIdentity = HostRequest> = (request: R, signal: AbortSignal, onIdentified: () => void, onProgress: (progress: ReviewProgress) => void,
   execution?: { review: string; root?: string }) => ReviewEvaluation<ReviewResult | null>
-interface Entry<R extends RequestIdentity = PermissionRequest> {
+interface Entry<R extends RequestIdentity = HostRequest> {
   view: View<R>; abort: AbortController; root?: string; gateRevision: number
   suspension?: "mode" | "unavailable"
   cancelTimer?: () => void; deadline?: number; approvalAbort?: AbortController
@@ -49,7 +46,7 @@ interface Entry<R extends RequestIdentity = PermissionRequest> {
   approvalArmed?: boolean
   /** The revoked reservation still owns its physical verification read. */
   approvalPaused?: boolean
-  approvalPaintPending?: boolean
+  eligibilityPending?: boolean
   fastApproval?: "pending" | "confirmed"
 }
 
@@ -64,60 +61,37 @@ const clock: ApprovalClock = {
 const permissionResolved = Object.freeze({ reason: "permission resolved" })
 const requestChanged = Object.freeze({ reason: "pending request changed" })
 type Options = ReviewOptions & Partial<Pick<Config, "autoApprove" | "fastMode" | "autoApproveDelaySeconds" | "stream">>
-/** Legacy confirmation contract: the void writer's successful return confirms. */
-export interface ApprovalTransport<R extends RequestIdentity = PermissionRequest> {
-  list: (signal: AbortSignal) => Promise<R[]>
-  once: (request: R, signal: AbortSignal) => Promise<void>
-}
-export interface Approval<R extends RequestIdentity = PermissionRequest> extends ApprovalTransport<R> {
-  /** Recompute actual presentation/order, rather than trusting a stale UI effect. */
-  visibleID(): string | undefined
-  /** Distinguish revoked paint from established physical/native-priority loss. */
-  presentation?(check?: PresentationCheck): ApprovalPresentation
-}
-
 /** Host closures own admitted snapshots/location/epoch. The controller sees only
- * reviewer requests, never snapshot envelopes or synthetic legacy requests. */
-export interface NativeApproval<R extends RequestIdentity> extends NativeApprovalTransport<R> {
+ * reviewer requests, never snapshot envelopes or projected requests. */
+export interface NativeApproval<R extends RequestIdentity = HostRequest> extends NativeApprovalTransport<R> {
   list(signal: AbortSignal): Promise<R[]>
-  visibleID(): string | undefined
-  presentation?(check?: PresentationCheck): ApprovalPresentation
 }
 export interface NativePermissionReply { sessionID: string; requestID: string; decision: string }
 
-export type ApprovalFact<R extends RequestIdentity = PermissionRequest> = { type: "dispatched" | "confirmed" | "settled"; request: R; automatic: boolean;
+export type ApprovalFact<R extends RequestIdentity = HostRequest> = { type: "dispatched" | "confirmed" | "settled"; request: R; automatic: boolean;
   approval?: string; review?: string; result?: "not-sent" | "uncertain" }
-export type ApprovalObserver<R extends RequestIdentity = PermissionRequest> = (fact: ApprovalFact<R>) => unknown
-export type ReviewLifecycleFact<R extends RequestIdentity = PermissionRequest> =
+export type ApprovalObserver<R extends RequestIdentity = HostRequest> = (fact: ApprovalFact<R>) => unknown
+export type ReviewLifecycleFact<R extends RequestIdentity = HostRequest> =
   | { type: "accepted"; request: R; result: ReviewResult; timing: ReviewTiming; root?: string; review: string; completedAt: number }
-  | { type: "cancelled"; request: R; reason: "explicit" | "visibility" | "mode" }
+  | { type: "cancelled"; request: R; reason: "explicit" | "mode" }
   | { type: "removed"; request: R; reason: "resolved" | "reconciled" | "deleted" | "disposed" }
-export type ReviewLifecycleObserver<R extends RequestIdentity = PermissionRequest> = (fact: ReviewLifecycleFact<R>) => unknown
+export type ReviewLifecycleObserver<R extends RequestIdentity = HostRequest> = (fact: ReviewLifecycleFact<R>) => unknown
 
-export type NativeFront<R extends RequestIdentity = PermissionRequest> = (root: string, pending: readonly R[]) => string | undefined
+export type NativeFront<R extends RequestIdentity = HostRequest> = (root: string, pending: readonly R[]) => string | undefined
 
-/** Only the legacy candidate policy reads SDK fields. Native requests without
- * this discriminator stay unrelated unless their host supplies a predicate. */
-function legacyCandidate(request: RequestIdentity, options: ReviewOptions): boolean {
-  const legacy = (value: RequestIdentity): value is PermissionRequest => "permission" in value && typeof value.permission === "string"
-  return legacy(request) && candidateEnabled(request, options)
-}
-
-export interface ControllerOptions<R extends RequestIdentity = PermissionRequest> {
+export interface ControllerOptions<R extends RequestIdentity = HostRequest> {
   reviewOptions?: Options
-  approval?: Approval<R>
-  /** Distinct from the legacy void writer; do not supply both interfaces. */
   nativeApproval?: NativeApproval<R>
   clock?: ApprovalClock
   modes?: SessionModeGate
-  /** Public host metadata distinguishes native root/direct-child priority from deeper descendants. */
+  /** Public host metadata resolves conversation ancestry, never queue order. */
   session?: (id: string) => { id: string; parentID?: string } | undefined
+  /** Classification is host-owned. Missing predicates admit no review work. */
   candidate?: (request: R, options: ReviewOptions) => boolean
   /** Actual public native queue ownership, independent of review eligibility.
-   * A callback may read an external queue including requests absent from entries. */
+   * A callback may read an external queue including requests absent from entries.
+   * Missing, throwing or unavailable observations never grant approval. */
   nativeFront?: NativeFront<R>
-  /** Historical V1 F34 route exception. Native V2 callers must set false. */
-  allowHiddenRoute?: boolean
   /** V2 automation policy, separate from physical panel presentation. False is a
    * recoverable wait, never cancellation. Rechecked at the native write boundary. */
   approvalReady?: (request: R, root: string | undefined) => boolean
@@ -127,11 +101,10 @@ export interface ControllerOptions<R extends RequestIdentity = PermissionRequest
 }
 
 /** Reviews remain advisory unless explicitly configured with a once-only writer. */
-class ControllerCore<R extends RequestIdentity = PermissionRequest> {
+export class Controller<R extends RequestIdentity = HostRequest> {
   private entries = new Map<string, Entry<R>>()
   private stopped = false
   private version = 0
-  private selectedID: string | undefined
   private modeChanges = new Map<string, number>()
   private manual = new Map<string, "cancelled" | "failed">()
   private workers = new Set<Promise<unknown>>()
@@ -142,39 +115,34 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
   private reconciliation = 0
   private reconciliationPublished = false
   private options: Options
-  private approval?: Approval<R>
   private nativeApproval?: NativeApproval<R>
   private time: ApprovalClock
   private modes?: SessionModeGate
   private session?: ControllerOptions<R>["session"]
   private candidate: NonNullable<ControllerOptions<R>["candidate"]>
   private priority?: NativeFront<R>
-  private allowHiddenRoute: boolean
   private approvalReady?: ControllerOptions<R>["approvalReady"]
   private approvalObserver?: ApprovalObserver<R>
   private ratingObserver?: ControllerOptions<R>["onRating"]
   private lifecycleObserver?: ReviewLifecycleObserver<R>
   constructor(private evaluate: Evaluate<R>, private changed: (views: View<R>[]) => void,
-    { reviewOptions = { reviewBash: true, reviewEdits: true }, approval, nativeApproval, clock: time = clock, modes,
-      onApproval, onRating, onLifecycle, session, candidate = legacyCandidate, nativeFront, allowHiddenRoute = true, approvalReady }: ControllerOptions<R> = {}) {
-    if (approval && nativeApproval) throw Error("Conflicting approval transports")
+    { reviewOptions = { reviewBash: true, reviewEdits: true }, nativeApproval, clock: time = clock, modes,
+      onApproval, onRating, onLifecycle, session, candidate = () => false, nativeFront, approvalReady }: ControllerOptions<R> = {}) {
     this.options = reviewOptions
-    this.approval = approval
     this.nativeApproval = nativeApproval
     this.time = time
     this.modes = modes
     this.session = session
     this.candidate = candidate
     this.priority = nativeFront
-    this.allowHiddenRoute = !nativeApproval && allowHiddenRoute
     this.approvalReady = approvalReady
     this.approvalObserver = onApproval
     this.ratingObserver = onRating
     this.lifecycleObserver = onLifecycle
   }
   get revision() { return this.version }
-  /** Notifications consume only the final pending snapshot. UI publications keep
-   * their synchronous W1 visibility/cancellation behavior during reconciliation. */
+  /** Notifications consume only the final pending snapshot. Controller facts
+   * continue publishing synchronously during reconciliation. */
   get reconciling() { return this.reconciliation > 0 }
   get views() { return [...this.entries.values()].map((entry) => entry.view) }
   get pendingViews() { return this.views.filter(view => !view.resolved) }
@@ -196,15 +164,8 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
   }
 
   private nativeFront(root: string) {
-    if (this.priority) return this.priority(root, this.pendingViews.map(view => view.request))
-    let first: R | undefined
-    for (const entry of this.entries.values()) {
-      const request = entry.view.request
-      if (entry.view.resolved || (request.sessionID !== root && (this.session
-        ? this.session(request.sessionID)?.parentID !== root : entry.root !== root))) continue
-      if (!first || request.sessionID < first.sessionID || (request.sessionID === first.sessionID && request.id < first.id)) first = request
-    }
-    return first?.id
+    try { return this.priority?.(root, this.pendingViews.map(view => view.request)) }
+    catch { return undefined }
   }
 
   /** Local state is already switched; invalidate snapshots before any publication. */
@@ -239,25 +200,6 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     }
   }
 
-  /** Physical presentation and intentional same-root suppression are distinct proofs. */
-  presented(value?: string | ApprovalPresentation) {
-    if (this.stopped) return
-    if (this.approvalReady) { this.refreshApprovalEligibility(); return }
-    const proof = typeof value === "string" ? { state: "visible" as const, id: value } : value ?? { state: "lost" as const }
-    const id = proof.state === "lost" ? undefined : proof.id
-    if (id !== this.selectedID) {
-      const old = this.selectedID
-      this.selectedID = id
-      if (old) this.cancelAutoApproval(old, "visibility")
-    }
-    const entry = id ? this.entries.get(id) : undefined
-    if (entry?.approvalArmed && this.approvalState(entry) === "lost") this.cancelAutoApproval(entry.view.request.id, "visibility")
-    if (entry && (proof.state === "visible" || proof.state === "route-hidden")) {
-      this.startApproval(entry)
-      if (entry.view.autoApproval?.status === "countdown" && !entry.cancelTimer && !entry.approvalAbort) this.schedule(entry)
-    }
-  }
-
   /** Public UI/cache observations wake waiting V2 automation without granting or
    * remembering paint. The policy getter still runs synchronously before writes. */
   refreshApprovalEligibility() {
@@ -287,8 +229,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     }
   }
 
-  /** Rating/settlement callbacks are not painted-frame observations. They may
-   * start eligible work, but cannot prove a hide from an unpainted publication. */
+  /** Rating and settlement may start work only under fresh native policy. */
   private startApproval(entry: Entry<R>) {
     if (entry.view.autoApproval || entry.approvalAbort || entry.approvalRefresh || !this.eligible(entry)) return
     entry.approvalArmed = true
@@ -301,7 +242,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     const seconds = this.options.autoApproveDelaySeconds ?? 15
     // A short initial grace makes the starting value observable without adding
     // a full second. Zero remains an immediate attempt.
-    if (!this.approvalReady || entry.deadline === undefined)
+    if (entry.deadline === undefined)
       entry.deadline = this.time.now() + seconds * 1000 + (seconds > 0 ? 200 : 0)
     entry.view = { ...entry.view, autoApproval: { status: "countdown",
       seconds: Math.min(seconds, Math.max(0, Math.ceil((entry.deadline - this.time.now()) / 1000))) } }
@@ -310,10 +251,10 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     this.schedule(entry)
   }
 
-  cancelAutoApproval(id: string, reason: "explicit" | "visibility" = "explicit") {
+  cancelAutoApproval(id: string) {
     const entry = this.entries.get(id)
     if (!entry || !entry.approvalArmed || entry.approvalDispatched || this.manual.has(id)) return
-    this.lifecycleFact({ type: "cancelled", request: entry.view.request, reason })
+    this.lifecycleFact({ type: "cancelled", request: entry.view.request, reason: "explicit" })
     entry.cancelTimer?.()
     entry.cancelTimer = undefined
     entry.approvalAbort?.abort()
@@ -390,39 +331,25 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
       : this.options.fastMode === true && entry.view.status === "analyzing" && entry.view.progress?.preview?.safe === true
   }
 
-  private approvalState(entry: Entry<R>, check: PresentationCheck = "eligibility"): ApprovalPresentationState | "ready" {
-    if ((!this.approval && !this.nativeApproval) || !this.active(entry) || entry.view.resolved || entry.fastApproval || this.options.autoApprove !== true
-      || (this.modes && (entry.root === undefined || !this.modes.enabled(entry.root)))) return this.approvalReady ? "pending" : "lost"
-    if (!this.approvalReady && this.selectedID !== entry.view.request.id) return "lost"
-    if (this.priority) {
+  private approvalState(entry: Entry<R>): "pending" | "ready" {
+    if (!this.nativeApproval || !this.priority || !this.approvalReady || !this.active(entry) || entry.view.resolved
+      || entry.fastApproval || this.options.autoApprove !== true
+      || (this.modes && (entry.root === undefined || !this.modes.enabled(entry.root)))) return "pending"
+    try {
       const root = entry.root ?? (this.session ? conversationRoot(entry.view.request.sessionID, this.session) : entry.view.request.sessionID)
-      try {
-        if (!root || this.nativeFront(root) !== entry.view.request.id) return this.approvalReady ? "pending" : "lost"
-      } catch (error) {
-        if (!this.approvalReady) throw error
-        return "pending"
-      }
-    }
-    if (this.approvalReady) {
-      try { return this.approvalReady(entry.view.request, entry.root) ? "ready" : "pending" }
-      catch { return "pending" }
-    }
-    const approval = this.nativeApproval ?? this.approval
-    const proof = approval?.presentation?.(check)
-    if (proof?.state === "route-hidden") return this.allowHiddenRoute && entry.root === proof.root && proof.id === entry.view.request.id
-      && this.nativeFront(proof.root) === proof.id ? "route-hidden" : "lost"
-    if (proof) return proof.state !== "lost" && proof.id === entry.view.request.id ? proof.state : "lost"
-    return approval?.visibleID() === entry.view.request.id ? "visible" : "lost"
+      if (!root || this.nativeFront(root) !== entry.view.request.id) return "pending"
+      return this.approvalReady(entry.view.request, root) ? "ready" : "pending"
+    } catch { return "pending" }
   }
 
   private eligible(entry: Entry<R>) {
     if (this.manual.has(entry.view.request.id) || entry.approvalPaused || !this.safe(entry)) return false
     const state = this.approvalState(entry)
-    return state === "visible" || state === "route-hidden" || state === "ready"
+    return state === "ready"
   }
 
   /** Rating rejection revokes the reservation, even if Safe returns before its GET.
-   * Keep the armed lifetime so real presentation loss/Cancel remains durable. */
+   * Keep the armed lifetime so explicit Cancel remains durable. */
   private pauseRating(entry: Entry<R>) {
     if (!entry.approvalArmed || entry.approvalDispatched || this.manual.has(entry.view.request.id)) return
     if (entry.view.status !== "analyzing") {
@@ -435,19 +362,16 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
       entry.view = { ...entry.view, autoApproval: undefined }
       return
     }
-    // Clearing a preview can remove footer/report hit owners before the next
-    // paint. Repeated parser clears and retry starts must only revoke the rating,
-    // not reinterpret that self-induced layout change as a physical hide.
+    // Repeated parser clears and retry starts revoke only the current rating.
     if (entry.approvalPaused || !entry.view.autoApproval) return
     entry.approvalPaused = !!entry.approvalAbort
     entry.approvalAbort?.abort()
     entry.view = { ...entry.view, autoApproval: entry.approvalRefresh ? { status: "checking" } : undefined }
   }
 
-  private approvalEligible(entry: Entry<R>, check: "timer" | "verification" = "verification") {
-    const state = this.approvalState(entry, check)
-    if (state === "lost") this.cancelAutoApproval(entry.view.request.id, "visibility")
-    else if (state === "pending") entry.approvalPaintPending = true
+  private approvalEligible(entry: Entry<R>) {
+    const state = this.approvalState(entry)
+    if (state === "pending") entry.eligibilityPending = true
     else if (!this.safe(entry)) this.pauseRating(entry)
     return this.eligible(entry)
   }
@@ -474,7 +398,6 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
       try {
         // A later rating clear may already have revoked this recovery, too.
         abort.signal.throwIfAborted()
-        if (this.approvalState(entry) === "lost") { this.cancelAutoApproval(entry.view.request.id, "visibility"); return }
         const pending = await withDeadline(AbortSignal.any([entry.abort.signal, abort.signal]), 5000,
           signal => this.approvalList(signal))
         if (!this.active(entry) || this.manual.has(entry.view.request.id)) return
@@ -500,7 +423,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     entry.cancelTimer = this.time.after(next, () => {
       entry.cancelTimer = undefined
       if (!this.active(entry) || entry.view.autoApproval?.status !== "countdown") return
-      const visible = this.approvalEligible(entry, "timer")
+      const eligible = this.approvalEligible(entry)
       if (this.manual.has(entry.view.request.id)) return
       const seconds = Math.min(this.options.autoApproveDelaySeconds ?? 15,
         Math.max(0, Math.ceil((entry.deadline! - this.time.now()) / 1000)))
@@ -509,9 +432,9 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
         this.publish()
       }
       if (seconds === 0) {
-        // No polling loop or grace restart while waiting for renewed paint.
-        if (visible) void this.approveNow(entry.view.request.id, true)
-        else if (this.approvalReady) {
+        // No polling loop or grace restart while waiting for native eligibility.
+        if (eligible) void this.approveNow(entry.view.request.id, true)
+        else {
           entry.view = { ...entry.view, autoApproval: { status: "waiting" } }
           this.publish()
         }
@@ -528,7 +451,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
       reviewStage(signal, "Approval verification")
     }
     reviewStage(signal, "Approval verification")
-    const read = (this.nativeApproval ?? this.approval)!.list(signal)
+    const read = this.nativeApproval!.list(signal)
     this.approvalRead = read
     try { return await read }
     finally { if (this.approvalRead === read) this.approvalRead = undefined }
@@ -536,13 +459,13 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
 
   async approveNow(id: string, automatic = false) {
     const entry = this.entries.get(id)
-    if (!entry || (!this.approval && !this.nativeApproval) || entry.approvalRefresh || !(entry.view.autoApproval?.status === "countdown"
+    if (!entry || !this.nativeApproval || entry.approvalRefresh || !(entry.view.autoApproval?.status === "countdown"
       || (this.options.fastMode && automatic && entry.view.autoApproval?.status === "checking" && !entry.approvalAbort))) return
     if (!this.approvalEligible(entry)) return
     entry.cancelTimer?.()
     entry.cancelTimer = undefined
     const abort = entry.approvalAbort = new AbortController()
-    entry.approvalPaintPending = false
+    entry.eligibilityPending = false
     entry.view = { ...entry.view, autoApproval: { status: "checking" } }
     this.publish()
     const transaction = new ApprovalTransaction(entry.view.request, entry.root, entry.review, automatic, permissionResolved,
@@ -567,13 +490,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
           this.reconcile(pending, revision)
           const verifiedRevision = this.version
           if (!this.approvalEligible(entry)) return
-          // Legacy writers have no separate preparation boundary. Native writers
-          // keep Checking and Cancel until their synchronous dispatch callback.
-          if (!this.nativeApproval) {
-            entry.view = { ...entry.view, autoApproval: { status: "allowing" } }
-            this.publish()
-          }
-          const write = transaction.submit(signal, this.nativeApproval ? { native: this.nativeApproval } : { legacy: this.approval! }, {
+          const write = transaction.submit(signal, this.nativeApproval!, {
             guard: () => {
               if (!this.approvalEligible(entry) || verifiedRevision !== this.version) return false
               if (!isDeepStrictEqual(verified, entry.view.request)) throw requestChanged
@@ -588,7 +505,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
               }
             },
             dispatched: () => {
-              if (this.nativeApproval && this.active(entry) && entry.view.autoApproval?.status === "checking") {
+              if (this.active(entry) && entry.view.autoApproval?.status === "checking") {
                 entry.view = { ...entry.view, autoApproval: { status: "allowing" } }
                 this.publish()
               }
@@ -607,8 +524,8 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
           void write.then(() => this.approvalWorkers.delete(write), () => this.approvalWorkers.delete(write))
           await write
           signal.throwIfAborted()
-          if (transaction.dispatched) { if (!this.nativeApproval) this.replied(id); return }
-          if (this.nativeApproval && transaction.state === "not-sent" && this.active(entry) && !this.manual.has(id)) {
+          if (transaction.dispatched) return
+          if (transaction.state === "not-sent" && this.active(entry) && !this.manual.has(id)) {
             entry.approvalRefresh = true
             entry.view = { ...entry.view, autoApproval: { status: "checking" } }
             this.publish()
@@ -666,9 +583,9 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
         else if (!entry.approvalRefresh && entry.approvalAbort === abort) entry.approvalAbort = undefined
         // Exhausted churn has already settled its reads, but still needs a poll.
         else if (entry.approvalRefresh && entry.approvalAbort === abort && !this.approvalRead) entry.approvalAbort = undefined
-        if (entry.approvalPaintPending && !entry.approvalAbort && !entry.approvalRefresh && this.active(entry)
+        if (entry.eligibilityPending && !entry.approvalAbort && !entry.approvalRefresh && this.active(entry)
           && !this.manual.has(id) && this.safe(entry)) {
-          entry.approvalPaintPending = false
+          entry.eligibilityPending = false
           entry.view = { ...entry.view, autoApproval: this.options.fastMode ? undefined : { status: "countdown",
             seconds: Math.min(this.options.autoApproveDelaySeconds ?? 15, Math.max(0, Math.ceil((entry.deadline! - this.time.now()) / 1000))) } }
           this.publish()
@@ -750,7 +667,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
         }
         this.publish()
         this.finishFast(entry)
-        if (this.approvalReady) this.startApproval(entry)
+        this.startApproval(entry)
       }
     }, (error: unknown) => {
       this.clearProgress(entry)
@@ -780,7 +697,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     if (entry) this.lifecycleFact({ type: "removed", request: entry.view.request, reason: resolved ? reason : "deleted" })
     if (entry) this.clearProgress(entry)
     this.entries.get(id)?.abort.abort(resolved ? permissionResolved : undefined)
-    if (!this.nativeApproval || !resolved || reason !== "reconciled") this.manual.delete(id)
+    if (!resolved || reason !== "reconciled") this.manual.delete(id)
     if (this.entries.delete(id)) this.publish()
   }
 
@@ -878,26 +795,8 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
   }
 }
 
-export type Controller<R extends RequestIdentity = PermissionRequest> = ControllerCore<R>
-interface LegacyApproval extends LegacyApprovalTransport {
-  visibleID(): string | undefined
-  presentation?(check?: PresentationCheck): ApprovalPresentation
-}
-type LegacyControllerOptions = Omit<ControllerOptions, "approval"> & { approval?: LegacyApproval }
-type ConstructorOptions<R extends RequestIdentity> = R extends PermissionRequest
-  ? PermissionRequest extends R ? LegacyControllerOptions : ControllerOptions<R> : ControllerOptions<R>
-/** Keep historical constructor-type extraction V1-shaped as well as ordinary
- * default construction, while explicit native instantiation stays fully typed. */
-export const Controller: {
-  new <R extends RequestIdentity = PermissionRequest>(evaluate: Evaluate<NoInfer<R>>, changed: (views: View<NoInfer<R>>[]) => void,
-    options?: ConstructorOptions<NoInfer<R>>): Controller<R>
-  new (evaluate: Evaluate, changed: (views: View[]) => void, options?: LegacyControllerOptions): Controller
-} = ControllerCore
-
-/** Select the conversation queue independently of its physical presentation.
- * Host priority can cover the full family; without it, preserve V1's native
- * root/direct-child order on any known descendant route. */
-export function visibleReview<R extends RequestIdentity = PermissionRequest>(
+/** Select the conversation queue using actual native family ownership. */
+export function visibleReview<R extends RequestIdentity = HostRequest>(
   views: readonly View<R>[],
   sessionID: string | undefined,
   getSession: (id: string) => { id: string; parentID?: string } | undefined,
@@ -905,25 +804,14 @@ export function visibleReview<R extends RequestIdentity = PermissionRequest>(
 ): View<R> | undefined {
   sessionID = conversationRoot(sessionID, getSession)
   if (!sessionID) return
-  let first: View<R> | undefined
-  let retained: View<R> | undefined
   if (priority) {
     const pending = views.filter(view => !view.resolved)
-    const id = priority(sessionID, pending.map(view => view.request))
-    retained = views.find(view => view.retained && conversationRoot(view.request.sessionID, getSession) === sessionID)
-    first = pending.find(view => view.request.id === id)
+    let id: string | undefined
+    try { id = priority(sessionID, pending.map(view => view.request)) } catch { return }
+    const retained = views.find(view => view.retained && conversationRoot(view.request.sessionID, getSession) === sessionID)
+    const first = pending.find(view => view.request.id === id)
     return retained ?? (first && first.status !== "unrelated" && first.status !== "identifying" && first.status !== "unidentified" && first.status !== "suspended" ? first : undefined)
   }
-  for (const view of views) {
-    const request = view.request
-    if (request.sessionID !== sessionID && getSession(request.sessionID)?.parentID !== sessionID) continue
-    if (view.retained) { retained ??= view; continue }
-    if (view.resolved) continue
-    // Match native code-unit ordering; hidden requests still participate in selection.
-    if (!first || request.sessionID < first.request.sessionID ||
-      (request.sessionID === first.request.sessionID && request.id < first.request.id)) first = view
-  }
-  return retained ?? (first && first.status !== "unrelated" && first.status !== "identifying" && first.status !== "unidentified" && first.status !== "suspended" ? first : undefined)
 }
 
 export function displayText(text: string): string {

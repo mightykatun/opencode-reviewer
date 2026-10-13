@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { test, type TestContext } from "node:test"
 import { DatabaseSync } from "node:sqlite"
 import { setImmediate as settle } from "node:timers/promises"
-import type { Message, PermissionRequest } from "@opencode-ai/sdk/v2"
+import type { HostRequest } from "../src/host-types.js"
 import { HistoryCoordinator, drainHistory } from "../src/history-coordinator.js"
 import { HistorySQL, type HistorySelection, type HistoryTotals } from "../src/history-schema.js"
 import { encodeEvent, reviewID, type HistoryEvent, type HistoryQuery } from "../src/history-records.js"
@@ -11,15 +11,15 @@ import { Controller, type ReviewLifecycleFact } from "../src/controller.js"
 import type { ReviewResult } from "../src/types.js"
 import { parseConfig } from "../src/config.js"
 
-const request: PermissionRequest = { id: "permission", sessionID: "child", permission: "bash", patterns: ["secret command"], always: [],
-  metadata: { private: "never stored" }, tool: { messageID: "message", callID: "call" } }
+const request: HostRequest = { id: "permission", sessionID: "child", action: "shell", resources: ["secret command"],
+  source: { assistantID: "message", id: "call" } }
 const config = parseConfig({ model: "configured", baseURL: "https://openrouter.ai/api/v1", notify: false })
 const result = (review = "review", safe = true): ReviewResult => ({ safe, desc: `private report ${review}`,
   metadata: { review, kind: "shell", configuredModel: config.model, provider: config.baseURL, reportedModel: "reported" }, usage: { cost: 0 } })
 const accepted = (value = result(), req = request, completedAt = 100): ReviewLifecycleFact => ({ type: "accepted", request: req,
   result: value, root: "root", review: value.metadata!.review, completedAt, timing: { fullReportMs: 10, ratingMs: 5 } })
 const removed = (req = request): ReviewLifecycleFact => ({ type: "removed", request: req, reason: "reconciled" })
-const aborted = (sessionID = "child", id = "message") => ({ role: "assistant", sessionID, id, error: { name: "MessageAbortedError", data: { message: "aborted" } } }) as Message
+const aborted = (sessionID = "child", assistantID = "message") => ({ sessionID, assistantID })
 
 function fixture(t: TestContext) {
   const db = new DatabaseSync(":memory:"), sql = new HistorySQL(db)
@@ -69,7 +69,7 @@ test("newer completed candidate replaces previous report independently of accept
   assert.equal(f.totals().safe, 1); assert.equal(f.totals().unsafe, 1)
 })
 
-for (const reason of ["explicit", "visibility", "mode"] as const) test(`actual ${reason} cancellation requires removal and admits one report`, async t => {
+for (const reason of ["explicit", "mode"] as const) test(`actual ${reason} cancellation requires removal and admits one report`, async t => {
   const f = fixture(t)
   f.h.lifecycle(accepted()); f.h.lifecycle({ type: "cancelled", request, reason })
   assert.equal(f.history().total, 0)
@@ -117,7 +117,7 @@ test("uncertain dispatched writes suppress both auto-cancel and confirmed stop a
   f.h.lifecycle(accepted())
   const fact = { request, automatic: true, approval: "approval", review: "review" }
   f.h.approval({ ...fact, type: "dispatched" }); f.h.approval({ ...fact, type: "settled", result: "uncertain" })
-  f.h.lifecycle({ type: "cancelled", request, reason: "mode" }); f.h.message(aborted()); f.h.lifecycle(removed())
+  f.h.lifecycle({ type: "cancelled", request, reason: "mode" }); f.h.interrupted(aborted()); f.h.lifecycle(removed())
   await settle()
   assert.equal(f.history().total, 0); assert.equal(f.totals().activity.autoApproved, 0)
 })
@@ -135,10 +135,10 @@ test("not-sent settlement removes uncertainty without fabricating an approval", 
 for (const after of [true, false]) test(`linked stop ${after ? "after" : "before"} removal qualifies without automation cancellation`, async t => {
   const f = fixture(t)
   f.h.lifecycle(accepted())
-  f.h.message(aborted("root")); f.h.message(aborted("child", "other-message"))
+  f.h.interrupted(aborted("root")); f.h.interrupted(aborted("child", "other-message"))
   if (after) f.h.lifecycle(removed())
   assert.equal(f.history().total, 0)
-  f.h.message(aborted())
+  f.h.interrupted(aborted())
   if (!after) f.h.lifecycle(removed())
   await settle()
   assert.equal(f.history().record?.outcome, "cancelled")
@@ -165,7 +165,7 @@ test("observed remote uncertainty suppresses cancellation bodies until shared co
   f.h.lifecycle(accepted()); second.lifecycle(accepted(result("newer", false), request, 200))
   const fact = { request, automatic: true, approval: "approval", review: "review" }
   f.h.approval({ ...fact, type: "dispatched" })
-  second.lifecycle({ type: "cancelled", request, reason: "visibility" }); second.lifecycle(removed())
+  second.lifecycle({ type: "cancelled", request, reason: "explicit" }); second.lifecycle(removed())
   await settle()
   assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 0)
   f.h.approval({ ...fact, type: "confirmed" }); f.h.approval({ ...fact, type: "settled" })
@@ -240,7 +240,8 @@ test("real controller preserves completed candidate through disabled mode and fa
     identified(); calls++
     if (calls > 1) throw new Error("replacement failed")
     return result(execution!.review)
-  }, () => {}, { modes, onApproval: f.h.approval, onLifecycle: f.h.lifecycle })
+  }, () => {}, { modes, candidate: () => true, nativeFront: () => request.id,
+    onApproval: f.h.approval, onLifecycle: f.h.lifecycle })
   t.after(() => controller.dispose())
   controller.asked(request); await settle()
   const original = controller.views[0]!.assessment!.desc

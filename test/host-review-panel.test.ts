@@ -1,5 +1,17 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
+import { EventEmitter } from "node:events"
+import { readFile } from "node:fs/promises"
+import { createRequire } from "node:module"
+import { transform } from "esbuild"
+import * as core from "@opentui/core"
+import * as solid from "solid-js"
+import { scannerFrame, SCANNER_FRAME_COUNT, SCANNER_INTERVAL_MS } from "../src/appearance.js"
+import { displayText } from "../src/controller.js"
+import { ReviewGeometryProof } from "../src/review-geometry.js"
+import { uiText } from "../src/ui-text.js"
+import { usageText } from "../src/usage.js"
+import type { HostReviewPanelProps } from "../src/host-review-panel.js"
 import { HostPanelPresentationProof, hostPanelOwnsHit, type HostPanelNode, type HostPanelProofInput } from "../src/host-review-panel.js"
 
 function node(num: number, y: number, height: number, children: HostPanelNode[] = []): HostPanelNode {
@@ -9,7 +21,7 @@ function input(): HostPanelProofInput {
   const heading = node(2, 5, 1), rating = node(3, 7, 1), footer = node(4, 29, 3, [node(5, 31, 1)])
   const report = node(6, 9, 19)
   const bounds = { x: 118, y: 4, width: 42, height: 30 }
-  return { id: "request", request: { id: "request", sessionID: "nested" }, selected: { id: "request", sessionID: "nested" },
+  return { id: "request", request: { id: "request", sessionID: "nested" },
     root: "root", route: { type: "session", sessionID: "root" }, mode: "base", mouse: true,
     width: 160, height: 40, fast: false, finalReady: true,
     anchor: { owner: Symbol(), sessionID: "root", node: { ...node(7, 4, 30), ...bounds } }, bounds,
@@ -21,7 +33,7 @@ test("V2 panel needs measured anchor bounds and a fresh real frame, not a timer 
   const value = input(), proof = new HostPanelPresentationProof()
   assert.deepEqual(proof.state(value), { state: "pending", id: "request" })
   assert.deepEqual(proof.state(value, true), { state: "visible", id: "request" })
-  assert.deepEqual(proof.state(value), { state: "visible", id: "request" }, "synchronous write-boundary recheck")
+  assert.deepEqual(proof.state(value), { state: "visible", id: "request" }, "fresh physical observation")
   value.panel!.y = 0
   assert.equal(proof.state(value).state, "pending", "full viewport top-zero overlay cannot inherit anchor proof")
   value.panel!.y = 4
@@ -29,13 +41,13 @@ test("V2 panel needs measured anchor bounds and a fresh real frame, not a timer 
   assert.equal(proof.state(value, true).state, "visible")
 })
 
-test("only normal mode can use independently proved history cover, still requiring root, final paint and native priority", () => {
-  const value = { ...input(), covered: true, hitTest: () => 999 }, proof = new HostPanelPresentationProof()
-  assert.equal(proof.state(value, true).state, "visible")
-  assert.equal(proof.state({ ...value, covered: false }, true).state, "lost")
+test("neither normal nor fast physical observations can accept history-owned hits", () => {
+  const value: HostPanelProofInput = { ...input(), hitTest: () => 999 }, proof = new HostPanelPresentationProof()
+  assert.equal(proof.state(value, true).state, "lost")
   assert.equal(proof.state({ ...value, fast: true }, true).state, "lost")
+  value.hitTest = input().hitTest
   assert.equal(proof.state({ ...value, finalReady: false }, true).state, "pending")
-  assert.equal(proof.state({ ...value, selected: undefined }, true).state, "lost")
+  assert.equal(proof.state({ ...value, request: { id: "other", sessionID: "nested" } }, true).state, "lost")
   assert.equal(proof.state({ ...value, route: { type: "session", sessionID: "child" } }, true).state, "lost")
   assert.equal(proof.state({ ...value, mode: "modal" }, true).state, "lost")
 })
@@ -66,11 +78,11 @@ test("modal input mode and disabled mouse block even apparently good hits", () =
   }
 })
 
-test("fresh native identity, priority and anchor ownership are independent of panel mounting", () => {
+test("fixture identity and anchor ownership are independent of panel mounting", () => {
   const mutations: ((value: HostPanelProofInput) => void)[] = [
-    value => { value.selected = undefined },
-    value => { value.selected = { id: "other", sessionID: "nested" } },
-    value => { value.selected = { id: "request", sessionID: "other" } },
+    value => { value.heading!.visible = false },
+    value => { value.heading!.isDestroyed = true },
+    value => { value.rating!.isDestroyed = true },
     value => { value.request = { id: "other", sessionID: "nested" } },
     value => { value.anchor = undefined },
     value => { value.anchor!.sessionID = "child" },
@@ -95,7 +107,7 @@ test("fresh native identity, priority and anchor ownership are independent of pa
   assert.equal(proof.state(value).state, "pending", "same rectangle is not the same physical anchor")
 })
 
-test("final Markdown readiness gates normal approval but not fast preview", () => {
+test("final Markdown readiness distinguishes completed report paint from fast preview paint", () => {
   const value = { ...input(), finalReady: false }, proof = new HostPanelPresentationProof()
   assert.equal(proof.state(value, true).state, "pending")
   value.finalReady = true
@@ -140,4 +152,79 @@ test("hit ownership traverses scroll wrappers but never hidden or destroyed node
   wrapper.visible = true; wrapper.isDestroyed = true
   assert.equal(hostPanelOwnsHit(root, 2), false)
   assert.equal(hostPanelOwnsHit(undefined, 2), false)
+})
+
+const require = createRequire(import.meta.url)
+const { transformAsync } = require("@babel/core")
+const universal = await transformAsync(await readFile(new URL("../src/host-review-panel.tsx", import.meta.url), "utf8"), {
+  filename: "src/host-review-panel.tsx", babelrc: false, configFile: false,
+  presets: [["babel-preset-solid", { moduleName: "@opentui/solid", generate: "universal" }],
+    ["@babel/preset-typescript", { allExtensions: true, isTSX: true }]],
+})
+const compiled = await transform(universal.code, { loader: "js", format: "cjs" })
+
+function panelObserverFixture(probe: boolean) {
+  const cleanup: (() => void)[] = [], samples: unknown[] = []
+  const elements: (HostPanelNode & { renderAfter?: () => void })[] = []
+  const color = core.RGBA.fromInts(255, 255, 255)
+  const renderer = Object.assign(new EventEmitter(), { width: 160, height: 40, useMouse: true,
+    hitTest: () => -1 })
+  const dependencies: Record<string, unknown> = {
+    "solid-js": { ...solid, createEffect() {}, onCleanup(fn: () => void) { cleanup.push(fn) } },
+    "@opentui/core": core,
+    "@opentui/solid": {
+      createElement() { const element = node(elements.length + 1, 4, 30); elements.push(element); return element },
+      use(ref: (value: unknown) => void, value: unknown) { ref(value) },
+      setProp(element: Record<string, unknown>, key: string, value: unknown) { element[key] = value; return value },
+      effect(fn: (previous: object) => unknown) { fn({}) },
+      // These tests cover observer registration, not rendering nested components.
+      createComponent() {}, insert() {}, insertNode() {}, createTextNode() {}, memo: solid.createMemo,
+    },
+    "./controller.js": { displayText },
+    "./appearance.js": { scannerFrame, SCANNER_FRAME_COUNT, SCANNER_INTERVAL_MS },
+    "./review-description.js": { HostReviewDescription() {} },
+    "./review-geometry.js": { ReviewGeometryProof },
+    "./ui-text.js": { uiText }, "./usage.js": { usageText },
+  }
+  const module = { exports: {} as { HostReviewPanel(props: HostReviewPanelProps): unknown } }
+  new Function("require", "module", "exports", compiled.code)((name: string) => {
+    assert.ok(name in dependencies, `unexpected dependency ${name}`)
+    return dependencies[name]
+  }, module, module.exports)
+  const value = input(), view = { request: value.request, status: "ready", assessment: { safe: true, desc: "Report" } }
+  const props = { id: "request", view: () => view, select: () => view, rootSession: () => "root",
+    sidebarOwner: () => value.anchor, sidebarGeometry: () => value.bounds,
+    config: { autoApprove: false, fastMode: false }, onApprove() {}, onCancel() {},
+    context: { renderer, ui: { router: { current: () => value.route } }, keymap: { mode: { current: () => "base" } },
+      theme: { text: { base: color, muted: color, feedback: { success: { base: color }, error: { base: color }, warning: { base: color } } },
+        background: { raised: { base: color } }, border: { base: color }, scrollbar: { base: color } } },
+    historyProbe: probe ? { observe(sample: unknown) { samples.push(sample); return Promise.reject(new Error("optional probe failed")) } } : undefined,
+  } as unknown as HostReviewPanelProps
+  module.exports.HostReviewPanel(props)
+  return { renderer, elements, samples, dispose() { for (const fn of cleanup) fn() } }
+}
+
+test("production panel without a probe installs no paint callback or physical observer", () => {
+  const host = panelObserverFixture(false)
+  assert.equal(host.renderer.listenerCount(core.CliRenderEvents.FRAME), 0)
+  assert.equal(host.renderer.listenerCount(core.CliRenderEvents.RESIZE), 0)
+  assert.ok(host.elements.every(element => element.renderAfter === undefined))
+  host.renderer.emit(core.CliRenderEvents.FRAME)
+  assert.deepEqual(host.samples, [])
+  host.dispose()
+})
+
+test("advisory panel observes real FRAME with a probe independently of autoApprove and isolates probe failures", async () => {
+  const host = panelObserverFixture(true)
+  assert.equal(host.renderer.listenerCount(core.CliRenderEvents.FRAME), 1)
+  assert.equal(host.renderer.listenerCount(core.CliRenderEvents.RESIZE), 1)
+  assert.ok(host.elements.some(element => typeof element.renderAfter === "function"))
+  host.renderer.emit(core.CliRenderEvents.FRAME)
+  assert.equal(host.samples.length, 1)
+  assert.equal((host.samples[0] as { stage: string }).stage, "frame")
+  assert.equal((host.samples[0] as { eligible: boolean }).eligible, false, "physical observations grant no approval eligibility")
+  await Promise.resolve()
+  host.dispose()
+  assert.equal(host.renderer.listenerCount(core.CliRenderEvents.FRAME), 0)
+  assert.equal(host.renderer.listenerCount(core.CliRenderEvents.RESIZE), 0)
 })

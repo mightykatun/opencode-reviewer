@@ -7,7 +7,7 @@ import type { ReviewKind } from "./types.js"
 type PromptName = keyof typeof inventory
 
 export type PromptSet = Readonly<Record<ReviewKind, Readonly<{ instructions: string }>>> & Readonly<{ extraCareful: string }>
-const kinds = ["shell", "edit", "mcp", "custom", "external-directory", "skill"] as const
+const kinds = ["shell", "edit", "external-directory"] as const
 
 // The build embeds these files; direct source tests read the same Markdown.
 declare const __REVIEW_PROMPTS__: Record<PromptName, string> | undefined
@@ -21,9 +21,6 @@ export const BUILTIN_PROMPTS: PromptSet = Object.freeze({
   extraCareful: prompt("extraCareful"),
   shell: Object.freeze({ instructions: prompt("shell") }),
   edit: Object.freeze({ instructions: prompt("edit") }),
-  skill: Object.freeze({ instructions: prompt("skill") }),
-  mcp: Object.freeze({ instructions: prompt("mcp") }),
-  custom: Object.freeze({ instructions: prompt("custom") }),
   "external-directory": Object.freeze({ instructions: prompt("external-directory") }),
 })
 export const CONTRACT = prompt("contract")

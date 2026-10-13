@@ -10,6 +10,7 @@ import type { HostRequest } from "../src/host-types.js"
 import type { ReviewResult } from "../src/types.js"
 import { parseConfig } from "../src/config.js"
 import { review } from "../src/reviewer.js"
+import { shellEvidence } from "./review-fixtures.js"
 
 const request: HostRequest = { id: "permission", sessionID: "child", action: "edit", resources: ["target.txt"],
   source: { assistantID: "assistant", id: "call" } }
@@ -32,10 +33,6 @@ function fixture(t: TestContext) {
   onCommit: (fn: () => unknown) => { commits.add(fn); return () => { commits.delete(fn) } } }
   const h = new HistoryCoordinator<HostRequest>("/native-host", store, async () => "root", () => now,
     req => req.source?.assistantID)
-  if (false) {
-    // @ts-expect-error Native request types require an explicit assistant source accessor.
-    new HistoryCoordinator<HostRequest>("/native-host", store, async () => "root")
-  }
   const lifecycle: ReviewLifecycleObserver<HostRequest> = h.lifecycle
   const onApproval: ApprovalObserver<HostRequest> = h.approval
   t.after(() => { h.dispose(); sql.close() })
@@ -84,7 +81,7 @@ test("ambiguous external native once resolution stores accounting but no report 
   assert.ok(f.events.every(event => !JSON.stringify(event).includes("Final validated native report.")))
 })
 
-test("native observation uses supplied validated kind rather than request action or legacy category guesses", t => {
+test("native observation uses supplied validated kind rather than request action guesses", t => {
   const f = fixture(t)
   const observation = f.h.observation(request, "external-directory", config, { review: "execution", root: "root" })
   observation.observe!({ type: "dispatched", review: "unrelated", attempt: "other", retry: "initial" })
@@ -104,7 +101,7 @@ test("fast native confirmation before completion saves only the final validated 
   const frame = (content: string, finish: string | null = null) => `data: ${JSON.stringify({ choices: [
     { index: 0, delta: { content }, finish_reason: finish },
   ] })}\n\n`
-  const evaluation = review({ kind: "shell", command: "true", cwd: "/project", userPrompt: "check", files: [], limitations: [] }, fast,
+  const evaluation = review(shellEvidence(), fast,
     new AbortController().signal, { observation, fetcher: async () => new Response(new ReadableStream({
       async start(controller) {
         controller.enqueue(new TextEncoder().encode(frame('{"safe":true,"desc":"Final')))
@@ -141,7 +138,7 @@ test("a rejected fast remainder counts received usage and confirmation without s
   const f = fixture(t), fast = { ...config, autoApprove: true, fastMode: true, stream: true }
   const observation = f.h.observation(request, "shell", fast, { review: "execution", root: "root" })
   let confirmed = false
-  const evaluation = review({ kind: "shell", command: "true", cwd: "/project", userPrompt: "check", files: [], limitations: [] }, fast,
+  const evaluation = review(shellEvidence(), fast,
     new AbortController().signal, { observation, fetcher: async () => new Response(new ReadableStream({
       start(controller) {
         controller.enqueue(new TextEncoder().encode('data: {"choices":[{"index":0,"delta":{"content":"{\\"safe\\":true,\\"desc\\":\\"Unfinished preview"}}]}\n\n'))
@@ -168,11 +165,10 @@ test("a rejected fast remainder counts received usage and confirmation without s
 
 for (const after of [true, false]) test(`native interruption ${after ? "after" : "before"} removal requires exact session and assistant identity`, async t => {
   const f = fixture(t)
-  const req = { ...request, tool: { messageID: "legacy-impostor", callID: "call" } }
+  const req = request
   f.lifecycle(accepted(result(), req))
   f.h.interrupted({ sessionID: "root", assistantID: "assistant" })
   f.h.interrupted({ sessionID: "child", assistantID: "other-assistant" })
-  f.h.interrupted({ sessionID: "child", assistantID: "legacy-impostor" })
   if (after) { f.lifecycle(removed(req)); await settle() }
   assert.equal(f.history().total, 0)
   f.h.interrupted({ sessionID: "child", assistantID: "assistant" })

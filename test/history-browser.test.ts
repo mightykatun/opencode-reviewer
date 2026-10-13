@@ -7,7 +7,6 @@ import type { HistoryQuery } from "../src/history-records.js"
 import { opaque } from "../src/history-records.js"
 import { historyLayout, historyMetadata } from "../src/history-layout.js"
 import { uiText } from "../src/ui-text.js"
-import { historyCommands } from "../src/history-commands.js"
 import { SessionModes } from "../src/session-mode.js"
 import { HistoryCoordinator } from "../src/history-coordinator.js"
 
@@ -54,24 +53,6 @@ test("historical metadata order, fallback, usage independence and control saniti
     "token: 12 in 3 out\ncost: $0.0001\nmodel: reported\nprovider: https://example.com\nTime to first rating: 1.25s\nTime to full report: 3.50s")
   const unsafe = historyMetadata({ ...selection.record!, payload: { ...selection.record!.payload, reportedModel: "x\x1b[31m\u202ey" } })
   assert.ok(!unsafe.includes("\x1b")); assert.ok(!unsafe.includes("\u202e")); assert.ok(!unsafe.includes("lifetime"))
-})
-test("public command contract and base-mode bindings leave normal typing to host", () => {
-  const layers: any[] = []; let session: string | undefined = "child", interactive = true, dialog = false
-  const actions: unknown[] = []
-  const off = historyCommands({ route: { get current() { return session ? { name: "session", params: { sessionID: session } } : { name: "home" } } },
-    ui: { dialog: { get open() { return dialog } } }, keymap: { registerLayer: (layer: unknown) => { layers.push(layer); return () => actions.push("off") } } } as any,
-  { state: { open: true }, open: (id: string) => actions.push(id), close: () => actions.push("close"), navigate: (direction: string) => actions.push(direction) } as any,
-  () => interactive, (amount, page) => actions.push([amount, page]))
-  const command = layers[0].commands[0]
-  assert.deepEqual([command.name, command.namespace, command.slashName, command.title, command.category],
-    ["opencode-reviewer.history", "palette", "reviewer-history", "Reviewer: Report history", "Reviewer"])
-  command.run(); assert.deepEqual(actions, ["child"])
-  session = undefined; assert.equal(command.enabled(), false); command.run(); assert.equal(actions.length, 1)
-  const keys = layers[1]; assert.equal(keys.mode, "base"); assert.equal(keys.priority, 100)
-  assert.deepEqual(keys.bindings.map((b: any) => b.key), ["left", "right", "escape", "up", "down", "pageup", "pagedown"])
-  assert.equal(keys.enabled(), true); dialog = true; assert.equal(keys.enabled(), false)
-  dialog = false; interactive = false; assert.equal(keys.enabled(), false)
-  off(); assert.deepEqual(actions.slice(-2), ["off", "off"])
 })
 test("real bounded ancestry is available without loading disabled or invalid mode records", async t => {
   let loads = 0

@@ -1,13 +1,13 @@
-import type { PermissionRequest } from "@opencode-ai/sdk/v2"
+import type { HostRequest } from "./host-types.js"
 import { withDeadline } from "./deadline.js"
 
-interface PendingState<R = PermissionRequest> {
+interface PendingState<R = HostRequest> {
   readonly revision: number
   reconcile(requests: readonly R[], revision: number): void
 }
 
 /** Read-only recovery. Deadline callbacks produce data, never controller effects. */
-class PendingRefreshCore<R = PermissionRequest> {
+export class PendingRefresh<R = HostRequest> {
   private syncing = false
   private stopped = false
   private again = false
@@ -57,11 +57,3 @@ class PendingRefreshCore<R = PermissionRequest> {
     this.abort.abort()
   }
 }
-
-export type PendingRefresh<R = PermissionRequest> = PendingRefreshCore<R>
-export const PendingRefresh: {
-  new <R = PermissionRequest>(pending: PendingState<R>, read: (signal: AbortSignal) => Promise<readonly R[]>, parent: AbortSignal,
-    health?: (healthy: boolean) => void): PendingRefresh<R>
-  new (pending: PendingState, read: (signal: AbortSignal) => Promise<readonly PermissionRequest[]>, parent: AbortSignal,
-    health?: (healthy: boolean) => void): PendingRefresh
-} = PendingRefreshCore

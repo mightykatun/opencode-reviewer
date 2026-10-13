@@ -28,9 +28,7 @@ if (args[0] === "--list") {
     for (const binary of ["git", "python3", "tmux", "tar", "bash"]) if (prerequisites.has(binary))
       execFileSync(binary, [binary === "tmux" ? "-V" : "--version"], { stdio: "pipe", timeout: 10000 })
     if (prerequisites.has("npm-pack")) execFileSync("npm", ["--version"], { stdio: "pipe", timeout: 10000 })
-    if (prerequisites.has("source-sqlite")) await access(path.join(root, "src/history-schema.ts"))
-    if (prerequisites.has("source-sqlite") || prerequisites.has("node-sqlite")) await import("node:sqlite")
-    if (prerequisites.has("git-tag:v0.7.0")) execFileSync("git", ["rev-parse", "--verify", "refs/tags/v0.7.0^{commit}"], { cwd: root, stdio: "pipe" })
+     if (prerequisites.has("node-sqlite")) await import("node:sqlite")
     let hostVersion
     if (selected.some(item => item.hosts)) {
       assert.equal(process.platform, "linux")
@@ -58,12 +56,10 @@ if (args[0] === "--list") {
         const result = await executeFixture(process.execPath, [item.entrypoint, ...item.args], { cwd: root,
           signal: abort.signal, timeoutMs: item.timeoutMs, output: (chunk, channel) => { output.push(chunk); process[channel].write(chunk) } })
         await writeFile(log, Buffer.concat(output))
-        const expectedFailure = item.flags.includes("fail-after-listen")
-        const cleanupProof = !expectedFailure || /PASS post-listen cleanup/.test(Buffer.concat(output).toString())
         results.push({ ...item, defaultHostVersion: item.hostVersion, hostVersion: item.hosts ? hostVersion : item.hostVersion,
           ...result, durationMs: Date.now() - start, log,
           invocation: [process.execPath, item.entrypoint, ...item.args],
-          status: result.code === (expectedFailure ? 1 : 0) && cleanupProof && !result.timedOut && !result.interrupted ? "passed" : "failed" })
+           status: result.code === 0 && !result.timedOut && !result.interrupted ? "passed" : "failed" })
         await publishObservation(path.join(directory, "results.json"), { profile: args[0] === "--profile" ? args[1] : undefined,
           hostVersion, nodeVersion: process.version, concurrency: "serial; at most two hosts", results })
         if (results.at(-1).status !== "passed") break

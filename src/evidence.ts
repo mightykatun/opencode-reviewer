@@ -1,19 +1,13 @@
 import path from "node:path"
 import { constants } from "node:fs"
-import type { EditChange, EditContext, EditEvidence, Evidence, FileEvidence, Limits } from "./types.js"
-import { FileLimit, DiffBudget, diffDelta, omittedFile } from "./files.js"
+import type { Evidence, FileEvidence, Limits } from "./types.js"
+import { FileLimit, omittedFile } from "./files.js"
 import { fileAccess, fileFailure, type FileScope } from "./file-access.js"
 import { discover, type Reference } from "./shell-discovery.js"
-import { reviewStage } from "./deadline.js"
 
 export { discover } from "./shell-discovery.js"
 
-export function withinDirectory(directory: string, filename: string): boolean {
-  const relative = path.relative(directory, filename)
-  return relative !== ".." && !relative.startsWith("../") && !path.isAbsolute(relative)
-}
-
-export async function captureFile(reference: Reference, budget: number, signal: AbortSignal, scope: FileScope, directory?: string, excludedPath?: string): Promise<FileEvidence> {
+export async function captureFile(reference: Reference, budget: number, signal: AbortSignal, scope: FileScope): Promise<FileEvidence> {
   const result: FileEvidence = { filename: reference.filename, status: "unavailable" }
   if (!reference.cwd && !path.isAbsolute(reference.filename)) return { ...result, status: "working directory unresolved; contents not provided" }
   // Do not normalize `..` before the filesystem traverses preceding symlinks.
@@ -24,20 +18,10 @@ export async function captureFile(reference: Reference, budget: number, signal: 
     const canonical = await scope.canonical(filename)
     signal.throwIfAborted()
     if (!canonical.path) return { ...result, status: `cannot read file (${canonical.reason}); contents not provided` }
-    if (directory && !withinDirectory(directory, canonical.path)) return { ...result, status: "outside the skill directory; contents not provided" }
-    if (canonical.path === excludedPath) return { ...result, status: "main skill instructions already supplied by host; contents not provided" }
     return await scope.capture(async (signal, io) => {
       const handle = await io.open(canonical.path!, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
       try {
         signal.throwIfAborted()
-        if (directory) {
-          // The final component's O_NOFOLLOW does not protect ancestor directories.
-          // Verify the opened descriptor before reading if a parent was swapped.
-          const opened = await io.realpath(`/proc/self/fd/${handle.fd}`)
-          signal.throwIfAborted()
-          if (!withinDirectory(directory, opened)) return { ...result, status: "opened file is outside the skill directory; contents not provided" }
-          if (opened === excludedPath) return { ...result, status: "opened file is the main skill; host instructions retained without rereading contents" }
-        }
         const before = await handle.stat()
         signal.throwIfAborted()
         if (!before.isFile()) return { ...result, status: "not a regular file; contents not provided" }
@@ -92,7 +76,7 @@ export async function collectEvidence(
   if (input.command.length > limits.maxEvidenceBytes) throw new Error("Command exceeds configured evidence budget")
   const commandBytes = Buffer.byteLength(input.command)
   if (commandBytes > limits.maxEvidenceBytes) throw new Error("Command exceeds configured evidence budget")
-  // Context already owns the launch-path probe. Standalone collectors use the
+  // Native evidence already owns the launch-path probe. Standalone collectors use the
   // same bounded scope; never replace the declared path with its canonical alias.
   const canonical = input.execution ? input.execution.canonicalCwd : input.cwd ? (await scope.canonical(input.cwd)).path : null
   const discovery = discover(input.command, { declared: input.cwd, canonical }, 0, signal)
@@ -147,113 +131,4 @@ export async function collectEvidence(
   signal.throwIfAborted()
   evidence.limitations.push(...limit.limitations)
   return evidence
-}
-
-/** Use host-computed diffs, never apply edits or duplicate unbounded tool input. */
-export async function collectEditEvidence(input: EditContext, limits: Limits, signal: AbortSignal, scope: FileScope = fileAccess.scope(signal)): Promise<EditEvidence> {
-  reviewStage(signal, "Evidence collection")
-  const metadata = input.permission.metadata
-  const limitations = [...input.limitations,
-    "Proposed diffs come from the pending host permission, not from applying edits. Full files, dependencies and post-approval formatter changes are not inspected; host diffs may normalize whitespace or omit BOMs.",
-  ]
-  const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
-  const field = (value: object, key: string): unknown => {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key)
-    if (!descriptor) return undefined
-    if (!Object.hasOwn(descriptor, "value")) throw new Error("Native edit metadata contains an accessor")
-    return descriptor.value
-  }
-  // Scope/header work is independently bounded, not charged to the configured
-  // allowance for diff bodies. Never silently truncate mandatory target scope.
-  let headerBytes = 16 * 1024 * 1024
-  const text = (value: unknown): string | undefined => {
-    if (typeof value !== "string") return
-    reviewStage(signal, "Evidence collection")
-    if (value.length > headerBytes) throw new Error("Native edit scope exceeds the 16 MiB normalization limit")
-    headerBytes -= Buffer.byteLength(value)
-    if (headerBytes < 0) throw new Error("Native edit scope exceeds the 16 MiB normalization limit")
-    return value
-  }
-  const patterns = (values: string[]) => {
-    if (values.length > 16384) throw new Error("Native edit scope exceeds the 16,384-entry normalization limit")
-    const result: string[] = []
-    for (let index = 0; index < values.length; index++) {
-      const value = text(field(values, String(index)))
-      if (value === undefined) throw new Error("Native edit scope contains an invalid pattern")
-      result.push(value)
-    }
-    return result
-  }
-  const scopeText = (value: string) => {
-    const result = text(value)
-    if (result === undefined) throw new Error("Native edit scope contains invalid identity text")
-    return result
-  }
-  const permissionScope = { id: scopeText(input.permission.id), type: scopeText(input.permission.type),
-    patterns: patterns(input.permission.patterns), always: patterns(input.permission.always),
-    tool: input.permission.tool ? { messageID: scopeText(input.permission.tool.messageID), callID: scopeText(input.permission.tool.callID) } : null }
-  const patch = input.tool === "apply_patch"
-  const hostFiles = patch ? field(record(metadata), "files") : undefined
-  const files = patch ? Array.isArray(hostFiles) ? hostFiles : [] : [metadata]
-  if (files.length > 16384) throw new Error("Native edit changes exceed the 16,384-entry normalization limit")
-  if (!files.length) limitations.push("Per-file patch metadata unavailable; affected changes could not be enumerated.")
-  let remaining = limits.maxEvidenceBytes
-  let measurementUnits = 16 * 1024 * 1024
-  const changes: EditChange[] = []
-  const limit = new FileLimit(limits.maxFiles, scope)
-  const countsBudget = new DiffBudget()
-  for (let index = 0; index < files.length; index++) {
-    reviewStage(signal, "Evidence collection")
-    const file = record(patch ? field(files, String(index)) : metadata)
-    const type = patch ? field(file, "type") : input.tool
-    const operation = typeof type === "string" && ["add", "update", "delete", "move", "edit", "write"].includes(type) ? type as EditChange["operation"] : "unknown"
-    const filePath = text(field(file, patch ? "filePath" : "filepath"))
-    const movePath = patch ? text(field(file, "movePath")) : undefined
-    const diff = field(file, patch ? "patch" : "diff")
-    const change: EditChange = {
-      path: filePath?.trim() ? filePath : null,
-      operation, status: "omitted",
-      ...(movePath !== undefined ? { movePath } : {}),
-    }
-    const { withinLimit } = await limit.consider(change.path && path.isAbsolute(change.path) ? change.path : null, signal)
-    if (!withinLimit) change.reason = "file-count limit reached"
-    else if (!change.path || !path.isAbsolute(change.path)) change.reason = "absolute target path unavailable"
-    else if (operation === "unknown" || (patch && (operation === "edit" || operation === "write"))) change.reason = "file operation unavailable or unsupported"
-    else if (operation === "move" && (!change.movePath || !path.isAbsolute(change.movePath))) change.reason = "absolute move destination unavailable"
-    else if (typeof diff !== "string" || !diff.length) change.reason = "proposed diff unavailable"
-    else if (diff.length > remaining) change.reason = "complete diff exceeds remaining evidence byte budget"
-    else if (diff.length > measurementUnits) change.reason = "shared diff UTF-8 measurement work limit reached"
-    else {
-      // Repeated rejected multibyte bodies must not each rescan the full byte
-      // allowance. Included bodies already have a separate aggregate byte cap.
-      measurementUnits -= diff.length
-      const bytes = Buffer.byteLength(diff)
-      if (bytes > remaining) change.reason = "complete diff exceeds remaining evidence byte budget"
-      else if (!diff.trim()) change.reason = "proposed diff unavailable"
-      else { change.status = "included"; change.diff = diff; remaining -= bytes }
-    }
-    if (change.status === "omitted") {
-      change.warning = omittedFile(change.path)
-      let counts = diffDelta(diff, signal, countsBudget)
-      if (!counts) {
-        const added = field(file, "additions"), removed = field(file, "deletions")
-        if (Number.isSafeInteger(added) && Number(added) >= 0 && Number.isSafeInteger(removed) && Number(removed) >= 0) {
-          counts = { added: Number(added), removed: Number(removed) }
-        }
-      }
-      if (counts) change.delta = `[Δ] ${JSON.stringify(change.path)}: +${counts.added} −${counts.removed} lines`
-    }
-    changes.push(change)
-  }
-  const partial = !changes.length || changes.some((change) => change.status === "omitted")
-  if (partial) limitations.push("Edit evidence is incomplete. Omitted changes are not assessed by the supplied diffs; do not assume the whole proposal is safe.")
-  if (!input.userPrompt) limitations.push("User prompt unavailable.")
-  limitations.push(...limit.limitations)
-  if (countsBudget.exhausted) limitations.push("Some omitted-diff line counts exceeded the shared 16 MiB/65,536-line/250 ms counting allowance; valid host counts were used when available.")
-  reviewStage(signal, "Evidence collection")
-  return {
-    kind: "edit", tool: input.tool, ...(input.delegation ? { delegation: input.delegation } : {}), userPrompt: input.userPrompt, session: input.session,
-    location: input.location, changes, partial, limitations,
-    permission: { ...permissionScope, metadataStatus: "Host change metadata normalized into changes; raw metadata and tool input are omitted to avoid duplicate or unbounded change text." },
-  }
 }

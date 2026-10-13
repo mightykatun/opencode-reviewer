@@ -1,13 +1,13 @@
 import { test, type TestContext } from "node:test"
 import assert from "node:assert/strict"
 import { setImmediate as settle } from "node:timers/promises"
-import type { PermissionRequest } from "@opencode-ai/sdk/v2"
+import type { HostRequest } from "../src/host-types.js"
 import { PendingRefresh } from "../src/pending-refresh.js"
 import { Controller, visibleReview } from "../src/controller.js"
 import { SessionModes } from "../src/session-mode.js"
 
-const request = (id: string, permission = "bash"): PermissionRequest => ({
-  id, permission, sessionID: "root", patterns: [id], always: [], metadata: {},
+const request = (id: string, action = "shell"): HostRequest => ({
+  id, action, sessionID: "root", resources: [id],
 })
 const safe = { safe: true, desc: "Reads the fixture." }
 
@@ -18,15 +18,15 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-function fixture(t: TestContext, pending?: ConstructorParameters<typeof PendingRefresh>[0]) {
+function fixture(t: TestContext, pending?: Pick<Controller, "revision" | "reconcile">) {
   const parent = new AbortController()
-  const state = { revision: 0, snapshots: [] as { requests: readonly PermissionRequest[]; revision: number }[] }
-  const calls: (ReturnType<typeof deferred<PermissionRequest[]>> & { signal: AbortSignal })[] = []
+  const state = { revision: 0, snapshots: [] as { requests: readonly HostRequest[]; revision: number }[] }
+  const calls: (ReturnType<typeof deferred<HostRequest[]>> & { signal: AbortSignal })[] = []
   const refresh = new PendingRefresh(pending ?? {
     get revision() { return state.revision },
     reconcile: (requests, revision) => { state.snapshots.push({ requests, revision }) },
   }, (signal) => {
-    const call = { ...deferred<PermissionRequest[]>(), signal }
+    const call = { ...deferred<HostRequest[]>(), signal }
     calls.push(call)
     return call.promise
   }, parent.signal)
@@ -112,7 +112,7 @@ test("an elapsed deadline rejects a result before reconciliation even before tim
 for (const event of ["ask", "reply", "delete", "mode"] as const) test(`${event} revision invalidates an outstanding snapshot before controller reconciliation`, async (t) => {
   let evaluations = 0
   const modes = new SessionModes({ read: async () => true, write: async () => {}, flush: async () => {} }, async (id) => ({ id }))
-  const controller = new Controller(async () => { evaluations++; return safe }, () => {}, { modes })
+  const controller = new Controller(async () => { evaluations++; return safe }, () => {}, { modes, candidate: req => req.action === "shell" })
   t.after(() => controller.dispose())
   controller.asked(request("b"))
   await settle()
@@ -136,7 +136,7 @@ for (const event of ["ask", "reply", "delete", "mode"] as const) test(`${event} 
 test("queued mode refresh takes a post-switch revision and recovers only the fresh pending request", async (t) => {
   const evaluated: string[] = []
   const modes = new SessionModes({ read: async () => false, write: async () => {}, flush: async () => {} }, async (id) => ({ id }))
-  const controller = new Controller(async (req) => { evaluated.push(req.id); return safe }, () => {}, { modes })
+  const controller = new Controller(async (req) => { evaluated.push(req.id); return safe }, () => {}, { modes, candidate: () => true })
   t.after(() => controller.dispose())
   controller.asked(request("old"))
   await settle()
@@ -159,7 +159,7 @@ test("queued mode refresh takes a post-switch revision and recovers only the fre
 })
 
 test("a valid empty list resolves tracked requests, while read errors preserve them and permit recovery", async (t) => {
-  const controller = new Controller(async () => safe, () => {})
+  const controller = new Controller(async () => safe, () => {}, { candidate: () => true })
   t.after(() => controller.dispose())
   controller.asked(request("a"))
   await settle()

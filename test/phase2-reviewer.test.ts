@@ -1,18 +1,18 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { setImmediate as settle } from "node:timers/promises"
-import type { PermissionRequest } from "@opencode-ai/sdk/v2"
+import type { HostRequest } from "../src/host-types.js"
 import { Controller, type ApprovalFact } from "../src/controller.js"
 import { parseConfig } from "../src/config.js"
 import { NotificationPolicy } from "../src/notification-policy.js"
 import type { NotificationMessage } from "../src/notification-types.js"
 import { review } from "../src/reviewer.js"
-import type { Evidence, ReviewAttemptEvent, ReviewProgress, ReviewResult } from "../src/types.js"
+import type { ReviewAttemptEvent, ReviewProgress, ReviewResult } from "../src/types.js"
+import { shellEvidence } from "./review-fixtures.js"
 
-const request: PermissionRequest = { id: "phase2", sessionID: "root", permission: "bash",
-  patterns: ["python fixture.py"], always: [], metadata: { command: "python fixture.py" } }
-const evidence: Evidence = { kind: "shell", command: "python fixture.py", cwd: "/fixture",
-  userPrompt: "Read the fixture", files: [], limitations: [] }
+const request: HostRequest = { id: "phase2", sessionID: "root", action: "shell",
+  resources: ["python fixture.py"], metadata: { command: "python fixture.py" } }
+const evidence = shellEvidence({ command: "python fixture.py", userPrompt: "Read the fixture" })
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(yes => { resolve = yes })
@@ -32,7 +32,7 @@ for (const failure of ["transport", "format", "transport+format"] as const) {
     test(`source reviewer SSE ${failure}: replacement Safe ${ordering} held GET settlement`, async t => {
       const config = parseConfig({ baseURL: "https://fixture.invalid/v1", model: "fixture", autoApprove: true,
         fastMode: true, stream: true, staleReminderSeconds: 0 })
-      const oldRead = deferred<PermissionRequest[]>(), replacement = deferred<Response>(), nextPOST = deferred<void>()
+      const oldRead = deferred<HostRequest[]>(), replacement = deferred<Response>(), nextPOST = deferred<void>()
       const facts: ApprovalFact[] = [], messages: NotificationMessage[] = [], bodies: string[] = []
       const progress: ReviewProgress[] = [], attempts: ReviewAttemptEvent[] = []
       const target = { root: "root", sessionID: "root", title: "Fixture" }
@@ -40,7 +40,7 @@ for (const failure of ["transport", "format", "transport+format"] as const) {
         async show(message) { messages.push(message); return { close() {} } }, dispose() {},
       })
       let first!: ReadableStreamDefaultController<Uint8Array>, reads = 0, writes = 0
-      let painted = true, hadReservation = false, clearedLayout = false
+      let hadReservation = false, clearedRating = false
       let reviewing!: Promise<ReviewResult>
       const prefix = '{"safe":true,"desc":"Rejected preview"'
       const invalid = prefix + ',"safe":false}'
@@ -61,16 +61,18 @@ for (const failure of ["transport", "format", "transport+format"] as const) {
         policy.snapshot(views, new Map([["root", { kind: "permission", id: request.id }]]))
         const view = views[0]
         if (view?.autoApproval?.status === "checking") hadReservation = true
-        if (hadReservation && !clearedLayout && view?.status === "analyzing" && !view.autoApproval) {
-          // Source parser clear removes the footer; its prior hit owner cannot
-          // prove physical presentation again until the replacement frame.
-          clearedLayout = true; painted = false
+        if (hadReservation && !clearedRating && view?.status === "analyzing" && !view.autoApproval) {
+          clearedRating = true
         }
       }, {
-        reviewOptions: config, approval: {
-          visibleID: () => painted ? request.id : undefined,
+        candidate: () => true, approvalReady: () => true, nativeFront: () => request.id,
+        reviewOptions: config, nativeApproval: {
           list: () => ++reads === 1 ? oldRead.promise : Promise.resolve([structuredClone(request)]),
-          once: async () => { writes++ },
+          once: async (_request, _signal, dispatch) => {
+            if (!dispatch()) return { status: "unavailable" }; writes++
+            controller.permissionReplied({ sessionID: request.sessionID, requestID: request.id, decision: "once" })
+            return { status: "submitted" }
+          },
         }, onApproval: fact => {
           facts.push(fact)
           if (fact.type === "confirmed") policy.approved(fact.request, target)
@@ -78,7 +80,7 @@ for (const failure of ["transport", "format", "transport+format"] as const) {
       })
       t.after(async () => { await controller.dispose(); await policy.dispose() })
       controller.asked(request); policy.permission(request, target, true)
-      await settle(); controller.presented(request.id)
+      await settle(); controller.refreshApprovalEligibility()
       first.enqueue(Buffer.from(frame(prefix))); await settle()
       assert.equal(reads, 1); assert.equal(writes, 0)
       assert.equal(controller.views[0]?.progress?.preview?.safe, true)
@@ -88,7 +90,7 @@ for (const failure of ["transport", "format", "transport+format"] as const) {
       await nextPOST.promise; await settle()
       assert.ok(progress.some(value => value.phase === "streaming" && !value.preview), "real parser clears the rejected Safe preview")
       assert.equal(controller.views[0]?.progress?.preview, undefined)
-      assert.equal(clearedLayout, true)
+      assert.equal(clearedRating, true)
       assert.notEqual(controller.views[0]?.autoApproval?.status, "cancelled", "retry publication is not a hide observation")
       assert.equal(writes, 0)
       if (ordering === "after") {
@@ -103,10 +105,7 @@ for (const failure of ["transport", "format", "transport+format"] as const) {
         oldRead.resolve([request])
       }
       await settle()
-      assert.equal(writes, 0); assert.equal(reads, 1, "replacement rating still needs physical presentation")
-      assert.notEqual(controller.views[0]?.autoApproval?.status, "cancelled")
-      painted = true
-      controller.presented(request.id); await settle()
+      controller.refreshApprovalEligibility(); await settle()
       assert.equal(reads, 2); assert.equal(writes, 1)
       assert.equal(controller.views.length, 0)
       assert.deepEqual(messages.map(message => message.kind), ["approved"], "no false attention banner or sound")
@@ -136,7 +135,7 @@ for (const stream of [false, true]) for (const safe of [false, true]) {
   test(`${stream ? "SSE" : "nonstream"} source format correction final ${safe ? "Safe" : "Unsafe"} control`, async t => {
     const config = parseConfig({ baseURL: "https://fixture.invalid/v1", model: "fixture", autoApprove: true,
       fastMode: true, stream, staleReminderSeconds: 0 })
-    const nextPOST = deferred<void>(), replacement = deferred<Response>(), held = deferred<PermissionRequest[]>()
+    const nextPOST = deferred<void>(), replacement = deferred<Response>(), held = deferred<HostRequest[]>()
     let reads = 0, writes = 0, posts = 0, reviewing!: Promise<ReviewResult>
     const messages: NotificationMessage[] = []
     const policy = new NotificationPolicy(config, true, {
@@ -150,20 +149,25 @@ for (const stream of [false, true]) for (const safe of [false, true]) {
       } })
       return reviewing
     }, views => policy.snapshot(views, new Map([["root", { kind: "permission", id: request.id }]])), {
-      reviewOptions: config, approval: { visibleID: () => request.id,
-        list: () => { reads++; return held.promise }, once: async () => { writes++ } },
+      candidate: () => true, approvalReady: () => true, nativeFront: () => request.id,
+      reviewOptions: config, nativeApproval: {
+        list: () => { reads++; return held.promise }, once: async (_request, _signal, dispatch) => {
+          if (!dispatch()) return { status: "unavailable" }; writes++
+          controller.permissionReplied({ sessionID: request.sessionID, requestID: request.id, decision: "once" })
+          return { status: "submitted" }
+        } },
     })
     t.after(async () => { await controller.dispose(); await policy.dispose() })
     controller.asked(request)
     policy.permission(request, { root: "root", sessionID: "root", title: "Fixture" }, true)
-    controller.presented(request.id)
+    controller.refreshApprovalEligibility()
     await nextPOST.promise; await settle()
     assert.equal(writes, 0)
     assert.equal(reads, stream ? 1 : 0, "nonstream never publishes an unvalidated rating")
     held.resolve([request]); await settle()
     assert.equal(writes, 0, "the rejected preview cannot write after its GET")
     replacement.resolve(response(JSON.stringify({ safe, desc: "Final assessment" }), stream))
-    await reviewing; await settle(); controller.presented(request.id); await settle()
+    await reviewing; await settle(); controller.refreshApprovalEligibility(); await settle()
     assert.equal(posts, 2)
     assert.equal(writes, safe ? 1 : 0)
     assert.equal(reads, (stream ? 1 : 0) + (safe ? 1 : 0))

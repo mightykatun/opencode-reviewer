@@ -12,8 +12,6 @@ import { conversationRoot, RouteSessions } from "./route-approval.js"
 import type { HostRequest, HostRequestSnapshot } from "./host-types.js"
 import type { CliPluginState } from "./cli-plugin.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
-import type { ReviewPresentation } from "./review-presentation.js"
-import { uiText } from "./ui-text.js"
 import { sameLocation } from "./companion-protocol.js"
 import { HostReviewPanel } from "./host-review-panel.js"
 import { setupHostHistory, setupHostHistoryOnly } from "./host-history-runtime.js"
@@ -23,6 +21,7 @@ import { hostPricingLookup } from "./host-pricing.js"
 import type { PricingLookup } from "./usage.js"
 import { setupHostNotificationOnly } from "./host-notification-runtime.js"
 import { hostApprovalReady, nativeDecisionPending } from "./host-approval-ready.js"
+import { setupHostModeCommands } from "./host-mode-commands.js"
 
 /** One scope-pinned controller. A replaced companion never adopts old evidence. */
 export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle) {
@@ -66,20 +65,14 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
         && value.sessionID === id) && new Set(values.map(value => value.id)).size === values.length ? values : undefined
     },
   })?.id
-  let proof: () => ReviewPresentation = () => ({ state: "lost" })
   const rootRoute = () => {
     const route = ctx.ui.router.current()
     if (route.type !== "session" || conversationRoot(route.sessionID, id => routes.get(id)) !== route.sessionID) return
     return route.sessionID
   }
   const select = () => visibleReview(views(), rootRoute(), id => routes.get(id), root => front(root))
-  const registerPresentation = (getter: () => ReviewPresentation) => {
-    proof = getter
-    return () => { if (proof === getter) proof = () => ({ state: "lost" }) }
-  }
-  const { sidebar, geometry } = setupHostSidebar(ctx, life, rootRoute, () => controller.presented({ state: "lost" }))
-  const records = setupHostHistory(ctx, state, life, { rootRoute, sidebarOwner: sidebar, sidebarGeometry: geometry,
-    onPresented: () => controller.presented(proof()) })
+  const { sidebar, geometry } = setupHostSidebar(ctx, life, rootRoute)
+  const records = setupHostHistory(ctx, state, life, { rootRoute, sidebarOwner: sidebar, sidebarGeometry: geometry })
   let cancelReveal = () => {}
   life.addCleanup(() => cancelReveal())
   const notifications = setupHostNotifications(ctx, state, { signal: life.signal,
@@ -134,7 +127,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       { onProgress, observation, pricing, onDiagnostics: state.dependencies.observer,
         observeEvidence: evidence => observation ? records.history.observation(request, evidence.kind, config, observation) : undefined })
   }, values => { setViews(values); notifications?.snapshot(controller.pendingViews) }, {
-    reviewOptions: config, modes, session: id => routes.get(id), allowHiddenRoute: false,
+    reviewOptions: config, modes, session: id => routes.get(id),
     approvalReady: (request, root) => hostApprovalReady(request, root, ctx.ui.router.current(), id => routes.get(id),
       () => nativeDecisionPending(ctx.renderer.root, ctx.theme.background.action.primary.focused)),
     nativeFront: root => front(root),
@@ -144,8 +137,6 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       || (request.action === "edit" && config.reviewEdits) || (request.action === "external_directory" && config.reviewExternalDirectories)
       || (request.action === "skill" && config.reviewSkills) || config.reviewMcp || config.reviewCustomTools),
     nativeApproval: {
-      visibleID: () => { const value = proof(); return value.state === "visible" ? value.id : undefined },
-      presentation: () => proof(),
       list: async signal => (await owned(transport.listScope(signal))).map(value => value.request),
       once: (request, signal, dispatch) => {
         const snapshot = snapshots.get(request.id)
@@ -302,7 +293,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       const session = route.type === "session" ? route.sessionID : undefined
       untrack(() => { notifications?.routeChanged(); notifications?.visit(session); void formRefresh?.refresh() })
     })
-    createEffect(() => { rootRoute(); sidebar(); ctx.keymap.mode.current(); untrack(() => controller.presented(proof())) })
+    createEffect(() => { ctx.ui.router.current(); untrack(() => controller.refreshApprovalEligibility()) })
     return <box position="absolute" left={geometry()?.x ?? 0} top={geometry()?.y ?? 0}
       width={geometry()?.width ?? 0} height={geometry()?.height ?? 0} zIndex={1} visible={!!rootRoute() && (!!selected() || records.state().open)}>
       <Show when={rootRoute() && selected()?.request.id} keyed>{id => {
@@ -311,9 +302,9 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       context={ctx} id={id} view={() => views().find(value => value.request.id === id) ?? initial} select={select} rootSession={rootRoute}
       sidebarOwner={sidebar} sidebarGeometry={geometry} config={config}
       historyProbe={state.dependencies.historyProbe}
-      historyCover={records.cover} lifetimeText={records.lifetimeText}
+       lifetimeText={records.lifetimeText}
       onApprove={id => controller.approveNow(id)} onCancel={id => controller.cancelAutoApproval(id)}
-      registerPresentation={registerPresentation} onPresented={value => controller.presented(value)} />}}</Show>
+       />}}</Show>
       {records.render()}</box>
   } }))
   if (config.autoApprove) {
@@ -322,33 +313,11 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     const eligibility = setInterval(() => controller.refreshApprovalEligibility(), 100)
     life.addCleanup(() => clearInterval(eligibility))
   }
-  let modeCommand = 0
-  const switchMode = async (enabled: boolean) => {
-    if (disconnected) return
-    const route = ctx.ui.router.current(), generation = ++modeCommand
-    if (route.type !== "session") return
-    try {
-      const root = await modes.root(route.sessionID, life.signal)
-      if (enabled) await modes.load(root, life.signal)
-      if (generation !== modeCommand || life.signal.aborted) return
-      const changed = modes.enabled(root) !== enabled
-      const saving = modes.set(root, enabled)
-      if (changed) controller.modeChanged(root)
-      void refresh.refresh()
-      try {
-        await saving
-        ctx.ui.toast.show({ message: uiText.sessionMode.saved(enabled), variant: "success" })
-      } catch { ctx.ui.toast.show({ message: uiText.sessionMode.saveFailed(enabled), variant: "error" }) }
-    } catch { if (!life.signal.aborted) ctx.ui.toast.show({ message: uiText.sessionMode.unavailable, variant: "error" }) }
-  }
-  ctx.keymap.layer(() => ({ mode: "global", commands: [
-    { id: "reviewer.enable", title: uiText.commands.enable, group: uiText.commands.category, palette: true,
-      slash: { name: "reviewer-enable" }, run: () => switchMode(true) },
-    { id: "reviewer.disable", title: uiText.commands.disable, group: uiText.commands.category, palette: true,
-      slash: { name: "reviewer-disable" }, run: () => switchMode(false) },
-  ] }))
+  setupHostModeCommands(ctx, modes, life.signal, {
+    active: () => !disconnected,
+    onChanged: root => controller.modeChanged(root),
+    onRefresh: () => refresh.refresh(),
+  })
   void refresh.refresh()
-  return { controller, views, front, routes, modes, refresh, scope, records, notifications,
-    registerPresentation, presentation: () => proof(),
-  }
+  return { controller, views, front, routes, modes, refresh, scope, records, notifications }
 }

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { reviewGeometry, ReviewGeometryProof, type ReviewRegion } from "../src/review-geometry.js"
-import { SidebarPresentation } from "../src/review-presentation.js"
 
 const region = (y: number, height: number, children: ReviewRegion[] = []): ReviewRegion => ({
   x: 120, y, width: 38, height, visible: true, isDestroyed: false, getChildren: () => children,
@@ -49,7 +48,7 @@ test("fast presentation requires the heading and rating, without a final report 
 
 test("same painted footer survives branch replacement only until its next layout", () => {
   const input = layout(), proof = new ReviewGeometryProof()
-  assert.equal(proof.visible(input), false, "an unpainted layout cannot approve")
+  assert.equal(proof.visible(input), false, "an unpainted layout is not physical evidence")
   assert.equal(proof.visible(input, true), true)
   input.footer.getChildren = () => [{ ...region(0, 0), width: 0 }]
   assert.equal(proof.visible(input), true, "Checking to Allowing replaces children before layout")
@@ -89,21 +88,22 @@ test("owner replacement and round-trip resize cannot reuse an earlier matching p
   assert.equal(proof.state(input, true), "visible")
 })
 
-test("public sidebar observer distinguishes breakpoint handoff from ordinary hide/navigation cleanup", () => {
-  const sidebar = new SidebarPresentation()
-  let owner = sidebar.mount("root", 160)
-  sidebar.unmount(owner, "root", 120, false)
-  assert.equal(sidebar.state("root"), "pending")
-  const replacement = sidebar.mount("root", 120)
-  sidebar.unmount(owner, "root", 120, false)
-  assert.equal(sidebar.state("root"), "visible", "late cleanup cannot release the new owner")
-  sidebar.unmount(replacement, "root", 160, false)
-  assert.equal(sidebar.state("root"), "pending")
-  sidebar.frame()
-  assert.equal(sidebar.state("root"), "lost", "missing replacement at FRAME is a real hide")
-  for (const [session, width, hidden] of [["root", 160, false], ["other", 120, false], ["root", 120, true]] as const) {
-    owner = sidebar.mount("root", 160)
-    sidebar.unmount(owner, session, width, hidden)
-    assert.equal(sidebar.state("root"), "lost", "ordinary cleanup is immediate, without a microtask grace")
+test("native sidebar layout replacement requires new paint while hide or destruction loses proof immediately", () => {
+  const input = { ...layout(), owner: Symbol() }, proof = new ReviewGeometryProof()
+  assert.equal(proof.state(input, true), "visible")
+  input.width = 120
+  assert.equal(proof.state(input), "pending", "breakpoint handoff awaits actual replacement geometry")
+  for (const key of ["panel", "heading", "rating", "report", "footer"] as const) input[key].x -= 40
+  for (const child of input.footer.getChildren!()) child.x -= 40
+  input.owner = Symbol()
+  assert.equal(proof.state(input), "pending")
+  assert.equal(proof.state(input, true), "visible")
+  for (const gate of ["visible", "isDestroyed"] as const) {
+    input.panel[gate] = gate === "isDestroyed"
+    assert.equal(proof.state(input), "lost", "ordinary hide/destruction is immediate")
+    input.panel[gate] = gate === "visible"
+    proof.invalidate()
+    assert.equal(proof.state(input), "pending", "restored bounds do not manufacture paint")
+    assert.equal(proof.state(input, true), "visible")
   }
 })

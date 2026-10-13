@@ -4,10 +4,11 @@ import { setImmediate as settle } from "node:timers/promises"
 import { createServer } from "node:http"
 import { parseConfig } from "../src/config.js"
 import { review, withDeadline } from "../src/reviewer.js"
-import type { Evidence, ReviewAttemptEvent, ReviewProgress } from "../src/types.js"
+import type { ReviewAttemptEvent, ReviewProgress } from "../src/types.js"
+import { shellEvidence } from "./review-fixtures.js"
 import type { Usage } from "../src/usage.js"
 
-const evidence: Evidence = { kind: "shell", command: "pwd", cwd: "/fixture", userPrompt: "Show cwd", files: [], limitations: [] }
+const evidence = shellEvidence()
 const config = parseConfig({ baseURL: "https://openrouter.ai/api/v1", model: "alias", stream: true, formatRetries: 5 })
 const event = (body: unknown) => `data: ${typeof body === "string" ? body : JSON.stringify(body)}\n\n`
 const frame = (delta: Record<string, unknown>, finish_reason: string | null = null) => event({

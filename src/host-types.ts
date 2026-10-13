@@ -1,4 +1,4 @@
-/** Reviewer-owned V2 data, independent of the legacy SDK. */
+/** Reviewer-owned native request, invocation and evidence data. */
 export type JSONValue = null | boolean | number | string | readonly JSONValue[] | JSONObject
 export interface JSONObject { readonly [key: string]: JSONValue }
 

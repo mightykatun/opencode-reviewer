@@ -1,5 +1,5 @@
 import type { Config } from "./config.js"
-import type { Assessment, ReviewEvidence, ReviewProgress, ReviewResult, ReviewObservation, ReviewAttemptEvent } from "./types.js"
+import type { Assessment, ReviewProgress, ReviewResult, ReviewObservation, ReviewAttemptEvent } from "./types.js"
 import { randomUUID } from "node:crypto"
 import { BUILTIN_PROMPTS, CONTRACT, correctionPrompt, type PromptSet } from "./prompts.js"
 import { usageAttempt, sumUsage, type PricingLookup, type Usage } from "./usage.js"
@@ -236,7 +236,7 @@ export interface ReviewerDependencies {
 }
 
 export async function review(
-  evidence: ReviewEvidence | HostReviewEvidence,
+  evidence: HostReviewEvidence,
   config: Config,
   signal: AbortSignal,
   { fetcher = fetch, environment = process.env, prompts = BUILTIN_PROMPTS,

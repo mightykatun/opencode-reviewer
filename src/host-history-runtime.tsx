@@ -9,10 +9,9 @@ import type { HostPanelBounds, HostSidebarAnchor } from "./host-review-panel.js"
 import { HistoryStore, type HistoryStoreOptions } from "./history-store.js"
 import { HistoryCoordinator, drainHistory } from "./history-coordinator.js"
 import { HistoryController, type HistoryViewState } from "./history-controller.js"
-import { HistoryCover } from "./history-cover.js"
 import { StatisticsController, type StatisticsState } from "./statistics-controller.js"
 import { SessionModes, type AncestryReader } from "./session-mode.js"
-import { HostHistoryView, setupHostHistoryCover } from "./host-history-view.js"
+import { HostHistoryView, type HostHistoryInput } from "./host-history-view.js"
 import { setupHostStatistics } from "./host-statistics-view.js"
 import { uiText } from "./ui-text.js"
 import { setupHostSidebar } from "./host-sidebar.js"
@@ -24,14 +23,12 @@ export interface HostHistoryRuntimeOptions {
   rootRoute(): string | undefined
   sidebarOwner(): HostSidebarAnchor | undefined
   sidebarGeometry(): HostPanelBounds | undefined
-  /** Recheck the live panel's real presentation after a history FRAME/cleanup. */
-  onPresented?(): void
   /** Explicit source-test/embedding transport seam, never plugin configuration. */
   storeOptions?: HistoryStoreOptions
 }
 
 /** Stable V2 indexing only. Neither this key nor the pathname proves server
- * ownership, authorizes deletion, relabels V1 rows or reconstructs lifetime totals. */
+ * ownership, authorizes deletion, relabels existing rows or reconstructs lifetime totals. */
 export function hostHistoryScope(directory: string): string {
   if (!path.isAbsolute(directory) || directory.includes("\0")) throw Error("History location must be absolute")
   return path.join(path.parse(directory).root, "opencode-reviewer-v2", createHash("sha256").update(path.normalize(directory)).digest("hex"))
@@ -76,13 +73,15 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
   const history = new HistoryCoordinator<HostRequest>(scope, store, root, Date.now, request => request.source?.assistantID)
   const [state, setState] = createSignal<HistoryViewState>({ open: false, status: "loading", reset: 0 })
   const browser = new HistoryController(scope, store, (id, signal) => history.root(id, signal), setState)
+  // Opt-in fixture observation of the actual mounted view's input ownership.
+  // The view replaces these disabled methods only after installing real browsing.
+  const historyInput: HostHistoryInput | undefined = pluginState.dependencies.historyProbe
+    ? { interactive: () => false, scroll: () => {} } : undefined
   const [statisticsState, setStatisticsState] = createSignal<StatisticsState>({
     open: false, view: "lifetime", unavailable: false, ancestry: "none",
   })
   const statistics = new StatisticsController(scope, store, (id, signal) => history.root(id, signal), setStatisticsState)
   const statisticsUI = setupHostStatistics(context, statistics, statisticsState, connected)
-  const cover = new HistoryCover()
-  const removeCover = setupHostHistoryCover(context, cover)
   let uiStopped = false
   const stopUI = () => {
     if (uiStopped) return
@@ -90,7 +89,6 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
     setConnected(false)
     statisticsUI.close()
     browser.close()
-    removeCover()
   }
   // Only UI ownership is registered here. Lifecycle cleanups run concurrently,
   // so closing storage here could race controller transport/accounting finalizers.
@@ -109,7 +107,7 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
     return <Show when={state().open && selected()} keyed>{session =>
       <HostHistoryView context={context} controller={browser} state={state} session={session}
         rootSession={selected} sidebarOwner={options.sidebarOwner} sidebarGeometry={options.sidebarGeometry}
-        cover={cover} onPresented={options.onPresented} />
+        input={historyInput} />
     }</Show>
   }
   /** Only invalidate volatile facts. A location index or an unproven stored row
@@ -139,8 +137,8 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
     browser.dispose()
     return disposal = drainHistory(store, Promise.allSettled([finalizers, settled()]), abortAt)
   }
-  return { history, store, browser, state, cover, statistics, statisticsState, lifetimeText: statisticsUI.text,
-    render, scope, location, invalidateSession, revoke, dispose, settled }
+  return { history, store, browser, state, statistics, statisticsState, lifetimeText: statisticsUI.text,
+    render, scope, location, historyInput, invalidateSession, revoke, dispose, settled }
 }
 
 /** Read-only composition for unavailable review configuration or companion. The

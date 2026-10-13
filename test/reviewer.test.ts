@@ -22,22 +22,20 @@ async function review(...args: Parameters<typeof reviewWithMetadata>) {
   return result
 }
 import { BUILTIN_PROMPTS, CONTRACT, CORRECTION, loadPrompts } from "../src/prompts.js"
-import { collectEditEvidence } from "../src/evidence.js"
-import type { Evidence, ReviewEvidence, ReviewProgress } from "../src/types.js"
+import { collectHostEvidence } from "../src/host-evidence.js"
+import { FileAccess } from "../src/file-access.js"
+import { shellEvidence, editEvidence, directoryEvidence, nativeInvocation } from "./review-fixtures.js"
+import type { ReviewProgress } from "../src/types.js"
 import { usageText, type Usage } from "../src/usage.js"
 import { lifetimeCost } from "../src/lifetime.js"
 import { DatabaseSync } from "node:sqlite"
 import { HistorySQL, type HistoryTotals } from "../src/history-schema.js"
 import { encodeEvent } from "../src/history-records.js"
 
-const evidence: Evidence = {
-  kind: "shell",
+const evidence = shellEvidence({
   command: "python fruits.py", cwd: "/external", userPrompt: "Count fruits",
   files: [{ filename: "fruits.py", status: "captured", contents: "print('pear')" }], limitations: [],
-  permission: { id: "request", type: "bash", patterns: ["python fruits.py"], always: ["python *"], metadata: { command: "python fruits.py", workdir: "/external" }, tool: { messageID: "m", callID: "c" } },
-  session: { root: { id: "root", parentID: null, directory: "/project/start", projectID: "repo", workspaceID: null }, current: null, currentProject: null, rootProject: { id: "repo", worktree: "/project", vcs: "git", name: "Initial repo" } },
-  execution: { tool: "bash", requestedWorkdir: "/external", instanceDirectory: "/project/start", instanceWorktree: "/project", cwdSource: "absolute tool.workdir", canonicalCwd: "/external" },
-}
+})
 const signal = () => new AbortController().signal
 const envelope = (content: string) => JSON.stringify({ choices: [{ message: { content } }] })
 
@@ -613,16 +611,16 @@ test("redirects are not followed and cannot forward review evidence", async (t) 
 
 test("edit evidence uses its own assessment and fixed correction, retaining partial coverage", async (t) => {
   const { config, requests } = await endpoint(t, (index, res) => res.end(envelope(index % 2 ? '{"safe":false,"desc":"Partial review: deleted file content omitted."}' : '{"safe":"yes","desc":"bad type"}')))
-  const edit = await collectEditEvidence({
-    kind: "edit", tool: "apply_patch", userPrompt: "Update a setting", limitations: [], session: evidence.session,
-    location: { instanceDirectory: "/project", instanceWorktree: "/project" },
-    permission: { id: "edit", type: "edit", patterns: ["config", "data"], always: ["*"], tool: { messageID: "m", callID: "c" }, metadata: {
-      diff: "raw secret aggregate", files: [
-        { filePath: "/project/config", type: "update", patch: "-false\n+true\n" },
-        { filePath: "/project/data", type: "delete", patch: "omitted secret" },
-      ],
-    } },
-  }, { maxFiles: 1, maxEvidenceBytes: 100 }, signal())
+  const collected = await collectHostEvidence(nativeInvocation("patch", {
+    patchText: "*** Begin Patch\n*** Update File: config\n@@\n-false\n+true\n*** Delete File: data\n*** End Patch",
+  }, { diff: "raw secret aggregate", files: [
+    { file: "config", status: "modified", patch: "-false\n+true\n" },
+    { file: "data", status: "deleted", patch: "omitted secret" },
+  ] }, "/project", ["config", "data"]), { ...config, maxFiles: 1, maxEvidenceBytes: 100 }, signal(), new FileAccess())
+  assert.ok(collected.status === "ready" && collected.evidence.kind === "edit")
+  const edit = collected.evidence
+  assert.equal(edit.partial, true)
+  assert.deepEqual(edit.changes.map(change => change.status), ["included", "omitted"])
   const customDir = await mkdtemp(path.join(tmpdir(), "review-prompts-"))
   t.after(() => rm(customDir, { recursive: true, force: true }))
   await writeFile(path.join(customDir, "EDIT-REVIEW-PROMPT.md"), "Custom edit instructions")
@@ -651,11 +649,7 @@ test("extra-careful guidance defaults on and can be omitted from native auto rev
     res.writeHead(200, { "Content-Type": stream ? "text/event-stream" : "application/json" })
     res.end(stream ? `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n` : envelope(content))
   })
-  const edit = await collectEditEvidence({
-    kind: "edit", tool: "edit", userPrompt: "Update note", limitations: [], session: evidence.session,
-    location: { instanceDirectory: "/project", instanceWorktree: "/project" },
-    permission: { ...evidence.permission!, type: "edit", metadata: { filepath: "/project/note", diff: "-old\n+new" } },
-  }, config, signal())
+  const edit = editEvidence({ userPrompt: "Update note" })
   for (const input of [evidence, edit]) for (const autoApprove of [false, true]) for (const extraCareful of [undefined, true, false]) for (const streaming of [false, true]) {
     stream = streaming
     const prompts = { ...BUILTIN_PROMPTS, extraCareful: "CUSTOM EXTRA CARE: check the supplied evidence carefully." }
@@ -751,20 +745,17 @@ test("canceling a rejected-stream retry clears the preview and dispatches no new
   assert.deepEqual(progress.at(-1), { attempt: 1, phase: "retrying" })
 })
 
-test("new review kinds select only their own instructions and share the fixed correction contract", async (t) => {
+test("native directory reviews select their own instructions and share the fixed correction contract", async (t) => {
   let stream = false
   const { config, requests } = await endpoint(t, (index, res) => {
     const content = index % 2 ? '{"safe":true,"desc":"Bounded operation."}' : "bad format"
     res.writeHead(200, { "Content-Type": stream ? "text/event-stream" : "application/json" })
     res.end(stream ? `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n` : envelope(content))
   })
-  for (const kind of ["mcp", "custom", "external-directory"] as const) for (const autoApprove of [false, true]) for (const extraCareful of [undefined, true, false]) for (const streaming of [false, true]) {
+  const kind = "external-directory"
+  for (const autoApprove of [false, true]) for (const extraCareful of [undefined, true, false]) for (const streaming of [false, true]) {
     stream = streaming
-    const common = { kind, tool: "fixture_tool", userPrompt: "Perform fixture operation", limitations: [],
-      permission: { ...evidence.permission!, type: kind === "external-directory" ? "external_directory" : "fixture_tool" }, location: { instanceDirectory: "/fixture", instanceWorktree: "/fixture" }, partial: false }
-    const input: ReviewEvidence = kind === "external-directory"
-      ? { ...common, kind, operation: { input: { path: "/outside" }, inputStatus: "complete" }, permission: { ...common.permission, metadataStatus: "complete" } }
-      : { ...common, kind, input: { target: "fixture" }, origin: { source: kind === "mcp" ? "host MCP routing" : "host registry", server: null }, definition: { status: "unavailable", reason: "Fixture definition unavailable" } }
+    const input = directoryEvidence({ userPrompt: "Perform fixture operation" })
     const start = requests.length
     await review(input, parseConfig({ ...config, autoApprove, extraCareful, stream }), signal())
     assert.equal(requests.length - start, 2)

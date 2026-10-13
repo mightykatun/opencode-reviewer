@@ -53,7 +53,6 @@ async function fixture(fast = false, heldPreparation = false, heldVerification =
     modes: { root: async () => "root", load: async () => {}, enabled: () => state.enabled },
     reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, fastMode: fast, stream: true, autoApproveDelaySeconds: delay },
     nativeApproval: {
-      visibleID: () => undefined, presentation: () => ({ state: "lost" }),
       list: async () => { if (state.listErrors-- > 0) throw Error("Temporary read failure"); await verification.promise; return state.pending },
       once: async (_request, signal, dispatch) => {
         state.preparations++
@@ -81,7 +80,7 @@ test("normal: Safe completion starts without any panel, mouse, Markdown or paint
   const f = await fixture(); t.after(() => f.dispose())
   await f.complete()
   assert.deepEqual(f.view()?.autoApproval, { status: "countdown", seconds: 2 })
-  f.controller.presented({ state: "lost" }); f.clock.jump(2199); await settle()
+   f.controller.refreshApprovalEligibility(); f.clock.jump(2199); await settle()
   assert.equal(f.state.writes, 0)
   f.clock.jump(1); await settle()
   assert.equal(f.state.writes, 1)
@@ -122,7 +121,7 @@ for (const blocker of ["route", "native decision", "native priority", "unreadabl
     if (blocker === "native priority") f.state.front = "disabled"
     else if (blocker === "unreadable queue") f.state.front = undefined
     else f.state.ready = false
-    f.controller.presented({ state: "lost" })
+    f.controller.refreshApprovalEligibility()
     f.clock.jump(10_000); await settle()
     assert.equal(f.state.writes, 0)
     assert.equal(f.view()?.autoApproval?.status, "waiting")
@@ -149,7 +148,7 @@ for (const fast of [false, true]) {
     const f = await fixture(fast, true); t.after(() => f.dispose())
     if (!fast) { await f.complete(); f.clock.jump(2200) }
     await settle(); assert.equal(f.state.preparations, 1)
-    f.state.ready = false; f.controller.presented({ state: "lost" })
+    f.state.ready = false; f.controller.refreshApprovalEligibility()
     f.preparation.resolve(); await settle()
     assert.equal(f.state.writes, 0)
     assert.notEqual(f.view()?.autoApproval?.status, "cancelled")
@@ -219,7 +218,7 @@ test("normal: a route change during the verification read cannot strand the expi
 test("fast: rejected preview revokes an unsent approval without turning hidden UI into cancellation", async t => {
   const f = await fixture(true, true); t.after(() => f.dispose())
   f.progress({ attempt: 0, phase: "streaming" })
-  f.controller.presented({ state: "lost" })
+  f.controller.refreshApprovalEligibility()
   f.preparation.resolve(); await settle()
   assert.equal(f.state.writes, 0)
   f.progress({ attempt: 1, phase: "retrying" })
@@ -233,7 +232,7 @@ test("fast: hidden Safe preview is retained and accepted without ever presenting
   const f = await fixture(true); t.after(() => f.dispose()); await settle()
   assert.equal(f.state.writes, 1)
   assert.equal(f.view()?.retained, true)
-  f.state.ready = false; f.controller.presented({ state: "lost" })
+  f.state.ready = false; f.controller.refreshApprovalEligibility()
   await f.complete()
   assert.equal(f.controller.views.length, 0)
   assert.equal(f.lifecycle.filter(fact => fact.type === "accepted").length, 1)
@@ -250,7 +249,7 @@ test("fast: a hidden retained report is not a native blocker for the next Safe r
     modes: { root: async () => "root", load: async () => {}, enabled: () => true },
     reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, fastMode: true, stream: true },
     onApproval: fact => { facts.push(fact) }, nativeApproval: {
-      visibleID: () => undefined, list: async () => pending,
+      list: async () => pending,
       async once(value, _signal, dispatch) {
         if (!dispatch()) return { status: "unavailable" }
         assert.equal(pending[0]?.id, value.id)

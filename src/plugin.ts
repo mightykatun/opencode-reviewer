@@ -7,7 +7,7 @@ import type { CompanionHandshake } from "./companion-protocol.js"
 import type { PluginDependencies } from "./plugin-dependencies.js"
 import type { FileIO } from "./file-access.js"
 import type { DiagnosticObserver } from "./diagnostics.js"
-import type { HistoryRenderProbe, NotificationBackendFactory } from "./tui.js"
+import type { HistoryRenderProbe, NotificationBackendFactory } from "./embedding-types.js"
 import type { NotificationProcesses } from "./notification-process.js"
 import { LinuxNotifications } from "./notification-linux.js"
 

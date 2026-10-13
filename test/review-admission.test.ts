@@ -1,13 +1,13 @@
 import assert from "node:assert/strict"
 import { test, type TestContext } from "node:test"
 import { setImmediate as settle } from "node:timers/promises"
-import type { PermissionRequest } from "@opencode-ai/sdk/v2"
+import type { HostRequest } from "../src/host-types.js"
 import { Controller, visibleReview, type ControllerOptions } from "../src/controller.js"
 import type { ReviewProgress, ReviewResult } from "../src/types.js"
 import { ownedReview } from "../src/review-admission.js"
 
-const request = (id: string, sessionID = "root", permission = "bash"): PermissionRequest =>
-  ({ id, sessionID, permission, patterns: [id], metadata: {}, always: [] })
+const request = (id: string, sessionID = "root", action = "shell"): HostRequest =>
+  ({ id, sessionID, action, resources: [id] })
 const report = { safe: true, desc: "Final admitted report." }
 const id = (i: number) => `per_${String(i).padStart(3, "0")}`
 function deferred<T>() {
@@ -18,7 +18,7 @@ function deferred<T>() {
 function fixture(t: TestContext, options: ControllerOptions = {}) {
   let actual = 0, maximum = 0, publications = 0
   const accepted: string[] = []
-  const workers: { request: PermissionRequest; signal: AbortSignal; identify(): void; progress(p: ReviewProgress): void;
+  const workers: { request: HostRequest; signal: AbortSignal; identify(): void; progress(p: ReviewProgress): void;
     result: ReturnType<typeof deferred<ReviewResult>>; cleanup: ReturnType<typeof deferred<void>> }[] = []
   const controller = new Controller(async (req, signal, identify, progress) => {
     actual++; maximum = Math.max(maximum, actual)
@@ -27,7 +27,8 @@ function fixture(t: TestContext, options: ControllerOptions = {}) {
     identify()
     try { return await result.promise }
     finally { await cleanup.promise; actual-- }
-  }, () => { publications++ }, { ...options, onLifecycle: fact => {
+  }, () => { publications++ }, { candidate: (req, options) => req.action === "shell" ? options.reviewBash : options.reviewEdits,
+    nativeFront: (_root, pending) => pending[0]?.id, ...options, onLifecycle: fact => {
     if (fact.type === "accepted") accepted.push(fact.request.id)
     return options.onLifecycle?.(fact)
   } })
@@ -46,12 +47,12 @@ const gate = (root: (session: string) => string, enabled = () => true) => ({
 })
 
 for (const children of [false, true]) test(`fanout64 ${children ? "root/child" : "same-root"}: four evaluators, native-front first and bounded progress`, async t => {
-  const f = fixture(t, { modes: gate(() => "ses_Z_root") })
+  const f = fixture(t, { modes: gate(() => "ses_Z_root"), nativeFront: () => id(0) })
   const requests = Array.from({ length: 64 }, (_, i) => request(id(i), children && i % 2 ? "ses_A_child" : "ses_Z_root"))
   f.controller.reconcile(requests.toReversed(), f.controller.revision)
   assert.equal(f.publications(), 65, "native blockers publish synchronously, including reconciliation completion")
   await settle()
-  const front = [...requests].sort((a, b) => a.sessionID < b.sessionID ? -1 : a.sessionID > b.sessionID ? 1 : a.id < b.id ? -1 : 1)[0]!
+  const front = requests[0]!
   // Reconciliation supplies reversed arrivals. Once the actual native front is
   // admitted, it stays pending and background service follows arrival order.
   const order = [front, ...requests.toReversed().filter(req => req !== front)]
@@ -71,7 +72,7 @@ for (const children of [false, true]) test(`fanout64 ${children ? "root/child" :
 })
 
 test("native-front child arriving behind fanout64 is next in its root, without preempting active evidence", async t => {
-  const f = fixture(t, { modes: gate(() => "ses_Z_root") })
+  const f = fixture(t, { modes: gate(() => "ses_Z_root"), nativeFront: (_root, pending) => pending.find(req => req.id === "per_z")?.id ?? pending[0]?.id })
   for (let i = 0; i < 64; i++) f.controller.asked(request(id(i), "ses_Z_root"))
   await settle()
   f.controller.asked(request("per_z", "ses_A_child"))
@@ -84,8 +85,9 @@ test("native-front child arriving behind fanout64 is next in its root, without p
   assert.equal(f.workers[5]?.request.id, id(4))
 })
 
-test("actual native front outranks earlier-ID deep descendants using public session metadata", async t => {
+test("actual native front outranks earlier-ID deep descendants using supplied public queue", async t => {
   const f = fixture(t, { modes: gate(session => session === "busy" ? "busy" : "ses_Z_root"),
+    nativeFront: (_root, pending) => pending.find(req => req.id === "per_z")?.id ?? pending.find(req => req.id === "per_a")?.id ?? pending[0]?.id,
     session: session => ({ id: session, ...(session === "ses_A_child" ? { parentID: "ses_Z_root" }
       : session === "ses_0_deep" ? { parentID: "ses_A_child" } : {}) }) })
   for (let i = 0; i < 4; i++) f.controller.asked(request(`busy-${i}`, "busy"))
@@ -212,41 +214,47 @@ test("disabled kinds remain native blockers after all admitted reviews complete"
   let writes = 0
   const f = fixture(t, {
     reviewOptions: { reviewBash: true, reviewEdits: false, autoApprove: true },
-    approval: { visibleID: () => visibleReview(f.controller.views, "root", id => ({ id }))?.request.id,
-      list: async () => requests, once: async () => { writes++ } },
+    approvalReady: () => true, nativeFront: () => requests[0]?.id,
+    nativeApproval: { list: async () => requests, once: async (req, _signal, dispatch) => {
+      if (!dispatch()) return { status: "unavailable" }; writes++
+      f.controller.permissionReplied({ sessionID: req.sessionID, requestID: req.id, decision: "once" }); return { status: "submitted" }
+    } },
   })
   f.controller.reconcile(requests, f.controller.revision); await settle()
   for (let i = 0; i < 8; i++) { f.finish(i); await settle() }
   assert.equal(f.workers.length, 8)
   assert.equal(f.controller.views[0]?.status, "unrelated")
   assert.equal(visibleReview(f.controller.views, "root", id => ({ id })), undefined)
-  f.controller.presented(id(0)); await f.controller.approveNow(id(0))
+  f.controller.refreshApprovalEligibility(); await f.controller.approveNow(id(0))
   assert.equal(writes, 0)
   requests.shift(); f.controller.replied("0-blocker")
-  f.controller.presented(id(0)); await f.controller.approveNow(id(0))
+  f.controller.refreshApprovalEligibility(); await f.controller.approveNow(id(0))
   assert.equal(writes, 1)
 })
 
 test("retained fast report owns one of four slots across resolution, disable/re-enable and native handoff", async t => {
-  let enabled = true, shown: string | undefined = "root"
+  let enabled = true, ready = true
   const requests = Array.from({ length: 64 }, (_, i) => request(id(i)))
   const writes: string[] = []
   const f = fixture(t, {
     modes: gate(() => "root", () => enabled),
     reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, fastMode: true, stream: true },
-    approval: { visibleID: () => visibleReview(f.controller.views, shown, id => ({ id }))?.request.id,
-      list: async () => requests, once: async req => { writes.push(req.id) } },
+    approvalReady: () => ready, nativeFront: () => requests[0]?.id,
+    nativeApproval: { list: async () => requests, once: async (req, _signal, dispatch) => {
+      if (!dispatch()) return { status: "unavailable" }; writes.push(req.id)
+      requests.splice(requests.findIndex(value => value.id === req.id), 1)
+      f.controller.permissionReplied({ sessionID: req.sessionID, requestID: req.id, decision: "once" }); return { status: "submitted" }
+    } },
   })
   f.controller.reconcile(requests, f.controller.revision); await settle()
-  f.controller.presented(id(0))
+  f.controller.refreshApprovalEligibility()
   f.workers[0]!.progress({ attempt: 0, phase: "evaluating" })
   f.workers[0]!.progress({ attempt: 0, phase: "streaming", preview: { safe: true, desc: "unfinished" } })
   await settle()
   assert.deepEqual(writes, [id(0)])
   assert.equal(f.controller.views[0]?.retained, true)
   assert.equal(f.controller.views[0]?.resolved, true)
-  requests.shift(); f.controller.replied(id(0))
-  shown = undefined; f.controller.presented()
+  ready = false; f.controller.refreshApprovalEligibility()
   enabled = false; f.controller.modeChanged("root")
   enabled = true; f.controller.modeChanged("root")
   f.controller.reconcile(requests, f.controller.revision); await settle()
@@ -257,17 +265,17 @@ test("retained fast report owns one of four slots across resolution, disable/re-
   assert.equal(f.workers.length, 5)
   assert.equal(f.workers[4]!.request.id, id(1))
   assert.equal(f.actual(), 4, "retained stream plus two old finalizers plus one fresh evaluator")
-  shown = "root"
-  f.controller.presented(visibleReview(f.controller.views, shown, id => ({ id }))?.request.id)
+  ready = true
+  f.controller.refreshApprovalEligibility()
   f.workers[4]!.progress({ attempt: 0, phase: "evaluating" })
   f.workers[4]!.progress({ attempt: 0, phase: "streaming", preview: { safe: true, desc: "next" } })
   await settle()
-  assert.deepEqual(writes, [id(0)], "retained physical presentation cannot approve the next native request")
+  assert.deepEqual(writes, [id(0), id(1)], "retained report does not gate the next native request")
   f.finish(0); await settle()
   assert.equal(f.workers.length, 6)
   assert.deepEqual(f.accepted, [id(0)])
   assert.equal(f.controller.views.some(v => v.request.id === id(0)), false)
-  f.controller.presented(id(1)); await settle()
+  f.controller.refreshApprovalEligibility(); await settle()
   assert.deepEqual(writes, [id(0), id(1)])
 })
 
@@ -290,7 +298,7 @@ for (const stage of ["evidence", "model"] as const) test(`fanout64 ${stage} dead
       if (stage === "model") await held.promise
       return report
     } finally { actual-- }
-  }), () => {}, { onLifecycle: fact => { if (fact.type === "accepted") accepted++ } })
+  }), () => {}, { candidate: () => true, onLifecycle: fact => { if (fact.type === "accepted") accepted++ } })
   t.after(async () => {
     const closing = controller.dispose()
     for (const held of physical) held.resolve()
@@ -330,7 +338,7 @@ test("disable during the reserved dispatch turn prevents the remaining queued in
     calls++
     enabled = false; controller.modeChanged("root")
     return report
-  }, () => {}, { modes: gate(() => "root", () => enabled) })
+  }, () => {}, { candidate: () => true, modes: gate(() => "root", () => enabled) })
   t.after(() => controller.dispose())
   for (let i = 0; i < 64; i++) controller.asked(request(id(i)))
   await settle()
@@ -340,7 +348,7 @@ test("disable during the reserved dispatch turn prevents the remaining queued in
 
 test("synchronous evaluator throws release their owned slots and the queue continues", async t => {
   let calls = 0
-  const controller = new Controller(() => { calls++; throw new Error("fixture evaluator failure") }, () => {})
+  const controller = new Controller(() => { calls++; throw new Error("fixture evaluator failure") }, () => {}, { candidate: () => true })
   t.after(() => controller.dispose())
   for (let i = 0; i < 64; i++) controller.asked(request(id(i)))
   await settle()

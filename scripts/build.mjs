@@ -104,7 +104,7 @@ const entrypoint = await build({
   target: "es2023",
   banner: { js: soundBanner(sounds) },
   define: { ...define, __HOST_RUNTIME__: JSON.stringify(Buffer.from(hostRuntime.outputFiles[0].text).toString("base64")) },
-  external: ["solid-js", "solid-js/*", "@opentui/*", "@opencode/*", "@opencode-ai/*"],
+  external: ["solid-js", "solid-js/*", "@opentui/*", "@opencode/*"],
   plugins: [decoderPlugin, jsxPlugin, embeddedPromptsPlugin],
 })
 for (const output of Object.values(entrypoint.metafile.outputs)) {

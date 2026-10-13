@@ -1,7 +1,5 @@
-import type { PresentationState } from "./review-presentation.js"
-
 /** Layout proof is independent of occlusion and Markdown readiness. A hit on any
- * panel child cannot prove that the approval controls still fit in the viewport. */
+ * panel child cannot prove that the displayed controls still fit in the viewport. */
 export interface ReviewRegion {
   x: number
   y: number
@@ -43,13 +41,13 @@ export function reviewGeometry(input: ReviewLayout, footerContents = true): bool
 
 /** A footer branch can be replaced synchronously before its next layout. Retain
  * only the painted proof for identical container geometry until the next frame;
- * otherwise zero-sized new children would cancel a valid Checking -> Allowing
+ * otherwise zero-sized new children would invalidate a Checking -> Allowing
  * transition. Viewport/container changes invalidate that proof immediately. */
 export class ReviewGeometryProof {
   private painted?: { regions: (ReviewRegion | undefined)[]; bounds: number[]; owner: unknown }
   private renewed = false
   invalidate() { this.renewed = true }
-  state(input: ReviewLayout, frame = false): PresentationState {
+  state(input: ReviewLayout, frame = false): "visible" | "pending" | "lost" {
     const regions = [input.panel, input.heading, input.rating, ...(input.fast ? [] : [input.report, input.footer])]
     const bounds = [input.width, input.height, ...regions.flatMap(region => region
       ? [region.x, region.y, region.width, region.height] : [])]

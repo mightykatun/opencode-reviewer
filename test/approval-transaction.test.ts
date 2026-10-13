@@ -30,7 +30,7 @@ function fixture(observe?: (fact: ApprovalFact<typeof request>) => unknown) {
     dispatched: () => { publications++; assert.equal(calls, 1) },
     confirming: () => {}, confirmed: () => {},
   }
-  const writer = { native: { async once(_request: typeof request, bounded: AbortSignal, dispatch: () => boolean) {
+  const writer = { async once(_request: typeof request, bounded: AbortSignal, dispatch: () => boolean) {
     signal = bounded
     await preparation.promise
     if (!dispatch()) return { status: "unavailable" as const }
@@ -38,7 +38,7 @@ function fixture(observe?: (fact: ApprovalFact<typeof request>) => unknown) {
     assert.equal(dispatch(), false, "even a repeated transport callback cannot dispatch again")
     calls++
     return ack.promise
-  } } }
+  } }
   return { transaction, parent, ack, preparation, facts, policy, writer, signal: () => signal, verification: () => verification, calls: () => calls,
     start() { return withDeadline(parent.signal, 5000, signal => { verification = signal; return transaction.submit(signal, writer, policy) }) },
     submit(other: Parameters<typeof transaction.submit>[1], checks: Parameters<typeof transaction.submit>[2] = policy) {
@@ -134,7 +134,7 @@ test("native owner: cancellation while preparing blocks a late dispatch and remo
 
 test("native owner: unavailable preparation never produces dispatch or automatic attribution", async () => {
   const f = fixture()
-  await f.submit({ native: { once: async () => ({ status: "unavailable" }) } })
+  await f.submit({ once: async () => ({ status: "unavailable" }) })
   assert.equal(f.transaction.state, "not-sent")
   assert.equal(f.transaction.dispatched, false)
   assert.equal(f.transaction.resolved(once), false)
@@ -153,17 +153,19 @@ test("owner: pre-aborted preparation settles not-sent without calling a writer",
   assert.equal(f.facts[0]?.result, "not-sent")
 })
 
-test("legacy owner: a read-only guard deferral allows fresh verification but never a second invocation", async () => {
+test("native owner: a read-only guard deferral allows fresh verification but never a second invocation", async () => {
   const f = fixture()
   let eligible = false, calls = 0
   const policy = { ...f.policy, guard: () => eligible, dispatched: undefined }
-  const writer = { legacy: { once: async () => { calls++ } } }
+  const writer = { once: async (_request: typeof request, _signal: AbortSignal, dispatch: () => boolean) => {
+    assert.equal(dispatch(), true); calls++; f.transaction.resolved(once); return { status: "submitted" as const }
+  } }
   await f.submit(writer, policy)
   assert.equal(f.transaction.state, "preparing")
   assert.equal(getEventListeners(f.verification(), "abort").length, 0)
   eligible = true
   await f.submit(writer, policy)
-  assert.equal(f.transaction.state, "confirmed", "legacy void return remains confirmation without a native event")
+  assert.equal(f.transaction.state, "confirmed", "native acknowledgement and exact once confirm together")
   await assert.rejects(f.submit(writer, policy))
   assert.equal(calls, 1)
   assert.deepEqual(f.facts.map(fact => fact.type), ["dispatched", "confirmed", "settled"])

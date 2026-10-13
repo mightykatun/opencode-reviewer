@@ -6,11 +6,13 @@ import { ownedReview } from "../src/review-admission.js"
 import { review } from "../src/reviewer.js"
 import { parseConfig } from "../src/config.js"
 import { drainHistory } from "../src/history-coordinator.js"
-import type { Evidence, ReviewAttemptEvent } from "../src/types.js"
+import type { ReviewAttemptEvent } from "../src/types.js"
+import { shellEvidence } from "./review-fixtures.js"
 
-const evidence: Evidence = { kind: "shell", command: "pwd", cwd: "/fixture", userPrompt: "Show cwd", files: [], limitations: [] }
+const evidence = shellEvidence()
 const config = parseConfig({ baseURL: "https://fixture.invalid/v1", model: "fixture", stream: false })
-const request = (i: number) => ({ id: `p${String(i).padStart(2, "0")}`, sessionID: "root", permission: "bash", patterns: ["pwd"], metadata: {}, always: [] })
+const request = (i: number) => ({ id: `p${String(i).padStart(2, "0")}`, sessionID: "root", action: "shell", resources: ["pwd"],
+  source: { assistantID: "assistant", id: "call" } })
 const good = JSON.stringify({ choices: [{ message: { content: '{"safe":true,"desc":"Bounded."}' } }] })
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (reason: unknown) => void
@@ -31,8 +33,8 @@ for (const outcome of ["resolve", "reject"] as const) test(`production admission
   let active = 0, maximum = 0
   const controller = new Controller((_request, parent, identify) => ownedReview(parent, 20, async signal => {
     identify()
-    // The ordinary async wrapper matches tui.tsx: no special promise property
-    // can survive it. Physical ownership travels with the bounded signal.
+    // An ordinary async wrapper cannot retain a special promise property.
+    // Physical ownership travels with the bounded signal.
     return review(evidence, config, signal, { fetcher: (_url, init) => {
       signals.push(init!.signal as AbortSignal)
       maximum = Math.max(maximum, ++active)
@@ -40,7 +42,7 @@ for (const outcome of ["resolve", "reject"] as const) test(`production admission
       fetches.push(pending)
       return pending.promise.finally(() => { active-- })
     }, observation: { review: "review", observe: event => { events.push(event) } } })
-  }), () => {})
+  }), () => {}, { candidate: () => true })
   for (let i = 0; i < 12; i++) controller.asked(request(i))
   await turn()
   assert.equal(fetches.length, 4)
@@ -100,7 +102,7 @@ for (const stream of [false, true]) for (const first of ["read", "cancel"] as co
         response.headers.set("Content-Type", "text/event-stream")
         return response
       } })
-    }), () => {})
+    }), () => {}, { candidate: () => true })
     for (let i = 0; i < 12; i++) controller.asked(request(i))
     await turn()
     assert.equal(posts, 4)
@@ -220,7 +222,7 @@ test("native body cancellation retains admission while usage finalization and bo
         }), { headers: { "Content-Type": "text/event-stream" } })
       }, observation: { review: "review", observe: event => { events.push(event) } },
     })
-  }), () => {})
+  }), () => {}, { candidate: () => true })
   for (let i = 0; i < 12; i++) controller.asked(request(i))
   await turn()
   assert.equal(posts, 4)

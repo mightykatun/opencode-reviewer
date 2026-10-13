@@ -62,7 +62,7 @@ export interface HostDirectoryEvidence extends Base {
   operation: Operation
   partial: boolean
 }
-/** V2 evidence never approximates a V1 SDK permission or assistant.path. */
+/** Evidence retains exact native permission and captured invocation scope. */
 export type HostReviewEvidence = HostShellEvidence | HostEditEvidence | HostDirectoryEvidence
 export type HostOperationEvidence = Omit<HostShellEvidence, keyof Conversation>
   | Omit<HostEditEvidence, keyof Conversation> | Omit<HostDirectoryEvidence, keyof Conversation>
@@ -133,8 +133,7 @@ function requiredText(input: JSONObject, key: string): string {
   return value
 }
 
-/** Header-only summary of an already host-accepted 2.0.26 patch. The V1
- * patchOperations scanner has different whitespace/boundary semantics.
+/** Header-only summary of an already host-accepted native patch.
  * No hunk application, path resolution or file access occurs here. */
 function nativePatchOperations(input: JSONObject, signal: AbortSignal): PatchOperation[] {
   const text = requiredText(input, "patchText")
@@ -250,8 +249,8 @@ function editChanges(request: HostRequest, proposed: Operation, limits: Limits, 
   }
   const previewed = new Set<string>()
   const changes: HostEditChange[] = []
-  // Mandatory per-file identities have a separate normalization ceiling, as in
-  // the legacy diff collector. Only whole optional bodies use the diff allowance.
+  // Mandatory per-file identities have a separate normalization ceiling.
+  // Only whole optional bodies use the diff allowance.
   boundedCopy(raw.map(file => {
     if (!file || typeof file !== "object" || Array.isArray(file)) throw new Error("Native edit file scope unavailable")
     return { file: file.file, status: file.status }
@@ -360,7 +359,7 @@ export async function collectHostOperation(owned: OperationRead, options: HostEv
     execution: { tool: "shell", ...execution, canonicalCwd: canonical.path } } }
 }
 
-/** Compatibility wrapper for callers already holding both server and CLI reads. */
+/** Collector for callers already holding both server and CLI reads. */
 export async function collectHostEvidence(owned: HostInvocationRead, options: HostEvidenceOptions,
   signal: AbortSignal, files: FileAccess): Promise<HostEvidenceResult> {
   reviewStage(signal, "Evidence collection")

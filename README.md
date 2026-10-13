@@ -85,7 +85,7 @@ that are not exposed by TUI APIs:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-reviewer@latest"],
+  "plugins": ["opencode-reviewer@latest"]
 }
 ```
 
@@ -110,7 +110,7 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `apiKey` | string | Unset | Nonempty Bearer token. Takes precedence over `apiKeyEnv`. |
 | `apiKeyEnv` | string | Unset | Environment-variable name matching `[A-Za-z_][A-Za-z_0-9]*`. Without an inline key, its value must be set and nonblank when a review runs. Omit both key options for no Authorization header. |
 | `instructions` | string | Unset (built-ins) | Absolute, NUL-free directory path containing overrides for the [prompt templates](https://github.com/mightykatun/opencode-reviewer/tree/main/prompts), not inline instructions. Missing named files use built-ins; supplied files must be readable, regular, non-symlink, nonempty UTF-8 text up to 64 KiB. Fixed contracts cannot be overridden. |
-| `stream` | boolean | `false` | Request SSE and show provisional rating/text updates. Normal automatic approval waits for a completed, validated report; fast mode can approve on an early Safe rating. Presentation rules are described below. |
+| `stream` | boolean | `false` | Request SSE and show provisional rating/text updates. Normal automatic approval waits for a completed, validated report; fast mode can approve on an early Safe rating. Approval rules are described below. |
 | `reviewBash` | boolean | `true` | Review native `shell` permissions. The option keeps its existing name. |
 | `reviewEdits` | boolean | `true` | Review native `edit`, `write` and `patch` tools, which use the `edit` permission action. |
 | `reviewSkills` | boolean | `true` | Skill-review category switch. Exact mandatory skill instructions are currently unavailable to the V2 collector, so these requests remain manual. |
@@ -264,9 +264,9 @@ An existing safe sibling database remains in use across restarts. Conversation
 enable/disable settings stay in the original OpenCode state directory.
 Saved modes require private ownership and a nonreplaceable path; an untrusted or
 unreadable mode suspends review rather than silently enabling it.
-The plugin deletes them only when it can verify that a deleted conversation belongs
-to the matching server and scope. If that can't be verified after an offline
-deletion, it keeps the history; a missing list entry or bare 404 isn't enough.
+Deleting a conversation currently leaves its saved history in place. Known live
+deletion events invalidate only volatile session state, not saved reports or totals.
+A missing list entry or bare 404 cannot prove deletion ownership.
 Windows using the same state directory share history, grouped by host directory
 and main conversation. Reports not yet saved can be lost on shutdown or during a
 prolonged storage failure.
@@ -291,7 +291,7 @@ review counts once, even without usage data; a fresh review after re-enabling co
 again. Retries count extra API attempts actually dispatched, including format
 corrections and transport recovery. Manual approvals are not auto-approvals.
 Timings run from evaluation start, including evidence and retries, to the accepted
-attempt's first rating and final validated response, excluding rendering/countdown
+attempt's first rating and final validated response, excluding countdown
 time. Non-streaming reviews use the final response time for both measurements.
 Averages use running means and sample counts; stored review details also retain
 their individual timings. Both scopes persist in the existing history database
@@ -331,8 +331,8 @@ terminal is focused:
 - **Session needs attention:** manual permissions. Reviewed requests
   stay silent during identification, report generation and retries. Final Safe
   reports notify when auto-approval is disabled or canceled, or after failed approval
-  is confirmed to remain pending. Waiting for rendering, queue position or an
-  automatic countdown to start does not trigger attention. Disabled/unsupported
+  is confirmed to remain pending. Waiting for conversation eligibility, native priority
+  or an automatic countdown to start does not trigger attention. Disabled/unsupported
   reviews and terminal analysis failures can notify without a report.
 - **Unsafe permission needs human approval:** a completed, validated Unsafe review,
   with its own sound. Provisional streamed ratings never notify.
@@ -438,6 +438,6 @@ After building, run `node scripts/test-runtime.mjs --profile ci` for that same
 profile. Use `node scripts/test-runtime.mjs --list` for the complete runtime
 inventory or `node scripts/test-runtime.mjs --plan --profile ci` for a
 host-independent plan. Profiles select documented scenario/flag combinations;
-interactive desktop checks and historical replays have separate prerequisites.
+interactive desktop checks have separate prerequisites.
 See [AGENTS.md](https://github.com/mightykatun/opencode-reviewer/blob/main/AGENTS.md)
 for runtime tests and the tag-driven release process.

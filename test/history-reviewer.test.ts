@@ -2,10 +2,11 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import { review } from "../src/reviewer.js"
 import { parseConfig } from "../src/config.js"
-import type { Evidence, ReviewAttemptEvent } from "../src/types.js"
+import type { ReviewAttemptEvent } from "../src/types.js"
+import { shellEvidence } from "./review-fixtures.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
 
-const evidence: Evidence = { kind: "shell", command: "true", cwd: "/target", userPrompt: "check", files: [], limitations: [] }
+const evidence = shellEvidence({ command: "true", cwd: "/target", userPrompt: "check" })
 const config = parseConfig({ model: "configured", baseURL: "https://openrouter.ai/api/v1", notify: false })
 const envelope = (model?: unknown, content = '{"safe":true,"desc":"report"}', usage: unknown = { cost: 0 }) =>
   Response.json({ model, usage, choices: [{ message: { content } }] })

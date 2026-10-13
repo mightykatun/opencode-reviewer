@@ -137,7 +137,7 @@ export function readHostScope(value: unknown): HostScope | undefined {
   return scope(copy) ? copy : undefined
 }
 
-/** Accept the pinned 2.0.26 permission payload, not an event or a V1 request.
+/** Accept the native permission payload, not an event envelope.
  * Missing source remains a valid native queue item; it provides no invocation link.
  * A tool source identifies a call, not native origin or unambiguous nested execution.
  */

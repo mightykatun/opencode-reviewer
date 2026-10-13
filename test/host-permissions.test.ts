@@ -267,7 +267,7 @@ test("physical ACK followed by confirmation timeout retains uncertainty after a 
   const transaction = new ApprovalTransaction(snapshot.request, "session", "review", true, {}, fact => { facts.push(fact.type) })
   f.state.onReply = invoked.release
   const native = { once: (_request: typeof snapshot.request, signal: AbortSignal, dispatch: () => boolean) => f.transport.once(snapshot, signal, dispatch) }
-  const submitting = withDeadline(parent.signal, 100, signal => transaction.submit(signal, { native }, {
+  const submitting = withDeadline(parent.signal, 100, signal => transaction.submit(signal, native, {
     guard: () => true, dispatch() {}, confirming: () => assert.fail("timed-out approval confirmed"), confirmed() {},
   }))
   const rejected = assert.rejects(submitting, /timed out/)

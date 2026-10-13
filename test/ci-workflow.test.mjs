@@ -45,11 +45,14 @@ test("normal checks aggregate every pure helper while keeping host and built-pac
   assert.equal(pkg.scripts["test:helpers"], "node scripts/test-helpers.mjs")
   assert.equal(pkg.scripts.check, "npm run typecheck && npm test && npm run test:helpers && npm run build")
   assert.equal(pkg.scripts["test:runtime-cleanup"], "node --test test/smoke-runtime.test.mjs")
+  assert.equal(pkg.scripts["test:runtime"], "node scripts/test-runtime.mjs --profile v2-acceptance")
+  assert.equal(pkg.scripts["test:runtime-permissions"], "node scripts/test-runtime.mjs --profile v2-permissions")
   assert.equal(pkg.devEngines.runtime.version, "^22.22.2 || ^24.15.0")
   assert.equal(pkg.devEngines.runtime.onFail, "error")
   assert.equal(pkg.engines.node, ">=22", "development floors are independent of distributed runtime metadata")
   assert.equal(lock.packages[""].engines.node, pkg.engines.node)
-  assert.equal(pkg.devDependencies["@opencode-ai/plugin"], "1.18.35")
+  assert.ok(!Object.keys(pkg.devDependencies).some(name => name.startsWith("@opencode-ai/")))
+  assert.ok(!Object.keys(lock.packages).some(name => name.includes("node_modules/@opencode-ai/")))
   for (const name of ["@opencode/plugin", "@opencode/client", "@opencode/theme"]) assert.equal(pkg.devDependencies[name], "2.0.26")
   for (const name of ["@opentui/core", "@opentui/keymap", "@opentui/solid"]) assert.equal(pkg.devDependencies[name], "0.5.17")
   assert.equal(pkg.devDependencies["solid-js"], "1.9.15")
@@ -77,7 +80,7 @@ test("active release validation runs the same helper inventory with a complete s
   const policy = validate.split("      - name: Check out active validation policy\n")[1].split("\n      - ")[0]
   for (const file of [...inventory, ...Object.keys(runtimeInventory).map(file => `scripts/${file}`), "scripts/test-helpers.mjs", "scripts/helper-tests.json", "scripts/smoke-runtime.mjs",
     "scripts/release-provenance.mjs", "scripts/bundled-sounds.mjs",
-    "scripts/smoke-reviewer.mjs", "scripts/smoke-notification-recorder.mjs", "scripts/smoke-stages.mjs", "scripts/smoke-permissions.mjs", "scripts/smoke.mjs",
+    "scripts/smoke-reviewer.mjs", "scripts/smoke-desktop-playback.mjs",
     "test/release-fixture.mjs", "test/npm-cli-smoke.test.mjs", "package.json", "package-lock.json", "README.md", "AGENTS.md", ".github/workflows/ci.yml"]) {
     assert.ok(policy.includes(`/${file}\n`), `active policy checkout must include ${file}`)
   }
@@ -91,8 +94,8 @@ test("active release validation runs the same helper inventory with a complete s
     await mkdir(path.dirname(destination), { recursive: true })
     await copyFile(new URL(`../${file}`, import.meta.url), destination)
   }
-  for (const [script, scenario] of [["smoke.mjs", "auto-shell"], ["smoke-permissions.mjs", "mcp"]]) {
-    const plan = execFileSync(process.execPath, [path.join(sparse, "scripts", script), scenario, "--plan"], {
+  for (const profile of ["ci", "v2-acceptance", "v2-permissions"]) {
+    const plan = execFileSync(process.execPath, [path.join(sparse, "scripts/test-runtime.mjs"), "--plan", "--profile", profile], {
       cwd: sparse, encoding: "utf8", timeout: 10000, env: { ...process.env, OPENCODE_BIN: "/no-host-required" },
     })
     assert.equal(typeof JSON.parse(plan), "object")

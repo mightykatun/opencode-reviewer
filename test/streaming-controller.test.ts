@@ -1,12 +1,12 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { setImmediate as settle } from "node:timers/promises"
-import type { PermissionRequest } from "@opencode-ai/sdk/v2"
+import type { HostRequest } from "../src/host-types.js"
 import { Controller, displayText, visibleReview, type ApprovalClock } from "../src/controller.js"
 import type { ReviewProgress, ReviewResult } from "../src/types.js"
 import { SessionModes } from "../src/session-mode.js"
 
-const request: PermissionRequest = { id: "a", sessionID: "root", permission: "bash", patterns: ["fixture"], always: [], metadata: {} }
+const request: HostRequest = { id: "a", sessionID: "root", action: "shell", resources: ["fixture"] }
 const final: ReviewResult = { safe: true, desc: "Final report" }
 class Clock implements ApprovalClock {
   nowMs = 0
@@ -34,8 +34,13 @@ async function fixture(options: { stream?: boolean; identify?: boolean; modes?: 
   const controller = new Controller((_, signal, identify, progress) => new Promise((finish, fail) => {
     workers.push({ progress, identify, signal, finish, fail })
     if (options.identify !== false) identify()
-  }), () => { publications++ }, { reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, stream: options.stream ?? true }, approval: {
-    visibleID: () => "a", list: async () => { reads++; return [request] }, once: async () => { writes++ },
+  }), () => { publications++ }, { candidate: () => true, approvalReady: () => true, nativeFront: () => request.id,
+  reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, stream: options.stream ?? true }, nativeApproval: {
+    list: async () => { reads++; return [request] }, once: async (_request, _signal, dispatch) => {
+      if (!dispatch()) return { status: "unavailable" }; writes++
+      controller.permissionReplied({ sessionID: request.sessionID, requestID: request.id, decision: "once" })
+      return { status: "submitted" }
+    },
   }, clock, modes: options.modes })
   controller.asked(request)
   await settle()
@@ -52,7 +57,7 @@ test("rating is immediate, text is latest-only at 40ms, and previews never arm a
   assert.equal(f.view()?.progress?.preview?.safe, true)
   assert.equal(f.view()?.progress?.preview?.desc, undefined)
   assert.equal(f.view()?.assessment, undefined)
-  f.controller.presented("a")
+  f.controller.refreshApprovalEligibility()
   await f.controller.approveNow("a")
   assert.equal(f.view()?.autoApproval, undefined)
   const before = f.counts().publications
@@ -102,16 +107,14 @@ test("validated completion flushes full final text without waiting for preview t
   await settle()
   assert.equal(f.view()?.assessment, final)
   assert.equal(f.view()?.progress, undefined)
-  assert.equal(f.view()?.autoApproval, undefined)
+  assert.deepEqual(f.view()?.autoApproval, { status: "countdown", seconds: 15 })
   const before = f.counts().publications
   queued[0]!()
   worker.progress({ attempt: 1, phase: "retrying" })
   assert.equal(f.counts().publications, before)
-  f.clock.jump(30_000)
-  assert.equal(f.counts().writes, 0, "validation alone does not mean rendered")
-  f.controller.presented("a")
+  f.controller.refreshApprovalEligibility()
   assert.deepEqual(f.view()?.autoApproval, { status: "countdown", seconds: 15 })
-  f.clock.jump(15_999)
+  f.clock.jump(15_199)
   assert.equal(f.counts().writes, 0)
   f.clock.jump(1)
   await settle()

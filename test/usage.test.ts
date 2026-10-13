@@ -1,8 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { setTimeout as sleep } from "node:timers/promises"
-import type { Model } from "@opencode-ai/sdk/v2"
-import { modelPricing, responseUsage, sumUsage, usageAttempt, usageText, type Pricing, type Usage } from "../src/usage.js"
+import { responseUsage, sumUsage, usageAttempt, usageText, type Pricing, type Usage } from "../src/usage.js"
 
 const prices: Pricing = { input: 3, output: 15, cache: { read: 0.3, write: 3.75 } }
 const response = (input = 1000, output = 100) => ({ model: "fixture", usage: { prompt_tokens: input, completion_tokens: output } })
@@ -33,7 +32,6 @@ test("context-tier prices include cached input; exact thresholds use the precedi
   assert.equal(responseUsage(response(200001, 0), "fixture", () => tiered)?.cost, 1.200006)
   const cached = { usage: { prompt_tokens: 200001, completion_tokens: 0, prompt_tokens_details: { cached_tokens: 200000 } } }
   assert.equal(responseUsage(cached, "fixture", () => tiered)?.cost, 0.120006)
-  assert.equal(responseUsage(response(200001, 0), "fixture", () => ({ ...prices, experimentalOver200K: expensive }))?.cost, 1.200006)
 })
 
 test("unknown or malformed pricing/cache metadata retains token counts without an invented cost", () => {
@@ -75,20 +73,6 @@ test("rejected asynchronous usage observers are consumed without delaying finali
   assert.deepEqual(attempt.finalize(), { cost: 0.01 })
   await sleep(10) // node:test fails this test if the observer rejection is unhandled.
   assert.equal(calls, 1)
-})
-
-test("catalog pricing matches endpoint and model exactly, honors overrides and rejects ambiguous prices", () => {
-  const model = { id: "fixture", api: { id: "upstream-fixture", url: "https://example.test/v1" }, options: {}, cost: prices } as Model
-  const provider = { options: {}, models: { fixture: model } }
-  assert.equal(modelPricing([provider], "https://example.test/v1/", "fixture"), prices)
-  assert.equal(modelPricing([provider], "https://example.test/v1", "upstream-fixture"), prices)
-  assert.equal(modelPricing([provider], "https://other.test/v1", "fixture"), undefined)
-  assert.equal(modelPricing([provider], "https://example.test/v1", "fixture-latest"), undefined)
-  const overridden = { ...provider, options: { baseURL: "https://proxy.test/v1" } }
-  assert.equal(modelPricing([overridden], "https://example.test/v1", "fixture"), undefined)
-  assert.equal(modelPricing([overridden], "https://proxy.test/v1", "fixture"), prices)
-  const different = { ...provider, models: { fixture: { ...model, cost: { ...prices, input: 9 } } } }
-  assert.equal(modelPricing([provider, different], "https://example.test/v1", "fixture"), undefined)
 })
 
 test("correction totals include every request and never silently undercount partial data", () => {

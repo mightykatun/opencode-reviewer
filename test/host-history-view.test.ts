@@ -1,8 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { HostHistoryPresentationProof, setupHostHistoryBrowsing, setupHostHistoryCover, type HostHistoryProofInput } from "../src/host-history-view.js"
+import { HostHistoryPresentationProof, setupHostHistoryBrowsing, type HostHistoryProofInput } from "../src/host-history-view.js"
 import type { HostPanelNode } from "../src/host-review-panel.js"
-import { HistoryCover } from "../src/history-cover.js"
 import { hostStatisticsMessage, setupHostStatistics } from "../src/host-statistics-view.js"
 import { empty, lifetimeReport } from "../src/lifetime.js"
 import type { StatisticsController, StatisticsState } from "../src/statistics-controller.js"
@@ -24,54 +23,36 @@ function input(): HostHistoryProofInput {
     hitTest: (_x, y) => y === heading.y ? heading.num : y === footer.y + 1 ? footer.num : -1 }
 }
 
-test("native history cover needs its own painted heading/footer and measured sidebar frame", () => {
-  const value = input(), proof = new HostHistoryPresentationProof(), cover = new HistoryCover()
-  const release = cover.mount("root", hit => proof.visible(value) && [value.heading!.num, value.footer!.num].includes(hit))
+test("native history input needs its own painted heading/footer and measured sidebar frame", () => {
+  const value = input(), proof = new HostHistoryPresentationProof()
   assert.equal(proof.visible(value), false)
-  assert.equal(cover.covers("root", [2, 3]), false, "logical open cannot cover")
+  assert.equal(proof.keyboard(value), false, "logical open cannot own input")
   assert.equal(proof.visible(value, true), true)
-  assert.equal(cover.covers("root", [2, 3]), true)
-  assert.equal(cover.covers("child", [2, 3]), false)
-  assert.equal(cover.covers("root", [2, 999]), false)
-  release(); cover.frame()
-  assert.equal(cover.covers("root", [2, 3]), false, "old owner cannot survive a new frame")
+  assert.equal(proof.keyboard(value, true), true)
+  value.current = false
+  assert.equal(proof.keyboard(value), false, "closed history immediately loses keyboard ownership")
+  value.current = true
+  assert.equal(proof.keyboard(value), false, "reopened history needs its own new frame")
+  assert.equal(proof.keyboard(value, true), true)
 })
 
-test("history close retains only exact same-frame hits; the persistent reset expires them without an overlay", () => {
-  const renderer = new EventEmitter(), cover = new HistoryCover()
-  const stop = setupHostHistoryCover({ renderer } as unknown as Plugin.Context, cover)
-  const release = cover.mount("root", hit => hit === 2 || hit === 3)
-  assert.equal(cover.covers("root", [2, 3]), true)
-  release()
-  assert.equal(cover.covers("root", [2, 3]), true)
-  assert.equal(cover.covers("root", [2, 4]), false)
-  renderer.emit(CliRenderEvents.FRAME)
-  assert.equal(cover.covers("root", [2, 3]), false)
-  stop()
-  assert.equal(renderer.listenerCount(CliRenderEvents.FRAME), 0)
-})
-
-test("persistent native FRAME refreshes history proof before live listeners without granting paint during invalidation", () => {
-  const renderer = new EventEmitter(), value = input(), proof = new HostHistoryPresentationProof(), cover = new HistoryCover()
-  const stop = setupHostHistoryCover({ renderer } as unknown as Plugin.Context, cover)
-  let frames = 0
-  const release = cover.mount("root", hit => proof.visible(value) && [2, 3].includes(hit), () => { frames++; proof.visible(value, true) })
+test("native FRAME renews registered history ownership without granting paint during invalidation", () => {
+  const value = input(), host = browsing(value)
   const observations: boolean[] = []
-  renderer.on(CliRenderEvents.FRAME, () => observations.push(cover.covers("root", [2, 3])))
-  cover.frame()
-  assert.equal(frames, 0)
-  assert.equal(cover.covers("root", [2, 3]), false)
-  renderer.emit(CliRenderEvents.FRAME)
+  host.renderer.on(CliRenderEvents.FRAME, () => observations.push(host.owner.interactive()))
+  host.owner.invalidate()
+  assert.equal(host.owner.interactive(), false)
+  host.renderer.emit(CliRenderEvents.FRAME)
   assert.deepEqual(observations, [true])
   value.mode = "modal"
-  renderer.emit(CliRenderEvents.FRAME)
+  host.renderer.emit(CliRenderEvents.FRAME)
   assert.deepEqual(observations, [true, false], "Current native modal cannot inherit earlier proof")
   value.mode = "base"
-  proof.invalidate(); cover.frame()
-  assert.equal(cover.covers("root", [2, 3]), false, "Restored logical gates need a genuine new FRAME")
-  renderer.emit(CliRenderEvents.FRAME)
+  host.owner.invalidate()
+  assert.equal(host.owner.interactive(), false, "Restored logical gates need a genuine new FRAME")
+  host.renderer.emit(CliRenderEvents.FRAME)
   assert.deepEqual(observations, [true, false, true])
-  release(); stop()
+  host.dispose()
 })
 
 test("route, mouse, mode and root/controller identity loss revoke history proof", () => {
@@ -151,20 +132,19 @@ test("restored gates still need new physical paint, not remembered history visib
 })
 
 function browsing(value: HostHistoryProofInput) {
-  const renderer = new EventEmitter(), cover = new HistoryCover(), layers: (() => KeymapLayer)[] = []
+  const renderer = new EventEmitter(), layers: (() => KeymapLayer)[] = []
   const navigations: string[] = [], scrolls: [number, boolean][] = []
   const context = { renderer, keymap: { layer(factory: () => KeymapLayer) { layers.push(factory) } } } as unknown as Plugin.Context
-  const stop = setupHostHistoryCover(context, cover)
-  const owner = setupHostHistoryBrowsing(context, "root", () => value, cover, {
+  const owner = setupHostHistoryBrowsing(context, () => value, {
     navigate: direction => navigations.push(direction), scroll: (amount, page) => scrolls.push([amount, page]),
   })
   const layer = layers[0]!()
   const enabled = () => typeof layer.enabled === "function" ? layer.enabled() : layer.enabled !== false
   const press = (bind: string) => layer.commands!.find(command => command.bind === bind)!.run()
-  return { renderer, cover, owner, layer: { ...layer, enabled }, press, navigations, scrolls, dispose() { owner.dispose(); stop() } }
+  return { renderer, owner, layer: { ...layer, enabled }, press, navigations, scrolls, dispose() { owner.dispose() } }
 }
 
-test("mouse-disabled history registered keys navigate and scroll only after a native FRAME without granting cover", () => {
+test("mouse-disabled history registered keys navigate and scroll only after a native FRAME", () => {
   const value = input()
   value.mouse = false
   value.hitTest = () => { throw new Error("mouse-disabled browsing must not manufacture or consult hit ownership") }
@@ -174,13 +154,11 @@ test("mouse-disabled history registered keys navigate and scroll only after a na
   for (const bind of ["left", "right", "up", "down", "pageup", "pagedown"]) host.press(bind)
   assert.deepEqual(host.navigations, [])
   assert.deepEqual(host.scrolls, [])
-  assert.equal(host.cover.covers("root", [2, 3]), false)
   host.renderer.emit(CliRenderEvents.FRAME)
   assert.equal(host.layer.enabled!(), true)
   for (const bind of ["left", "right", "up", "down", "pageup", "pagedown"]) host.press(bind)
   assert.deepEqual(host.navigations, ["older", "newer"])
   assert.deepEqual(host.scrolls, [[-1, false], [1, false], [-1, true], [1, true]])
-  assert.equal(host.cover.covers("root", [2, 3]), false, "keyboard FRAME geometry is never automatic-approval cover")
   assert.equal(value.mouse, false)
   host.dispose()
   assert.equal(host.layer.enabled!(), false)
@@ -213,7 +191,6 @@ test("mouse-disabled registered history keys lose ownership on modal, route, nat
     host.press("left"); host.press("pagedown")
     assert.deepEqual(host.navigations, [])
     assert.deepEqual(host.scrolls, [])
-    assert.equal(host.cover.covers("root", [2, 3]), false)
     host.dispose()
   }
 })
@@ -242,7 +219,6 @@ test("mouse-disabled keyboard ownership needs fresh FRAME after modal restoratio
   host.press("right"); host.press("up")
   assert.deepEqual(host.navigations, ["newer"])
   assert.deepEqual(host.scrolls, [[-1, false]])
-  assert.equal(host.cover.covers("root", [2, 3]), false)
   host.dispose()
 })
 
@@ -262,27 +238,24 @@ test("native frames under modal, descendant route or clipped geometry cannot ena
     host.press("left"); host.press("down")
     assert.deepEqual(host.navigations, [])
     assert.deepEqual(host.scrolls, [])
-    assert.equal(host.cover.covers("root", [2, 3]), false)
     host.dispose()
   }
 })
 
-test("registered history browsing never substitutes keyboard geometry for strict native cover hits", () => {
+test("mouse-enabled history browsing requires strict heading/footer hits, not just keyboard geometry", () => {
   const value = input(), hits = value.hitTest
   value.hitTest = () => value.panel!.num
   const host = browsing(value)
   host.renderer.emit(CliRenderEvents.FRAME)
   assert.equal(host.layer.enabled!(), false, "mouse-enabled browsing still rejects known native covers")
-  assert.equal(host.cover.covers("root", [2, 3]), false)
   value.hitTest = hits
-  assert.equal(host.cover.covers("root", [2, 3]), false, "restored hit ownership still needs real paint")
+  assert.equal(host.layer.enabled!(), false, "restored hit ownership still needs real paint")
   host.renderer.emit(CliRenderEvents.FRAME)
-  assert.equal(host.cover.covers("root", [2, 3]), true)
+  assert.equal(host.layer.enabled!(), true)
   value.mouse = false
   value.hitTest = () => { throw new Error("disabled hit grid must not become cover evidence") }
   host.renderer.emit(CliRenderEvents.FRAME)
   assert.equal(host.layer.enabled!(), true)
-  assert.equal(host.cover.covers("root", [2, 3]), false)
   host.dispose()
 })
 

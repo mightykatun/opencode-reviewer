@@ -3,20 +3,26 @@ import assert from "node:assert/strict"
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { collectEvidence, collectEditEvidence, discover } from "../src/evidence.js"
+import { collectEvidence, discover } from "../src/evidence.js"
+import { collectHostEvidence } from "../src/host-evidence.js"
+import { FileAccess } from "../src/file-access.js"
+import { nativeInvocation } from "./review-fixtures.js"
 import { DiffBudget, diffDelta } from "../src/files.js"
 import { withDeadline } from "../src/deadline.js"
 import { parseConfig } from "../src/config.js"
-import type { EditContext } from "../src/types.js"
+import type { JSONObject } from "../src/host-types.js"
 
 const signal = () => new AbortController().signal
 const diff = "--- before\n+++ after\n@@ -1,2 +1,3 @@\n-old-secret\n+new-secret\n+extra-secret\n retained\n"
 const config = parseConfig({ baseURL: "http://localhost/v1", model: "fixture" })
-const edit = (tool: EditContext["tool"], metadata: Record<string, unknown>): EditContext => ({
-  kind: "edit", tool, userPrompt: "Update files", limitations: [],
-  location: { instanceDirectory: "/project", instanceWorktree: "/project" },
-  permission: { id: "edit", type: "edit", patterns: ["*"], always: ["*"], tool: null, metadata },
-})
+async function edits(files: JSONObject[], limits = config) {
+  const targets = files.map(file => String(file.file))
+  const result = await collectHostEvidence(nativeInvocation("patch", {
+    patchText: `*** Begin Patch\n${targets.map(file => `*** Update File: ${file}\n@@\n-old\n+new`).join("\n")}\n*** End Patch`,
+  }, { files }, "/project", targets), limits, signal(), new FileAccess())
+  assert.ok(result.status === "ready" && result.evidence.kind === "edit")
+  return result.evidence
+}
 
 test("doubled byte default includes a formerly over-budget file; explicit old limits are retained", async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), "review-limit-"))
@@ -31,7 +37,7 @@ test("doubled byte default includes a formerly over-budget file; explicit old li
   assert.equal(omitted.warning, `[!] File ${JSON.stringify(`${dir}/data`)} not included in context.`)
 })
 
-test("shell and patch share unique-file counting across aliases, missing files and duplicate changes", async (t) => {
+test("shell counts canonical aliases while native edits count exact declared identities and duplicate previews once", async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), "review-files-"))
   t.after(() => rm(dir, { recursive: true, force: true }))
   await writeFile(`${dir}/one`, "one")
@@ -47,10 +53,10 @@ test("shell and patch share unique-file counting across aliases, missing files a
   assert.match(shell.files[1]?.status ?? "", /ENOENT/)
   assert.match(shell.files[2]?.status ?? "", /file-count/)
   assert.ok(shell.files.slice(1).every((f) => f.warning && f.contents === undefined))
-  const patch = await collectEditEvidence(edit("apply_patch", { files: names.map((name) => ({ filePath: `${dir}/${name}`, type: "update", patch: diff })) }), limits, signal())
-  assert.deepEqual(patch.changes.map((c) => c.status), ["included", "included", "included", "included", "included", "omitted"])
-  assert.match(patch.changes[5]?.reason ?? "", /file-count/)
-  assert.equal(patch.changes[5]?.delta, `[Δ] ${JSON.stringify(`${dir}/two`)}: +2 −1 lines`)
+  const patch = await edits(["one", "one", "alias", "missing", "two"].map(name => ({ file: `${dir}/${name}`, status: "modified", patch: diff })), limits)
+  assert.deepEqual(patch.changes.map(c => c.status), ["included", "included", "included", "omitted", "omitted"])
+  assert.match(patch.changes[4]?.reason ?? "", /file-count/)
+  assert.equal(patch.changes[4]?.delta, `[Δ] ${JSON.stringify(`${dir}/two`)}: +2 −1 lines`)
 })
 
 test("six distinct candidates fit by default in shell and patch evidence, seventh has a compact warning", async (t) => {
@@ -59,25 +65,30 @@ test("six distinct candidates fit by default in shell and patch evidence, sevent
   const files = Array.from({ length: 7 }, (_, i) => `${dir}/${i}.txt`)
   await Promise.all(files.map((file) => writeFile(file, "text")))
   const shell = await collectEvidence({ command: `head -n 1 ${files.join(" ")}`, cwd: dir, userPrompt: "Inspect" }, config, signal())
-  const patch = await collectEditEvidence(edit("apply_patch", { files: files.map((filePath) => ({ filePath, type: "update", patch: diff })) }), config, signal())
+  const patch = await edits(files.map(file => ({ file, status: "modified", patch: diff })))
   assert.equal(shell.files.filter((f) => f.contents !== undefined).length, 6)
   assert.equal(patch.changes.filter((c) => c.status === "included").length, 6)
   assert.equal(shell.files[6]?.warning, patch.changes[6]?.warning)
-  assert.equal(patch.changes[6]?.diff, undefined)
+  assert.equal(patch.changes[6]?.patch, undefined)
 })
 
 test("edit/write omissions report line counts without leaking diff text, including absent diffs with host counts", async () => {
   for (const tool of ["edit", "write"] as const) {
-    for (const metadata of [{ diff }, { additions: 2, deletions: 1 }]) {
-      const result = await collectEditEvidence(edit(tool, { filepath: '/project/a\n"b', ...metadata }), { ...config, maxEvidenceBytes: 1 }, signal())
-      const change = result.changes[0]!
+    for (const metadata of [{ patch: diff }, { additions: 2, deletions: 1 }] as JSONObject[]) {
+      const input: JSONObject = tool === "write" ? { path: '/project/a\n"b', content: "new" }
+        : { path: '/project/a\n"b', oldString: "old", newString: "new" }
+      const result = await collectHostEvidence(nativeInvocation(tool, input,
+        { files: [{ file: '/project/a\n"b', status: "modified", ...metadata }] }, "/project", ['/project/a\n"b']),
+        { ...config, maxEvidenceBytes: 1 }, signal(), new FileAccess())
+      assert.ok(result.status === "ready" && result.evidence.kind === "edit")
+      const change = result.evidence.changes[0]!
       assert.equal(change.warning, '[!] File "/project/a\\n\\\"b" not included in context.')
       assert.equal(change.delta, '[Δ] "/project/a\\n\\\"b": +2 −1 lines')
       assert.doesNotMatch(JSON.stringify(result), /secret/)
-      assert.equal(change.diff, undefined)
+      assert.equal(change.patch, undefined)
     }
   }
-  const unknown = await collectEditEvidence(edit("edit", { filepath: "/project/a", additions: -1, deletions: "2" }), config, signal())
+  const unknown = await edits([{ file: "/project/a", status: "modified", additions: -1, deletions: "2" }])
   assert.equal(unknown.changes[0]?.delta, undefined)
   assert.ok(unknown.changes[0]?.warning)
 })

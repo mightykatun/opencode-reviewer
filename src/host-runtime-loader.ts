@@ -20,7 +20,7 @@ export function loadHostRuntime(): Promise<HostRuntime> {
     const nativeRequire = createRequire(import.meta.url)
     const require = (name: string): unknown => {
       if (modules.has(name)) return modules.get(name)
-      // No terminal package lookup, legacy SDK, private host import, or arbitrary
+      // No terminal package lookup, private host import, or arbitrary
       // package fallback. Non-host dependencies are bundled at build time.
       if (isBuiltin(name)) return nativeRequire(name)
       throw new Error(`Unexpected host runtime dependency: ${name}`)

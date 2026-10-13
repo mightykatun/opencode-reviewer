@@ -4,11 +4,10 @@ import { execFileSync } from "node:child_process"
 import { mkdtemp, mkdir, writeFile, symlink, rm, readFile, open, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import type { AssistantMessage, Part, PermissionRequest, Session } from "@opencode-ai/sdk/v2"
 import { collectEvidence, discover } from "../src/evidence.js"
-import { evaluateEvidence } from "../src/evaluate.js"
+import { collectHostEvidence } from "../src/host-evidence.js"
+import { nativeInvocation } from "./review-fixtures.js"
 import { parseConfig } from "../src/config.js"
-import type { ContextReader } from "../src/context.js"
 import { FileAccess } from "../src/file-access.js"
 
 const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", maxFiles: 16 })
@@ -29,30 +28,12 @@ function bash(command: string, cwd: string, pwd = cwd): Buffer {
 }
 
 async function evaluated(command: string, cwd: string, workdir?: string, files = new FileAccess()) {
-  const request: PermissionRequest = { id: "permission", sessionID: "root", permission: "bash",
-    patterns: [command], always: [], metadata: { command }, tool: { messageID: "assistant", callID: "call" } }
-  const assistant: AssistantMessage = { id: "assistant", sessionID: "root", parentID: "user", role: "assistant",
-    time: { created: 2 }, providerID: "fixture", modelID: "fixture", agent: "build", mode: "build",
-    path: { cwd, root: cwd }, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }
-  const part: Part = { id: "part", sessionID: "root", messageID: "assistant", type: "tool", tool: "bash", callID: "call",
-    state: { status: "running", input: { command, ...(workdir === undefined ? {} : { workdir }) }, time: { start: 2 } } }
-  const session: Session = { id: "root", directory: "/unrelated-session-origin", projectID: "project", slug: "root", title: "fixture", version: "1",
-    time: { created: 1, updated: 2 } }
-  const reader: ContextReader = {
-    message: async () => ({ info: assistant, parts: [part] }),
-    session: async () => session,
-    messages: async () => [{ info: { id: "user", sessionID: "root", role: "user", time: { created: 1 }, agent: "build",
-      model: { providerID: "fixture", modelID: "fixture" } },
-    parts: [{ id: "text", sessionID: "root", messageID: "user", type: "text", text: "Inspect these fixture sources." }] }],
-    projects: async () => [{ id: "project", worktree: cwd, sandboxes: [], time: { created: 1, updated: 1 } }],
-    toolIDs: async () => ["bash"],
-  }
-  let identified = 0
-  const result = await evaluateEvidence(request, reader, config, config, "", signal(), () => identified++, files)
-  assert.equal(identified, 1)
-  assert.ok(result?.kind === "shell")
+  const collected = await collectHostEvidence(nativeInvocation("shell", { command,
+    ...(workdir === undefined ? {} : { workdir }) }, undefined, cwd, [command]), config, signal(), files)
+  assert.ok(collected.status === "ready" && collected.evidence.kind === "shell")
+  const result = collected.evidence
   assert.equal(result.command, command)
-  assert.deepEqual(result.permission?.patterns, [command])
+  assert.deepEqual(result.permission.resources, [command])
   return result
 }
 
@@ -195,7 +176,7 @@ test("F04 Bash logical and physical launch controls preserve direct source but o
       assert.doesNotMatch(JSON.stringify(result), /# logical PWD target|# physical PWD target|DIRECT SOURCE DECOY/)
       if (result.execution) {
         assert.equal(result.execution.canonicalCwd, `${outside}/deep`)
-        assert.match(result.limitations.join(" "), /Declared launch directory differs/)
+        assert.match(result.limitations.join(" "), /Declared invocation directory differs/)
       }
     }
   }
@@ -216,5 +197,5 @@ test("F04 Bash logical and physical launch controls preserve direct source but o
   assert.equal(inaccessible.execution?.canonicalCwd, null)
   assert.equal(inaccessible.files[0]?.contents, "# direct source before cd\n")
   assert.equal(inaccessible.files[1]?.contents, undefined)
-  assert.match(inaccessible.limitations.join(" "), /could not be canonicalized.*EACCES/)
+  assert.match(inaccessible.limitations.join(" "), /Canonical invocation working directory unavailable \(EACCES\)/)
 })

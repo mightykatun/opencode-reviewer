@@ -24,6 +24,9 @@ export interface Config extends Limits, NotificationConfig {
   maxOutputTokens: number
 }
 
+export type ReviewOptions = Pick<Config, "reviewBash" | "reviewEdits"> & Partial<Pick<Config,
+  "reviewSkills" | "reviewMcp" | "reviewCustomTools" | "reviewExternalDirectories">>
+
 export function parseConfig(options: Record<string, unknown> = {}): Config {
   const keys = new Set(["baseURL", "model", "apiKey", "apiKeyEnv", "instructions", "stream", "reviewBash", "reviewEdits", "reviewSkills", "reviewMcp", "reviewCustomTools", "reviewExternalDirectories", "autoApprove", "fastMode", "extraCareful", "autoApproveDelaySeconds", "formatRetries", "timeoutMs", "maxOutputTokens", "maxFiles", "maxEvidenceBytes", "notify", "notifySound", "notificationSoundDirectory", "staleReminderSeconds", "notifications"])
   for (const key of Object.keys(options)) if (!keys.has(key)) throw new Error(`Unknown opencode-reviewer setting: ${key}`)

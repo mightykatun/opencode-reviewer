@@ -23,7 +23,7 @@ function deferred<T>() {
   const promise = new Promise<T>(yes => { resolve = yes })
   return { promise, resolve }
 }
-function fixture(unavailable: "configuration" | "companion" = "configuration") {
+function fixture(unavailable: "configuration" | "companion" = "configuration", observeHistoryInput = false) {
   const life = new PluginLifecycle(), commands: NonNullable<KeymapLayer["commands"]>[number][] = []
   const slots: { prepend?: string; append?: string; render: unknown; removed?: boolean }[] = []
   const wire: Record<string, unknown>[] = [], serverReads: string[] = [], unexpected: string[] = []
@@ -70,7 +70,8 @@ function fixture(unavailable: "configuration" | "companion" = "configuration") {
       router: { current: () => route }, dialog: { show: (_render: unknown, close: () => void) => { dialogClose = close },
         clear: () => { dialogClose?.(); dialogClose = undefined } } },
   } as unknown as Plugin.Context
-  const state = { stateRoot: "/tmp/opencode/reviewer-history-source", prompts: BUILTIN_PROMPTS, dependencies: {},
+  const state = { stateRoot: "/tmp/opencode/reviewer-history-source", prompts: BUILTIN_PROMPTS,
+    dependencies: observeHistoryInput ? { historyProbe: { observe: () => {} } } : {},
     ...(unavailable === "configuration" ? { configError: "Invalid review configuration", companion: {
       protocol: 1 as const, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location,
       project: { id: "project", directory: "/server", canonical: "/server" },
@@ -100,6 +101,30 @@ test("V2 history uses the existing absolute normalized directory index, independ
   assert.deepEqual(snapshotQuery({ type: "history", scope, root: "root" }), { type: "history", scope, root: "root" })
   assert.throws(() => hostHistoryScope("relative"), /absolute/)
   assert.throws(() => hostHistoryScope("/server/\0project"), /absolute/)
+})
+
+test("history input observation is opt-in and logical browsing never fabricates mounted input ownership", async t => {
+  const production = fixture(), observed = fixture("configuration", true)
+  t.after(async () => { await Promise.all([production.life.stop(), observed.life.stop()]) })
+  assert.equal(production.runtime.records.historyInput, undefined, "ordinary production composition creates no observation seam")
+  const input = observed.runtime.records.historyInput
+  assert.ok(input)
+  assert.equal(input.interactive(), false, "unmounted history starts disabled")
+  input.scroll(1, false)
+  assert.equal(observed.runtime.records.browser.scroll, 0)
+  observed.command("reviewer.history").run()
+  await tick(); await tick()
+  assert.equal(observed.runtime.records.state().status, "ready")
+  assert.equal(observed.runtime.records.state().open, true)
+  assert.equal(observed.runtime.records.historyInput, input, "the observation object stays stable across history state changes")
+  observed.renderer.emit(CliRenderEvents.FRAME)
+  assert.equal(input.interactive(), false, "real FRAME without a mounted view cannot grant keyboard ownership")
+  input.scroll(1, true)
+  assert.equal(observed.runtime.records.browser.scroll, 0)
+  assert.equal(observed.renderer.useMouse, false)
+  assert.deepEqual(observed.unexpected, [])
+  observed.runtime.records.browser.close()
+  assert.equal(input.interactive(), false)
 })
 
 for (const unavailable of ["configuration", "companion"] as const) {

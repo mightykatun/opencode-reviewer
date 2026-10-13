@@ -7,7 +7,7 @@ import type { HostPanelBounds, HostSidebarAnchor } from "./host-review-panel.js"
 /** One public sidebar anchor and FRAME-measured app-slot geometry. Never reveal
  * the sidebar or change mouse tracking to obtain a presentation surface. */
 export function setupHostSidebar(ctx: Plugin.Context, life: PluginLifecycle,
-  rootSession: () => string | undefined, onLost?: () => void) {
+  rootSession: () => string | undefined) {
   const [sidebar, setSidebar] = createSignal<HostSidebarAnchor>()
   const [geometry, setGeometry] = createSignal<HostPanelBounds | undefined>(undefined, {
     equals: (a, b) => a?.x === b?.x && a?.y === b?.y && a?.width === b?.width && a?.height === b?.height,
@@ -18,7 +18,7 @@ export function setupHostSidebar(ctx: Plugin.Context, life: PluginLifecycle,
     createEffect(() => { input.sessionID; if (node) setSidebar({ owner, sessionID: input.sessionID, node }) })
     onCleanup(() => {
       if (sidebar()?.owner !== owner) return
-      setSidebar(undefined); setGeometry(undefined); onLost?.()
+      setSidebar(undefined); setGeometry(undefined)
     })
     return <box ref={(value: BoxRenderable) => { node = value; setSidebar({ owner, sessionID: input.sessionID, node }) }}
       width="100%" height={1} flexShrink={0} />
@@ -40,7 +40,7 @@ export function setupHostSidebar(ctx: Plugin.Context, life: PluginLifecycle,
   ctx.renderer.on(CliRenderEvents.FRAME, frame)
   life.addCleanup(() => {
     ctx.renderer.off(CliRenderEvents.FRAME, frame)
-    setSidebar(undefined); setGeometry(undefined); onLost?.()
+    setSidebar(undefined); setGeometry(undefined)
   })
   return { sidebar, geometry }
 }

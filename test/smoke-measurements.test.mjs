@@ -62,10 +62,24 @@ test("separate origins measure a fresh reviewer connection then warm reuse witho
 
 const initial = () => ({ model: "PRIVATE-MODEL", messages: [
   { role: "system", content: "PRIVATE-SYSTEM" },
-  { role: "user", content: JSON.stringify({ kind: "mcp", permission: { id: "PRIVATE-ID" }, input: "PRIVATE-EVIDENCE" }) },
+  { role: "user", content: JSON.stringify({ kind: "shell", permission: { id: "PRIVATE-ID" }, command: "PRIVATE-EVIDENCE" }) },
 ], max_tokens: 4096, stream: false })
 const corrected = (body) => ({ ...structuredClone(body), messages: [...structuredClone(body.messages),
   { role: "assistant", content: "PRIVATE-BAD-RESPONSE" }, { role: "user", content: "Format validation failed: Invalid JSON" }] })
+
+test("payload audit accepts only the supported V2 review categories", () => {
+  const request = kind => {
+    const body = initial(), evidence = JSON.parse(body.messages[1].content)
+    body.messages[1].content = JSON.stringify({ ...evidence, kind })
+    return JSON.stringify(body)
+  }
+  for (const kind of ["shell", "edit", "skill", "external-directory"]) {
+    const audit = reviewerAudit()
+    audit.request("POST", request(kind))
+    audit.verify([kind], 1)
+  }
+  for (const kind of ["mcp", "custom", "unknown"]) assert.throws(() => reviewerAudit().request("POST", request(kind)))
+})
 
 test("payload audit preserves exact correction history and reports cumulative cache usage once per attempt", () => {
   const audit = reviewerAudit(), first = initial()
@@ -76,7 +90,7 @@ test("payload audit preserves exact correction history and reports cumulative ca
   const usage = { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 40, cache_write_tokens: 5 }, private: "PRIVATE-USAGE" }
   two.usage(usage); two.usage(usage)
   two.response("PRIVATE-GOOD-RESPONSE")
-  audit.verify(["mcp"], 2)
+  audit.verify(["shell"], 2)
   const report = audit.snapshot()
   assert.equal(report.verified, true)
   assert.equal(report.posts, 2)
@@ -98,7 +112,7 @@ test("payload audit admits only explicitly planned, byte-identical transport ret
   const correction = corrected(body)
   audit.request("POST", JSON.stringify(correction)).transportRetry()
   audit.request("POST", JSON.stringify(correction)).response("PRIVATE-GOOD-RESPONSE")
-  audit.verify(["mcp"], 4)
+  audit.verify(["shell"], 4)
   assert.doesNotMatch(JSON.stringify(audit.snapshot()), /PRIVATE/)
   assert.throws(() => audit.request("POST", JSON.stringify(correction)), /duplicate\/speculative POST/)
   const changed = reviewerAudit()
@@ -126,7 +140,7 @@ test("payload audit rejects altered correction evidence/history, category prefix
   next.messages[1].content = next.messages[1].content.replace("PRIVATE-ID", "second-id")
   next.messages[0].content = "changed prefix"
   assert.throws(() => audit.request("POST", JSON.stringify(next)), /system prefix/)
-  assert.throws(() => audit.verify(["mcp"], 2), /one POST per planned attempt/)
+  assert.throws(() => audit.verify(["shell"], 2), /one POST per planned attempt/)
   assert.equal(audit.snapshot().verified, false)
 })
 
@@ -140,7 +154,7 @@ test("payload audit rejects noncompact JSON, provider extras and incorrect strea
   assert.throws(() => reviewerAudit({ stream: true }).request("POST", JSON.stringify({ ...initial(), stream: true })))
   const audit = reviewerAudit({ stream: true })
   audit.request("POST", JSON.stringify({ ...initial(), stream: true, stream_options: { include_usage: true } }))
-  audit.verify(["mcp"], 1)
+  audit.verify(["shell"], 1)
 })
 
 test("SSE fixture sends fragmented multiline events, repeated stop/usage and a terminal marker after the gate", async () => {

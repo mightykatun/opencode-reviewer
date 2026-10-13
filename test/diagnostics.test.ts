@@ -4,10 +4,10 @@ import { setImmediate as settle } from "node:timers/promises"
 import { DiagnosticTrace, diagnosticAttempt, emitDiagnostic, measured, type DiagnosticEvent, type DiagnosticObserver } from "../src/diagnostics.js"
 import { review } from "../src/reviewer.js"
 import { parseConfig } from "../src/config.js"
-import type { ReviewEvidence } from "../src/types.js"
+import { shellEvidence } from "./review-fixtures.js"
 
-const evidence: ReviewEvidence = { kind: "shell", command: "PRIVATE_COMMAND", cwd: "/private/path", userPrompt: "PRIVATE_PROMPT",
-  files: [{ filename: "private.py", contents: "PRIVATE_SOURCE", status: "included" }], limitations: [] }
+const evidence = shellEvidence({ command: "PRIVATE_COMMAND", cwd: "/private/path", userPrompt: "PRIVATE_PROMPT",
+  files: [{ filename: "private.py", contents: "PRIVATE_SOURCE", status: "captured" }] })
 const config = (stream: boolean) => parseConfig({ baseURL: "http://private.invalid/v1", model: "PRIVATE_MODEL", apiKey: "PRIVATE_KEY", stream })
 const frame = (content: string, finish_reason: string | null = null) => `data: ${JSON.stringify({ id: "PRIVATE_NATIVE_ID", model: "PRIVATE_MODEL",
   choices: [{ index: 0, delta: { content }, finish_reason }] })}\n\n`

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { setTimeout as sleep } from "node:timers/promises"
 
-const kinds = ["shell", "edit", "mcp", "custom", "external-directory"]
+const kinds = ["shell", "edit", "skill", "external-directory"]
 const bytes = (text) => Buffer.byteLength(text, "utf8")
 const count = (value) => Number.isSafeInteger(value) && value >= 0
 

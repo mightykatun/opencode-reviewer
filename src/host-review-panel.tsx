@@ -7,11 +7,12 @@ import type { HostRequest } from "./host-types.js"
 import { scannerFrame, SCANNER_FRAME_COUNT, SCANNER_INTERVAL_MS } from "./appearance.js"
 import { HostReviewDescription } from "./review-description.js"
 import { ReviewGeometryProof, type ReviewLayout, type ReviewRegion } from "./review-geometry.js"
-import type { PresentationCheck, ReviewPresentation } from "./review-presentation.js"
 import { uiText } from "./ui-text.js"
 import { usageText } from "./usage.js"
-import type { HistoryRenderProbe } from "./live-review-panel.js"
-import type { HistoryCover } from "./history-cover.js"
+import type { HistoryRenderProbe } from "./embedding-types.js"
+
+export type HostPanelObservationState = "visible" | "pending" | "lost"
+export type HostPanelObservation = { state: HostPanelObservationState; id?: string }
 
 export interface HostPanelBounds { x: number; y: number; width: number; height: number }
 export interface HostSidebarAnchor {
@@ -25,7 +26,7 @@ export interface HostReviewPanelProps {
   context: Plugin.Context
   id: string
   view(): View<HostRequest>
-  /** Fresh native-priority selection, including at the synchronous write boundary. */
+  /** Current selection identity for fixture observations only. */
   select(): View<HostRequest> | undefined
   rootSession(): string | undefined
   sidebarOwner(): HostSidebarAnchor | undefined
@@ -38,11 +39,8 @@ export interface HostReviewPanelProps {
   animations?: () => boolean
   lifetimeText?: () => string | undefined
   historyProbe?: HistoryRenderProbe
-  historyCover?: HistoryCover
   onApprove(id: string): void | Promise<void>
   onCancel(id: string): void
-  registerPresentation(visible: (check?: PresentationCheck) => ReviewPresentation): () => void
-  onPresented(proof?: ReviewPresentation): void
 }
 
 /** Structural nodes let source tests exercise the real proof without a terminal. */
@@ -61,7 +59,6 @@ export function hostPanelOwnsHit(node: HostPanelNode | undefined, hit: number): 
 export interface HostPanelProofInput extends ReviewLayout {
   id: string
   request: Pick<HostRequest, "id" | "sessionID">
-  selected?: Pick<HostRequest, "id" | "sessionID">
   root?: string
   route: { type: string; sessionID?: string }
   mode: string
@@ -73,8 +70,6 @@ export interface HostPanelProofInput extends ReviewLayout {
   rating?: HostPanelNode
   footer?: HostPanelNode
   finalReady: boolean
-  /** Actual root-scoped production history hit ownership, never logical open. */
-  covered?: boolean
   hitTest(x: number, y: number): number
 }
 
@@ -87,20 +82,18 @@ function validBounds(bounds: HostPanelBounds, width: number, height: number) {
     && bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= width && bounds.y + bounds.height <= height
 }
 
-/** No route exception, inferred visibility or timer-generated paint. Only normal
- * mode accepts independently proved production history ownership at its probes.
- * Every gate is rechecked synchronously; only FRAME can renew geometry proof. */
+/** Fixture-only physical observation: no inferred visibility, history ownership
+ * override or timer-generated paint. Only FRAME can renew geometry proof. */
 export class HostPanelPresentationProof {
   private geometry = new ReviewGeometryProof()
   private painted?: { root: string; id: string; anchor: HostPanelNode; owner: unknown; bounds: HostPanelBounds; finalReady: boolean }
   invalidate() { this.painted = undefined; this.geometry.invalidate() }
-  state(input: HostPanelProofInput, frame = false): ReviewPresentation {
-    const lost = (): ReviewPresentation => { this.invalidate(); return { state: "lost" } }
-    const pending = (): ReviewPresentation => { this.invalidate(); return { state: "pending", id: input.id } }
+  state(input: HostPanelProofInput, frame = false): HostPanelObservation {
+    const lost = (): HostPanelObservation => { this.invalidate(); return { state: "lost" } }
+    const pending = (): HostPanelObservation => { this.invalidate(); return { state: "pending", id: input.id } }
     const { anchor, bounds, panel, root } = input
     if (!root || input.route.type !== "session" || input.route.sessionID !== root
       || input.mode !== "base" || !input.mouse || input.request.id !== input.id
-      || input.selected?.id !== input.id || input.selected.sessionID !== input.request.sessionID
       || !anchor || anchor.sessionID !== root || !anchor.node.visible || anchor.node.isDestroyed
       || !panel || !panel.visible || panel.isDestroyed) return lost()
     if (!validBounds(anchor.node, input.width, input.height)) return lost()
@@ -119,7 +112,7 @@ export class HostPanelPresentationProof {
       // panel. Preserve that real owner during initial/Checking branch handoffs.
       return hostPanelOwnsHit(panel, hit) && (node === input.footer || hostPanelOwnsHit(node, hit))
     })
-    if (!ownsProbes && (input.fast || !input.covered)) return lost()
+    if (!ownsProbes) return lost()
     if (frame) this.painted = { root, id: input.id, anchor: anchor.node, owner: anchor.owner, bounds: { ...bounds }, finalReady: input.finalReady }
     const painted = this.painted
     if (!painted || painted.root !== root || painted.id !== input.id || painted.anchor !== anchor.node
@@ -210,8 +203,8 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
   const { context, id, view } = props
   let panel: BoxRenderable | undefined, heading: Renderable | undefined, ratingRegion: BoxRenderable | undefined
   let footer: BoxRenderable | undefined, description: MarkdownRenderable | undefined, scroll: ScrollBoxRenderable | undefined
-  let attempt = 0, paintedAssessment: View<HostRequest>["assessment"], readyAssessment: View<HostRequest>["assessment"]
-  const proof = new HostPanelPresentationProof()
+  let attempt = 0
+  let observePaint: (() => void) | undefined
   createEffect(() => {
     const progress = view().progress
     if (progress && progress.attempt !== attempt) { attempt = progress.attempt; scroll?.scrollTo(0) }
@@ -223,42 +216,43 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
   const visible = () => rootRoute() && props.sidebarOwner()?.sessionID === props.rootSession() && !!props.sidebarGeometry()
   const rating = () => view().assessment?.safe ?? (view().status === "analyzing" ? view().progress?.preview?.safe : undefined)
   const report = () => view().assessment?.desc ?? (view().status === "analyzing" ? view().progress?.preview?.desc : undefined) ?? ""
-  const presentation = (frame = false): ReviewPresentation => {
-    const assessment = view().assessment
-    // Once the completed report was actually painted, scrolling newly exposed
-    // code does not cancel a running countdown. New assessments need new paint.
-    if (paintedAssessment && paintedAssessment === assessment && readyAssessment !== assessment
-      && description && !description.isDestroyed && description.getChildrenCount() && highlightingComplete(description)) readyAssessment = assessment
-    const anchor = props.sidebarOwner()
-    const covered = !props.config?.fastMode && !!props.rootSession() && !!heading && !!footer
-      && props.historyCover?.covers(props.rootSession()!, [context.renderer.hitTest(heading.x + 1, heading.y),
-        context.renderer.hitTest(footer.x + 1, footer.y + 1)]) === true
-    return proof.state({ width: context.renderer.width, height: context.renderer.height, fast: props.config?.fastMode === true,
-      id, request: view().request, selected: props.select()?.request, root: props.rootSession(), route: context.ui.router.current(),
-      mode: context.keymap.mode.current(), mouse: context.renderer.useMouse,
-      anchor: anchor && { ...anchor, node: anchor.node as HostPanelNode }, bounds: props.sidebarGeometry(),
-      panel: panel as HostPanelNode | undefined, heading: heading as HostPanelNode | undefined,
-      rating: ratingRegion as HostPanelNode | undefined, report: scroll, footer: footer as HostPanelNode | undefined,
-      finalReady: !!assessment && readyAssessment === assessment && paintedAssessment === assessment,
-      covered,
-      hitTest: (x, y) => context.renderer.hitTest(x, y) }, frame)
-  }
-  if (props.config?.autoApprove) {
-    const release = props.registerPresentation(() => presentation())
+  if (props.historyProbe) {
+    const proof = new HostPanelPresentationProof()
+    let paintedAssessment: View<HostRequest>["assessment"], readyAssessment: View<HostRequest>["assessment"]
+    observePaint = () => {
+      const assessment = view().assessment
+      if (assessment && description && !description.isDestroyed && !description.streaming
+        && description.content === displayText(assessment.desc) && description.getChildrenCount() && highlightingComplete(description)) paintedAssessment = assessment
+    }
+    const presentation = (frame = false): HostPanelObservation => {
+      const assessment = view().assessment
+      // Once the completed report was actually painted, scrolling newly exposed
+      // code preserves that observation. New assessments need their own paint.
+      if (paintedAssessment && paintedAssessment === assessment && readyAssessment !== assessment
+        && description && !description.isDestroyed && description.getChildrenCount() && highlightingComplete(description)) readyAssessment = assessment
+      const anchor = props.sidebarOwner()
+      return proof.state({ width: context.renderer.width, height: context.renderer.height, fast: props.config?.fastMode === true,
+        id, request: view().request, root: props.rootSession(), route: context.ui.router.current(),
+        mode: context.keymap.mode.current(), mouse: context.renderer.useMouse,
+        anchor: anchor && { ...anchor, node: anchor.node as HostPanelNode }, bounds: props.sidebarGeometry(),
+        panel: panel as HostPanelNode | undefined, heading: heading as HostPanelNode | undefined,
+        rating: ratingRegion as HostPanelNode | undefined, report: scroll, footer: footer as HostPanelNode | undefined,
+        finalReady: !!assessment && readyAssessment === assessment && paintedAssessment === assessment,
+        hitTest: (x, y) => context.renderer.hitTest(x, y) }, frame)
+    }
     const resize = () => proof.invalidate()
     const frame = () => {
       const value = presentation(true)
-      props.onPresented(value)
       if (props.historyProbe && panel) {
         const regions = [panel, heading, ratingRegion, scroll, footer].map(node => node && ({ x: node.x, y: node.y,
           width: node.width, height: node.height, visible: node.visible, num: node.num }))
         const sample = { stage: "frame" as const, at: performance.now(), panel: panel.num, final: !!view().assessment,
           streaming: description?.streaming ?? true, contentMatches: description?.content === displayText(view().assessment?.desc ?? ""),
           children: description?.getChildrenCount() ?? 0, codeBlocks: 0, highlighting: !!description && !highlightingComplete(description),
-          painted: paintedAssessment === view().assessment, covered: false, physical: value.state === "visible", eligible: value.state === "visible",
+          painted: !!view().assessment && paintedAssessment === view().assessment, covered: false, physical: value.state === "visible", eligible: false,
           presentation: value.state, auto: view().autoApproval?.status, regions, bounds: props.sidebarGeometry(),
           mouse: context.renderer.useMouse, mode: context.keymap.mode.current(),
-          selected: props.select()?.request.id, root: props.rootSession(), finalReady: readyAssessment === view().assessment,
+          selected: props.select()?.request.id, root: props.rootSession(), finalReady: !!view().assessment && readyAssessment === view().assessment,
           anchor: props.sidebarOwner() && { x: props.sidebarOwner()!.node.x, y: props.sidebarOwner()!.node.y,
             width: props.sidebarOwner()!.node.width, height: props.sidebarOwner()!.node.height,
             visible: props.sidebarOwner()!.node.visible, session: props.sidebarOwner()!.sessionID },
@@ -269,24 +263,20 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
     }
     context.renderer.on(CliRenderEvents.RESIZE, resize)
     context.renderer.on(CliRenderEvents.FRAME, frame)
-    // Immediate navigation/modal/anchor changes publish UI evidence and wake the
-    // independent automation policy, rather than canceling on presentation loss.
-    // Do not subscribe this observer to countdown/report publications.
+    // Invalidate fixture evidence immediately on navigation/modal/anchor changes.
+    // No observer publication wakes or gates automation.
     createEffect(() => {
       context.ui.router.current(); context.keymap.mode.current(); props.rootSession(); props.sidebarOwner(); props.sidebarGeometry()
-      untrack(() => { proof.invalidate(); props.onPresented(presentation()) })
+      untrack(() => proof.invalidate())
     })
     onCleanup(() => {
       context.renderer.off(CliRenderEvents.FRAME, frame)
       context.renderer.off(CliRenderEvents.RESIZE, resize)
-      proof.invalidate(); release(); props.onPresented()
+      proof.invalidate()
     })
   }
-  return <box ref={(value: BoxRenderable) => { panel = value }} renderAfter={() => {
-    const assessment = view().assessment
-    if (assessment && description && !description.isDestroyed && !description.streaming
-      && description.content === displayText(assessment.desc) && description.getChildrenCount() && highlightingComplete(description)) paintedAssessment = assessment
-   }} position="absolute" left={props.positionedByParent ? 0 : props.sidebarGeometry()?.x ?? 0} top={props.positionedByParent ? 0 : props.sidebarGeometry()?.y ?? 0}
+  return <box ref={(value: BoxRenderable) => { panel = value }} renderAfter={observePaint}
+    position="absolute" left={props.positionedByParent ? 0 : props.sidebarGeometry()?.x ?? 0} top={props.positionedByParent ? 0 : props.sidebarGeometry()?.y ?? 0}
     width={props.sidebarGeometry()?.width ?? 0} height={props.sidebarGeometry()?.height ?? 0} visible={visible()} zIndex={1}
     paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2} backgroundColor={context.theme.background.raised.base}>
     <text ref={(value: Renderable) => { heading = value }} fg={context.theme.text.base} flexShrink={0}><b>{uiText.review.heading}</b></text>

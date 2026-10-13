@@ -2,7 +2,6 @@ import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from
 import { CliRenderEvents, CodeRenderable, ScrollBoxRenderable, type BoxRenderable, type MarkdownRenderable, type Renderable } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { HistoryController, HistoryViewState } from "./history-controller.js"
-import type { HistoryCover } from "./history-cover.js"
 import { historyLayout, historyMetadata } from "./history-layout.js"
 import { hostPanelOwnsHit, type HostPanelBounds, type HostPanelNode, type HostSidebarAnchor } from "./host-review-panel.js"
 import { HostReviewDescription } from "./review-description.js"
@@ -61,7 +60,7 @@ function samePaint(painted: HistoryPaint | undefined, current: HistoryPaint): bo
 }
 
 /** Keyboard ownership uses genuine FRAME geometry in the native root sidebar.
- * Approval cover separately requires mouse-enabled heading/footer hit ownership. */
+ * When mouse is enabled, heading/footer hits also rule out native occlusion. */
 export class HostHistoryPresentationProof {
   private painted?: HistoryPaint & { hits: number[] }
   private keyboardPainted?: HistoryPaint
@@ -92,10 +91,9 @@ export interface HostHistoryInput {
   scroll(amount: number, page: boolean): void
 }
 
-/** Shared production registration seam: no mounted-state keyboard bypass and no
- * keyboard proof passed to the automatic-approval cover. */
-export function setupHostHistoryBrowsing(context: Plugin.Context, session: string, input: () => HostHistoryProofInput,
-  cover: HistoryCover, actions: { navigate(direction: "older" | "newer"): void; scroll(amount: number, page: boolean): void; onPresented?(): void }) {
+/** Shared production registration seam: mounted state alone never owns input. */
+export function setupHostHistoryBrowsing(context: Plugin.Context, input: () => HostHistoryProofInput,
+  actions: { navigate(direction: "older" | "newer"): void; scroll(amount: number, page: boolean): void }) {
   const proof = new HostHistoryPresentationProof()
   const interactive = () => proof.keyboard(input())
   const navigate = (direction: "older" | "newer") => { if (interactive()) actions.navigate(direction) }
@@ -105,18 +103,14 @@ export function setupHostHistoryBrowsing(context: Plugin.Context, session: strin
     { bind: "up", run: () => scroll(-1, false) }, { bind: "down", run: () => scroll(1, false) },
     { bind: "pageup", run: () => scroll(-1, true) }, { bind: "pagedown", run: () => scroll(1, true) },
   ] }))
-  const release = cover.mount(session, hit => {
-    const value = input()
-    return proof.visible(value) && hostPanelOwnsHit(value.panel, hit)
-  }, () => { proof.visible(input(), true) })
-  const invalidate = () => { proof.invalidate(); cover.frame() }
-  const frame = () => { const value = input(); proof.keyboard(value, true); proof.visible(value, true); actions.onPresented?.() }
-  const resize = () => { invalidate(); actions.onPresented?.() }
+  const invalidate = () => proof.invalidate()
+  const frame = () => { proof.keyboard(input(), true) }
+  const resize = invalidate
   context.renderer.on(CliRenderEvents.FRAME, frame)
   context.renderer.on(CliRenderEvents.RESIZE, resize)
   return { interactive, navigate, scroll, invalidate, dispose() {
     context.renderer.off(CliRenderEvents.FRAME, frame); context.renderer.off(CliRenderEvents.RESIZE, resize)
-    proof.invalidate(); release()
+    proof.invalidate()
   } }
 }
 export interface HostHistoryViewProps {
@@ -128,20 +122,7 @@ export interface HostHistoryViewProps {
   rootSession(): string | undefined
   sidebarOwner(): HostSidebarAnchor | undefined
   sidebarGeometry(): HostPanelBounds | undefined
-  /** Install setupHostHistoryCover before mounting the live/history siblings. */
-  cover: HistoryCover
   input?: HostHistoryInput
-  /** Allows the enclosing runtime to recheck a covered normal countdown on FRAME. */
-  onPresented?(): void
-}
-
-/** Keep this listener alive across history close/remount. The exact old painted
- * hits may bridge a same-frame close, but never a later FRAME without an owner.
- * Register before panel listeners and pass the returned cleanup to the lifecycle. */
-export function setupHostHistoryCover(context: Plugin.Context, cover: HistoryCover): () => void {
-  const frame = () => cover.beginFrame()
-  context.renderer.on(CliRenderEvents.FRAME, frame)
-  return () => { context.renderer.off(CliRenderEvents.FRAME, frame); cover.frame() }
 }
 
 function highlightingComplete(node: Renderable): boolean {
@@ -191,13 +172,13 @@ export function HostHistoryView(props: HostHistoryViewProps) {
     // Do not replace a saved offset with the collapsed loading/Markdown extent.
     if (restored) controller.recordScroll(scroll.scrollTop)
   }
-  const browsing = setupHostHistoryBrowsing(context, props.session, proofInput, props.cover,
-    { navigate: direction => controller.navigate(direction), scroll: scrollBy, onPresented: props.onPresented })
+  const browsing = setupHostHistoryBrowsing(context, proofInput,
+    { navigate: direction => controller.navigate(direction), scroll: scrollBy })
   const { interactive, navigate } = browsing
   if (props.input) { props.input.interactive = interactive; props.input.scroll = browsing.scroll }
   const close = () => { if (rootRoute() && context.keymap.mode.current() === "base") controller.close() }
-  // Explicit close remains available with mouse:false; it grants no cover or
-  // browsing proof and cannot consume Escape from an unrelated native modal.
+  // Explicit close remains available with mouse:false; it grants no browsing
+  // proof and cannot consume Escape from an unrelated native modal.
   context.keymap.layer(() => ({ priority: 100, mode: "base", enabled: rootRoute,
     commands: [{ bind: "escape", run: close }] }))
   createEffect(() => {
@@ -207,7 +188,7 @@ export function HostHistoryView(props: HostHistoryViewProps) {
   })
   createEffect(() => {
     context.ui.router.current(); context.keymap.mode.current(); props.rootSession(); props.sidebarOwner(); props.sidebarGeometry()
-    untrack(() => { browsing.invalidate(); props.onPresented?.() })
+    untrack(() => browsing.invalidate())
   })
   const frame = () => {
     if (!scroll || scroll.isDestroyed || !visible() || props.state().status !== "ready") return
@@ -225,7 +206,6 @@ export function HostHistoryView(props: HostHistoryViewProps) {
     context.renderer.off(CliRenderEvents.FRAME, frame)
     browsing.dispose()
     if (props.input?.interactive === interactive) { props.input.interactive = () => false; props.input.scroll = () => {} }
-    props.onPresented?.()
   })
   const arrows = () => <>
     <HistoryButton context={context} label={uiText.history.older} disabled={!selection()?.older} run={() => navigate("older")} />

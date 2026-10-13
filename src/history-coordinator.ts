@@ -1,4 +1,4 @@
-import type { PermissionRequest, Message } from "@opencode-ai/sdk/v2"
+import type { HostRequest } from "./host-types.js"
 import type { ApprovalFact, RequestIdentity, ReviewLifecycleFact } from "./controller.js"
 import type { Config } from "./config.js"
 import type { ReviewKind, ReviewObservation } from "./types.js"
@@ -25,16 +25,12 @@ interface EarlyReview { context: HistoryReview; confirmed?: "auto" | "manual"; r
 const category = (kind: ReviewKind): HistoryReview["category"] => kind === "shell" ? "bash"
   : kind === "external-directory" ? "external_directory" : kind
 type AssistantSource<R extends RequestIdentity> = (request: R) => string | undefined
-const legacyAssistant = (request: RequestIdentity): string | undefined => {
-  const legacy = (value: RequestIdentity): value is PermissionRequest => "permission" in value && typeof value.permission === "string"
-  return legacy(request) ? request.tool?.messageID : undefined
-}
 
 /** Data-only observers. Report bodies live here until a qualifying resolution.
  * A bounded resolution window can observe a remote acknowledgement. Its expiry is
  * omission, never evidence that no other client submitted an automatic write.
  */
-export class HistoryCoordinator<R extends RequestIdentity = PermissionRequest> {
+export class HistoryCoordinator<R extends HostRequest = HostRequest> {
   private candidates = new Map<string, Candidate>()
   private dispatches = new Map<string, Dispatch>()
   private early = new Map<string, EarlyReview>()
@@ -48,8 +44,8 @@ export class HistoryCoordinator<R extends RequestIdentity = PermissionRequest> {
   constructor(readonly scope: string, private store: Store,
     private ancestry: AncestryReader,
     private now: () => number = Date.now,
-    ...source: [assistant?: AssistantSource<R>] & (R extends PermissionRequest ? unknown : [assistant: AssistantSource<R>])) {
-    this.assistant = source[0] ?? legacyAssistant
+    assistant: AssistantSource<R> = request => request.source?.assistantID) {
+    this.assistant = assistant
     this.unsubscribe = store.onCommit(() => this.poll())
   }
   /** History browsing uses ancestry only, even with invalid/disabled review mode. */
@@ -127,11 +123,7 @@ export class HistoryCoordinator<R extends RequestIdentity = PermissionRequest> {
     c.reply = properties.reply
     if (c.removed) this.finishKnown(c)
   }
-  /** Exact assistant-message link plus later permission removal, never root idle. */
-  message(message: Message) {
-    if (this.stopped || message.role !== "assistant" || message.error?.name !== "MessageAbortedError") return
-    this.interrupted({ sessionID: message.sessionID, assistantID: message.id })
-  }
+  /** Exact native assistant-message link plus later permission removal, never root idle. */
   interrupted(identity: { sessionID: string; assistantID: string }) {
     if (this.stopped) return
     for (const c of this.candidates.values()) if (c.context.session === identity.sessionID && c.message === identity.assistantID) {
@@ -266,7 +258,7 @@ export class HistoryCoordinator<R extends RequestIdentity = PermissionRequest> {
 }
 
 /** Finalizers have first use of the shared budget; worker cleanup still reserves
- * 350 ms. A hung legacy writer/notification cannot delay storage termination.
+ * 350 ms. A hung writer/notification cannot delay storage termination.
  */
 export async function drainHistory(store: Pick<HistoryStore, "dispose">, finalizers: Promise<unknown>, abortAt: number) {
   let timer: ReturnType<typeof setTimeout> | undefined

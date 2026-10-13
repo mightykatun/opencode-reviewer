@@ -8,7 +8,7 @@ import type { View } from "../src/controller.js"
 
 const target = { root: "root", sessionID: "root", title: "Fixture title" }
 const view = (id = "a", status: View["status"] = "analyzing", safe = true): View => ({
-  request: { id, sessionID: "root", permission: "bash", patterns: ["command"], always: [], metadata: {} },
+  request: { id, sessionID: "root", action: "shell", resources: ["command"], source: { assistantID: "assistant", id: "call" } },
   status, ...(status === "complete" ? { assessment: { safe, desc: "Fixture" } } : {}),
 })
 function fixture(auto = false, notify = true, sound = true, options: Record<string, unknown> = {}) {
@@ -145,7 +145,7 @@ for (const status of ["unrelated", "unidentified", "unavailable", "suspended"] a
   })
 }
 
-test("Safe automatic requests wait silently for rendering and countdown; cancellation establishes manual attention", async () => {
+test("Safe automatic requests wait silently for eligibility and countdown; cancellation establishes manual attention", async () => {
   const f = fixture(true); f.add(view("a", "complete"))
   await f.advance(999); assert.equal(f.messages.length, 0)
   await f.advance(60000); assert.equal(f.messages.length, 0)
@@ -162,7 +162,7 @@ test("Safe automatic requests wait silently for rendering and countdown; cancell
   f.policy.dispose()
 })
 
-test("normal final rendering and request resolution never create a notification timer", async () => {
+test("final acceptance and request resolution never create a notification timer", async () => {
   const f = fixture(true); f.add(view("a", "complete"))
   f.policy.snapshot([{ ...view("a", "complete"), autoApproval: { status: "countdown", seconds: 15 } }])
   await f.advance(1000)

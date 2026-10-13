@@ -52,7 +52,7 @@ export function assertWriteEvidence(evidence, { action, target, prompt, initial,
   assert.equal(evidence.kind, action === "edit" ? "edit" : "external-directory")
   assert.equal(evidence.tool, "write")
   assert.equal(evidence.permission.action, action)
-  assert.equal(evidence.permission.type, undefined, "No fabricated V1 permission")
+  assert.equal(evidence.permission.type, undefined, "No alternate permission projection")
   assert.deepEqual(evidence.operation.input, { path: target }, "Exact target retained; write body is deliberately omitted")
   assert.equal(evidence.userPrompt, prompt)
   assert.deepEqual(evidence.location, { directory: initial })
