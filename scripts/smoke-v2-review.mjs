@@ -1698,6 +1698,17 @@ try {
           } catch { return false }
         }, 15000)
         await saveCapture("history-keyboard-mouse-off-latest")
+        runtime.tmux("send-keys", "-t", "v2-review", "C-h")
+        await until("Ctrl+H closes mouse-off history", async record => record?.mode === "base"
+          && !capture().includes("Analysis history") && !(await coverState()).history.open)
+        runtime.tmux("send-keys", "-t", "v2-review", "C-h")
+        await until("Ctrl+H reopens the latest saved report with mouse off", async record => {
+          try {
+            const history = await selected(2, record, capture())
+            assert.equal(history.scroll, 0)
+            return history
+          } catch { return false }
+        }, 15000)
         for (const [key, rank] of [["Left", 1], ["Right", 2]]) {
           const prior = (await coverState()).history
           runtime.tmux("send-keys", "-t", "v2-review", key)

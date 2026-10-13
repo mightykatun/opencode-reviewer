@@ -97,6 +97,15 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
     palette: true, slash: { name: "reviewer-history" }, enabled: () => !!selected(),
     run: () => { const session = selected(); if (session) browser.open(session) },
   }] }))
+  context.keymap.layer(() => ({ priority: 100, mode: "base", enabled: () => !!selected(), commands: [{
+    bind: "ctrl+h",
+    run: () => {
+      const session = selected()
+      if (!session || context.keymap.mode.current() !== "base") return
+      if (browser.isCurrent(session)) browser.close()
+      else browser.open(session)
+    },
+  }] }))
   const render = () => {
     createEffect(() => {
       const session = selected()

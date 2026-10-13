@@ -25,6 +25,7 @@ function deferred<T>() {
 }
 function fixture(unavailable: "configuration" | "companion" = "configuration", observeHistoryInput = false) {
   const life = new PluginLifecycle(), commands: NonNullable<KeymapLayer["commands"]>[number][] = []
+  const layers: KeymapLayer[] = []
   const slots: { prepend?: string; append?: string; render: unknown; removed?: boolean }[] = []
   const wire: Record<string, unknown>[] = [], serverReads: string[] = [], unexpected: string[] = []
   const renderer = Object.assign(new EventEmitter(), { width: 140, height: 40, useMouse: false })
@@ -36,6 +37,7 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", o
   let route: { type: "session"; sessionID: string } | { type: "home" } = { type: "session", sessionID: "root" }
   let listener: ((event: any) => void) | undefined, dialogClose: (() => void) | undefined
   let terminated = 0
+  let mode = "base"
   const scope = hostHistoryScope(location.directory)
   const context = { scope, root: "root", session: "root", permission: "saved-permission", review: "saved-review",
     category: "bash" as const, configuredModel: "saved-model", provider: "https://fixture.invalid/v1" }
@@ -64,7 +66,9 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", o
       model: { list: () => { unexpected.push("models"); throw Error("unavailable") } } },
     data: { listen: (callback: typeof listener) => { listener = callback; return () => { listener = undefined } },
       session: { get: (id: string) => sessions.get(id) }, location: { default: () => location } },
-    keymap: { layer: (factory: () => KeymapLayer) => { commands.push(...factory().commands ?? []) } },
+    keymap: { layer: (factory: () => KeymapLayer) => {
+      const layer = factory(); layers.push(layer); commands.push(...layer.commands ?? [])
+    }, mode: { current: () => mode } },
     renderer,
     ui: { slot: (slot: typeof slots[number]) => { slots.push(slot); return () => { slot.removed = true } },
       router: { current: () => route }, dialog: { show: (_render: unknown, close: () => void) => { dialogClose = close },
@@ -78,7 +82,8 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", o
     } }
       : { config: config() }) }
   const runtime = setupHostHistoryOnly(ctx, state, life, { transport: () => transport })
-  return { life, runtime, commands, slots, renderer, sessions, wire, serverReads, unexpected, server,
+  return { life, runtime, commands, layers, slots, renderer, sessions, wire, serverReads, unexpected, server,
+    mode: (value: string) => { mode = value },
     sample, totals, terminated: () => terminated, listening: () => !!listener,
     route: (value: typeof route) => { route = value },
     event: (type: string, data: unknown, eventLocation?: typeof location) => listener?.({ details: { type, data,
@@ -131,7 +136,7 @@ for (const unavailable of ["configuration", "companion"] as const) {
   test(`history/statistics remain available without review ${unavailable}, using current indexed samples`, async t => {
     const f = fixture(unavailable)
     t.after(async () => { await f.life.stop(); await f.life.settled() })
-    assert.deepEqual(f.commands.map(value => value.id), ["reviewer.lifetime", "reviewer.history"])
+    assert.deepEqual(f.commands.filter(value => value.id).map(value => value.id), ["reviewer.lifetime", "reviewer.history"])
     assert.deepEqual(f.slots.map(slot => slot.prepend ?? slot.append), ["sidebar.content", "app"])
     assert.equal(f.command("reviewer.history").enabled!(), true)
     assert.equal(f.command("reviewer.lifetime").enabled!(), true)
@@ -156,6 +161,47 @@ for (const unavailable of ["configuration", "companion"] as const) {
     assert.equal(f.renderer.useMouse, false)
   })
 }
+
+test("Ctrl+H toggles history only on an active root in base mode without changing UI commands", async t => {
+  const f = fixture()
+  t.after(() => f.life.stop())
+  const layer = f.layers.find(value => value.commands?.some(command => command.bind === "ctrl+h"))!
+  const toggle = layer.commands![0]
+  assert.ok(toggle)
+  assert.equal(layer.mode, "base")
+  assert.equal(layer.priority, 100)
+  assert.equal(toggle.id, undefined)
+  assert.equal(toggle.palette, undefined)
+  assert.equal(f.command("reviewer.history").bind, undefined)
+  toggle.run()
+  assert.equal(f.runtime.records.state().open, true)
+  toggle.run()
+  await tick(); await tick()
+  assert.equal(f.runtime.records.state().open, false, "closing during loading cannot reopen from a late read")
+  toggle.run()
+  await tick(); await tick()
+  assert.equal(f.runtime.records.state().status, "ready")
+  f.mode("modal")
+  toggle.run()
+  assert.equal(f.runtime.records.state().open, true, "native modal input is not consumed")
+  f.mode("base")
+  toggle.run()
+  assert.equal(f.runtime.records.state().open, false)
+  for (const route of [{ type: "home" }, { type: "session", sessionID: "child" },
+    { type: "session", sessionID: "missing" }] as const) {
+    f.route(route)
+    assert.equal((layer.enabled as () => boolean)(), false)
+    toggle.run()
+    assert.equal(f.runtime.records.state().open, false)
+  }
+  f.route({ type: "session", sessionID: "root" })
+  f.event("server.connected", {})
+  assert.equal((layer.enabled as () => boolean)(), false)
+  toggle.run()
+  assert.equal(f.runtime.records.state().open, false)
+  assert.deepEqual(f.unexpected, [])
+  assert.equal(f.renderer.useMouse, false)
+})
 
 test("history-only route identity uses known native scoped ancestry, not review modes or remembered paint", async t => {
   const f = fixture()
