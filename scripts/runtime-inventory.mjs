@@ -49,7 +49,10 @@ export const runtimeInventory = {
   "smoke-v2-lifecycle.mjs": host(["default"], [], { hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-invocation.mjs": host(["default", "review"], [], { hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-review.mjs": host(["advisory", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant", "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
-    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete"], [], { hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
+    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-edit", "normal-directory-edit"], [], { hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
+  "smoke-v2-notifications.mjs": host(["manual-handoff", "forms", "execution", "unavailable-review"], [], {
+    hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions,
+    requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"], timeoutMs: 360000 }),
   "smoke-v2-sidebar-state.mjs": host(["default"], [], { classification: "synthetic-host", hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux"] }),
   "smoke-style-retirement.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux", "bundle", "babel"] }),
   "smoke-approval-recovery.mjs": host(["read-error", "read-timeout", "correction-after", "correction-before", "transport-after", "transport-before"], [], {
@@ -81,7 +84,7 @@ export const runtimeInventory = {
   "audit-usage-history.mjs": { classification: "historical", scenarios: ["default"], default: "default", flags: [], rules: [],
     requires: ["git-tag:v0.7.0", "source", "esbuild", "node-sqlite"], hosts: 0, timeoutMs: 60000 },
   ...Object.fromEntries(["smoke-runtime.mjs", "smoke-stages.mjs", "smoke-scenarios.mjs", "smoke-reviewer.mjs", "smoke-lifetime.mjs",
-    "smoke-notification-recorder.mjs", "smoke-desktop-playback.mjs", "smoke-observations.mjs", "smoke-ui.mjs", "runtime-inventory.mjs", "runtime-runner.mjs", "test-runtime.mjs"]
+     "smoke-notification-recorder.mjs", "smoke-desktop-playback.mjs", "smoke-observations.mjs", "smoke-ui.mjs", "smoke-v2-review-support.mjs", "runtime-inventory.mjs", "runtime-runner.mjs", "test-runtime.mjs"]
     .map(name => [name, { classification: "helper", internal: name === "smoke-runtime.mjs" ? ["--guard <absolute-socket>"]
       : name === "test-runtime.mjs" ? ["--list", "--plan [--profile <name> | <entrypoint> <scenario> <flags>]", "--profile <name>"] : [] }])),
 }
@@ -147,7 +150,8 @@ export const runtimeProfiles = {
     ["smoke-v2-native-queue.mjs"],
     ...["normal-mouse-off", "normal-cancel", "fast-descendant", "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off",
       "fast-history-cover", "fast-notifications", "normal-hide", "normal-dialog", "normal-resize", "fast-dialog",
-      "normal-hidden-complete"].map(scenario => ["smoke-v2-review.mjs", scenario]),
+      "normal-hidden-complete", "normal-edit", "normal-directory-edit"].map(scenario => ["smoke-v2-review.mjs", scenario]),
+    ...["manual-handoff", "forms", "execution", "unavailable-review"].map(scenario => ["smoke-v2-notifications.mjs", scenario]),
   ],
   "ci-v1": [
     ["smoke-history-lifecycle.mjs", "auto-shell"],

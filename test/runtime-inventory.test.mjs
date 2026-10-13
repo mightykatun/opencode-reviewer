@@ -85,12 +85,12 @@ test("a multi-scenario fixture can retain its default while explicitly selecting
 
 test("V2 acceptance includes each production review case exactly once and retains explicit synthetic classifications", () => {
   const cases = profilePlan("v2-acceptance")
-  assert.equal(cases.length, 24, "Exact current production/foundation acceptance selection")
+  assert.equal(cases.length, 30, "Exact current production/foundation acceptance selection")
   assert.equal(cases.length, new Set(cases.map(value => value.id)).size)
   const reviews = cases.filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs")
   const expectedReviews = ["advisory", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant",
     "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
-    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete"].sort()
+    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-edit", "normal-directory-edit"].sort()
   assert.deepEqual(reviews.map(value => value.scenario).sort(), expectedReviews)
   assert.deepEqual([...runtimeInventory["smoke-v2-review.mjs"].scenarios].sort(), expectedReviews)
   assert.ok(reviews.every(value => value.classification === "production-host"))
@@ -107,6 +107,9 @@ test("V2 acceptance includes each production review case exactly once and retain
   assert.equal(keyboardMouseOff.classification, "production-host")
   assert.deepEqual(keyboardMouseOff.args, ["normal-history-keyboard-mouse-off"])
   assert.ok(keyboardMouseOff.requires.includes("bundle"), "Exercises real production history and approvals from the parent's fresh build")
+  const notifications = cases.filter(value => value.entrypoint === "scripts/smoke-v2-notifications.mjs")
+  assert.deepEqual(notifications.map(value => value.scenario).sort(), ["execution", "forms", "manual-handoff", "unavailable-review"])
+  assert.ok(notifications.every(value => value.classification === "production-host" && value.requires.includes("bundle")))
 })
 
 test("fixture verification pins are distinct from plugin activation and require one actual binary for the entire run", () => {

@@ -13,5 +13,6 @@
   "test/smoke-desktop-playback.test.mjs",
   "test/smoke-measurements.test.mjs",
   "test/smoke-stages.test.mjs",
-  "test/theme-syntax-adapter.test.mjs"
+  "test/theme-syntax-adapter.test.mjs",
+  "test/smoke-v2-review-support.test.mjs"
 ]

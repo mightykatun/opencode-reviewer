@@ -6,12 +6,12 @@
 // normal-history-cover / fast-history-cover (two genuine native requests in one root),
 // normal-history-keyboard-mouse-off (two actual saved reports, mouse-off keys and no approval cover),
 // fast-notifications (injected desktop boundary, retained/live and exact history clicks).
+// normal-edit / normal-directory-edit (one native write; distinct directory/edit stages).
 // Build first. Do not execute a host until the main session grants approval.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { createServer } from "node:http"
-import { DatabaseSync } from "node:sqlite"
 import { chmod, mkdir, mkdtemp, readFile, lstat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
@@ -20,6 +20,8 @@ import { runtimeArguments } from "./runtime-inventory.mjs"
 import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 import { activatePalette } from "./smoke-ui.mjs"
+import { readProductionHistory, assertWriteInspection, assertWriteEvidence, assertEvidenceRequest,
+  savedStageHistory } from "./smoke-v2-review-support.mjs"
 
 // Independent public wire schema. No production imports in either observer.
 function rpcDefinition() {
@@ -262,7 +264,8 @@ async function observedReviewerSetup(ctx) {
     const admit = runtime.store.admit.bind(runtime.store)
     runtime.store.admit = event => {
       const accepted = admit(event)
-      facts.events.push({ type: event.type, accepted })
+      facts.events.push({ type: event.type, accepted, ...(reviewerPaths.editCase ? {
+        context: event.context, ...(event.type === "permissionResolved" ? { outcome: event.outcome } : {}) } : {}) })
       void storage.publish(facts)
       return accepted
     }
@@ -303,6 +306,7 @@ async function observedReviewerSetup(ctx) {
       attention.cleaned = true
       await saveNotifications(); await notifications.flush(); await notifications.close()
     }
+    await panels.flush(); await storage.flush()
     await panels.close(); await storage.close()
   }
 }
@@ -316,8 +320,11 @@ const coverCase = ["normal-history-cover", "fast-history-cover"].includes(scenar
 const dialogCase = ["normal-dialog", "fast-dialog"].includes(scenario)
 const visibilityLoss = ["normal-hide", "normal-dialog", "normal-resize"].includes(scenario)
 const hiddenComplete = scenario === "normal-hidden-complete"
-const notificationCase = scenario === "fast-notifications", savedCase = historyCase || notificationCase || coverCase || scenario === "fast-dialog"
-const requestCount = coverCase ? 2 : 1
+const editCase = ["normal-edit", "normal-directory-edit"].includes(scenario)
+const directoryEditCase = scenario === "normal-directory-edit"
+const notificationCase = scenario === "fast-notifications", savedCase = historyCase || notificationCase || coverCase || scenario === "fast-dialog" || editCase
+const requestCount = coverCase || directoryEditCase ? 2 : 1
+const nativeCallCount = editCase ? 1 : requestCount
 const negative = ["normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant"].includes(scenario) || visibilityLoss
 const descendant = scenario.endsWith("-descendant")
 const mouseOff = scenario === "normal-mouse-off", approvalDelaySeconds = fast ? 45 : visibilityLoss || hiddenComplete ? 5 : 8
@@ -364,22 +371,32 @@ const presentationPath = path.join(artifacts, "presentation.json")
 const notificationPath = path.join(artifacts, "notifications.json"), notificationControlPath = path.join(artifacts, "notifications-control.json")
 const cliPath = path.join(temp, "config/opencode/cli.json")
 const archiveFiles = ["dist/tui.js", "package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"].sort()
-const prompt = "Run python3 fixture.py once in inputs. It appends the isolated V2_REVIEW_EXECUTED marker and prints it."
+const editTarget = directoryEditCase ? path.join(temp, "outside-project", "target.txt") : path.join(initial, "target.txt")
+const writeTarget = directoryEditCase ? editTarget : "target.txt"
+const beforeEdit = "V2_EDIT_BEFORE\n", afterEdit = "V2_EDIT_AFTER\n"
+const editActions = directoryEditCase ? ["external_directory", "edit"] : ["edit"]
+const editDescriptions = editActions.map(action => action === "edit"
+  ? "V2 native edit report.\n\nThe proposed diff replaces one isolated marker."
+  : "V2 directory access report.\n\nAllow access to the isolated outside-project target for the pending write; edit contents are assessed separately.")
+const prompt = editCase ? `Use native write once to replace ${writeTarget} with exactly V2_EDIT_AFTER followed by a newline.`
+  : "Run python3 fixture.py once in inputs. It appends the isolated V2_REVIEW_EXECUTED marker and prints it."
 const script = 'from pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write("V2_REVIEW_EXECUTED\\n")\nprint("V2_REVIEW_EXECUTED")\n'
 const description = "V2 local marker report.\n\nThe script writes one isolated marker."
 // Only the second keyboard-case response is long. The first genuine report keeps
 // all existing history-cover text/metadata and selected-original assertions intact.
 const keyboardDescription = description + "\n\n" + Array.from({ length: 80 }, (_, index) =>
   `Keyboard scroll line ${String(index + 1).padStart(2, "0")}: one isolated marker.`).join("\n\n")
-const reportDescription = index => keyboardMouseOffCase && index === 2 ? keyboardDescription : description
-const assessment = { safe: true, desc: description }
+const reportDescription = index => editCase ? editDescriptions[index - 1] : keyboardMouseOffCase && index === 2 ? keyboardDescription : description
+const assessment = { safe: true, desc: editCase ? editDescriptions.at(-1) : description }
 const reviewUsage = { prompt_tokens: 23, completion_tokens: 11, total_tokens: 34 }
-const toolCall = { id: "v2-production-review-shell", name: "shell", input: { command: "python3 fixture.py", workdir: "inputs" } }
+const toolCall = editCase ? { id: "v2-production-review-write", name: "write", input: { path: writeTarget, content: afterEdit } }
+  : { id: "v2-production-review-shell", name: "shell", input: { command: "python3 fixture.py", workdir: "inputs" } }
 const publishers = new Map(), calls = [], errors = [], negativeWindows = []
 let version, modelServer, mainResponse, reviewResponse, sessionID, childSession, request, inspection, handshake, sequence = 0
 let reviewPOSTs = 0, reviewCompleted = false, allowWrites = false
 let allowedReplies = 1, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, notificationSequence = 0
 const requests = [], inspections = [], reviewerTransactions = []
+const editStages = []
 const markerLine = "V2_REVIEW_EXECUTED\n"
 const publish = async (file, value) => {
   let publisher = publishers.get(file)
@@ -391,7 +408,7 @@ const saveCapture = async name => {
   await writeFile(path.join(artifacts, name + ".txt"), capture())
   await writeFile(path.join(artifacts, name + ".ansi.txt"), runtime.tmux("capture-pane", "-p", "-e", "-t", "v2-review"))
 }
-const executed = () => readFile(path.join(inputs, "executed"), "utf8").catch(error => {
+const executed = () => readFile(editCase ? editTarget : path.join(inputs, "executed"), "utf8").catch(error => {
   if (error.code === "ENOENT") return null
   throw error
 })
@@ -401,13 +418,14 @@ const observations = async () => {
    assert.ok(reviewPOSTs <= requestCount, "One production reviewer POST per native request, no correction or transport retry")
   if (record) {
     assert.deepEqual(record.errors, [])
-     assert.ok(record.asked.length <= requestCount, "Only expected native shell permissions")
+      assert.ok(record.asked.length <= requestCount, "Only expected native operation permissions")
      assert.ok(record.replied.length <= (allowWrites ? allowedReplies : 0), "Only the production automatic path may reply once per eligible request")
     for (const reply of record.replied) {
       assert.equal(reply.reply, "once")
       assert.equal(reply.sessionID, sessionID)
        assert.ok(record.asked.some(asked => asked.id === reply.requestID), "Reply belongs to an actual observed native request")
-       if (!coverCase) assert.equal(reply.requestID, request.id)
+        if (!coverCase && !directoryEditCase) assert.equal(reply.requestID, request.id)
+        assert.equal(record.replied.filter(item => item.requestID === reply.requestID).length, 1, "Exact once-only native reply per permission")
     }
   }
   const marker = await executed()
@@ -429,7 +447,9 @@ const observations = async () => {
   }
   // Native Python can create the append target just before flushing its line.
   // Only an admitted automatic write may expose that transient empty file.
-   assert.ok(marker === null || allowWrites && Array.from({ length: allowedReplies + 1 }, (_, count) => markerLine.repeat(count)).includes(marker), "No unexpected or duplicate execution")
+   if (editCase) assert.ok(marker === beforeEdit || allowWrites && allowedReplies === requestCount
+     && [null, "", afterEdit].includes(marker), "Native write cannot change contents before final edit approval")
+   else assert.ok(marker === null || allowWrites && Array.from({ length: allowedReplies + 1 }, (_, count) => markerLine.repeat(count)).includes(marker), "No unexpected or duplicate execution")
   return record
 }
 const until = async (label, predicate, timeout = 60000) => {
@@ -485,25 +505,7 @@ const clickNotification = async id => {
 }
 const readHistory = async () => {
   await assertDefaultHomeStorage()
-  const stat = await lstat(historyFile).catch(error => { if (error.code === "ENOENT") return undefined; throw error })
-  if (!stat) return undefined
-  assert.ok(stat.isFile() && !stat.isSymbolicLink(), "Actual isolated production database")
-  // Reopen on every poll to observe settled worker commits. No production SQL
-  // adapter, imports, history insertion, checkpoint or fixture write connection.
-  const db = new DatabaseSync(historyFile, { readOnly: true })
-  try {
-    db.exec("BEGIN")
-    const rows = db.prepare(`SELECT h.*,r.context,r.accepted,p.body FROM history h
-      JOIN reviews r ON r.id=h.review JOIN payloads p ON p.id=h.id ORDER BY h.completed,h.tie,h.id`).all()
-    const reviews = db.prepare("SELECT id,root,session,context,accepted FROM reviews ORDER BY id").all()
-    const attempts = db.prepare("SELECT id,review,dispatched,finalized FROM attempts ORDER BY id").all()
-    const approvals = db.prepare("SELECT * FROM approvals ORDER BY id").all()
-    const meta = db.prepare("SELECT version,revision,totals FROM meta WHERE id=1").get()
-    const conversations = db.prepare("SELECT id,totals,partial FROM conversation_totals ORDER BY id").all()
-    const payloadCount = db.prepare("SELECT count(*) AS n FROM payloads").get().n
-    db.exec("COMMIT")
-    return { file: historyFile, rows, reviews, attempts, approvals, meta, conversations, payloadCount }
-  } finally { db.close() }
+  return readProductionHistory(historyFile)
 }
 const noSavedBody = async () => {
   const value = await readHistory()
@@ -784,10 +786,11 @@ const releaseNativeCall = () => {
 }
 const limits = [
   "One installed default archive with separate server companion and global CLI configuration. The independent monitor never imports production code or replies to permissions.",
-  `One standalone Linux OpenCode V2 verification host, ${requestCount} direct native shell call(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal, disconnect or tab-switch acceptance.`,
+  `One standalone Linux OpenCode V2 verification host, ${nativeCallCount} direct native ${editCase ? "write" : "shell"} call(s), ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal, disconnect or tab-switch acceptance.`,
   "Mouse capture is explicitly configured only by the isolated fixture, never forced by production. Countdown-loss cases require real physical FRAME proof before native command/navigation or actual tmux resize; no synthesized paint, modes, hits or geometry. Individual cases do not imply full presentation-matrix acceptance.",
   "Descendant cases navigate a real child while a root request is pending; they do not exercise descendant-owned native queue ordering. No disabled kinds or uncertain writes.",
-    dialogCase ? "Stock command.palette.show owns a real native modal. Normal loss after an actual countdown permanently cancels; fast withholds SSE Safe preview until that cover, closes through real Escape and requires fresh physical root paint before once, with final usage verified in SQLite. No permission fullscreen or other modal-family acceptance."
+    editCase ? "One actual native write, exact direct source linkage and pending native diff. Outside-project access, when selected, automatically resumes that same write into a distinct edit permission. Each stage holds the real reviewer response, proves no mutation, paints a full normal countdown and receives one production once reply. Read-only SQLite proves per-stage accepted reports, qualifying resolutions, categories and both aggregate scopes. Production history opens through painted palette activation. No native edit/patch variant, formatter, descendant-owned queue, notification, multi-client or live-provider judgment acceptance."
+      : dialogCase ? "Stock command.palette.show owns a real native modal. Normal loss after an actual countdown permanently cancels; fast withholds SSE Safe preview until that cover, closes through real Escape and requires fresh physical root paint before once, with final usage verified in SQLite. No permission fullscreen or other modal-family acceptance."
       : visibilityLoss ? "One actual normal countdown, native sidebar hide or a real 160x8 tmux window, and restoration to the root. The unchanged native request remains manual beyond both the original and any hypothetical restarted deadline. No benign-width continuity or other geometry-family acceptance."
       : hiddenComplete ? "A never-armed normal report completes on a real child route. Read-only production storage confirms final acceptance while hidden; no write beyond the configured delay. Actual root return requires a fresh painted full countdown before a single once. No descendant-owned permission queue acceptance."
       : keyboardMouseOffCase ? "Reuse normal-history-cover's two real automatic requests with configured mouse on, then disable mouse via its public setter only after both entries save and no request is pending. Real palette/history input, exact two-entry Left/Right selection and Up/Down/Page scroll use the long second fixed reviewer response. Mouse-off production cover queries reject previously proven heading/footer hits. No new approval eligibility, synthesized paint/hits, statistics dialog or multi-client acceptance."
@@ -802,6 +805,10 @@ try {
   await Promise.all([inputs, path.dirname(cliPath)].map(directory => mkdir(directory, { recursive: true })))
   execFileSync("git", ["init", "--quiet", project], { env, timeout: 10000 })
   await writeFile(path.join(inputs, "fixture.py"), script)
+  if (editCase) {
+    await mkdir(path.dirname(editTarget), { recursive: true })
+    await writeFile(editTarget, beforeEdit)
+  }
   const packedOutput = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--offline", "--pack-destination", temp],
     { cwd: root, env: { ...env, npm_config_cache: path.join(temp, "npm-cache"), npm_config_ignore_scripts: "true" }, encoding: "utf8", timeout: 60000 }))
   const packed = Array.isArray(packedOutput) ? packedOutput : Object.values(packedOutput)
@@ -835,25 +842,34 @@ try {
         assert.equal(body.stream, streaming)
         assert.equal(body.messages.length, 2)
         assert.equal(body.messages[0].role, "system")
-        assert.match(body.messages[0].content, /permission\.action="shell"/)
         assert.equal(body.messages[1].role, "user")
         const evidence = JSON.parse(body.messages[1].content)
-        assert.equal(evidence.kind, "shell")
-        assert.equal(evidence.tool, "shell")
-        assert.equal(evidence.command, toolCall.input.command)
-        assert.deepEqual(evidence.operation.input, toolCall.input)
-        assert.equal(evidence.userPrompt, prompt)
-        assert.equal(evidence.location.directory, initial)
-        assert.equal(evidence.cwd, inputs)
-        assert.deepEqual(evidence.execution, { tool: "shell", requestedWorkdir: "inputs", canonicalCwd: inputs,
-          cwdSource: "tool.workdir relative to invocation.location.directory" })
-        assert.equal(evidence.project.directory, project)
-        assert.equal(evidence.permission.action, "shell")
-        assert.deepEqual(evidence.permission.resources, [toolCall.input.command])
-        assert.equal(evidence.permission.type, undefined, "No fabricated V1 permission")
-        assert.equal(evidence.files.length, 1)
-        assert.equal(evidence.files[0].status, "captured")
-        assert.equal(evidence.files[0].contents, script)
+        if (editCase) {
+          const action = editActions[reviewPOSTs - 1]
+          assert.match(body.messages[0].content, action === "edit" ? /permission\.action="edit"/ : /external-directory access/)
+          assertWriteEvidence(evidence, { action, target: writeTarget, prompt, initial, project })
+          assert.equal(evidence.permission.sessionID, sessionID)
+          assert.equal(evidence.permission.source.id, toolCall.id)
+          reviewCompleted = false
+         } else {
+          assert.match(body.messages[0].content, /permission\.action="shell"/)
+          assert.equal(evidence.kind, "shell")
+          assert.equal(evidence.tool, "shell")
+          assert.equal(evidence.command, toolCall.input.command)
+          assert.deepEqual(evidence.operation.input, toolCall.input)
+          assert.equal(evidence.userPrompt, prompt)
+          assert.equal(evidence.location.directory, initial)
+          assert.equal(evidence.cwd, inputs)
+          assert.deepEqual(evidence.execution, { tool: "shell", requestedWorkdir: "inputs", canonicalCwd: inputs,
+            cwdSource: "tool.workdir relative to invocation.location.directory" })
+          assert.equal(evidence.project.directory, project)
+          assert.equal(evidence.permission.action, "shell")
+          assert.deepEqual(evidence.permission.resources, [toolCall.input.command])
+          assert.equal(evidence.permission.type, undefined, "No fabricated V1 permission")
+          assert.equal(evidence.files.length, 1)
+          assert.equal(evidence.files[0].status, "captured")
+          assert.equal(evidence.files[0].contents, script)
+        }
          reviewResponse = res
          const transaction = { res, completed: false }
          reviewerTransactions.push(transaction)
@@ -864,9 +880,16 @@ try {
       assert.equal(req.url, "/v1/chat/completions")
       assert.ok(body.tools?.some(tool => tool.function.name === "execute"), "Native Code Mode search/execution remains installed")
       const mainCalls = calls.filter(call => call.url === req.url)
-       assert.ok(mainCalls.length <= requestCount * 2, "Only genuine prompts and tool-result continuations")
+        assert.ok(mainCalls.length <= nativeCallCount * 2, "Only genuine prompts and tool-result continuations")
        if (mainCalls.length === 1 || coverCase && mainCalls.length === 3) {
-         assert.ok(body.tools.some(tool => tool.function.name === toolCall.name), "Use the actually advertised direct native shell")
+          assert.ok(body.tools.some(tool => tool.function.name === toolCall.name), "Use the actually advertised direct native tool")
+          if (editCase) {
+            const definition = body.tools.find(tool => tool.function.name === "write").function
+            assert.equal(definition.parameters.properties.path.type, "string")
+            assert.equal(definition.parameters.properties.content.type, "string")
+            assert.ok(definition.parameters.required.includes("path"))
+            assert.ok(definition.parameters.required.includes("content"))
+          }
          if (mainCalls.length === 3) {
            const oldResults = body.messages.filter(message => message.role === "tool")
            assert.equal(oldResults.length, 1)
@@ -881,7 +904,12 @@ try {
        assert.equal(toolResults.length, coverCase ? mainCalls.length / 2 : 1)
        const latestResult = toolResults.at(-1)
        assert.equal(latestResult.tool_call_id, toolCall.id)
-       assert.match(JSON.stringify(latestResult.content), /V2_REVIEW_EXECUTED/, "Exact latest actual native tool response reaches the main model")
+        if (editCase) {
+          assert.equal(reviewPOSTs, requestCount, "Directory approval alone cannot finish native write")
+          assert.equal(await executed(), afterEdit, "Actual native result follows the exact applied file contents")
+          assert.ok(latestResult.content, "Actual native write response reaches the main model")
+          assert.doesNotMatch(JSON.stringify(latestResult.content), /Tool execution failed|Permission denied/)
+        } else assert.match(JSON.stringify(latestResult.content), /V2_REVIEW_EXECUTED/, "Exact latest actual native tool response reaches the main model")
       const message = { role: "assistant", content: "V2 fixture complete." }
       if (body.stream) {
         res.writeHead(200, { "Content-Type": "text/event-stream" })
@@ -908,7 +936,7 @@ try {
     + `\nimport * as production from ${JSON.stringify(pathToFileURL(path.join(installed, "dist/tui.js")).href)}\n`
      + `\nconst reviewerPaths=${JSON.stringify({ presentation: presentationPath, storage: path.join(artifacts, "storage-observations.json"),
          ...(notificationCase ? { notifications: notificationPath, notificationControl: notificationControlPath } : {}), historyCover: coverCase,
-         keyboardMouseOff: keyboardMouseOffCase })}\n`
+          keyboardMouseOff: keyboardMouseOffCase, editCase })}\n`
      + observedReviewerSetup + '\nexport default {id:"opencode-reviewer",setup:observedReviewerSetup}\n'
     : archived))
   await Promise.all([observer, monitor].map(directory => mkdir(directory)))
@@ -923,7 +951,8 @@ try {
   for (const file of [path.join(observer, "index.mjs"), path.join(monitor, "tui.mjs"), path.join(reviewer, "tui.mjs")])
     execFileSync(process.execPath, ["--check", file], { env, timeout: 10000 })
   const config = { $schema: "https://opencode.ai/config.json", model: "fixture/fixture", update: "disable",
-    plugins: [reviewer, observer], permissions: [{ action: "*", resource: "*", effect: "allow" }, { action: "shell", resource: "*", effect: "ask" }],
+    plugins: [reviewer, observer], permissions: [{ action: "*", resource: "*", effect: "allow" },
+      ...(editCase ? editActions.map(action => ({ action, resource: "*", effect: "ask" })) : [{ action: "shell", resource: "*", effect: "ask" }])],
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: origin + "/v1", apiKey: "synthetic-only" },
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } }
    // Approval cases explicitly configure mouse capture in the isolated fixture,
@@ -934,6 +963,7 @@ try {
      ...(automatic ? { mouse: !mouseOff } : {}),
     session: { permissions: "prompt" }, plugins: [{ package: reviewer, options: { baseURL: origin + "/review", model: "v2-production-reviewer",
        stream: streaming, autoApprove: automatic, fastMode: fast, autoApproveDelaySeconds: approvalDelaySeconds,
+       ...(directoryEditCase ? { reviewExternalDirectories: true } : {}),
        timeoutMs: 120000, notify: notificationCase, notifySound: false, staleReminderSeconds: 0,
        ...(notificationCase ? { notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } : {}) } }, monitor] }
   await publish(path.join(project, "opencode.json"), config); await publish(cliPath, cli)
@@ -961,8 +991,156 @@ try {
   const session = await command({ type: "start", text: prompt })
   sessionID = session.id
   await until("controlled initial native model request", () => mainResponse)
-   releaseNativeCall()
-   request = await until("native shell permission", record => record?.asked[0])
+    releaseNativeCall()
+   if (editCase) {
+     // One direct native call remains running across both permission stages. The
+     // monitor reads native data and the companion RPC; only production replies.
+     for (const [index, action] of editActions.entries()) {
+       allowedReplies = index
+       request = await until(`native ${action} permission`, record => record?.asked[index])
+       requests.push(request)
+       assert.equal(request.action, action)
+       assert.equal(request.sessionID, sessionID)
+       assert.equal(request.source.type, "tool")
+       assert.equal(request.source.id, toolCall.id)
+       if (index) {
+         assert.notEqual(request.id, requests[0].id, "Access and edit are distinct native requests")
+         assert.deepEqual(request.source, requests[0].source, "Automatic continuation retains the exact source triple")
+         assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 1,
+           "Directory-to-edit continuation is native, not a second model tool invocation")
+       }
+       if (action === "external_directory") {
+         assert.deepEqual(request.resources, [path.dirname(editTarget) + "/*"], "Exact outside-project directory boundary")
+         assert.equal(request.metadata?.files, undefined, "Native access precedes edit preview construction")
+       } else assert.deepEqual(request.resources, [writeTarget])
+       inspection = await command({ type: "inspect", sessionID, requestID: request.id, epoch: handshake.epoch })
+       inspections.push(inspection)
+       assertWriteInspection(inspection, request, toolCall, sessionID, handshake)
+       await publish(path.join(artifacts, `inspection-stage-${index + 1}.json`), inspection)
+       await until(`production ${action} reviewer POST`, () => reviewPOSTs === index + 1 && reviewResponse)
+       const evidence = JSON.parse(calls.filter(call => call.url === "/review/chat/completions")[index].body.messages[1].content)
+       assertEvidenceRequest(evidence, request, sessionID, initial, handshake.project.id)
+       assertWriteEvidence(evidence, { action, target: writeTarget, prompt, initial, project })
+       const stage = { action, request, evidence, description: editDescriptions[index], countdown: undefined }
+       editStages.push(stage)
+       await until(`rendered evaluating ${action} panel`, () => capture().includes("Permission analysis"))
+       await saveCapture(`stage-${index + 1}-evaluating`)
+       const priorReplies = (await observations()).replied
+       assert.deepEqual(priorReplies.map(reply => reply.requestID), requests.slice(0, index).map(item => item.id))
+       const unresolved = async () => {
+         const saved = await readHistory()
+         if (saved) {
+           assert.equal(saved.payloadCount, index, "Current unresolved report remains memory-only")
+           assert.ok(saved.rows.every(row => JSON.parse(row.context).permission !== request.id))
+         }
+         const facts = await coverState()
+         assert.deepEqual(facts.events.filter(event => event.type === "permissionResolved" && event.accepted)
+           .map(event => event.context.permission), requests.slice(0, index).map(item => item.id))
+         assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 1,
+           "No native tool completion before the final edit stage releases")
+       }
+       await negativeWindow(`${action} review response held: unchanged file and native request`, [request], priorReplies,
+         beforeEdit, index + 1, 1500, unresolved)
+       assert.equal(reviewerTransactions[index].completed, false)
+       finishReview()
+       stage.countdown = await until(`physically painted normal ${action} countdown`, async () => {
+         const proof = await presentation(), screen = capture()
+         if (proof?.stage !== "frame" || proof.selected !== request.id || proof.root !== sessionID
+           || !proof.final || !proof.finalReady || !proof.physical || proof.auto !== "countdown"
+           || !screen.includes(stage.description.split("\n")[0]) || !/Allowed in \d+s/.test(screen)) return false
+         assert.equal(proof.mouse, true)
+         assert.equal(proof.mode, "base")
+         const seconds = Number(screen.match(/Allowed in (\d+)s/)[1])
+         assert.ok(seconds >= approvalDelaySeconds - 1, "Each stage gets its own fresh full normal countdown")
+         return proof
+       }, 15000)
+       const accepted = await coverState()
+       const acceptedEvents = accepted.events.filter(event => event.type === "reviewAccepted" && event.accepted
+         && event.context.permission === request.id)
+       assert.equal(acceptedEvents.length, 1, "One production accepted review for this exact permission stage")
+       assert.equal(acceptedEvents[0].context.category, action)
+       await saveCapture(`stage-${index + 1}-countdown`)
+       await negativeWindow(`${action} countdown remains pending with no mutation`, [request], priorReplies,
+         beforeEdit, index + 1, 1500, unresolved)
+       // Admit only the impending production write after genuine physical proof.
+       allowedReplies = index + 1
+       allowWrites = true
+       await until(`production exact once reply for ${action}`, record => record?.replied.length === index + 1)
+       const replies = (await observations()).replied
+       assert.deepEqual(replies.map(reply => reply.requestID), requests.map(item => item.id))
+       assert.deepEqual(replies.map(reply => reply.reply), Array(index + 1).fill("once"))
+       if (action === "external_directory") {
+         assert.equal(await executed(), beforeEdit, "Access alone does not apply the native write")
+         await until("automatic native continuation reaches the edit permission", record => record?.asked.length === 2)
+         assert.equal((await observations()).asked[1].action, "edit")
+         assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 1)
+       } else await until("native write applies exact requested contents", async () => await executed() === afterEdit)
+       const saved = await until(`actual saved ${action} report and both aggregate scopes`, async () =>
+         savedStageHistory(await readHistory(), editStages, sessionID), 20000)
+       const facts = await coverState()
+       const resolutions = facts.events.filter(event => event.type === "permissionResolved" && event.accepted
+         && event.context.permission === request.id)
+       assert.equal(resolutions.length, 1, "Exactly one qualifying production resolution saves this stage")
+       assert.equal(resolutions[0].outcome, "auto")
+       assert.equal(resolutions[0].context.category, action)
+       stage.savedEntry = saved.rows.find(row => JSON.parse(row.context).permission === request.id).id
+       stage.savedRow = saved.rows.find(row => row.id === stage.savedEntry)
+       await publish(path.join(artifacts, `history-saved-stage-${index + 1}.json`), saved)
+     }
+     await until("actual native write tool-result continuation", () => calls.filter(call => call.url === "/v1/chat/completions").length === 2)
+     const completed = await command({ type: "message", sessionID, messageID: request.source.messageID })
+     const native = completed.content.filter(item => item.type === "tool" && item.id === toolCall.id)
+     assert.equal(native.length, 1)
+     assert.equal(native[0].name, "write")
+     assert.equal(native[0].state.status, "completed")
+     assert.deepEqual(native[0].state.input, toolCall.input)
+     assert.equal(await executed(), afterEdit)
+     await until("native write resolution clears reviewer panel", () => !capture().includes("Permission analysis"))
+     historyEvidence = await until("all native stage reports, attempts, confirmations and independent totals", async () =>
+       savedStageHistory(await readHistory(), editStages, sessionID), 20000)
+     for (const key of ["rows", "reviews", "attempts", "approvals"]) assert.equal(historyEvidence[key].length, requestCount)
+     for (const stage of editStages) assert.deepEqual(historyEvidence.rows.find(row => row.id === stage.savedEntry), stage.savedRow,
+       "Later native continuation never rewrites a previously saved report")
+     const finalFacts = await coverState()
+     for (const type of ["reviewAccepted", "permissionResolved", "approvalConfirmed", "attemptDispatched", "attemptFinalized"]) {
+       const events = finalFacts.events.filter(event => event.type === type && event.accepted)
+       assert.equal(events.length, requestCount, `Exact ${type} count across stages`)
+       assert.deepEqual(events.map(event => event.context.permission), requests.map(item => item.id))
+       assert.deepEqual(events.map(event => event.context.category), editActions)
+     }
+     const replies = (await observations()).replied
+     const stable = async () => {
+       assert.deepEqual(await savedStageHistory(await readHistory(), editStages, sessionID), historyEvidence)
+       assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 2)
+     }
+     await negativeWindow("resolved native write stages stay once-only with exact contents", [], replies, afterEdit,
+       requestCount, 1500, stable)
+     // Real painted palette activation and a production history postcondition,
+     // never a fixture-created history row or direct browser callback.
+     const historyCommand = await command({ type: "keymap", id: "reviewer.history" })
+     assert.equal(historyCommand.registered, true)
+     assert.equal(historyCommand.enabled, true)
+     await activatePalette({ send: (...keys) => runtime.tmux("send-keys", "-t", "v2-review", ...keys),
+       capture: () => runtime.tmux("capture-pane", "-p", "-e", "-t", "v2-review") }, historyCommand.title, async screen => {
+       const record = await observations()
+       return record?.mode === "base" && screen.includes("Analysis history") && screen.includes("V2 native edit report.")
+         && screen.includes("Auto approved") && screen.includes(`${requestCount}/${requestCount}`)
+     })
+     await saveCapture("edit-history-latest")
+     await negativeWindow("production history browsing cannot repeat native writes or reviews", [], replies, afterEdit,
+       requestCount, 1500, async (record, screen) => {
+         assert.deepEqual(record.route, { type: "session", sessionID })
+         assert.match(screen, /Analysis history/)
+         assert.match(screen, /V2 native edit report\./)
+         assert.match(screen, /token: 23 in 11 out/)
+         await stable()
+       })
+     runtime.tmux("send-keys", "-t", "v2-review", "Escape")
+     await until("production edit history closes via real Escape", record => record?.mode === "base" && !capture().includes("Analysis history"))
+     await publish(path.join(artifacts, "native-write-stages.json"), { toolCall, target: editTarget,
+       before: beforeEdit, after: afterEdit, stages: editStages, completed, historyEvidence, facts: finalFacts })
+   } else {
+    request = await until("native shell permission", record => record?.asked[0])
    requests.push(request)
   assert.equal(request.sessionID, sessionID)
   assert.equal(request.action, "shell")
@@ -1677,9 +1855,10 @@ try {
     assert.equal(JSON.parse(saved.meta.totals).activity.autoApproved, 0)
     await publish(path.join(artifacts, "advisory-cancelled-history.json"), saved)
   }
+   }
   assert.equal(reviewCompleted, true)
    assert.equal(reviewPOSTs, requestCount)
-   assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, allowWrites ? requestCount * 2 : 1)
+   assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, allowWrites ? nativeCallCount * 2 : 1)
   const final = await observations()
    assert.equal(final.asked.length, requestCount)
    assert.equal(final.replied.length, allowWrites ? requestCount : 0)
@@ -1705,13 +1884,15 @@ try {
   assert.deepEqual(await readObservation(monitorPath), cleaned, "No observer callback after final close")
   if (notificationCase) assert.deepEqual(await notificationObservations(), notificationEvidence.cleaned, "No backend publication after final close")
   await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, temp, handshake, inspection,
-       assessment, reviewCompleted, reviewPOSTs, calls, requests, inspections, childSession, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, negativeWindows, observations: cleaned, execution: await executed(), limits })
+        assessment, reviewCompleted, reviewPOSTs, calls, requests, inspections, childSession, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence,
+        ...(editCase ? { editStages, editTarget, beforeEdit, afterEdit } : {}), negativeWindows, observations: cleaned, execution: await executed(), limits })
   console.log(`PASS V2 installed production review ${scenario}: ${artifacts}`)
   console.log(`Isolated files: ${temp}`)
 } catch (error) {
   await saveCapture("failed").catch(() => {})
   await publish(path.join(artifacts, "failure.json"), { version, scenario, temp, error: String(error), stack: error.stack,
-      errors, handshake, inspection, request, requests, inspections, coverEvidence, presentationEvidence, calls, reviewPOSTs, reviewCompleted, negativeWindows, limits,
+       errors, handshake, inspection, request, requests, inspections, coverEvidence, presentationEvidence, calls, reviewPOSTs, reviewCompleted, negativeWindows, limits,
+    ...(editCase ? { editStages, editTarget, beforeEdit, afterEdit } : {}),
     notifications: notificationCase ? await readObservation(notificationPath, { optional: true }).catch(() => null) : undefined,
     observations: await readObservation(monitorPath, { optional: true }).catch(() => null) })
   throw error

@@ -228,6 +228,7 @@ review won't restart a canceled countdown. If the plugin can't confirm the resul
 of an approval attempt, it leaves the request manual and never retries that attempt.
 Cancel before using native Allow always or rejection
 forms; those forms alone do not stop the countdown.
+Cancel remains available during native preparation, until the approval is sent.
 Positive countdowns add a 200 ms initial grace and then update on remaining-time
 boundaries. A zero-second setting still approves without that grace.
 
@@ -249,6 +250,8 @@ PageUp/PageDown scroll. Close or Escape closes history. Repeating the command
 returns to the newest report. History remains available with review disabled or
 invalid reviewer configuration. The history command preserves a hidden sidebar;
 clicking an approval notification reveals it and selects that permission's live or saved report.
+Keyboard browsing also works with mouse tracking off; that does not grant
+automatic-approval history cover.
 
 Each entry shows the original report, available usage, model, provider and outcome:
 **Auto approved**, **Manually approved**, **Cancelled**, or **Rejected**. Cancelled
@@ -441,7 +444,8 @@ Use Node.js 24.15.0+ within 24.x, or 22.22.2+ within 22.x, and npm.
 Run `npm ci --ignore-scripts`, then `npm run check` for typechecking, source tests,
 pure-helper tests and the build. `npm run test:helpers` runs the helper checks
 without building or starting OpenCode. Pull-request CI checks both Node versions
-and runs a separate representative Linux OpenCode 2.0.26 fixture profile.
+and runs a separate representative Linux fixture profile on stock OpenCode
+2.0.26 and 2.0.27.
 After building, run `node scripts/test-runtime.mjs --profile ci` for that same
 profile. Use `node scripts/test-runtime.mjs --list` for the complete runtime
 inventory or `node scripts/test-runtime.mjs --plan --profile ci` for a

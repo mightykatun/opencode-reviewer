@@ -68,13 +68,13 @@ implementation and fixtures as migration inputs. Keep exactly five package files
 
 ## Phase 6: production coverage and fixture structure
 
-- [ ] Split reusable V2 review driving/observation code from scenario assertions where useful.
-- [ ] Add automatic native edit and directory-to-edit continuation cases.
-- [ ] Verify exact replies, applied changes, saved history and statistics for both cases.
-- [ ] Add manual attention handoff, form lifecycle and reminder cancellation cases.
-- [ ] Add execution terminal distinctions and unavailable-review notification-only coverage.
-- [ ] Register cases, preserve classifications and include active-policy helper dependencies.
-- [ ] Verify helper inventory and run each new stock-V2 production case.
+- [x] Split reusable V2 review driving/observation code from scenario assertions where useful.
+- [x] Add automatic native edit and directory-to-edit continuation cases.
+- [x] Verify exact replies, applied changes, saved history and statistics for both cases.
+- [x] Add manual attention handoff, form lifecycle and reminder cancellation cases.
+- [x] Add execution terminal distinctions and unavailable-review notification-only coverage.
+- [x] Register cases, preserve classifications and include active-policy helper dependencies.
+- [x] Verify helper inventory and run each new stock-V2 production case.
 - [ ] Commit verified phase and record evidence.
 
 ## Phase 7: final verification
@@ -226,3 +226,23 @@ databases remain untouched; their namespace cannot authorize migration reads.
   (`.runtime/phase6-runtime-isolation-tests.log`).
 - Built archive/provenance tests against the extracted-transaction build:
   10 passed, 0 failed (`.runtime/phase6-built-archive-tests.log`).
+- Foreground fixture implementations completed after cancelled background agents;
+  no unverified agent output was marked complete.
+- Reusable read-only SQL and independent stage assertions moved into
+  `scripts/smoke-v2-review-support.mjs`; pure tests verify rejection of corrupted
+  attribution, categories, usage and snapshots, and read-only byte preservation.
+- Helpers: 129 passed, 0 failed, including inventory discovery and active-policy
+  sparse closure (`.runtime/phase6-helper-tests.log`).
+- All six new cases passed on stock OpenCode 2.0.27:
+  - `normal-edit`: `.runtime/runtime-run-51dRvZ/results.json`.
+  - `normal-directory-edit`: `.runtime/runtime-run-aknjVj/results.json`.
+  - `manual-handoff`: `.runtime/runtime-run-QeerMU/results.json`.
+  - `forms`: `.runtime/runtime-run-tf1QyZ/results.json`.
+  - `execution`: `.runtime/runtime-run-ozADan/results.json`.
+  - `unavailable-review`: `.runtime/runtime-run-CH9VGG/results.json`.
+- Corrected fixture assumptions from actual failures, not relaxed safety gates:
+  directory review needs explicit opt-in; execution births precede received
+  assistant-step output. Manual replies use the actual public decision field.
+- These additions exercise genuine native events/operations with real held
+  responses and sustained negative windows. They do not prove native edit/patch
+  variants, desktop/audio playback, multi-terminal races or live-provider judgment.

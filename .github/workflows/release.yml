@@ -93,6 +93,8 @@ jobs:
             /scripts/smoke-v2-lifecycle.mjs
             /scripts/smoke-v2-invocation.mjs
             /scripts/smoke-v2-review.mjs
+            /scripts/smoke-v2-review-support.mjs
+            /scripts/smoke-v2-notifications.mjs
             /scripts/smoke-v2-sidebar-state.mjs
             /scripts/smoke-style-retirement.mjs
             /scripts/smoke-approval-recovery.mjs
@@ -124,6 +126,7 @@ jobs:
             /test/release-provenance.test.mjs
             /test/bundled-sounds.test.mjs
             /test/theme-syntax-adapter.test.mjs
+            /test/smoke-v2-review-support.test.mjs
             /test/release-artifact-smoke.test.mjs
             /test/npm-cli-smoke.test.mjs
             /test/release-workflow.test.mjs

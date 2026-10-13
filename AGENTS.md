@@ -19,7 +19,7 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  verified 24-case production/foundation selection from PR CI, including history,
+  verified 30-case production/foundation selection from PR CI, including history,
   statistics, approval notifications and explicitly classified synthetic probes.
   `--profile v2-acceptance` currently selects the same cases. Neither proves the
   complete historical V1 matrix or real desktop/audio acceptance. `--profile ci-v1` retains the
@@ -74,6 +74,12 @@ All commands below use the installed five-file archive and production runtime.
 | --- | --- |
 | Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
 | Saved history and statistics | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history` |
+| Default HOME with writable host state | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-default-home` |
+| Keyboard history with mouse disabled | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-keyboard-mouse-off` |
+| Automatic native write / outside-directory continuation | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-edit` / `normal-directory-edit` |
+| Manual attention handoff and reminders | `node scripts/test-runtime.mjs smoke-v2-notifications.mjs manual-handoff` |
+| Native question form / terminal execution distinctions | `node scripts/test-runtime.mjs smoke-v2-notifications.mjs forms` / `execution` |
+| Invalid review and unavailable companion notification-only fallback | `node scripts/test-runtime.mjs smoke-v2-notifications.mjs unavailable-review` |
 | Normal-only history cover | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-cover` / `fast-history-cover` |
 | Approval notification and exact history click | `node scripts/test-runtime.mjs smoke-v2-review.mjs fast-notifications` |
 | Descendant cancellation / hidden fast response | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-descendant` / `fast-descendant` |
