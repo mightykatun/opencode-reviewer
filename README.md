@@ -29,7 +29,7 @@ There is no project-local CLI configuration. OpenCode loads the
   "$schema": "https://opencode.ai/v2/cli.json",
   "plugins": [
     {
-      "package": "opencode-reviewer@2.0.0",
+      "package": "opencode-reviewer@2.0.1",
       "options": {
         "baseURL": "https://openrouter.ai/api/v1",
         "model": "your-model",
@@ -88,7 +88,7 @@ only in this server configuration, not in `cli.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-reviewer@2.0.0"],
+  "plugins": ["opencode-reviewer@2.0.1"],
   "permissions": [
     { "action": "shell", "resource": "*", "effect": "ask" },
     { "action": "edit", "resource": "*", "effect": "ask" },
