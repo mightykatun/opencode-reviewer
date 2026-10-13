@@ -190,6 +190,10 @@ existing user directories.
   `host-evaluate.ts` uses `host-evidence-reader.ts` and `host-reader.ts` to bind exact
   requests/invocations, `host-evidence.ts` for server-only operation collection and
   `host-context.ts` for public conversation context.
+  Full evidence reads prepare and bind before collection, then finalize native
+  identity/companion epoch once after validation; standalone invocation reads also
+  finalize. Strict host JSON copying shares bounded traversal with collector copies
+  while retaining its descriptor/proxy policy and independent RPC component caps.
 - `controller.ts` owns V2 request lifecycle, evaluation, cancellation and approval;
   `session-ancestry.ts` owns bounded metadata traversal and actual read settlement;
   review and history share a scope-pinned instance without sharing saved-mode admission.

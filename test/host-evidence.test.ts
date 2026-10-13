@@ -226,6 +226,31 @@ test("optional diffs are omitted whole with real counts, including count limits 
   assert.deepEqual(files.calls, [])
 })
 
+test("omitted native diffs prefer valid host counts and fall back only for invalid count pairs", async () => {
+  const files = io()
+  for (const counts of [
+    { additions: 7, deletions: 3, expected: "+7 −3" },
+    { additions: 0, deletions: 0, expected: "+0 −0" },
+    { additions: -1, deletions: 3, expected: "+1 −1" },
+    { additions: 1.5, deletions: 3, expected: "+1 −1" },
+    { additions: 7, deletions: "3", expected: "+1 −1" },
+    { additions: Number.MAX_SAFE_INTEGER + 1, deletions: 3, expected: "+1 −1" },
+  ]) {
+    const { expected, ...metadata } = counts
+    const evidence = await ready(owned("write", nativeInput, { ...nativeRequest,
+      metadata: { files: [{ ...nativeFile, ...metadata }] } }), { ...options, maxEvidenceBytes: 1 }, files.access)
+    assert.ok(evidence.kind === "edit")
+    assert.equal(evidence.changes[0]?.delta, `[Δ] "target.txt": ${expected} lines`)
+  }
+  const huge = await ready(owned("write", nativeInput, { ...nativeRequest,
+    metadata: { files: [{ ...nativeFile, patch: "\n".repeat(65537), additions: 7, deletions: 3 }] } }),
+  { ...options, maxEvidenceBytes: 1 }, files.access)
+  assert.ok(huge.kind === "edit")
+  assert.equal(huge.changes[0]?.delta, '[Δ] "target.txt": +7 −3 lines')
+  assert.ok(!huge.limitations.some(value => value.includes("bounded counting allowance")), "valid counts do not spend omitted-diff parsing work")
+  assert.deepEqual(files.calls, [])
+})
+
 test("edit has exact replacement scope and unavailable previews never trigger target reads", async () => {
   const { metadata: _, ...request } = nativeRequest, files = io()
   const evidence = await ready(owned("edit", { path: "target.txt", oldString: "old", newString: "new", replaceAll: true }, request), options, files.access)

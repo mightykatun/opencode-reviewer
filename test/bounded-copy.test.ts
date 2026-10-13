@@ -43,3 +43,37 @@ test("separate JSON components share the remaining value allowance", () => {
     16384 - mandatory.values), /structure limits/)
   assert.deepEqual(mandatory.value.values, Array(9000).fill(1))
 })
+
+test("strict copying rejects discarded fields, array prototypes and proxies without traps", () => {
+  let touched = 0
+  const proxy = new Proxy({}, { getPrototypeOf() { touched++; throw Error("No trap") }, ownKeys() { touched++; throw Error("No trap") } })
+  const revoked = Proxy.revocable([], {}); revoked.revoke()
+  for (const value of [proxy, revoked.proxy,
+    Object.defineProperty({}, "hidden", { value: 1 }), { [Symbol("field")]: 1 },
+    Object.assign([], { extra: 1 }), Object.setPrototypeOf([1], null),
+    Object.defineProperty([1], "0", { enumerable: false }),
+    { get field() { touched++; return 1 } },
+  ]) assert.throws(() => boundedCopy(value, 1000, 16384, undefined, true))
+  assert.equal(touched, 0)
+  const generic = Object.defineProperty({ visible: 1 }, "hidden", { value: 2 })
+  assert.deepEqual(boundedCopy(generic, 1000).value, { visible: 1 }, "generic collector policy remains unchanged")
+})
+
+test("strict copying preserves measured bytes, aliases and exact value/depth limits", () => {
+  const nested = Object.assign(Object.create(null), { value: "é🍐\ud800", zero: -0 })
+  const raw = { a: nested, b: nested, values: [false, null, 1] }
+  const measurements = new WeakMap<object, number>()
+  const bytes = Buffer.byteLength(JSON.stringify(raw))
+  const result = boundedCopy(raw, bytes, 11, measurements, true)
+  assert.equal(result.bytes, bytes)
+  assert.equal(result.values, 11)
+  assert.deepEqual(result.value.a, { value: nested.value, zero: -0 })
+  assert.notEqual(result.value.a, result.value.b)
+  assert.equal(measurements.get(result.value.a), Buffer.byteLength(JSON.stringify(nested)))
+  assert.throws(() => boundedCopy(raw, bytes - 1, 11, undefined, true), /byte budget/)
+  assert.throws(() => boundedCopy(raw, bytes, 10, undefined, true), /structure/)
+  let depth: unknown = null
+  for (let i = 0; i < 32; i++) depth = { child: depth }
+  assert.ok(boundedCopy(depth, 1000, 16384, undefined, true))
+  assert.throws(() => boundedCopy({ child: depth }, 1000, 16384, undefined, true), /structure/)
+})

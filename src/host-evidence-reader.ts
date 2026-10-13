@@ -1,6 +1,6 @@
 import type { OpenCodeClient } from "@opencode/client"
-import { companionRpc, readHandshake } from "./companion-protocol.js"
-import { readPendingInvocation, type HostInvocationRead } from "./host-reader.js"
+import { companionRpc } from "./companion-protocol.js"
+import { preparePendingInvocation, finalizePendingInvocation, type HostInvocationRead } from "./host-reader.js"
 import { attachHostConversation, readHostOperationEvidence, type HostEvidenceOptions, type HostEvidenceResult } from "./host-evidence.js"
 import { hostEvidenceOptions, readHostEvidenceOptions } from "./host-evidence-options.js"
 import { hostJSONBytes, hostOperationJSONBytes, readHostEnvelope, readHostInvocation, sameHostJSON, sameRequest, snapshotRequest } from "./host-request.js"
@@ -19,7 +19,9 @@ export async function readHostEvidence(client: OpenCodeClient, at: HostScope, pe
   const collection = readHostEvidenceOptions(hostEvidenceOptions(options))
   if (!collection) return
   return withDeadline(parent, 5000, async signal => {
-    const current = await readPendingInvocation(client, at, pending, signal)
+    const initial = snapshotRequest(pending, at)
+    if (!initial?.request.source) return
+    const current = await preparePendingInvocation(client, initial, signal)
     if (!current) return
     const { snapshot } = current, { scope, request } = snapshot
     const owned = <T>(work: Promise<T>) => transportOwnership(signal)?.track(work) ?? work
@@ -41,12 +43,7 @@ export async function readHostEvidence(client: OpenCodeClient, at: HostScope, pe
     } else if ((result.status === "disabled" || result.status === "unsupported") && typeof result.reason === "string" && result.reason.length > 0) {
       reviewed = { status: result.status, reason: result.reason }
     } else return
-    const final = snapshotRequest(await owned(client.permission.get({ sessionID: request.sessionID, requestID: request.id }, rpcOptions)), scope)
-    signal.throwIfAborted()
-    if (!final || !sameRequest(snapshot, final)) return
-    const handshake = readHandshake(await owned(client.rpc(companionRpc).handshake(scope.location, rpcOptions)), scope.location)
-    signal.throwIfAborted()
-    if (handshake?.epoch !== scope.epoch) return
+    if (!await finalizePendingInvocation(client, current, signal)) return
     return { ...current, result: reviewed }
   }, "Host evidence lookup")
 }

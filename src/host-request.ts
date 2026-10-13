@@ -15,32 +15,6 @@ function allowedBytes(bytes: number): boolean {
   return bytes === hostJSONBytes || bytes === hostOperationJSONBytes
 }
 
-/** Reject properties JSON copying would silently discard, without running getters. */
-function inspectJSON(value: unknown, depth = 0, count = { values: 0 }): void {
-  if (++count.values > hostJSONValues || depth > 32) throw new Error("Host JSON structure limit exceeded")
-  if (value === null || typeof value === "string" || typeof value === "boolean"
-    || (typeof value === "number" && Number.isFinite(value))) return
-  if (!value || typeof value !== "object" || types.isProxy(value)) throw new Error("Unsupported host JSON value")
-  const array = Array.isArray(value)
-  const prototype = Object.getPrototypeOf(value)
-  if (prototype !== (array ? Array.prototype : Object.prototype) && !(prototype === null && !array)) {
-    throw new Error("Unsupported host JSON prototype")
-  }
-  const keys = Reflect.ownKeys(value)
-  if (keys.length > hostJSONValues + (array ? 1 : 0)) throw new Error("Host JSON structure limit exceeded")
-  const length = array ? Object.getOwnPropertyDescriptor(value, "length")!.value as number : 0
-  if (array && (length > hostJSONValues || keys.length !== length + 1)) throw new Error("Unsupported host JSON array")
-  for (const key of keys) {
-    if (array && key === "length") continue
-    if (typeof key !== "string" || (array && (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= length))) {
-      throw new Error("Unsupported host JSON property")
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key)!
-    if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new Error("Unsupported host JSON descriptor")
-    inspectJSON(descriptor.value, depth + 1, count)
-  }
-}
-
 function freeze<T>(value: T): T {
   if (value && typeof value === "object") {
     for (const item of Object.values(value)) freeze(item)
@@ -65,9 +39,8 @@ export function boundedHostJSON(value: unknown, maxBytes = hostJSONBytes): JSONV
       const owned = issued.get(value)
       if (owned) return owned.bytes <= maxBytes ? value as JSONValue : undefined
     }
-    inspectJSON(value)
     const measurements = new WeakMap<object, number>()
-    const copy = boundedCopy(value, maxBytes, hostJSONValues, measurements).value as JSONValue
+    const copy = boundedCopy(value, maxBytes, hostJSONValues, measurements, true).value as JSONValue
     issue(copy, measurements)
     return copy
   } catch { return undefined }

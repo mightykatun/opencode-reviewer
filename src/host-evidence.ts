@@ -277,11 +277,10 @@ function editChanges(request: HostRequest, proposed: Operation, limits: Limits, 
     }
     if (change.status === "omitted") {
       change.warning = omittedFile(change.file)
-      let counts = diffDelta(diff, signal, countsBudget)
-      if (!counts && Number.isSafeInteger(file.additions) && Number(file.additions) >= 0
-        && Number.isSafeInteger(file.deletions) && Number(file.deletions) >= 0) {
-        counts = { added: Number(file.additions), removed: Number(file.deletions) }
-      }
+      const counts = Number.isSafeInteger(file.additions) && Number(file.additions) >= 0
+        && Number.isSafeInteger(file.deletions) && Number(file.deletions) >= 0
+        ? { added: Number(file.additions), removed: Number(file.deletions) }
+        : diffDelta(diff, signal, countsBudget)
       if (counts) change.delta = `[Δ] ${JSON.stringify(change.file)}: +${counts.added} −${counts.removed} lines`
     }
     changes.push(change)
