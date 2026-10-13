@@ -30,14 +30,17 @@ export interface HostPermissionTransport extends NativeApprovalTransport<HostReq
 export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): HostPermissionTransport {
   const scope = readHostScope(at)
   if (!scope) throw Error("Permission connection scope unavailable")
-  type Reservation = { dispatched: boolean; acknowledged: boolean; resolution?: string }
+  type Reservation = { dispatched: boolean; acknowledged: boolean; uncertain?: boolean; resolution?: string; cleanup?: () => void }
   const reservations = new Map<string, Reservation>()
   // Keep original snapshots spent without strongly retaining successful IDs.
   // Other snapshots still need a fresh native get, which fails after resolution.
   const dispatchedSnapshots = new WeakSet<HostRequestSnapshot>()
   const identity = (sessionID: string, requestID: string) => JSON.stringify([sessionID, requestID])
   const prune = (key: string, reservation: Reservation) => {
-    if (reservation.acknowledged && reservation.resolution === "once") reservations.delete(key)
+    if (reservation.acknowledged && !reservation.uncertain && reservation.resolution === "once") {
+      reservation.cleanup?.()
+      reservations.delete(key)
+    }
   }
   const owned = <T>(signal: AbortSignal, work: Promise<T>): Promise<T> => transportOwnership(signal)?.track(work) ?? work
   const options = (signal: AbortSignal) => ({ location: scope.location, signal })
@@ -109,6 +112,11 @@ export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): 
       // the fresh identity check. No retries after dispatch, even on rejection.
       const reservation: Reservation = { dispatched: false, acknowledged: false }
       reservations.set(key, reservation)
+      // Confirmation may outlive the physical ACK. Keep the same signal owner
+      // until exact native resolution, so a timeout cannot later prune uncertainty.
+      const aborted = () => { if (reservation.dispatched) reservation.uncertain = true }
+      signal.addEventListener("abort", aborted, { once: true })
+      reservation.cleanup = () => signal.removeEventListener("abort", aborted)
       try {
         signal.throwIfAborted()
         const current = await get(snapshot.request.sessionID, snapshot.request.id, signal)
@@ -132,7 +140,7 @@ export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): 
       } catch {
         return { status: reservation.dispatched ? "uncertain" : "unavailable" }
       } finally {
-        if (!reservation.dispatched) { reservations.delete(key); dispatchedSnapshots.delete(snapshot) }
+        if (!reservation.dispatched) { reservation.cleanup(); reservations.delete(key); dispatchedSnapshots.delete(snapshot) }
       }
     },
   }

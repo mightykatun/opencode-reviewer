@@ -64,7 +64,7 @@ implementation and fixtures as migration inputs. Keep exactly five package files
 - [x] Extract explicit approval transaction ownership without changing dispatch invariants.
 - [x] Add delayed-delivery, churn, successful cleanup and uncertain-retention tests.
 - [x] Verify focused approval/notification tests, build and relevant V2 fixtures.
-- [ ] Commit verified phase and record evidence.
+- [x] Commit verified phase and record evidence.
 
 ## Phase 6: production coverage and fixture structure
 
@@ -199,3 +199,30 @@ databases remain untouched; their namespace cannot authorize migration reads.
   Results: `.runtime/runtime-run-lQrC7f/results.json`,
   `.runtime/runtime-run-NZ8iek/results.json`,
   `.runtime/runtime-run-3IuBwy/results.json`.
+- Commit: `21e4269`, `fix: own approval transactions and invalidate stale notifications`.
+- Full source suite after the five implementation phases: 1,581 passed, 0 failed,
+  0 cancelled (`.runtime/implementation-source-tests-complete.log`, 156 seconds).
+  The first invocation was interrupted by the shell's 120-second command limit;
+  the completed rerun changed no source-test budgets or concurrency.
+- Focused independent verification found an ACK-first edge case: a confirmation
+  timeout followed by a late once event could prune an uncertain reservation.
+  Controller tombstones still prevented repeat writes, but transport retention
+  violated the planned contract. Reservation abort ownership now lasts through
+  confirmation; successful/unsent paths release listeners. Integrated real-deadline
+  regression and focused transport/transaction/controller tests: 64 passed.
+  Typecheck and build passed; rebuilt stock `normal` and `fast-notifications`
+  passed (`.runtime/runtime-run-qaqXkZ/results.json`,
+  `.runtime/runtime-run-g0Fg9p/results.json`).
+
+### Phase 6 verification scope
+
+- Production additions must use actual native permissions, operations and forms,
+  not synthetic event injection or replacement executors. Only the desktop
+  delivery backend is substituted; actual audio/focus remain outside acceptance.
+- Exact new inventory: `normal-edit`, `normal-directory-edit`;
+  notifications `manual-handoff`, `forms`, `execution`, `unavailable-review`.
+  Final CI/acceptance enrollment is contingent on stock-host completion.
+- Runtime supervisor/isolation tests: 8 passed, 0 failed
+  (`.runtime/phase6-runtime-isolation-tests.log`).
+- Built archive/provenance tests against the extracted-transaction build:
+  10 passed, 0 failed (`.runtime/phase6-built-archive-tests.log`).

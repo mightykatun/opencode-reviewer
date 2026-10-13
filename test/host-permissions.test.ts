@@ -3,6 +3,10 @@ import { test } from "node:test"
 import type { OpenCodeClient } from "@opencode/client"
 import { hostPermissionTransport } from "../src/host-permissions.js"
 import { snapshotRequest } from "../src/host-request.js"
+import { ApprovalTransaction } from "../src/approval-transaction.js"
+import { withDeadline } from "../src/deadline.js"
+import { setImmediate as tick } from "node:timers/promises"
+import { getEventListeners } from "node:events"
 
 const location = { directory: "/invocation", workspaceID: "workspace" }, scope = { location, epoch: "10000000-1000-4000-8000-100000000000" }
 const raw = (id = "request", sessionID = "session") => ({ id, sessionID, action: "shell", resources: ["python3 fixture.py"], save: ["python3 *"] })
@@ -254,5 +258,42 @@ test("deadline abort followed by a late successful physical ACK remains uncertai
     assert.equal(f.transport.retainedReservations, 1, "late ACK is not accepted as successful local settlement")
     assert.equal((await f.transport.once(snapshotRequest(raw(), scope)!, signal(), () => assert.fail("late-ACK retry"))).status, "unavailable")
     assert.equal(f.state.calls.length, 1)
+  }
+})
+
+test("physical ACK followed by confirmation timeout retains uncertainty after a late native once event", async () => {
+  const f = fixture(), snapshot = snapshotRequest(raw(), scope)!, parent = new AbortController(), invoked = gate()
+  const facts: string[] = []
+  const transaction = new ApprovalTransaction(snapshot.request, "session", "review", true, {}, fact => { facts.push(fact.type) })
+  f.state.onReply = invoked.release
+  const native = { once: (_request: typeof snapshot.request, signal: AbortSignal, dispatch: () => boolean) => f.transport.once(snapshot, signal, dispatch) }
+  const submitting = withDeadline(parent.signal, 100, signal => transaction.submit(signal, { native }, {
+    guard: () => true, dispatch() {}, confirming: () => assert.fail("timed-out approval confirmed"), confirmed() {},
+  }))
+  const rejected = assert.rejects(submitting, /timed out/)
+  await invoked.promise; await tick()
+  assert.equal(transaction.state, "acknowledged")
+  assert.equal(f.transport.retainedReservations, 1)
+  await rejected; await tick()
+  assert.equal(transaction.state, "uncertain")
+  f.transport.resolved(resolution())
+  assert.equal(transaction.resolved({ sessionID: "session", requestID: "request", decision: "once" }), false)
+  assert.equal(f.transport.retainedReservations, 1, "a late event cannot prune a deadline-uncertain write whose ACK arrived first")
+  assert.deepEqual(facts, ["dispatched", "settled"])
+  assert.equal((await f.transport.once(snapshotRequest(raw(), scope)!, signal(), () => assert.fail("uncertain retry"))).status, "unavailable")
+  assert.equal(f.state.calls.length, 1)
+})
+
+test("successful confirmation and unsent preparation release reservation abort listeners", async () => {
+  for (const dispatch of [false, true]) {
+    const f = fixture(), snapshot = snapshotRequest(raw(), scope)!, abort = new AbortController()
+    const result = await f.transport.once(snapshot, abort.signal, () => dispatch)
+    assert.equal(result.status, dispatch ? "submitted" : "unavailable")
+    if (dispatch) {
+      assert.equal(getEventListeners(abort.signal, "abort").length, 1)
+      f.transport.resolved(resolution())
+    }
+    assert.equal(f.transport.retainedReservations, 0)
+    assert.equal(getEventListeners(abort.signal, "abort").length, 0)
   }
 })
