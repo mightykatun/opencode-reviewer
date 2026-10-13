@@ -1,5 +1,6 @@
 [
   "test/bundled-sounds.test.mjs",
+  "test/bundled-history-worker.test.mjs",
   "test/ci-workflow.test.mjs",
   "test/npm-publication.test.mjs",
   "test/publish-release.test.mjs",

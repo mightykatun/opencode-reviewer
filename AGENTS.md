@@ -115,7 +115,10 @@ existing user directories.
   Solid DOM. TypeScript only checks types. The ESM bundle leaves Solid/OpenTUI/OpenCode
   external and embeds prompts, sounds, the MP3 decoder, the pinned theme helper
   and a CJS history worker. Terminal code is an opaque base64 CJS payload loaded
-  only in the CLI role, with fixed public-module mappings and bundled sounds.
+  only in the CLI role, with fixed public-module mappings. Sounds and worker source
+  are single fixed outer mappings injected into the payload; the Linux/audio backend
+  is bundled only there. The notification-process embedding factory is forwarded
+  as a dependency and constructed only by that CLI backend, never by the server.
 - Preserve exactly five package files: `dist/tui.js`, `package.json`, `README.md`,
   `LICENSE`, `THIRD_PARTY_NOTICES.md`. `dist/` is generated and ignored. `npm pack`
   rebuilds via `prepack`; verified CI packing uses `--ignore-scripts`.

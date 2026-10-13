@@ -5,6 +5,25 @@ import type { Plugin } from "@opencode/plugin"
 import { setupCompanion } from "../src/companion.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import type { FileIO } from "../src/file-access.js"
+import { withNotificationProcesses } from "../src/plugin.js"
+
+test("the public notification-process seam stays dormant in the server lifecycle", async () => {
+  const disposed: string[] = []
+  let constructed = 0
+  const plugin = withNotificationProcesses(() => { constructed++; throw Error("Server must never construct desktop processes") })
+  const context = {
+    app: { version: "development" },
+    location: { directory: "/project", project: { id: "project", directory: "/project", canonical: "/project" } },
+    tool: { hook: async (name: string) => ({ dispose() { disposed.push(name) } }) },
+    rpc: { register: async () => ({ dispose() { disposed.push("rpc") } }) },
+  } as unknown as Plugin.Context
+  assert.equal(constructed, 0)
+  const stop = await plugin.setup(context)
+  assert.equal(constructed, 0)
+  await stop()
+  assert.equal(constructed, 0)
+  assert.deepEqual(disposed, ["rpc", "execute.after", "execute.before"])
+})
 
 test("companion read admission retains timed-out operations and unload owns their actual settlement", async () => {
   const lifecycle = new PluginLifecycle(), hooks = new Map<string, (event: any) => void>(), disposed: string[] = []

@@ -13,6 +13,7 @@ import { HostNotifications, setupHostNotifications } from "../src/host-notificat
 import { hostQueueSnapshot, type HostQueueSnapshot } from "../src/host-queue.js"
 import { parseConfig } from "../src/config.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
+import type { PluginDependencies } from "../src/plugin-dependencies.js"
 
 const request = (id: string, sessionID = "root"): HostRequest => ({ id, sessionID, action: "shell", resources: ["pwd"] })
 type WireForm = Extract<OpenCodeEvent, { type: "form.created" }>["data"]["form"]
@@ -20,7 +21,7 @@ const form = (id: string, sessionID = "root"): WireForm => ({ id, sessionID, tit
 type EventOf<T extends OpenCodeEvent["type"]> = Extract<OpenCodeEvent, { type: T }>
 
 function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryReader = async id => id,
-  backend?: NotificationBackend) {
+  backend?: NotificationBackend, dependencies?: PluginDependencies) {
   const sessions = new Map<string, { id: string; parentID?: string; title: string }>([
     ["root", { id: "root", title: "Root title" }], ["child", { id: "child", parentID: "root", title: "Child" }],
     ["deep", { id: "deep", parentID: "child", title: "Deep" }], ["other", { id: "other", title: "Other" }],
@@ -55,7 +56,7 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
   const state: CliPluginState = {
     config: parseConfig({ baseURL: "http://localhost", model: "fixture", autoApprove: true, notifySound: false,
       staleReminderSeconds: 0, ...options }), prompts: BUILTIN_PROMPTS, stateRoot: "/unused",
-    dependencies: { notifications: click => {
+    dependencies: dependencies ?? { notifications: click => {
       clicked = click
       return backend ?? { async show(message, signal) { banners.push(message); signals.push(signal); return { close() {} } }, dispose() {} }
     } },
@@ -102,6 +103,46 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
     family: (ids: string[]) => { family = ids }, native: (value?: string) => { override = true; nativeOverride = value },
     nativeQueue: (read: (root: string) => HostQueueSnapshot) => { observedQueue = read } }
 }
+
+test("the CLI constructs the process embedding seam only for its real Linux backend and owns disposal", async () => {
+  let constructed = 0, disposed = 0, started!: () => void
+  const dispatched = new Promise<void>(resolve => { started = resolve })
+  const calls: { command: string; args: readonly string[] }[] = []
+  const f = fixture({}, undefined, undefined, { notificationProcesses: () => {
+    constructed++
+    return {
+      start(command, args, _ms, signal, line) {
+        assert.equal(signal.aborted, false)
+        calls.push({ command, args })
+        if (command === "notify-send") { line?.("41"); started() }
+        return { result: Promise.resolve({ code: 0, stdout: "41\n" }), cancel() {} }
+      },
+      dispose() { disposed++ },
+    }
+  } })
+  try {
+    assert.equal(constructed, 1)
+    f.host.visit("root")
+    const value = request("manual")
+    f.permissions.set("root", [value])
+    f.host.snapshot([{ request: value, status: "suspended" }], true)
+    f.ask(value)
+    await dispatched
+    const banner = calls.find(value => value.command === "notify-send")!
+    assert.ok(banner.args.includes("--transient"))
+    assert.equal(banner.args.at(-1), "Session needs attention")
+    assert.equal(constructed, 1)
+  } finally { await f.host.dispose() }
+  assert.equal(disposed, 1)
+})
+
+test("an explicit notification backend does not construct the lower-level process seam", async () => {
+  const f = fixture({}, undefined, undefined, {
+    notifications: () => ({ async show() { return undefined }, dispose() {} }),
+    notificationProcesses: () => { throw Error("Explicit backend takes precedence") },
+  })
+  await f.host.dispose()
+})
 
 test("V2 event births, not startup/retained snapshots, authorize root-family attention", async () => {
   const f = fixture(); f.host.visit("root")

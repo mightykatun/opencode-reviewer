@@ -6,6 +6,8 @@ import type { HistoryEvent, HistoryQuery } from "./history-records.js"
 import type { HistoryResult } from "./history-schema.js"
 
 declare const __HISTORY_WORKER__: string
+// The fixed build banner is shared with the opaque terminal payload. Direct
+// source tests have no embedded worker and must supply their own transport/source.
 export const historyWorkerSource = typeof __HISTORY_WORKER__ === "string" ? __HISTORY_WORKER__ : ""
 export interface HistoryTransport {
   /** Resolves/rejects only on actual message settlement or confirmed worker exit. */

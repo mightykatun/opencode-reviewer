@@ -60,6 +60,7 @@ jobs:
             /scripts/release-artifact.mjs
             /scripts/release-provenance.mjs
             /scripts/bundled-sounds.mjs
+            /scripts/bundled-history-worker.mjs
             /scripts/theme-syntax-adapter.mjs
             /scripts/publish-release.mjs
             /scripts/npm-publication.mjs
@@ -96,6 +97,7 @@ jobs:
             /test/release-artifact.test.mjs
             /test/release-provenance.test.mjs
             /test/bundled-sounds.test.mjs
+            /test/bundled-history-worker.test.mjs
             /test/theme-syntax-adapter.test.mjs
             /test/smoke-v2-review-support.test.mjs
             /test/release-artifact-smoke.test.mjs

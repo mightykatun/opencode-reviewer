@@ -8,6 +8,7 @@ import { createRequire, isBuiltin } from "node:module"
 import { packageFiles, inspectPackageArchive } from "../scripts/release-artifact.mjs"
 import { archiveIntegrity } from "../scripts/npm-publication.mjs"
 import { soundBanner, verifyBundledSounds } from "../scripts/bundled-sounds.mjs"
+import { historyWorkerBanner, verifyBundledHistoryWorker } from "../scripts/bundled-history-worker.mjs"
 import { archiveFixture } from "./release-fixture.mjs"
 
 test("terminal payload excludes Effect/theme parsing, preserves public module mapping and upstream syntax semantics", async () => {
@@ -34,6 +35,9 @@ test("terminal payload excludes Effect/theme parsing, preserves public module ma
     && node.arguments[0]?.type === "StringLiteral" && node.arguments[1]?.value === "base64")
   assert.equal(payloads.length, 1, "one fixed terminal payload must feed the CLI loader")
   const terminal = Buffer.from(payloads[0].arguments[0].value, "base64").toString("utf8")
+  verifyBundledHistoryWorker(bundle)
+  assert.doesNotMatch(bundle.slice(bundle.indexOf("\n", bundle.indexOf("\n") + 1) + 1), /node_modules\/(?:mpg123-decoder|@wasm-audio-decoders)\//)
+  assert.equal(outer.filter(node => node.type === "VariableDeclarator" && node.id.name === "LinuxNotifications").length, 0)
   assert.doesNotMatch(terminal, /node_modules\/effect\/|Symbol\.for\(["']effect\//)
   assert.doesNotMatch(terminal, /@opencode\/theme\/dist\/tui\/(?:schema|resolve|expand|select|color|v1-migrate)\.js/)
   assert.doesNotMatch(terminal, /\b(?:ThemeDocument|parseThemeDocument|themeDecodeError)\b/)
@@ -88,7 +92,11 @@ test("the built audio constructor consumes the inspected mapping and actual bund
   // Parse only, without evaluating any package code. Follow the emitted binding
   // to the production constructor default so a detached data banner cannot pass.
   const { parseSync } = createRequire(path.resolve("package.json"))("@babel/core")
-  const ast = parseSync(bundle, { sourceType: "module", babelrc: false, configFile: false })
+  const outer = parseSync(bundle, { sourceType: "module", babelrc: false, configFile: false })
+  const payload = bundle.match(/Buffer\.from\("([A-Za-z0-9+/=]{10000,})", "base64"\)/)
+  assert.ok(payload, "fixed terminal payload must contain the sole audio implementation")
+  const terminal = Buffer.from(payload[1], "base64").toString("utf8")
+  const ast = parseSync(terminal, { sourceType: "script", babelrc: false, configFile: false })
   const nodes = []
   const walk = node => {
     if (!node || typeof node !== "object") return
@@ -108,6 +116,10 @@ test("the built audio constructor consumes the inspected mapping and actual bund
   const constructor = audio.init.body.body.find(node => node.kind === "constructor")
   assert.ok(constructor.params.some(node => node.type === "AssignmentPattern" && node.left.name === "sounds"
     && node.right.name === bindings[0].id.name), "audio must consume the inspected mapping by default")
+  nodes.length = 0; walk(outer.program)
+  assert.equal(nodes.filter(node => node.type === "VariableDeclarator" && node.id.name === "NotificationAudio").length, 0)
+  const loader = nodes.find(node => node.type === "CallExpression" && node.callee.type === "NewExpression" && node.callee.callee.name === "Function")
+  assert.equal(loader.arguments[3].name, "__REVIEWER_BUNDLED_SOUNDS__", "sole audio backend receives the exact inspected mapping")
   const originalFiles = new Map(await Promise.all(packageFiles.map(async file => [file, await readFile(file)])))
   for (const mutate of [s => { delete s.unsafe }, s => { delete s.question },
     s => { s.unsafe = s.approved }, s => { s.question = s.attention },
@@ -118,6 +130,24 @@ test("the built audio constructor consumes the inspected mapping and actual bund
     const files = new Map(originalFiles); files.set("dist/tui.js", Buffer.from(invalid))
     const archive = archiveFixture({ entries: [...files].map(([name, content]) => ({ name: `package/${name}`, content })) })
     assert.throws(() => verifyBundledSounds(inspectPackageArchive(archive).files.get("dist/tui.js").toString("utf8"), assets))
+  }
+})
+
+test("the actual bundle and archive share one worker source and reject changed consumers", async () => {
+  const bundle = await readFile("dist/tui.js", "utf8")
+  const source = verifyBundledHistoryWorker(bundle)
+  const originalFiles = new Map(await Promise.all(packageFiles.map(async file => [file, await readFile(file)])))
+  for (const invalid of [
+    bundle.replace(historyWorkerBanner(source), ""),
+    bundle + `\n${historyWorkerBanner(source)}`,
+    bundle.replace(historyWorkerBanner(source), historyWorkerBanner("replacement")),
+    bundle.replace('module.exports, __REVIEWER_BUNDLED_SOUNDS__, __REVIEWER_HISTORY_WORKER__', 'module.exports, __REVIEWER_BUNDLED_SOUNDS__, "replacement"'),
+  ]) {
+    assert.notEqual(invalid, bundle)
+    assert.throws(() => verifyBundledHistoryWorker(invalid, source))
+    const files = new Map(originalFiles); files.set("dist/tui.js", Buffer.from(invalid))
+    const archive = archiveFixture({ entries: [...files].map(([name, content]) => ({ name: `package/${name}`, content })) })
+    assert.throws(() => verifyBundledHistoryWorker(inspectPackageArchive(archive).files.get("dist/tui.js").toString("utf8"), source))
   }
 })
 
@@ -152,6 +182,7 @@ test("built package crosses the real version, npm pack, artifact and isolated ve
     .map(async kind => [kind, await readFile(`sounds/${kind}.mp3`)])))
   verifyBundledSounds((await readFile(path.join(source, "dist/tui.js"))).toString("utf8"), sounds)
   verifyBundledSounds(inspectPackageArchive(bytes).files.get("dist/tui.js").toString("utf8"), sounds)
+  verifyBundledHistoryWorker(inspectPackageArchive(bytes).files.get("dist/tui.js").toString("utf8"))
   const verifyEnv = { ...artifactEnv, RELEASE_INTEGRITY: prepared.integrity }
   const verified = execFileSync(process.execPath, [helper, "verify", artifact], { cwd: isolated, env: verifyEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
   assert.match(verified, /exactly five package files, matching digest and workflow identity/)

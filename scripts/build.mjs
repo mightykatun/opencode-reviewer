@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises"
 import { isBuiltin } from "node:module"
 import inventory from "../src/prompt-files.json" with { type: "json" }
 import { soundBanner } from "./bundled-sounds.mjs"
+import { historyWorkerBanner } from "./bundled-history-worker.mjs"
 import { themeSyntaxOnlyPlugin, verifyThemeSyntaxBuild } from "./theme-syntax-adapter.mjs"
 
 const prompts = Object.fromEntries(await Promise.all(
@@ -24,7 +25,7 @@ const historyWorker = await build({
 
 const define = {
   __REVIEW_PROMPTS__: JSON.stringify(prompts), __REVIEW_SOUNDS__: "__REVIEWER_BUNDLED_SOUNDS__",
-  __HISTORY_WORKER__: JSON.stringify(historyWorker.outputFiles[0].text),
+  __HISTORY_WORKER__: "__REVIEWER_HISTORY_WORKER__",
 }
 const decoderPlugin = {
   name: "notification-decoder-only",
@@ -102,7 +103,7 @@ const entrypoint = await build({
   platform: "node",
   format: "esm",
   target: "es2023",
-  banner: { js: soundBanner(sounds) },
+  banner: { js: `${soundBanner(sounds)}\n${historyWorkerBanner(historyWorker.outputFiles[0].text)}` },
   define: { ...define, __HOST_RUNTIME__: JSON.stringify(Buffer.from(hostRuntime.outputFiles[0].text).toString("base64")) },
   external: ["solid-js", "solid-js/*", "@opentui/*", "@opencode/*"],
   plugins: [decoderPlugin, jsxPlugin, embeddedPromptsPlugin],

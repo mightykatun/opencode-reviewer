@@ -9,7 +9,6 @@ import type { FileIO } from "./file-access.js"
 import type { DiagnosticObserver } from "./diagnostics.js"
 import type { HistoryRenderProbe, NotificationBackendFactory } from "./embedding-types.js"
 import type { NotificationProcesses } from "./notification-process.js"
-import { LinuxNotifications } from "./notification-linux.js"
 
 export const pluginID = "opencode-reviewer"
 type Context = ServerPlugin.Context | CliPlugin.Context
@@ -50,7 +49,9 @@ export function withHistoryObservations(observe: HistoryRenderProbe["observe"], 
   notifications?: NotificationBackendFactory, setup?: PluginSetupObserver) { return createPlugin({ historyProbe: { observe }, observer, notifications }, setup) }
 export function withNotifications(notifications: NotificationBackendFactory) { return createPlugin({ notifications }) }
 export function withNotificationProcesses(factory: () => NotificationProcesses) {
-  return withNotifications((click, config) => new LinuxNotifications(config, click, factory()))
+  // Keep the backend/decoder in the CLI payload. Merely importing or constructing
+  // this embedding seam must not resolve terminal modules or invoke the factory.
+  return createPlugin({ notificationProcesses: factory })
 }
 export type { HistoryRenderProbe, DiagnosticObserver, NotificationBackendFactory }
 export type { DiagnosticEvent } from "./diagnostics.js"
