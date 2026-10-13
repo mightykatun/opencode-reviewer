@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtemp, readdir, readFile, writeFile, rm, symlink, stat } from "node:fs/promises"
+import { chmod, link, mkdir, mkdtemp, readdir, readFile, rename, writeFile, rm, symlink, stat } from "node:fs/promises"
 import path from "node:path"
 import { tmpdir } from "node:os"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
@@ -100,6 +100,53 @@ test("failed writes reject honestly and later serialized writes recover", async 
   await rm(blocked)
   await store.write("root", false)
   assert.equal(await store.read("root", signal()), false)
+})
+
+test("replaceable mode ancestors fail closed even when a disabled record disappears", async t => {
+  const base = await mkdtemp(path.join(tmpdir(), "reviewer-mode-namespace-"))
+  t.after(() => rm(base, { recursive: true, force: true }))
+  await chmod(base, 0o755)
+  const host = path.join(base, "host"), directory = path.join(host, "modes")
+  await mkdir(host, { mode: 0o755 })
+  const store = new SessionModeStore(directory, "host")
+  await store.write("root", false)
+  assert.equal(await store.read("root", signal()), false)
+  await chmod(host, 0o777)
+  await rename(directory, path.join(host, "displaced"))
+  await mkdir(directory, { mode: 0o700 })
+  const resumed = new SessionModes(new SessionModeStore(directory, "host"), async id => ({ id }))
+  await assert.rejects(resumed.load("root", signal()), /Untrusted session mode ancestor/)
+  assert.equal(resumed.enabled("root"), false)
+  await assert.rejects(store.write("root", true), /Untrusted session mode ancestor/)
+  assert.deepEqual(await readdir(directory), [])
+  assert.equal((await stat(host)).mode & 0o777, 0o777, "Existing host permissions remain untouched")
+})
+
+test("mode reads and writes reject ancestor symlinks without touching their targets", async t => {
+  const base = await mkdtemp(path.join(tmpdir(), "reviewer-mode-link-"))
+  t.after(() => rm(base, { recursive: true, force: true }))
+  const target = path.join(base, "target"), ancestor = path.join(base, "linked")
+  await mkdir(target, { mode: 0o700 })
+  await symlink(target, ancestor)
+  const store = new SessionModeStore(path.join(ancestor, "modes"), "host")
+  await assert.rejects(store.read("root", signal()), /Untrusted session mode ancestor/)
+  await assert.rejects(store.write("root", false), /Untrusted session mode ancestor/)
+  assert.deepEqual(await readdir(target), [])
+})
+
+test("mode records reject writable permissions and hard links without repairing them", async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), "reviewer-mode-record-"))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const store = new SessionModeStore(directory, "host")
+  await store.write("root", false)
+  const file = path.join(directory, (await readdir(directory))[0]!)
+  await chmod(file, 0o666)
+  await assert.rejects(store.read("root", signal()), /Invalid session mode record/)
+  assert.equal((await stat(file)).mode & 0o777, 0o666)
+  await chmod(file, 0o600)
+  await link(file, path.join(directory, "alias"))
+  await assert.rejects(store.read("root", signal()), /Invalid session mode record/)
+  assert.equal(await readFile(file, "utf8"), '{"version":1,"enabled":false}')
 })
 
 test("bounded ancestry resolves all descendants using only session metadata", async () => {

@@ -22,6 +22,7 @@ import { setupHostSidebar } from "./host-sidebar.js"
 import { hostPricingLookup } from "./host-pricing.js"
 import type { PricingLookup } from "./usage.js"
 import { setupHostNotificationOnly } from "./host-notification-runtime.js"
+import { hostApprovalReady, nativeDecisionPending } from "./host-approval-ready.js"
 
 /** One scope-pinned controller. A replaced companion never adopts old evidence. */
 export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle) {
@@ -86,14 +87,9 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     openHistory: (root, target, lease) => {
       cancelReveal()
       records.browser.close()
-      if (!lease.current() || controller.retained(root, target)) return
-      const invalidate = () => {
-        const view = records.state(), selected = view.selection?.record?.context
-        if (!view.open || (selected?.permission === target.permission && selected.session === target.session)) records.browser.close()
-      }
-      lease.signal.addEventListener("abort", invalidate, { once: true })
-      records.browser.openPermission(root, target, () => {
-        if (!lease.current()) { records.browser.close(); return }
+      if (!lease.current()) return
+      const revealSidebar = (live = false) => {
+        if (!lease.current()) return
         cancelReveal()
         const stop = () => {
           clearTimeout(timeout)
@@ -102,7 +98,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
           if (cancelReveal === stop) cancelReveal = () => {}
         }
         const reveal = () => {
-          if (!lease.current()) { stop(); return }
+          if (!lease.current() || (live && !controller.retained(root, target))) { stop(); return }
           if (rootRoute() !== root) return
           // A real root FRAME distinguishes a mounted sidebar from an absent one.
           // Only this explicit approval-notification action may reveal it.
@@ -115,6 +111,16 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
         lease.signal.addEventListener("abort", stop, { once: true })
         ctx.renderer.on(CliRenderEvents.FRAME, reveal)
         ctx.renderer.requestRender()
+      }
+      if (controller.retained(root, target)) { revealSidebar(true); return }
+      const invalidate = () => {
+        const view = records.state(), selected = view.selection?.record?.context
+        if (!view.open || (selected?.permission === target.permission && selected.session === target.session)) records.browser.close()
+      }
+      lease.signal.addEventListener("abort", invalidate, { once: true })
+      records.browser.openPermission(root, target, () => {
+        if (!lease.current()) { records.browser.close(); return }
+        revealSidebar()
       })
     },
   })
@@ -129,6 +135,8 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
         observeEvidence: evidence => observation ? records.history.observation(request, evidence.kind, config, observation) : undefined })
   }, values => { setViews(values); notifications?.snapshot(controller.pendingViews) }, {
     reviewOptions: config, modes, session: id => routes.get(id), allowHiddenRoute: false,
+    approvalReady: (request, root) => hostApprovalReady(request, root, ctx.ui.router.current(), id => routes.get(id),
+      () => nativeDecisionPending(ctx.renderer.root, ctx.theme.background.action.primary.focused)),
     nativeFront: root => front(root),
     onLifecycle: records.history.lifecycle,
     onApproval: fact => { records.history.approval(fact); notifications?.approval(fact) },
@@ -309,8 +317,10 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       {records.render()}</box>
   } }))
   if (config.autoApprove) {
-    const paint = setInterval(() => { if (select()) ctx.renderer.requestRender() }, 100)
-    life.addCleanup(() => clearInterval(paint))
+    // Native choice selection is public renderable styling, not a reactive API.
+    // Wake waits without requesting/synthesizing paint or revealing the sidebar.
+    const eligibility = setInterval(() => controller.refreshApprovalEligibility(), 100)
+    life.addCleanup(() => clearInterval(eligibility))
   }
   let modeCommand = 0
   const switchMode = async (enabled: boolean) => {

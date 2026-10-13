@@ -17,7 +17,7 @@ import { ReviewAdmission, type ReviewEvaluation } from "./review-admission.js"
 import type { NativeApprovalTransport } from "./host-permissions.js"
 import { ApprovalTransaction } from "./approval-transaction.js"
 
-export type AutoApproval = { status: "countdown"; seconds: number } | { status: "checking" | "allowing" | "cancelled" | "failed" | "approved" }
+export type AutoApproval = { status: "countdown"; seconds: number } | { status: "waiting" | "checking" | "allowing" | "cancelled" | "failed" | "approved" }
 
 export interface RequestIdentity { readonly id: string; readonly sessionID: string }
 
@@ -118,6 +118,9 @@ export interface ControllerOptions<R extends RequestIdentity = PermissionRequest
   nativeFront?: NativeFront<R>
   /** Historical V1 F34 route exception. Native V2 callers must set false. */
   allowHiddenRoute?: boolean
+  /** V2 automation policy, separate from physical panel presentation. False is a
+   * recoverable wait, never cancellation. Rechecked at the native write boundary. */
+  approvalReady?: (request: R, root: string | undefined) => boolean
   onApproval?: ApprovalObserver<R>
   onRating?: (safe: boolean, timing: ReviewTiming) => unknown
   onLifecycle?: ReviewLifecycleObserver<R>
@@ -147,12 +150,13 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
   private candidate: NonNullable<ControllerOptions<R>["candidate"]>
   private priority?: NativeFront<R>
   private allowHiddenRoute: boolean
+  private approvalReady?: ControllerOptions<R>["approvalReady"]
   private approvalObserver?: ApprovalObserver<R>
   private ratingObserver?: ControllerOptions<R>["onRating"]
   private lifecycleObserver?: ReviewLifecycleObserver<R>
   constructor(private evaluate: Evaluate<R>, private changed: (views: View<R>[]) => void,
     { reviewOptions = { reviewBash: true, reviewEdits: true }, approval, nativeApproval, clock: time = clock, modes,
-      onApproval, onRating, onLifecycle, session, candidate = legacyCandidate, nativeFront, allowHiddenRoute = true }: ControllerOptions<R> = {}) {
+      onApproval, onRating, onLifecycle, session, candidate = legacyCandidate, nativeFront, allowHiddenRoute = true, approvalReady }: ControllerOptions<R> = {}) {
     if (approval && nativeApproval) throw Error("Conflicting approval transports")
     this.options = reviewOptions
     this.approval = approval
@@ -163,6 +167,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     this.candidate = candidate
     this.priority = nativeFront
     this.allowHiddenRoute = !nativeApproval && allowHiddenRoute
+    this.approvalReady = approvalReady
     this.approvalObserver = onApproval
     this.ratingObserver = onRating
     this.lifecycleObserver = onLifecycle
@@ -237,6 +242,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
   /** Physical presentation and intentional same-root suppression are distinct proofs. */
   presented(value?: string | ApprovalPresentation) {
     if (this.stopped) return
+    if (this.approvalReady) { this.refreshApprovalEligibility(); return }
     const proof = typeof value === "string" ? { state: "visible" as const, id: value } : value ?? { state: "lost" as const }
     const id = proof.state === "lost" ? undefined : proof.id
     if (id !== this.selectedID) {
@@ -245,10 +251,39 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
       if (old) this.cancelAutoApproval(old, "visibility")
     }
     const entry = id ? this.entries.get(id) : undefined
-    if (entry?.approvalArmed && this.presentationState(entry) === "lost") this.cancelAutoApproval(entry.view.request.id, "visibility")
+    if (entry?.approvalArmed && this.approvalState(entry) === "lost") this.cancelAutoApproval(entry.view.request.id, "visibility")
     if (entry && (proof.state === "visible" || proof.state === "route-hidden")) {
       this.startApproval(entry)
       if (entry.view.autoApproval?.status === "countdown" && !entry.cancelTimer && !entry.approvalAbort) this.schedule(entry)
+    }
+  }
+
+  /** Public UI/cache observations wake waiting V2 automation without granting or
+   * remembering paint. The policy getter still runs synchronously before writes. */
+  refreshApprovalEligibility() {
+    if (this.stopped || !this.approvalReady) return
+    // One queue snapshot per root is only a wake-up filter. Final eligibility
+    // still rechecks actual priority, so publication/reentrancy cannot admit a
+    // stale owner. Avoid rebuilding the full pending family for every Safe row.
+    const pending = this.pendingViews.map(view => view.request), fronts = new Map<string, string | undefined>()
+    for (const entry of this.entries.values()) {
+      if (!this.safe(entry) || this.manual.has(entry.view.request.id)) continue
+      if (this.priority) {
+        const root = entry.root ?? (this.session ? conversationRoot(entry.view.request.sessionID, this.session) : entry.view.request.sessionID)
+        if (!root) continue
+        if (!fronts.has(root)) {
+          try { fronts.set(root, this.priority(root, pending)) } catch { fronts.set(root, undefined) }
+        }
+        if (fronts.get(root) !== entry.view.request.id) continue
+      }
+      this.startApproval(entry)
+      if (entry.view.autoApproval?.status === "waiting" && !entry.approvalAbort && !entry.approvalRefresh && this.eligible(entry)) {
+        entry.view = { ...entry.view, autoApproval: { status: "countdown", seconds: Math.min(this.options.autoApproveDelaySeconds ?? 15,
+          Math.max(0, Math.ceil((entry.deadline! - this.time.now()) / 1000))) } }
+        this.publish()
+      }
+      if (entry.view.autoApproval?.status === "countdown" && !entry.cancelTimer && !entry.approvalAbort
+        && !entry.approvalRefresh && this.eligible(entry)) this.schedule(entry)
     }
   }
 
@@ -266,8 +301,10 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     const seconds = this.options.autoApproveDelaySeconds ?? 15
     // A short initial grace makes the starting value observable without adding
     // a full second. Zero remains an immediate attempt.
-    entry.deadline = this.time.now() + seconds * 1000 + (seconds > 0 ? 200 : 0)
-    entry.view = { ...entry.view, autoApproval: { status: "countdown", seconds } }
+    if (!this.approvalReady || entry.deadline === undefined)
+      entry.deadline = this.time.now() + seconds * 1000 + (seconds > 0 ? 200 : 0)
+    entry.view = { ...entry.view, autoApproval: { status: "countdown",
+      seconds: Math.min(seconds, Math.max(0, Math.ceil((entry.deadline - this.time.now()) / 1000))) } }
     this.publish()
     // Even zero delay goes through the same cancellable single-flight path.
     this.schedule(entry)
@@ -353,13 +390,22 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
       : this.options.fastMode === true && entry.view.status === "analyzing" && entry.view.progress?.preview?.safe === true
   }
 
-  private presentationState(entry: Entry<R>, check: PresentationCheck = "eligibility"): ApprovalPresentationState {
-    if (!this.active(entry) || entry.view.resolved || entry.fastApproval || this.options.autoApprove !== true
-      || (this.modes && (entry.root === undefined || !this.modes.enabled(entry.root)))
-      || this.selectedID !== entry.view.request.id) return "lost"
+  private approvalState(entry: Entry<R>, check: PresentationCheck = "eligibility"): ApprovalPresentationState | "ready" {
+    if ((!this.approval && !this.nativeApproval) || !this.active(entry) || entry.view.resolved || entry.fastApproval || this.options.autoApprove !== true
+      || (this.modes && (entry.root === undefined || !this.modes.enabled(entry.root)))) return this.approvalReady ? "pending" : "lost"
+    if (!this.approvalReady && this.selectedID !== entry.view.request.id) return "lost"
     if (this.priority) {
       const root = entry.root ?? (this.session ? conversationRoot(entry.view.request.sessionID, this.session) : entry.view.request.sessionID)
-      if (!root || this.nativeFront(root) !== entry.view.request.id) return "lost"
+      try {
+        if (!root || this.nativeFront(root) !== entry.view.request.id) return this.approvalReady ? "pending" : "lost"
+      } catch (error) {
+        if (!this.approvalReady) throw error
+        return "pending"
+      }
+    }
+    if (this.approvalReady) {
+      try { return this.approvalReady(entry.view.request, entry.root) ? "ready" : "pending" }
+      catch { return "pending" }
     }
     const approval = this.nativeApproval ?? this.approval
     const proof = approval?.presentation?.(check)
@@ -371,8 +417,8 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
 
   private eligible(entry: Entry<R>) {
     if (this.manual.has(entry.view.request.id) || entry.approvalPaused || !this.safe(entry)) return false
-    const state = this.presentationState(entry)
-    return state === "visible" || state === "route-hidden"
+    const state = this.approvalState(entry)
+    return state === "visible" || state === "route-hidden" || state === "ready"
   }
 
   /** Rating rejection revokes the reservation, even if Safe returns before its GET.
@@ -399,7 +445,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
   }
 
   private approvalEligible(entry: Entry<R>, check: "timer" | "verification" = "verification") {
-    const state = this.presentationState(entry, check)
+    const state = this.approvalState(entry, check)
     if (state === "lost") this.cancelAutoApproval(entry.view.request.id, "visibility")
     else if (state === "pending") entry.approvalPaintPending = true
     else if (!this.safe(entry)) this.pauseRating(entry)
@@ -428,7 +474,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
       try {
         // A later rating clear may already have revoked this recovery, too.
         abort.signal.throwIfAborted()
-        if (this.presentationState(entry) === "lost") { this.cancelAutoApproval(entry.view.request.id, "visibility"); return }
+        if (this.approvalState(entry) === "lost") { this.cancelAutoApproval(entry.view.request.id, "visibility"); return }
         const pending = await withDeadline(AbortSignal.any([entry.abort.signal, abort.signal]), 5000,
           signal => this.approvalList(signal))
         if (!this.active(entry) || this.manual.has(entry.view.request.id)) return
@@ -465,6 +511,10 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
       if (seconds === 0) {
         // No polling loop or grace restart while waiting for renewed paint.
         if (visible) void this.approveNow(entry.view.request.id, true)
+        else if (this.approvalReady) {
+          entry.view = { ...entry.view, autoApproval: { status: "waiting" } }
+          this.publish()
+        }
         return
       }
       this.schedule(entry)
@@ -700,6 +750,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
         }
         this.publish()
         this.finishFast(entry)
+        if (this.approvalReady) this.startApproval(entry)
       }
     }, (error: unknown) => {
       this.clearProgress(entry)

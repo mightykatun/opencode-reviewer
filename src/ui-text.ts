@@ -32,6 +32,7 @@ export const uiText = {
   autoApproval: {
     countdown: (seconds: number) => `Allowed in ${seconds}s`,
     checking: "Checking…",
+    waiting: "Auto-approval waiting",
     cancel: "Cancel",
     allowing: "Allowing…",
     finishing: "Auto-approved; finishing report…",

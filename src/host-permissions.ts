@@ -7,7 +7,7 @@ import type { HostRequestSnapshot, HostScope } from "./host-types.js"
 export type OnceSubmission = { status: "submitted" | "unavailable" | "uncertain" }
 /** Preparation may await host reads. Call dispatch exactly once, synchronously
  * immediately before invoking the native once reply, with no intervening work.
- * The caller proves root presentation/native priority in that callback.
+ * The caller proves same-conversation eligibility/native priority in that callback.
  * A false return means no write. submitted is only a successful local ack,
  * never a permission.replied confirmation event. */
 export interface NativeApprovalTransport<R> {

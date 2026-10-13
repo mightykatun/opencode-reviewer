@@ -30,7 +30,7 @@ interface Pending {
 function permissionAttention(view: View<RequestIdentity>, auto: boolean): "attention" | "unsafe" | undefined {
   if (view.status === "identifying" || view.status === "analyzing") return
   const state = view.autoApproval?.status
-  if (state === "countdown" || state === "checking" || state === "allowing") return
+  if (state === "countdown" || state === "waiting" || state === "checking" || state === "allowing") return
   if (state === "failed" && !view.approvalPendingConfirmed) return
   if (view.status === "complete") {
     if (!view.assessment) return

@@ -194,6 +194,8 @@ function HostReviewFooter(props: Pick<HostReviewPanelProps, "context" | "onAppro
           <HostReviewButton context={props.context} label={uiText.autoApproval.allowing} disabled onClick={() => {}} />
         </Match>
         <Match when={state()?.status === "approved"}><text fg={props.context.theme.text.muted}>{uiText.autoApproval.finishing}</text></Match>
+        <Match when={state()?.status === "waiting"}><text fg={props.context.theme.text.muted}>{uiText.autoApproval.waiting}</text>
+          <HostReviewButton context={props.context} label={uiText.autoApproval.cancel} onClick={() => props.onCancel(props.view.request.id)} /></Match>
         <Match when={state()?.status === "cancelled"}><text fg={props.context.theme.text.muted}>{uiText.autoApproval.cancelled}</text></Match>
         <Match when={state()?.status === "failed"}><text fg={props.context.theme.text.feedback.warning.base}>{uiText.autoApproval.unavailable}</text></Match>
       </Switch>
@@ -203,7 +205,7 @@ function HostReviewFooter(props: Pick<HostReviewPanelProps, "context" | "onAppro
 
 /** The app-slot parent stays stable, but the caller mounts this panel only on the
  * root route. Navigation may dispose Markdown and scrolling state. Controller
- * reports can survive disposal; automatic-write presentation is always revoked. */
+ * reports and automation can survive disposal. Presentation is UI evidence only. */
 export function HostReviewPanel(props: HostReviewPanelProps) {
   const { context, id, view } = props
   let panel: BoxRenderable | undefined, heading: Renderable | undefined, ratingRegion: BoxRenderable | undefined
@@ -267,7 +269,8 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
     }
     context.renderer.on(CliRenderEvents.RESIZE, resize)
     context.renderer.on(CliRenderEvents.FRAME, frame)
-    // Immediate navigation/modal/anchor loss must not wait for a render tick.
+    // Immediate navigation/modal/anchor changes publish UI evidence and wake the
+    // independent automation policy, rather than canceling on presentation loss.
     // Do not subscribe this observer to countdown/report publications.
     createEffect(() => {
       context.ui.router.current(); context.keymap.mode.current(); props.rootSession(); props.sidebarOwner(); props.sidebarGeometry()

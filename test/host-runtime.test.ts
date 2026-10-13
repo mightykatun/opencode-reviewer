@@ -1,6 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { mkdtemp } from "node:fs/promises"
+import { EventEmitter } from "node:events"
+import { CliRenderEvents } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import { setupHostRuntime } from "../src/host-runtime.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
@@ -16,6 +18,7 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
   backend?: NotificationBackend } = {}) {
   const life = new PluginLifecycle(), calls: string[] = []
   const commands: { id: string; run: () => Promise<void> }[] = []
+  const renderer = Object.assign(new EventEmitter(), { width: 140, height: 40, requestRender: () => calls.push("render") })
   let listen!: (event: any) => void
   const state = { requests: [pending("first")], epoch: companion.epoch, list: async () => ({ location, data: state.requests }),
     nativeRequests: undefined as ReturnType<typeof pending>[] | undefined,
@@ -30,22 +33,71 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
         sync: async (id: string) => { calls.push("session:" + id); await options.sessionSync?.() },
         permission: { invalidate: (id: string) => calls.push("invalidate:" + id), sync: async (id: string) => { calls.push("sync:" + id) },
            list: () => state.nativeRequests ?? state.requests }, form: { sync: async () => { calls.push("form"); await options.formSync?.() }, list: () => [] } } },
-    keymap: { mode: { current: () => "base" }, layer: (factory: () => { commands: typeof commands }) => { commands.push(...factory().commands) } },
-    renderer: { on: () => {}, off: () => {}, width: 140, height: 40 },
-    ui: { slot: () => () => {}, router: { current: () => state.route }, toast: { show: () => {} } },
+    keymap: { mode: { current: () => "base" }, layer: (factory: () => { commands: typeof commands }) => { commands.push(...factory().commands) },
+      commands: () => [{ id: "session.sidebar.toggle" }], dispatch: (id: string) => calls.push("dispatch:" + id) },
+    renderer,
+    ui: { slot: () => () => {}, router: { current: () => state.route,
+      navigate: (route: typeof state.route) => { state.route = route } }, toast: { show: () => {} } },
   } as unknown as Plugin.Context
-  const root = await mkdtemp("/tmp/opencode/reviewer-runtime-source-")
+  // Saved modes need a nonreplaceable namespace, just like the history fixture.
+  const root = await mkdtemp("/tmp/reviewer-runtime-source-")
   const runtime = setupHostRuntime(ctx, { config: parseConfig({ baseURL: "http://localhost:40999", model: "unused", notify: options.notify ?? false }),
     companion, stateRoot: root, prompts: BUILTIN_PROMPTS,
     dependencies: { notifications: () => options.backend ?? ({ show: async () => undefined, dispose: () => {} }) } }, life)!
   let sequence = 0
-  return { life, runtime, state, calls, commands, event: (type: string, data: unknown) => {
+  return { life, runtime, state, calls, commands, renderer, event: (type: string, data: unknown) => {
     sequence++
     listen({ details: { type, data, location, id: `event-${sequence}`, created: sequence,
       durable: { aggregateID: (data as { sessionID?: string }).sessionID, seq: sequence, version: 1 } } })
   } }
 }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+
+test("a retained approval click reveals an absent sidebar only on a genuine root frame, without history lookup", async () => {
+  const f = await fixture({ notify: true })
+  try {
+    await tick(); await tick()
+    f.state.route = { type: "session", sessionID: "root" }
+    f.runtime.controller.retained = () => ({ request: pending("first"), status: "analyzing", retained: true })
+    f.runtime.records.browser.openPermission = () => { assert.fail("Retained report must not open saved history") }
+    f.runtime.notifications!.click("root", { session: "root", permission: "first" })
+    assert.equal(f.calls.includes("dispatch:session.sidebar.toggle"), false, "Click alone is not a painted absence observation")
+    f.renderer.emit(CliRenderEvents.FRAME)
+    f.renderer.emit(CliRenderEvents.FRAME)
+    assert.equal(f.calls.filter(call => call === "dispatch:session.sidebar.toggle").length, 1)
+    assert.equal(f.runtime.records.state().open, false)
+  } finally { await f.life.stop() }
+})
+
+test("navigation invalidates a retained approval click before its sidebar reveal frame", async () => {
+  const f = await fixture({ notify: true })
+  try {
+    await tick(); await tick()
+    f.state.route = { type: "session", sessionID: "root" }
+    f.runtime.controller.retained = () => ({ request: pending("first"), status: "analyzing", retained: true })
+    f.runtime.notifications!.click("root", { session: "root", permission: "first" })
+    f.state.route = { type: "home" }
+    f.runtime.notifications!.routeChanged()
+    f.state.route = { type: "session", sessionID: "root" }
+    f.renderer.emit(CliRenderEvents.FRAME)
+    assert.equal(f.calls.includes("dispatch:session.sidebar.toggle"), false)
+  } finally { await f.life.stop() }
+})
+
+test("a retained report finishing before the click's reveal frame cannot reveal an empty sidebar or open history", async () => {
+  const f = await fixture({ notify: true })
+  try {
+    await tick(); await tick()
+    f.state.route = { type: "session", sessionID: "root" }
+    f.runtime.controller.retained = () => ({ request: pending("first"), status: "analyzing", retained: true })
+    f.runtime.records.browser.openPermission = () => { assert.fail("A live click cannot become a later history click") }
+    f.runtime.notifications!.click("root", { session: "root", permission: "first" })
+    f.runtime.controller.retained = () => undefined
+    f.renderer.emit(CliRenderEvents.FRAME)
+    assert.equal(f.calls.includes("dispatch:session.sidebar.toggle"), false)
+    assert.equal(f.runtime.records.state().open, false)
+  } finally { await f.life.stop() }
+})
 
 for (const invalidation of ["interruption", "permission churn"] as const) test(`scoped ${invalidation} revokes deferred notification delivery before held native reconciliation`, async () => {
   let releasePreparation!: () => void, releaseSync!: () => void, started!: () => void

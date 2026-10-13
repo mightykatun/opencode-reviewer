@@ -198,7 +198,7 @@ test("positive countdown stays silent through submission and only confirmed succ
   await f.advance(1000)
   f.policy.snapshot([{ ...view("a", "complete"), autoApproval: { status: "countdown", seconds: 14 } }])
   await f.advance(14000)
-  for (const status of ["checking", "allowing"] as const) {
+  for (const status of ["waiting", "checking", "allowing"] as const) {
     f.policy.snapshot([{ ...view("a", "complete"), autoApproval: { status } }])
     await settle()
   }

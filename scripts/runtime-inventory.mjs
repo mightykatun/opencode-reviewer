@@ -49,7 +49,7 @@ export const runtimeInventory = {
   "smoke-v2-lifecycle.mjs": host(["default"], [], { hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-invocation.mjs": host(["default", "review"], [], { hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-review.mjs": host(["advisory", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant", "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
-    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-edit", "normal-directory-edit"], [], { hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
+    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit"], [], { hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
   "smoke-v2-notifications.mjs": host(["manual-handoff", "forms", "execution", "unavailable-review"], [], {
     hostVersion: "opencode v2.0.26", hostVersions: acceptanceHostVersions,
     requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"], timeoutMs: 360000 }),
@@ -150,7 +150,7 @@ export const runtimeProfiles = {
     ["smoke-v2-native-queue.mjs"],
     ...["normal-mouse-off", "normal-cancel", "fast-descendant", "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off",
       "fast-history-cover", "fast-notifications", "normal-hide", "normal-dialog", "normal-resize", "fast-dialog",
-      "normal-hidden-complete", "normal-edit", "normal-directory-edit"].map(scenario => ["smoke-v2-review.mjs", scenario]),
+      "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit"].map(scenario => ["smoke-v2-review.mjs", scenario]),
     ...["manual-handoff", "forms", "execution", "unavailable-review"].map(scenario => ["smoke-v2-notifications.mjs", scenario]),
   ],
   "ci-v1": [

@@ -2,6 +2,7 @@
 // Scenarios: advisory (nonstream), normal (SSE), fast (held SSE preview/remainder),
 // normal-mouse-off, normal-cancel, normal-descendant, fast-descendant,
 // normal-hide, normal-dialog, normal-resize, fast-dialog, normal-hidden-complete,
+// normal-route-wait, normal-decision, fast-decision,
 // normal-history / normal-history-default-home (actual saved report, browsing and native statistics dialog),
 // normal-history-cover / fast-history-cover (two genuine native requests in one root),
 // normal-history-keyboard-mouse-off (two actual saved reports, mouse-off keys and no approval cover),
@@ -57,12 +58,22 @@ async function monitorSetup(ctx) {
   const rpc = ctx.client.rpc(Rpc.define(rpcDefinition()))
   const publisher = observationPublisher(fixture.monitor), abort = new AbortController()
   const record = { version: ctx.app.version, ready: true, errors: [], asked: [], replied: [], interrupted: [], replies: {}, cleaned: false }
+  const unregisterDashboard = ctx.ui.router.register({ name: "fixture.dashboard", render: () => null })
   const location = { directory: fixture.initial }
   const options = () => ({ location, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15000)]) })
   const save = () => {
     record.route = JSON.parse(JSON.stringify(ctx.ui.router.current()))
     record.mouse = ctx.renderer.useMouse
     record.mode = ctx.keymap.mode.current()
+    record.choices = {}
+    let budget = 8192
+    const choices = node => {
+      if (--budget < 0 || !node.visible || node.isDestroyed) return
+      if (typeof node.id === "string" && node.id.startsWith("session.permission.action."))
+        record.choices[node.id.slice("session.permission.action.".length)] = node.backgroundColor?.equals(ctx.theme.background.action.primary.focused)
+      for (const child of node.getChildren()) choices(child)
+    }
+    choices(ctx.renderer.root)
     record.terminal = { width: ctx.renderer.width, height: ctx.renderer.height }
     const sidebar = ctx.keymap.commands().find(item => item.id === "session.sidebar.toggle")
     record.sidebarCommand = sidebar && { id: sidebar.id, title: sidebar.title }
@@ -104,10 +115,21 @@ async function monitorSetup(ctx) {
            await ctx.data.session.sync(value.id)
            assert.equal(ctx.data.session.root(value.id), command.sessionID)
            assert.ok(ctx.data.session.family(command.sessionID).includes(value.id))
-         } else if (command.type === "navigate") {
+          } else if (command.type === "navigate") {
            ctx.ui.router.navigate({ type: "session", sessionID: command.sessionID })
            value = { route: ctx.ui.router.current(), root: ctx.data.session.root(command.sessionID),
-             session: ctx.data.session.get(command.sessionID) }
+              session: ctx.data.session.get(command.sessionID) }
+          } else if (command.type === "away") {
+            assert.ok(["home", "dashboard", "other"].includes(command.destination))
+            if (command.destination === "home") ctx.ui.router.navigate({ type: "home" })
+            else if (command.destination === "dashboard") ctx.ui.router.navigate({ type: "plugin", name: "fixture.dashboard" })
+            else {
+              const other = await ctx.client.session.create({ title: "Unrelated fixture conversation", location,
+                model: { providerID: "fixture", id: "fixture" } }, options())
+              await ctx.data.session.sync(other.id)
+              ctx.ui.router.navigate({ type: "session", sessionID: other.id })
+            }
+            value = ctx.ui.router.current()
          } else if (command.type === "pending") value = await ctx.client.permission.list({ sessionID: command.sessionID }, options())
         else if (command.type === "inspect") {
           const request = await ctx.client.permission.get({ sessionID: command.sessionID, requestID: command.requestID }, options())
@@ -155,7 +177,7 @@ async function monitorSetup(ctx) {
   })().catch(error => { if (!abort.signal.aborted) { record.errors.push(error instanceof Error ? String(error.stack) : JSON.stringify(error)); void save() } })
   await save(); await publisher.flush()
   return async () => {
-    off(); ctx.renderer.off(CliRenderEvents.FRAME, frame); abort.abort(); await loop
+    off(); unregisterDashboard(); ctx.renderer.off(CliRenderEvents.FRAME, frame); abort.abort(); await loop
     record.cleaned = true
     await save(); await publisher.flush(); await publisher.close()
   }
@@ -320,12 +342,13 @@ const coverCase = ["normal-history-cover", "fast-history-cover"].includes(scenar
 const dialogCase = ["normal-dialog", "fast-dialog"].includes(scenario)
 const visibilityLoss = ["normal-hide", "normal-dialog", "normal-resize"].includes(scenario)
 const hiddenComplete = scenario === "normal-hidden-complete"
+const routeWait = scenario === "normal-route-wait", decisionCase = scenario.endsWith("-decision")
 const editCase = ["normal-edit", "normal-directory-edit"].includes(scenario)
 const directoryEditCase = scenario === "normal-directory-edit"
-const notificationCase = scenario === "fast-notifications", savedCase = historyCase || notificationCase || coverCase || scenario === "fast-dialog" || editCase
+const notificationCase = scenario === "fast-notifications", savedCase = automatic && scenario !== "normal-cancel"
 const requestCount = coverCase || directoryEditCase ? 2 : 1
 const nativeCallCount = editCase ? 1 : requestCount
-const negative = ["normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant"].includes(scenario) || visibilityLoss
+const negative = scenario === "normal-cancel"
 const descendant = scenario.endsWith("-descendant")
 const mouseOff = scenario === "normal-mouse-off", approvalDelaySeconds = fast ? 45 : visibilityLoss || hiddenComplete ? 5 : 8
 const root = path.resolve(import.meta.dirname, ".."), host = process.env.OPENCODE_BIN ?? "opencode"
@@ -785,18 +808,20 @@ const releaseNativeCall = () => {
   }
 }
 const limits = [
-  "One installed default archive with separate server companion and global CLI configuration. The independent monitor never imports production code or replies to permissions.",
+     "One installed default archive with separate server companion and global CLI configuration. The independent monitor never imports production code or replies to permissions.",
   `One standalone Linux OpenCode V2 verification host, ${nativeCallCount} direct native ${editCase ? "write" : "shell"} call(s), ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal, disconnect or tab-switch acceptance.`,
-  "Mouse capture is explicitly configured only by the isolated fixture, never forced by production. Countdown-loss cases require real physical FRAME proof before native command/navigation or actual tmux resize; no synthesized paint, modes, hits or geometry. Individual cases do not imply full presentation-matrix acceptance.",
+  "Mouse capture is explicitly configured only by the isolated fixture, never forced by production. UI changes use real native commands/navigation, keyboard choices or actual tmux resize; no synthesized paint, modes, hits or geometry. Individual cases do not imply full UI-matrix acceptance.",
   "Descendant cases navigate a real child while a root request is pending; they do not exercise descendant-owned native queue ordering. No disabled kinds or uncertain writes.",
     editCase ? "One actual native write, exact direct source linkage and pending native diff. Outside-project access, when selected, automatically resumes that same write into a distinct edit permission. Each stage holds the real reviewer response, proves no mutation, paints a full normal countdown and receives one production once reply. Read-only SQLite proves per-stage accepted reports, qualifying resolutions, categories and both aggregate scopes. Production history opens through painted palette activation. No native edit/patch variant, formatter, descendant-owned queue, notification, multi-client or live-provider judgment acceptance."
-      : dialogCase ? "Stock command.palette.show owns a real native modal. Normal loss after an actual countdown permanently cancels; fast withholds SSE Safe preview until that cover, closes through real Escape and requires fresh physical root paint before once, with final usage verified in SQLite. No permission fullscreen or other modal-family acceptance."
-      : visibilityLoss ? "One actual normal countdown, native sidebar hide or a real 160x8 tmux window, and restoration to the root. The unchanged native request remains manual beyond both the original and any hypothetical restarted deadline. No benign-width continuity or other geometry-family acceptance."
-      : hiddenComplete ? "A never-armed normal report completes on a real child route. Read-only production storage confirms final acceptance while hidden; no write beyond the configured delay. Actual root return requires a fresh painted full countdown before a single once. No descendant-owned permission queue acceptance."
+      : routeWait ? "A started normal countdown survives native home, a public plugin dashboard and an unrelated session route, with no writes past its original deadline. Returning to its root resumes once without a new delay. Saved report and aggregates are verified."
+      : decisionCase ? "Actual Right/Left native keyboard input selects Always then Once. Automatic approval waits without cancellation while Always is selected, then resumes with the original delay or fast preview semantics. No persistent native grant is submitted; saved automatic report is verified. Rejection editing is separately source-tested, not host-accepted here."
+      : dialogCase ? "Stock command.palette.show owns a real native modal. Normal and fast automatic replies proceed underneath it without closing it; final report and usage are verified in SQLite. No other modal-family acceptance."
+      : visibilityLoss ? "One actual normal countdown continues through native sidebar hide or a real 160x8 tmux window. A single native once reply and saved report occur without restoring presentation first. No other geometry-family acceptance."
+      : hiddenComplete ? "A never-displayed normal report completes on a real child route and approves after its delay without returning to root. SQLite verifies the saved report and aggregates. No descendant-owned permission queue acceptance."
       : keyboardMouseOffCase ? "Reuse normal-history-cover's two real automatic requests with configured mouse on, then disable mouse via its public setter only after both entries save and no request is pending. Real palette/history input, exact two-entry Left/Right selection and Up/Down/Page scroll use the long second fixed reviewer response. Mouse-off production cover queries reject previously proven heading/footer hits. No new approval eligibility, synthesized paint/hits, statistics dialog or multi-client acceptance."
-      : coverCase ? "Two real root-owned native shell permissions, two real reviewer POSTs and worker-saved validated automatic entries. Public production history stays selected on the first entry. Normal requires actual production cover-query hit ownership and FRAME countdown proof; fast has no history-cover exception and requires real Escape plus fresh root paint. No descendant-owned queue, canceled countdown recovery, offline deletion, statistics dialog, notification or multi-client acceptance."
+      : coverCase ? "Two real root-owned native shell permissions, two real reviewer POSTs and worker-saved validated automatic entries. Public production history stays selected on the first entry while normal or fast automatic approval proceeds. No descendant-owned queue, offline deletion, statistics dialog, notification or multi-client acceptance."
      : historyCase ? "History/statistics acceptance is one actual automatic saved entry and its real read-only SQLite aggregates, public command browsing and native dialog. Child history invocation is disabled; root return explicitly reopens the same saved entry. No production history-cover approval, offline deletion, multiple entries or multi-client acceptance."
-    : notificationCase ? "Production host with an injected desktop boundary only: one actual fast native approval, retained SSE response, approved banner and lease-based simulated clicks. No real GNOME activation, desktop processes, audio, live-provider latency, advisory/unsafe attention, reminders or multi-request queue acceptance. Exact-key history selection is observed without a competing newer entry; multi-entry not-latest behavior is not accepted by this single-entry fixture."
+    : notificationCase ? "Production host with an injected desktop boundary only: one actual fast native approval, retained SSE response, approved banner and lease-based simulated clicks, including revealing a deliberately hidden native sidebar for the retained report. No real GNOME activation, desktop processes, audio, live-provider latency, advisory/unsafe attention, reminders or multi-request queue acceptance. Exact-key history selection is observed without a competing newer entry; multi-entry not-latest behavior is not accepted by this single-entry fixture."
       : "No production history browsing, statistics UI or notification acceptance in this scenario. Advisory native interruption is not treated as exact manual attribution.",
 ]
 try {
@@ -956,7 +981,7 @@ try {
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: origin + "/v1", apiKey: "synthetic-only" },
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } }
    // Approval cases explicitly configure mouse capture in the isolated fixture,
-   // except the intentional mouse-off negative. Production never changes it;
+   // except the mouse-off approval case. Production never changes it;
    // advisory retains the host default.
   // Native autoaccept is explicitly disabled.
   const cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, attention: { notifications: false, sound: false },
@@ -1194,57 +1219,34 @@ try {
      } else if (dialogCase) {
        presentationEvidence = { cover: await openPalette() }
        await negativeWindow("native modal owns input before fast preview is released", [request], [], null, 1, 1500, paletteCover)
-     } else allowWrites = true
-     sse(reviewResponse, '{"safe":true,"desc":' + JSON.stringify(description).slice(0, -1))
-     if (dialogCase) {
-       await until("held fast Safe preview rendered under the stock palette", async record => {
-         const screen = capture()
-         if (!screen.includes("✓ Safe") || !screen.includes("V2 local marker report.")) return false
-         const proof = await paletteCover(record, screen)
-         assert.equal(proof.final, false)
-         assert.equal(reviewCompleted, false)
-         return proof
-       }, 15000)
-       await saveCapture("native-palette-fast-preview")
-       await negativeWindow("parsed fast Safe preview cannot approve through native modal ownership", [request], [], null, 1, 1500, async (record, screen) => {
-         const proof = await paletteCover(record, screen)
-         assert.equal(proof.final, false)
-         assert.equal(reviewCompleted, false)
-         await noSavedBody()
-       })
-       const covered = await presentation(), frame = (await observations()).frame
-       allowWrites = true
-       runtime.tmux("send-keys", "-t", "v2-review", "Escape")
-       presentationEvidence.return = await until("Escape closes native palette and fresh root FRAME permits fast preview once", async record => {
-         const value = await presentation()
-         if (record?.mode !== "base" || !(record.frame?.id > frame.id) || capture().includes("Commands")
-           || value?.stage !== "frame" || !(value.at > covered.at) || !value.physical || value.mode !== "base"
-           || value.selected !== request.id || value.root !== sessionID || value.final) return false
-         return { proof: value, frame: record.frame }
-       }, 15000)
-       assert.equal(reviewCompleted, false, "Fresh actual root paint permits fast preview, not a normal countdown")
-       assert.notEqual(presentationEvidence.return.proof.auto, "countdown")
-       await publish(path.join(artifacts, "native-palette-fast-proof.json"), presentationEvidence)
      }
-    if (descendant) {
-      await negativeWindow("hidden fast Safe preview has no automatic write", [request], [], null, 1, 1500, hiddenDescendant)
-      assert.equal(reviewCompleted, false)
-      await saveCapture("descendant-preview-held")
-      finishReview()
-      await negativeWindow("fast response completes while descendant-hidden without approval", [request], [], null, 1, 1500, hiddenDescendant)
-      await saveCapture("descendant-completed")
-      // Never return to root: a never-armed fast report may become eligible on
-      // its first genuine root presentation, which is not this negative case.
-      await interruptPending(hiddenDescendant)
-    } else {
-      await until("production fast once reply and marker execution", async record => record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n")
-      assert.equal(reviewCompleted, false, "Fast approval must precede terminal assessment/EOF")
-      await until("rendered retained fast report", () => {
+     if (decisionCase) {
+       runtime.tmux("send-keys", "-t", "v2-review", "Right")
+       await until("actual native Always selection before fast preview", record => record?.choices.always === true && record.choices.once === false)
+     } else allowWrites = true
+      sse(reviewResponse, '{"safe":true,"desc":' + JSON.stringify(description).slice(0, -1))
+      if (decisionCase) {
+        await negativeWindow("native Always selection holds fast Safe preview without a reply", [request], [], null, 1, 1500, async record => {
+          assert.equal(record.choices.always, true)
+          assert.equal(reviewCompleted, false)
+          await noSavedBody()
+        })
+        allowWrites = true
+        runtime.tmux("send-keys", "-t", "v2-review", "Left")
+      }
+       await until("production fast once reply and marker execution", async record => record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n")
+       assert.equal(reviewCompleted, false, "Fast approval must precede terminal assessment/EOF")
+       if (!descendant) await until("rendered retained fast report", () => {
         const screen = capture()
         return screen.includes("Permission analysis") && screen.includes("✓ Safe") && screen.includes("V2 local marker report.")
           && screen.includes("Auto-approved; finishing report") && !screen.includes("Allowed in")
       })
-      await saveCapture("fast-retained")
+       await saveCapture("fast-retained")
+       if (descendant) hiddenDescendant(await observations(), capture())
+       if (dialogCase) {
+         assert.equal((await observations()).mode, "modal")
+         assert.match(capture(), /Commands/)
+       }
       if (notificationCase) {
         await until("native tool continuation while reviewer response remains held", () => calls.filter(call => call.url === "/v1/chat/completions").length === 2)
         const value = await until("approved banner before retained stream EOF", async () => {
@@ -1262,7 +1264,18 @@ try {
         assert.equal(shown.length, 1)
         notificationEvidence = { beforeEOF: value, id: shown[0].id }
         await publish(path.join(artifacts, "notification-before-eof.json"), notificationEvidence)
+        const hidden = await nativePresentationCommand("session.sidebar.toggle")
+        assert.equal(hidden.title, "Hide sidebar")
+        await until("native sidebar hides the retained report before its approval click", record =>
+          record?.sidebarCommand?.title === "Show sidebar" && !capture().includes("Permission analysis"))
+        await negativeWindow("hidden retained report does not reveal itself without an explicit click", [], (await observations()).replied,
+          "V2_REVIEW_EXECUTED\n", 1, 500, async record => {
+            assert.equal(record.sidebarCommand?.title, "Show sidebar")
+            assert.equal(reviewCompleted, false)
+          })
         await clickNotification(notificationEvidence.id)
+        await until("retained approval click reveals the actual absent native sidebar", record =>
+          record?.sidebarCommand?.title === "Hide sidebar" && capture().includes("Auto-approved; finishing report"))
       }
       await negativeWindow("fast retained response has no duplicate reply or execution", [], (await observations()).replied, "V2_REVIEW_EXECUTED\n", 1,
         1500, notificationCase ? async (record, screen) => {
@@ -1278,8 +1291,7 @@ try {
           assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 2)
           await noSavedBody()
          } : savedCase ? noSavedBody : () => {})
-      finishReview()
-    }
+       finishReview()
    } else {
      if (hiddenComplete) {
        await navigate(childSession.id)
@@ -1295,6 +1307,7 @@ try {
           record?.frame && record.mouse && record.mode === "base" && !capture().includes("Finishing startup"))
         await saveCapture("cancel-input-ready")
       }
+      if (hiddenComplete) allowWrites = true
       finishReview()
       if (hiddenComplete) {
        presentationEvidence.hiddenAccepted = await until("actual normal final acceptance while native child route hides reviewer", async () => {
@@ -1309,11 +1322,11 @@ try {
          return { facts, saved }
        }, 15000)
        await saveCapture("normal-hidden-completed")
-       await negativeWindow("never-armed completed normal report stays hidden past the configured countdown delay", [request], [], null, 1,
-         approvalDelaySeconds * 1000 + 1500, async (record, screen) => { hiddenDescendant(record, screen); await noSavedBody() })
-       presentationEvidence.rootReturnStartedAt = performance.now()
-       await navigate(sessionID)
-     }
+        await until("never-displayed normal Safe report approves on the descendant route", async record =>
+          record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n")
+        hiddenDescendant(await observations(), capture())
+        await navigate(sessionID)
+      } else {
     await until("rendered validated Safe report", () => {
       const screen = capture()
       return screen.includes("Permission analysis") && screen.includes("✓ Safe") && screen.includes("V2 local marker report.")
@@ -1332,12 +1345,12 @@ try {
       })
       assert.equal(proof.mouse, false)
       assert.equal(proof.physical, false)
-      assert.notEqual(proof.auto, "countdown")
-      await publish(path.join(artifacts, "mouse-off-proof.json"), proof)
-      await negativeWindow("completed Safe report stays manual with mouse off", [request], [], null, 1,
-        approvalDelaySeconds * 1000 + 1500, rootPending)
-      await saveCapture("mouse-off-pending")
-      await interruptPending()
+       assert.equal(proof.auto, "countdown")
+       await publish(path.join(artifacts, "mouse-off-proof.json"), proof)
+       allowWrites = true
+       await until("Safe report approves without mouse tracking", async record => record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n")
+       assert.equal((await observations()).mouse, false)
+       await saveCapture("mouse-off-approved")
     } else {
       const proof = await until("painted normal countdown", async () => {
         const value = await presentation()
@@ -1345,13 +1358,10 @@ try {
           && value.root === sessionID && /Allowed in \d+s/.test(capture()) && value
       }, 15000)
        assert.equal(proof.mouse, true)
-       if (visibilityLoss || hiddenComplete) {
+        if (visibilityLoss) {
          const seconds = Number(capture().match(/Allowed in (\d+)s/)?.[1])
          assert.ok(seconds >= approvalDelaySeconds - 1, "A freshly painted countdown, well before its approval threshold")
-         if (hiddenComplete) {
-           assert.ok(proof.at > presentationEvidence.lastRootProof.at, "Root return uses a new actual physical FRAME, not remembered paint")
-           presentationEvidence.return = proof
-         } else presentationEvidence = { countdown: proof }
+          presentationEvidence = { countdown: proof }
        }
       await publish(path.join(artifacts, "countdown-proof.json"), proof)
       await saveCapture("countdown")
@@ -1369,45 +1379,22 @@ try {
            await until("native host receives actual short tmux geometry", record => record?.terminal.height === 8
              && record.terminal.width === 160 && record.frame?.height === 8 && record.frame.id > before.id, 3000)
          }
-         presentationEvidence.lost = await until("real native presentation loss permanently cancels the armed countdown", async () => {
-           const value = await presentation()
-           return value?.stage === "frame" && value.selected === request.id && value.root === sessionID
-             && value.final && !value.physical && value.auto === "cancelled" && value.at > proof.at && value
-         }, 3000)
-         const blocked = async (record, screen) => {
-           if (scenario === "normal-hide") hiddenSidebar(record, screen)
-           else if (dialogCase) await paletteCover(record, screen)
-           else {
-             assert.deepEqual(record.route, { type: "session", sessionID })
-             assert.equal(record.mouse, true)
-             assert.equal(record.mode, "base")
-             assert.deepEqual(record.terminal, { width: 160, height: 8 })
-             assert.equal(record.frame.height, 8)
-             assert.doesNotMatch(screen, /Allowed in/)
-           }
-           const value = await presentation()
-           assert.equal(value.physical, false)
-           assert.equal(value.auto, "cancelled")
-         }
-         await saveCapture("native-presentation-countdown-cancelled")
-         await negativeWindow("genuine native visibility loss blocks approval past the original deadline", [request], [], null, 1,
-           approvalDelaySeconds * 1000 + 1500, blocked)
+         allowWrites = true
+         await until("normal countdown approves without restoring native presentation", async record =>
+           record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n")
+         const record = await observations(), screen = capture()
+         if (scenario === "normal-hide") hiddenSidebar(record, screen)
+         else if (dialogCase) { assert.equal(record.mode, "modal"); assert.match(screen, /Commands/) }
+         else assert.deepEqual(record.terminal, { width: 160, height: 8 })
+         assert.doesNotMatch(screen, /Auto-approval canceled/)
+         await saveCapture("native-presentation-background-approved")
          if (scenario === "normal-hide") {
            const native = await nativePresentationCommand("session.sidebar.toggle")
            assert.equal(native.title, "Show sidebar")
          } else if (dialogCase) runtime.tmux("send-keys", "-t", "v2-review", "Escape")
          else resizeWindow(40)
-         presentationEvidence.return = await until("actual restored root paint preserves the cancellation tombstone", async record => {
-           const value = await presentation()
-           if (record?.mode !== "base" || record.terminal.height !== 40 || record.sidebarCommand?.title !== "Hide sidebar"
-             || value?.stage !== "frame" || !(value.at > presentationEvidence.lost.at) || !value.physical || value.auto !== "cancelled") return false
-           try { cancelledRoot(record, capture()); return { proof: value, frame: record.frame } } catch { return false }
-         }, 15000)
-         await saveCapture("native-presentation-root-return-cancelled")
-         await publish(path.join(artifacts, "native-presentation-loss-proof.json"), presentationEvidence)
-         await negativeWindow("native root restoration cannot rearm a canceled request", [request], [], null, 1,
-           approvalDelaySeconds * 1000 + 1500, cancelledRoot)
-         await interruptPending()
+         await until("native UI restoration after background approval", record => record?.mode === "base" && record.terminal.height === 40)
+         await publish(path.join(artifacts, "native-presentation-background-proof.json"), presentationEvidence)
        } else if (scenario === "normal-cancel") {
         const rows = capture().split("\n"), row = rows.findIndex(line => /Allowed in \d+s/.test(line) && line.includes("Cancel"))
         assert.ok(row >= 0, "Actual painted countdown and Cancel control share a row")
@@ -1424,30 +1411,42 @@ try {
         await negativeWindow("Cancel remains manual past the original countdown", [request], [], null, 1,
           approvalDelaySeconds * 1000 + 1500, cancelledRoot)
         await interruptPending()
-      } else if (descendant) {
+       } else if (descendant) {
         await navigate(childSession.id)
         await until("reviewer absent after countdown route loss", () => !capture().includes("Permission analysis"))
-        await saveCapture("descendant-countdown-cancelled")
-        await negativeWindow("descendant route blocks approval past the original countdown", [request], [], null, 1,
-          approvalDelaySeconds * 1000 + 1500, hiddenDescendant)
-        await navigate(sessionID)
-        await until("root return preserves cancellation tombstone", () => capture().includes("Auto-approval canceled"))
-        await saveCapture("root-return-cancelled")
-        await negativeWindow("root return cannot rearm the canceled countdown", [request], [], null, 1,
-          approvalDelaySeconds * 1000 + 1500, cancelledRoot)
-        await interruptPending()
+         await saveCapture("descendant-countdown-running")
+         allowWrites = true
+         await until("normal countdown approves while descendant-hidden", async record => record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n")
+         hiddenDescendant(await observations(), capture())
+         await navigate(sessionID)
+       } else if (routeWait || decisionCase) {
+         if (decisionCase) {
+           runtime.tmux("send-keys", "-t", "v2-review", "Right")
+           await until("native Always choice owns the pending decision", record => record?.choices.always === true && record.choices.once === false)
+           await negativeWindow("Always selection waits past the original countdown without cancellation", [request], [], null, 1,
+             approvalDelaySeconds * 1000 + 1500, record => { assert.equal(record.choices.always, true); assert.doesNotMatch(capture(), /Auto-approval canceled/) })
+           assert.match(capture(), /Auto-approval waiting/)
+         } else {
+           for (const destination of ["home", "dashboard", "other"]) {
+             const away = await command({ type: "away", destination })
+             assert.notDeepEqual(away, { type: "session", sessionID })
+             await negativeWindow(`${destination} waits without cancelling the Safe request`, [request], [], null, 1,
+               approvalDelaySeconds * 1000 + 1500, record => assert.deepEqual(record.route, away))
+           }
+         }
+         allowWrites = true
+         const resumed = performance.now()
+         if (decisionCase) runtime.tmux("send-keys", "-t", "v2-review", "Left")
+         else await navigate(sessionID)
+         await until("waiting request resumes with its expired original deadline", async record => record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n")
+         assert.ok(performance.now() - resumed < approvalDelaySeconds * 1000, "Resume must not restart the full countdown")
       } else {
          await negativeWindow("normal countdown remains pending", [request], [], null, 1, 1500, savedCase ? noSavedBody : () => {})
         allowWrites = true
          await until("production normal once reply and marker execution", async record => record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n")
-         if (hiddenComplete) {
-           presentationEvidence.executionAt = performance.now()
-           assert.ok(presentationEvidence.executionAt - presentationEvidence.rootReturnStartedAt >= approvalDelaySeconds * 1000,
-             "Never-armed hidden completion starts a full fresh countdown only after actual root return")
-           await publish(path.join(artifacts, "normal-hidden-completion-proof.json"), presentationEvidence)
-         }
-      }
-    }
+     }
+     }
+   }
   }
    if (allowWrites) {
     await until("actual native tool-result continuation", () => calls.filter(call => call.url === "/v1/chat/completions").length === 2)
@@ -1530,29 +1529,22 @@ try {
        assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 3)
      }
      await negativeWindow("second review is never armed before history already covers it", [request], firstReplies, markerLine, 2, 1500, unchangedFirst)
-     if (fast) {
-       sse(reviewResponse, '{"safe":true,"desc":' + JSON.stringify(description).slice(0, -1))
-       await phase("second-fast-safe-preview-behind-history")
-       await negativeWindow("fast parsed Safe preview cannot approve behind production history", [request], firstReplies, markerLine, 2, 1500, unchangedFirst)
-       await saveCapture("history-cover-fast-preview")
-       finishReview()
-       await until("completed fast report observation behind history", async () => {
-         const value = await presentation()
-         return value?.stage === "frame" && value.selected === request.id && value.final && value.contentMatches && !value.streaming && value
-       })
-       await phase("second-fast-final-eof-behind-history")
-       await negativeWindow("fast final validated EOF still cannot approve behind production history", [request], firstReplies, markerLine, 2, 1500, unchangedFirst)
-       await saveCapture("history-cover-fast-final")
-       // Admit the second possible write only at genuine keyboard close. No
-       // direct close callback, presentation override or native reply is used.
-       allowedReplies = 2
-       runtime.tmux("send-keys", "-t", "v2-review", "Escape")
-       await until("production history closes via actual Escape", record => record?.mode === "base" && !capture().includes("Analysis history"))
-       coverEvidence.rootProof = await until("fresh actual root FRAME permits fast second once", async () => {
-         const value = await presentation()
-         return value?.stage === "frame" && value.selected === request.id && value.root === sessionID && value.physical && value.final && value
-       })
-       await phase("history-escaped-fresh-root-physical-proof", { proof: coverEvidence.rootProof })
+      if (fast) {
+        allowedReplies = 2
+        sse(reviewResponse, '{"safe":true,"desc":' + JSON.stringify(description).slice(0, -1))
+        await phase("second-fast-safe-preview-behind-history")
+        await until("fast Safe preview approves underneath production history", async record => record?.replied.length === 2 && await executed() === markerLine.repeat(2))
+        assert.equal(reviewCompleted, false, "Fast approval still precedes terminal report validation")
+        await selectedOriginal(await observations(), capture())
+        await negativeWindow("history-covered fast remainder cannot duplicate execution or save an unfinished body", [], (await observations()).replied,
+          markerLine.repeat(2), 2, 1500, async (record, screen) => {
+            await selectedOriginal(record, screen)
+            assert.equal((await readHistory()).payloadCount, 1)
+          })
+        await saveCapture("history-cover-fast-preview")
+        finishReview()
+        await phase("second-fast-final-eof-behind-history")
+        await saveCapture("history-cover-fast-final")
      } else {
        finishReview()
        coverEvidence.coverProof = await until("real production heading/footer cover and completed normal countdown FRAME", async record => {
@@ -1590,11 +1582,14 @@ try {
      }
      await phase("two-confirmed-once-writes-two-saved-reports", { entries: coverEvidence.pair.rows.map(row => row.id) })
       await negativeWindow("second resolution cannot replay either approval or execution", [], (await observations()).replied, markerLine.repeat(2), 2, 1500, async (record, screen) => {
-        if (!fast) await selectedOriginal(record, screen, 2)
-        else assert.doesNotMatch(screen, /Analysis history|Permission analysis/)
+        await selectedOriginal(record, screen, 2)
         assert.deepEqual(await savedPair(), coverEvidence.pair)
         assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 4)
-      })
+       })
+      if (fast) {
+        runtime.tmux("send-keys", "-t", "v2-review", "Escape")
+        await until("production history closes after fast background approval and save", record => record?.mode === "base" && !capture().includes("Analysis history"))
+      }
       if (keyboardMouseOffCase) {
         const replies = (await observations()).replied, before = (await observations()).frame
         assert.equal((await observations()).mouse, true, "Actual approvals and saves occurred with configured mouse on")
@@ -1711,9 +1706,14 @@ try {
           })
       }
     }
+   if (savedCase && !coverCase && !historyCase && !notificationCase && !editCase) {
+     historyEvidence = await until("background automatic report and aggregates save normally", savedHistory, 20000)
+     await publish(path.join(artifacts, "background-saved-history.json"), historyEvidence)
+   }
    if (scenario === "fast-dialog") {
-     historyEvidence = await until("fast native-modal final usage and saved report settle after preview approval", savedHistory, 20000)
-     await publish(path.join(artifacts, "native-palette-fast-history.json"), historyEvidence)
+     assert.equal((await observations()).mode, "modal", "The reviewer never closes the user's palette")
+     runtime.tmux("send-keys", "-t", "v2-review", "Escape")
+     await until("user closes palette after fast background report is saved", record => record?.mode === "base")
    }
    if (historyCase) {
     historyEvidence = await until("actual worker-saved history and aggregate commits", savedHistory, 20000)

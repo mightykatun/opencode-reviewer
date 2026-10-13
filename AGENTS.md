@@ -19,7 +19,7 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  verified 30-case production/foundation selection from PR CI, including history,
+  33-case production/foundation selection from PR CI, including history,
   statistics, approval notifications and explicitly classified synthetic probes.
   `--profile v2-acceptance` currently selects the same cases. Neither proves the
   complete historical V1 matrix or real desktop/audio acceptance. `--profile ci-v1` retains the
@@ -80,10 +80,12 @@ All commands below use the installed five-file archive and production runtime.
 | Manual attention handoff and reminders | `node scripts/test-runtime.mjs smoke-v2-notifications.mjs manual-handoff` |
 | Native question form / terminal execution distinctions | `node scripts/test-runtime.mjs smoke-v2-notifications.mjs forms` / `execution` |
 | Invalid review and unavailable companion notification-only fallback | `node scripts/test-runtime.mjs smoke-v2-notifications.mjs unavailable-review` |
-| Normal-only history cover | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-cover` / `fast-history-cover` |
+| Normal/fast approval behind history | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-cover` / `fast-history-cover` |
 | Approval notification and exact history click | `node scripts/test-runtime.mjs smoke-v2-review.mjs fast-notifications` |
-| Descendant cancellation / hidden fast response | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-descendant` / `fast-descendant` |
-| Mouse-disabled / Cancel | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-mouse-off` / `normal-cancel` |
+| Descendant background approval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-descendant` / `fast-descendant` |
+| Mouse-disabled approval / explicit Cancel | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-mouse-off` / `normal-cancel` |
+| Home/dashboard/unrelated route waiting | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-route-wait` |
+| Native decision waiting without cancellation | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-decision` / `fast-decision` |
 
 The notification case injects only the desktop backend. It does not prove actual
 audio playback, GNOME focus or live-provider judgment. History fixtures use a new
@@ -126,7 +128,7 @@ not acceptance evidence for the distributed V2 archive.
 - The shared V2 lifecycle entrypoint targets local Linux OpenCode V2.
   On 2026-10-13 the user explicitly rejected a runtime host-version allowlist.
   Do not gate activation, companion admission or evidence reads on version numbers.
-  Preserve protocol/location/epoch, mandatory evidence and physical approval checks;
+  Preserve protocol/location/epoch, mandatory evidence and approval eligibility checks;
   incompatible public API data stays manual rather than being guessed. Test pins
   remain separate from runtime activation. Development uses pinned
   `@opencode/plugin`, `@opencode/client` and
@@ -163,28 +165,35 @@ not acceptance evidence for the distributed V2 archive.
 
 ## Execution flow and invariants
 
-### Approved V2 migration presentation contract
+### Approved V2 same-conversation automation contract
 
-- For the V2 port, the user selected **visible-root presentation** on 2026-10-12.
-  See `git show 181245e:V2-MIGRATION-PLAN.md`, section 3A.6, for the exact
-  replacement and acceptance cases. This supersedes the F34 hidden-route approval exception for V2 only; the
-  V1 implementation and historical F34 verification below remain the baseline.
-- V2 normal and fast automatic replies require the root conversation route and
-  actual physical presentation proof. Descendant browsing permits no automatic
-  write. Root route identity alone, mounted state or remembered paint is insufficient.
+- On 2026-10-13 the user replaced V2 visible-root approval with same-conversation
+  automation, without an additional opt-in. Panel display remains root-only, but
+  normal and fast approval need no report paint, hit ownership, mouse or sidebar.
+  Known same-root descendants, selectors/dialogs, session panels and history do not
+  gate approval. Home/dashboard/unrelated or unknown routes wait, never cancel.
+  The archived visible-root migration checks and historical V1/F34 behavior remain
+  historical evidence, not the current V2 automation contract.
 - Stock V2's root native queue includes the full descendant family, root first and
   then public family order. Use actual native ownership, not V1's direct-child
   limitation or event-arrival order. Reconcile native permission caches after
   interruption; fresh server reads alone do not refresh a stale native prompt.
-- Leaving root presentation after a normal countdown starts permanently makes
-  that request manual. Root return/remount/re-enable cannot erase cancellation or
-  uncertain-write tombstones. Never-armed reports completed while hidden may first
-  become eligible after real root presentation, with a fresh normal countdown.
+- Started normal countdowns retain their original monotonic deadline through UI,
+  native-priority and pre-write read/cache waits. Expired waits resume without a
+  fresh delay. Never-armed requests start a full countdown when their conversation
+  first becomes eligible, including while the report is hidden. Only explicit
+  Cancel/disable/native stop actions cancel; remount/re-enable cannot erase those
+  tombstones. Changed evidence and uncertain writes stay failed/manual, never retried.
+- Hold approval while native Always/reject choices or rejection editing are active.
+  Observe bounded public renderable IDs and choice colors, not private host state,
+  dialog patches or text matching. Partial/ambiguous decision observations wait
+  closed. Recheck same-conversation ancestry, native priority and decision state
+  synchronously immediately before the once write. Ordinary modal mode is not a hold.
 - Preserve fast preview/full-response behavior, no countdown, fresh identity/native
   priority checks and once-only writes. Retained responses may finish while hidden.
-  Normal production-history cover remains a separate root-scoped physical-proof
-  exception; fast mode gains no history-cover exception. Do not force mouse/sidebar
-  visibility. The registered production presentation cases pass; additional
+  Hidden reports save through ordinary qualifying history resolution, with no UI
+  dependency. Production history is no longer a separate approval exception in V2.
+  Do not force mouse/sidebar visibility or fabricate presentation proof. Additional
   native fullscreen/family/multi-terminal permutations remain separate acceptance.
 
 ### Approved V2 migration evidence direction
@@ -197,7 +206,7 @@ not acceptance evidence for the distributed V2 archive.
   native tool meanings, do not replace/alias native executors, and do not rewrite
   commands after evidence capture. This is an installation assumption, not public
   host provenance or an enforceable registry seal. Preserve exact scope, source,
-  native-priority, visible-root and once-only write checks. Additional skill/MCP
+  native-priority, same-conversation eligibility and once-only write checks. Additional skill/MCP
   snapshot/mapping assumptions require their own disposition in the migration plan.
 - When asked about extra skill-catalog mutation assumptions, the user said "keep
   it simple". Keep requests manual when exact mandatory skill instructions are
@@ -233,8 +242,9 @@ not acceptance evidence for the distributed V2 archive.
   Optional form reads must stay outside permission admission; own their complete
   transactions through abort/settlement, and fail notification health closed on errors.
 - `host-sidebar.tsx` measures native FRAME geometry; `host-review-panel.tsx` and
-  `host-history-view.tsx` prove actual hit ownership. One stable app surface contains
-  live/history siblings. Normal physical history cover is not a fast exception.
+  `host-history-view.tsx` prove actual hit ownership for UI/fixture observations,
+  not V2 approval eligibility. `host-approval-ready.ts` owns the public native
+  decision/same-conversation gates. One stable app surface contains live/history siblings.
 
 ### Historical V1 implementation and shared invariants
 
