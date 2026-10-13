@@ -32,30 +32,47 @@ async function titleSetup(ctx) {
 
 async function monitorSetup(ctx) {
   const publisher = observationPublisher(fixture.monitor), abort = new AbortController()
-  const record = { ready: true, version: ctx.app.version, connections: [], events: [], replies: {}, manual: [], errors: [], cleaned: false }
+  // CLI config activation can reload every plugin. Preserve actual observations
+  // and the consumed control boundary so reload cannot replay create/remove.
+  const [memory, update] = ctx.storage.memory("notification-monitor", { initial: { sequence: 0,
+    record: { ready: true, version: ctx.app.version, connections: [], connectionBirths: [], connectionDeletes: [], events: [], replies: {}, manual: [], errors: [], cleaned: false } } })
+  const record = JSON.parse(JSON.stringify(memory.record))
+  record.cleaned = false
   const location = { directory: fixture.project }
   const options = () => ({ location, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15000)]) })
   const save = () => {
     record.route = JSON.parse(JSON.stringify(ctx.ui.router.current()))
     record.mode = ctx.keymap.mode.current()
+    update(draft => { draft.record = JSON.parse(JSON.stringify(record)) })
     return publisher.publish(record)
   }
   const off = ctx.data.listen(({ details }) => {
     if (details.type === "server.connected") record.connections.push(JSON.parse(JSON.stringify(details)))
+    if (details.type === "session.created") record.connectionBirths.push(JSON.parse(JSON.stringify(details)))
+    if (details.type === "session.deleted") record.connectionDeletes.push(JSON.parse(JSON.stringify(details)))
     if (details.type.startsWith("permission.") || details.type.startsWith("form.")
-      || details.type.startsWith("session.execution.") || details.type.startsWith("session.step.")) {
+      || details.type.startsWith("session.execution.") || details.type.startsWith("session.step.")
+      || details.type.startsWith("shell.") || details.type.startsWith("persistent-pty.")) {
       record.events.push(JSON.parse(JSON.stringify(details)))
     }
     void save()
   })
-  let sequence = 0
   const loop = (async () => {
     while (!abort.signal.aborted) {
       const command = await readObservation(fixture.control, { optional: true })
-      if (command && command.sequence > sequence) {
-        sequence = command.sequence
+      if (command && command.sequence > memory.sequence) {
+        const sequence = command.sequence
+        update(draft => { draft.sequence = sequence })
         let value
-        if (command.type === "start") {
+        if (command.type === "connection-probe") {
+          // Its exact real event on the native data stream is a startup barrier,
+          // even when initial server.connected preceded this monitor's setup.
+          // No prompt, tool invocation or model call is created.
+          value = await ctx.client.session.create({ title: "Notification connection probe", location,
+            model: { providerID: "fixture", id: "fixture" } }, options())
+        } else if (command.type === "remove-probe") {
+          await ctx.client.session.remove({ sessionID: command.sessionID }, options())
+        } else if (command.type === "start") {
           value = await ctx.client.session.create({ title: "V2 notification fixture", location,
             model: { providerID: "fixture", id: "fixture" } }, options())
           await ctx.data.session.sync(value.id)
@@ -63,6 +80,23 @@ async function monitorSetup(ctx) {
           await ctx.client.session.prompt({ sessionID: value.id, text: command.text }, options())
         } else if (command.type === "prompt") {
           value = await ctx.client.session.prompt({ sessionID: command.sessionID, text: command.text }, options())
+        } else if (command.type === "background-work") {
+          const child = await ctx.client.session.create({ parentID: command.sessionID, title: "Background child",
+            location, model: { providerID: "fixture", id: "fixture" } }, options())
+          await ctx.client.session.prompt({ sessionID: child.id, text: "NOTIFICATIONS:background-child" }, options())
+          const shell = await ctx.client.shell.create({ location, command: "python3 background.py",
+            timeout: 0, metadata: { sessionID: child.id } }, options())
+          const terminal = await ctx.client.experimental.persistentPty.create({ sessionID: child.id,
+            command: "python3", args: ["background.py"], cwd: fixture.project, title: "Background terminal", env: {} }, options())
+          value = { child, shell: shell.data, terminal }
+        } else if (command.type === "background-state") {
+          value = { active: await ctx.client.session.active(options()),
+            shells: (await ctx.client.shell.list({ location }, options())).data,
+            terminals: await ctx.client.experimental.persistentPty.list({ sessionID: command.childID }, options()) }
+        } else if (command.type === "stop-background-shell") {
+          await ctx.client.shell.remove({ id: command.shellID, location }, options())
+        } else if (command.type === "stop-background-terminal") {
+          await ctx.client.experimental.persistentPty.remove({ ptyID: command.terminalID }, options())
         } else if (command.type === "snapshot") {
           value = { native: nativeSnapshot(ctx, command.sessionID),
             pending: await ctx.client.permission.list({ sessionID: command.sessionID }, options()),
@@ -92,6 +126,14 @@ async function monitorSetup(ctx) {
         } else if (command.type === "interrupt") {
           record.manual.push({ type: "interrupt", sessionID: command.sessionID })
           await ctx.client.session.interrupt({ sessionID: command.sessionID, continue: false }, options())
+        } else if (command.type === "mode-command") {
+          assert.ok(["reviewer.enable", "reviewer.disable"].includes(command.id))
+          const registered = ctx.keymap.commands().find(item => item.id === command.id)
+          assert.ok(registered, "Local conversation controls remain registered without review admission")
+          assert.equal(registered.palette, true)
+          assert.equal(registered.slash.name, command.id.replace(".", "-"))
+          value = { id: registered.id, title: registered.title, slash: registered.slash.name, palette: registered.palette }
+          ctx.keymap.dispatch(command.id)
         } else if (command.type === "plugins") {
           value = await ctx.client.plugin.list({ location }, options())
         } else throw Error("Unknown notification monitor control: " + command.type)
@@ -333,7 +375,8 @@ const limits = [
   "Only the exported desktop-backend seam is injected. No actual desktop processes, GNOME focus, audible playback, live-provider judgment or audio/desktop acceptance.",
   "One isolated standalone host/terminal and public client user controls. Manual once replies and form answers are explicit fixture actions, never reviewer automatic replies. No Always/reject or permission-rule mutation.",
   "Native question tool creates the production form. Pinned public SessionFormReplyInput uses session.form.reply with formID and an answer object; there is no guessed form.submit API.",
-  ...(scenario === "unavailable-review" ? ["The independent monitor observes the real initial server.connected event before public CLI configuration activates notification-only fallback. Reconnect still revokes an active generation; pre-connection plugin startup is not acceptance evidence from this case."] : []),
+  "Execution coverage uses a genuine child session and native session-owned shell/terminal processes created through public client controls. It proves family completion gating, not the interactive background-tool gesture or a live provider's decision to stop waiting.",
+  "An owned, prompt-free temporary session and its exact genuine birth and deletion on the native data stream establish connection before public CLI configuration activates notification behavior. Reconnect still revokes an active generation; these cases do not prove pre-connection startup acceptance. The separate lifecycle fixture checks startup.",
 ]
 
 try {
@@ -342,6 +385,7 @@ try {
   await mkdir(project); await mkdir(path.dirname(cliPath), { recursive: true })
   execFileSync("git", ["init", "--quiet", project], { env, timeout: 10000 })
   await writeFile(path.join(project, "fixture.py"), script)
+  if (scenario === "execution") await writeFile(path.join(project, "background.py"), "import time\ntime.sleep(120)\n")
   const output = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--offline", "--pack-destination", temp], {
     cwd: root, env: { ...env, npm_config_cache: path.join(temp, "npm-cache"), npm_config_ignore_scripts: "true" }, encoding: "utf8", timeout: 60000 }))
   const packed = Array.isArray(output) ? output : Object.values(output)
@@ -448,10 +492,11 @@ try {
     session: { permissions: "prompt" }, plugins: [{ package: reviewer,
       options: { ...options, ...(phase === "invalid" ? { fileIO: {} } : {}) } }, monitor] }
   await publish(setupControl, { phase })
-  // The unavailable-review check activates a fresh generation after the actual
-  // initial connection. A pre-connection runtime is correctly revoked by that
-  // event; this fixture does not claim pre-connection startup acceptance.
-  const startupCli = scenario === "unavailable-review" ? { ...cli, plugins: ["-opencode-reviewer", monitor] } : cli
+  // Behavioral checks activate a fresh generation after the actual
+  // initial connection. Native receipt of an exact real probe birth establishes
+  // the stream even if server.connected preceded monitor setup. A pre-connection
+  // runtime is correctly revoked; this does not prove startup acceptance.
+  const startupCli = { ...cli, plugins: ["-opencode-reviewer", monitor] }
   await publish(path.join(project, "opencode.json"), config); await publish(cliPath, startupCli)
   await publish(path.join(artifacts, "setup.json"), { version, scenario, archive, packed, installed, moduleURL, config, cli,
     startupCli, temp, environment: { HOME: env.HOME, XDG_STATE_HOME: env.XDG_STATE_HOME }, socket: runtime.socket, supervisorPID: runtime.supervisorPID, limits })
@@ -459,8 +504,18 @@ try {
     "env", "XDG_STATE_HOME=" + env.XDG_STATE_HOME, host, "--standalone", project)
   const ready = await until("independent observer", record => record?.ready && record)
   assert.equal(ready.version, version.slice("opencode v".length))
-  if (scenario === "unavailable-review") {
-    await until("actual initial connection before notification-only activation", record => record.connections?.length === 1)
+  {
+    const probe = await command({ type: "connection-probe" })
+    assert.ok(probe.id)
+    evidence.push({ requestedConnectionProbe: probe.id })
+    const birth = await until("actual native connection probe before notification-only activation", record =>
+      record.connectionBirths.find(event => event.data.sessionID === probe.id))
+    assert.equal(birth.data.location.directory, project)
+    assert.equal(birth.durable.aggregateID, probe.id)
+    await command({ type: "remove-probe", sessionID: probe.id })
+    const deletion = await until("actual native connection probe removal before activation", record =>
+      record.connectionDeletes.find(event => event.data.sessionID === probe.id))
+    evidence.push({ connectionProbe: { sessionID: probe.id, birth, deletion, removed: true, prompted: false } })
     await publish(cliPath, cli)
   }
   const productionReady = await until("actual production notification runtime", async () => {
@@ -576,9 +631,28 @@ try {
     await start("ended")
     await until("actual first active execution", record => events(record, "session.execution.started").length === 1)
     await quiet("active execution is not an ended notification", 0)
+    const background = await command({ type: "background-work", sessionID })
+    await until("actual background child provider transaction", () => mainRequests.get("background-child")?.[0])
+    const backgroundState = () => command({ type: "background-state", childID: background.child.id })
+    let running = await backgroundState()
+    assert.equal(running.active[background.child.id]?.type, "running")
+    assert.ok(running.shells.some(value => value.id === background.shell.id && value.status === "running"))
+    assert.ok(running.terminals.some(value => value.id === background.terminal.id && value.status === "running"))
     send(mainRequests.get("ended")[0], { role: "assistant", content: "Native ended fixture." })
     await until("actual successful terminal execution", record => events(record, "session.execution.succeeded").length === 1)
+    await quiet("root stopped while its child, shell and terminal are still running", 0, 2500)
+    send(mainRequests.get("background-child")[0], { role: "assistant", content: "Background child finished." })
+    await until("actual child completion", record => events(record, "session.execution.succeeded", background.child.id).length === 1)
+    await quiet("finished child does not conceal its running shell and terminal", 0, 2500)
+    await command({ type: "stop-background-shell", shellID: background.shell.id })
+    running = await backgroundState()
+    assert.ok(!running.shells.some(value => value.id === background.shell.id && value.status === "running"))
+    assert.ok(running.terminals.some(value => value.id === background.terminal.id && value.status === "running"))
+    await quiet("terminal alone still suppresses session finished", 0, 2500)
+    await command({ type: "stop-background-terminal", terminalID: background.terminal.id })
     assert.equal(shows(await awaitShows(1))[0].message.kind, "ended")
+    await quiet("all background work settled produces exactly one finished notification", 1)
+    evidence.push({ background, settled: await backgroundState(), scope: "Public child execution and native session-owned shell/terminal processes; no fabricated activity." })
     await command({ type: "prompt", sessionID, text: prompt("error") })
     const failure = await until("real error primary transaction and active execution", record => mainRequests.get("error")?.[0]
       && events(record, "session.execution.started").length === 2
@@ -604,10 +678,13 @@ try {
     const active = events(record, "session.execution.started"), steps = events(record, "session.step.started")
     assert.equal(active.length, 3)
     assert.equal(new Set(active.map(event => event.id)).size, 3, "Three distinct genuine execution births")
-    const executionEvents = record.events.filter(event => event.type.startsWith("session.execution."))
+    const executionEvents = record.events.filter(event => event.type.startsWith("session.execution.") && event.data.sessionID === sessionID)
     for (const event of executionEvents) assert.equal(event.durable.aggregateID, sessionID, "Terminal facts belong to the actual native root aggregate")
     assert.equal(executionEvents.length, 6, "Three execution births and three native terminal facts, not inferred model outcomes")
     assert.ok(executionEvents.every((event, index) => !index || event.durable.seq > executionEvents[index - 1].durable.seq))
+    const childEvents = record.events.filter(event => event.type.startsWith("session.execution.") && event.data.sessionID === background.child.id)
+    assert.deepEqual(childEvents.map(event => event.type), ["session.execution.started", "session.execution.succeeded"])
+    for (const event of childEvents) assert.equal(event.durable.aggregateID, background.child.id)
     // step.started belongs to received assistant output, not HTTP dispatch. A
     // held response or rejected HTTP request need not create an assistant step.
     // Native execution births and terminals, not invented step events, own these
@@ -647,6 +724,19 @@ try {
       await reminder(1, initial, "attention", request.id)
       assert.equal(reviewCalls().length, 0); assert.equal(await execution(), null)
       assert.doesNotMatch(capture(), /Permission analysis|Allowed in/)
+      const primaryBeforeModes = calls.filter(call => call.url === "/v1/chat/completions").length
+      const controls = []
+      for (const [id, expected] of [["reviewer.disable", "Reviewer disabled for this conversation."],
+        ["reviewer.enable", "Reviewer enabled for this conversation."]]) {
+        controls.push(await command({ type: "mode-command", id }))
+        await until("actual saved-mode toast without review " + targetPhase + "/" + id, () => capture().includes(expected))
+      }
+      await quiet("local fallback controls cannot dispatch reviews, primary requests or permission replies", 2, 1500, async record => {
+        assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, primaryBeforeModes)
+        assert.equal(reviewCalls().length, 0); assert.deepEqual(recordReplies(record), [])
+        assert.equal(await execution(), null)
+      })
+      evidence.push({ phase: targetPhase, localControls: controls, primaryCallsUnchanged: primaryBeforeModes })
       await saveCapture("notification-only-" + targetPhase)
       await interrupt()
       await until("actual interruption clears unavailable-review request", async () => (await snapshot()).pending.length === 0)
@@ -666,7 +756,7 @@ try {
   assert.equal(recordReplies(final).length, scenario === "manual-handoff" ? 2 : 0)
   assert.equal(reviewCalls().length, expectedReviews)
   assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length,
-    scenario === "execution" ? 3 : scenario === "unavailable-review" ? 2 : 2)
+    scenario === "execution" ? 4 : scenario === "unavailable-review" ? 2 : 2)
   await saveCapture("final")
   await publish(cliPath, { ...cli, plugins: ["-opencode-reviewer", "-fixture.notifications.monitor"] })
   const cleaned = await until("monitor owned transactions and final publication settle", record => record?.cleaned && record)

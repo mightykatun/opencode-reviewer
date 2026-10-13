@@ -115,7 +115,7 @@ export class SessionModes implements SessionModeGate {
   private values = new Map<string, boolean>()
   private changes = new Map<string, number>()
   private reads = new Map<string, ModeRead>()
-  constructor(private store: ModeStore, private ancestry: SessionAncestry) {}
+  constructor(private store: ModeStore, private ancestry: Pick<SessionAncestry, "root" | "deleted">) {}
   root(sessionID: string, signal: AbortSignal): AncestryRead { return this.ancestry.root(sessionID, signal) }
   async load(root: string, parent: AbortSignal) {
     parent.throwIfAborted()

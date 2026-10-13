@@ -12,6 +12,7 @@ interface Target { root: string; sessionID: string; title: string }
 interface Banner {
   abort: AbortController; handle?: NotificationHandle; target: Target; expire?: () => void
   root: string; attention: boolean; message: NotificationMessage; attempted?: () => void
+  current?: () => boolean
 }
 interface Pending {
   identity: NotificationInteraction
@@ -147,9 +148,9 @@ export class NotificationPolicy<R extends RequestIdentity = HostRequest> {
     if (!controls.banner && !sound) return
     return { kind, title, body: notificationText(target.title), sessionID: target.sessionID, banner: controls.banner, sound }
   }
-  private dispatch(message: NotificationMessage, target: Target, attempted?: () => void): Banner | undefined {
+  private dispatch(message: NotificationMessage, target: Target, attempted?: () => void, current?: () => boolean): Banner | undefined {
     if (this.stopped) return
-    const banner: Banner = { abort: new AbortController(), target, root: target.root, attention: actionable(message.kind), message, attempted }
+    const banner: Banner = { abort: new AbortController(), target, root: target.root, attention: actionable(message.kind), message, attempted, current }
     // Routine overflow is an explicit terminal drop. Actionable intents have one
     // current episode per tracked root, independent of the 64 active tickets.
     if (!this.queue.add(banner)) return
@@ -177,11 +178,13 @@ export class NotificationPolicy<R extends RequestIdentity = HostRequest> {
     const attempt = () => {
       if (attempted || this.stopped || banner.abort.signal.aborted) return
       attempted = true
+      banner.current = undefined // Delivered turns are never replayed or retracted by later activity.
       banner.expire = this.clock.after(120000, () => this.withdraw(banner))
       banner.attempted?.()
     }
     try {
       if (banner.abort.signal.aborted || this.stopped) { this.release(banner); return }
+      if (banner.current && !banner.current()) { this.withdraw(banner); return }
       const handle = await this.backend.show(banner.message, banner.abort.signal)
       banner.handle = handle
       if (banner.abort.signal.aborted || this.stopped) this.withdraw(banner)
@@ -219,6 +222,9 @@ export class NotificationPolicy<R extends RequestIdentity = HostRequest> {
   }
   snapshot(views: readonly View<R>[], blockers: ReadonlyMap<string, NotificationInteraction> = this.blockers, healthy = true) {
     if (this.stopped) return
+    // Completion may still be preparing audio or waiting for backend capacity.
+    // New activity must abort that work before its banner/sound is dispatched.
+    for (const banner of this.banners) if (banner.current && !banner.current()) this.withdraw(banner)
     // Queue identity and outcomes must change together. Otherwise handing off
     // the queue could briefly notify from an older completed/manual snapshot.
     this.views = new Map(views.map((view) => [view.request.id, view]))
@@ -251,8 +257,15 @@ export class NotificationPolicy<R extends RequestIdentity = HostRequest> {
     entries.delete(id)
     this.remember(`${kind}:${id}`)
   }
-  turn(kind: "error" | "ended", id: string, target: Target) {
-    if (this.remember(`turn:${target.root}:${id}`)) this.show(kind, uiText.notifications[kind], target)
+  turn(kind: "error" | "ended", id: string, target: Target, current?: () => boolean) {
+    const key = `turn:${target.root}:${id}`
+    if (!this.remember(key)) return
+    const message = this.message(kind, uiText.notifications[kind], target)
+    if (message) this.dispatch(message, target, undefined, current ? () => {
+      if (current()) return true
+      this.seen.delete(key) // Undispatched completion may be observed again once idle.
+      return false
+    } : undefined)
   }
   deleted(sessionID: string) {
     for (const banner of this.banners) if (banner.target.root === sessionID || banner.target.sessionID === sessionID

@@ -9,13 +9,15 @@ import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import { parseConfig } from "../src/config.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
 import type { NotificationBackend } from "../src/notification-types.js"
+import { SessionModeStore } from "../src/session-mode.js"
+import path from "node:path"
 
 const location = { directory: "/server/project" }
 const companion = { protocol: 1 as const, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location,
   project: { id: "project", directory: "/server", canonical: "/server" } }
 const pending = (id: string) => ({ id, sessionID: "root", action: "unknown", resources: ["scope"] })
 async function fixture(options: { notify?: boolean; formSync?: () => Promise<void>; sessionSync?: () => Promise<void>;
-  backend?: NotificationBackend } = {}) {
+  backend?: NotificationBackend; unavailable?: "configuration" | "companion" } = {}) {
   const life = new PluginLifecycle(), calls: string[] = [], ancestryReads: string[] = []
   const commands: { id: string; run: () => Promise<void> }[] = []
   const renderer = Object.assign(new EventEmitter(), { width: 140, height: 40, requestRender: () => calls.push("render") })
@@ -26,10 +28,11 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
   const ctx = {
     location,
     client: { rpc: () => ({ handshake: async () => ({ ...companion, epoch: state.epoch }) }),
-      session: { get: async ({ sessionID }: { sessionID: string }) => { ancestryReads.push(sessionID); return { id: sessionID, location } } },
+      session: { get: async ({ sessionID }: { sessionID: string }) => { ancestryReads.push(sessionID);
+        return { id: sessionID, location, ...(sessionID === "child" ? { parentID: "root" } : {}) } } },
       permission: { request: { list: () => state.list() } } },
     data: { listen: (callback: typeof listen) => { listen = callback; return () => calls.push("off") },
-      session: { get: (id: string) => ({ id, location }), family: () => ["root"],
+      session: { get: (id: string) => ({ id, location, ...(id === "child" ? { parentID: "root" } : {}) }), family: () => ["root"],
         sync: async (id: string) => { calls.push("session:" + id); await options.sessionSync?.() },
         permission: { invalidate: (id: string) => calls.push("invalidate:" + id), sync: async (id: string) => { calls.push("sync:" + id) },
            list: () => state.nativeRequests ?? state.requests }, form: { sync: async () => { calls.push("form"); await options.formSync?.() }, list: () => [] } } },
@@ -41,17 +44,39 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
   } as unknown as Plugin.Context
   // Saved modes need a nonreplaceable namespace, just like the history fixture.
   const root = await mkdtemp("/tmp/reviewer-runtime-source-")
-  const runtime = setupHostRuntime(ctx, { config: parseConfig({ baseURL: "http://localhost:40999", model: "unused", notify: options.notify ?? false }),
-    companion, stateRoot: root, prompts: BUILTIN_PROMPTS,
+  const runtime = setupHostRuntime(ctx, { ...(options.unavailable === "configuration" ? { configError: "Invalid configuration" }
+    : { config: parseConfig({ baseURL: "http://localhost:40999", model: "unused", notify: options.notify ?? false }) }),
+    ...(options.unavailable === "companion" ? {} : { companion }), stateRoot: root, prompts: BUILTIN_PROMPTS,
     dependencies: { notifications: () => options.backend ?? ({ show: async () => undefined, dispose: () => {} }) } }, life)!
   let sequence = 0
-  return { life, runtime, state, calls, ancestryReads, commands, renderer, event: (type: string, data: unknown) => {
+  return { life, runtime, state, calls, ancestryReads, commands, renderer, stateRoot: root, event: (type: string, data: unknown) => {
     sequence++
     listen({ details: { type, data, location, id: `event-${sequence}`, created: sequence,
       durable: { aggregateID: (data as { sessionID?: string }).sessionID, seq: sequence, version: 1 } } })
   } }
 }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+
+for (const unavailable of ["configuration", "companion"] as const) {
+  test(`local enable/disable commands stay registered without review ${unavailable} and persist the same conversation namespace`, async t => {
+    const f = await fixture({ unavailable }); t.after(() => f.life.stop())
+    assert.equal(f.runtime, undefined, "local preferences cannot create a review runtime")
+    const enable = f.commands.find(command => command.id === "reviewer.enable")!
+    const disable = f.commands.find(command => command.id === "reviewer.disable")!
+    assert.ok(enable); assert.ok(disable)
+    f.state.route = { type: "session", sessionID: "child" }
+    const store = new SessionModeStore(path.join(f.stateRoot, "session-mode-v2"), JSON.stringify(location))
+    await disable.run()
+    assert.equal(await store.read("root", f.life.signal), false)
+    await enable.run()
+    assert.equal(await store.read("root", f.life.signal), true)
+    assert.deepEqual(f.ancestryReads, ["child", "root"], "both commands share owned, scoped history ancestry")
+    assert.equal(f.calls.some(call => call.startsWith("sync:")), false, "local commands make no permission replies or model calls")
+    f.event("server.connected", {})
+    await disable.run()
+    assert.equal(await store.read("root", f.life.signal), true, "reconnect cannot reuse an old scoped generation")
+  })
+}
 
 test("review and history share bounded metadata ancestry without history loading saved review modes", async () => {
   const f = await fixture()

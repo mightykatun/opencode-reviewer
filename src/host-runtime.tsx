@@ -17,6 +17,7 @@ import { sameLocation } from "./companion-protocol.js"
 import { HostReviewPanel } from "./host-review-panel.js"
 import { setupHostHistory, setupHostHistoryOnly } from "./host-history-runtime.js"
 import { setupHostNotifications } from "./host-notifications.js"
+import { notificationWorkEvent } from "./host-background-work.js"
 import { setupHostSidebar } from "./host-sidebar.js"
 import { hostPricingLookup } from "./host-pricing.js"
 import type { PricingLookup } from "./usage.js"
@@ -31,7 +32,19 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   const config = state.config, companion = state.companion
   if (!config || !companion) {
     const standalone = setupHostHistoryOnly(ctx, state, life)
-    setupHostNotificationOnly(ctx, state, life, standalone.records)
+    const attention = setupHostNotificationOnly(ctx, state, life, standalone.records)
+    // Conversation preferences are local controls, not companion admission.
+    // Keep their native commands available without constructing or reviving a
+    // reviewer. History's scoped metadata reader owns ancestry settlement.
+    const modes = new SessionModes(new SessionModeStore(path.join(state.stateRoot, "session-mode-v2"),
+      JSON.stringify(standalone.records.location)), {
+      root: (id, signal) => standalone.records.history.root(id, signal),
+      deleted: id => standalone.records.invalidateSession(id),
+    })
+    setupHostModeCommands(ctx, modes, life.signal, {
+      active: standalone.active, onChanged: () => {}, onRefresh: () => attention?.refresh.refresh(),
+    })
+    life.addCleanup(() => modes.flush())
     return
   }
   const scope = { epoch: companion.epoch, location: companion.location }
@@ -222,7 +235,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     if (event.location && !sameLocation(event.location, scope.location)) return
     const interrupted = event.type === "session.step.failed" && event.data.error.type === "aborted"
     if (interrupted || event.type === "permission.asked" || event.type === "permission.replied"
-      || event.type === "session.deleted" || event.type.startsWith("session.execution.") || event.type.startsWith("form.")) {
+      || event.type === "session.deleted" || notificationWorkEvent(event) || event.type.startsWith("form.")) {
       // Withdraw deferred deliveries before publishing events against stale
       // native caches. Observer health remains separate from approval admission.
       permissionHealthy = false; formHealthy = false
@@ -257,7 +270,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     } else if (event.type === "session.step.failed" && event.data.error.type === "aborted") {
       try { records.history.interrupted({ sessionID: event.data.sessionID, assistantID: event.data.assistantMessageID }) } catch {}
       events++; void refresh.refresh(); void formRefresh?.refresh()
-    } else if (event.type.startsWith("session.execution.") || event.type.startsWith("form.")) {
+    } else if (notificationWorkEvent(event) || event.type.startsWith("form.")) {
       events++; void refresh.refresh(); void formRefresh?.refresh()
     }
   })

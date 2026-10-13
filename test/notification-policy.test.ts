@@ -64,6 +64,44 @@ test("front questions notify once, baseline and repeated asks stay silent, resol
   f.policy.dispose()
 })
 
+test("queued completion rechecks activity before backend dispatch and may retry only an undispatched turn", async () => {
+  const f = fixture()
+  let idle = true
+  f.policy.turn("ended", "turn", target, () => idle)
+  idle = false
+  await settle(); assert.equal(f.messages.length, 0)
+  idle = true
+  f.policy.turn("ended", "turn", target, () => idle)
+  await settle(); assert.equal(f.messages.length, 1)
+  f.policy.turn("ended", "turn", target, () => idle)
+  await settle(); assert.equal(f.messages.length, 1)
+  await f.policy.dispose()
+})
+
+test("new activity aborts completion still preparing in the backend without retracting an already delivered turn", async () => {
+  let idle = true, signal!: AbortSignal, release!: () => void, closed = 0
+  const policy = new NotificationPolicy(parseNotificationConfig(), false, {
+    async show(_message, parent) {
+      signal = parent
+      await new Promise<void>(resolve => { release = resolve })
+      return { close() { closed++ } }
+    }, dispose() {},
+  })
+  policy.turn("ended", "held", target, () => idle)
+  await settle()
+  idle = false; policy.snapshot([])
+  assert.equal(signal.aborted, true)
+  release(); await settle(); assert.ok(closed > 0)
+  await policy.dispose()
+
+  const f = fixture()
+  idle = true; f.policy.turn("ended", "delivered", target, () => idle)
+  await settle()
+  idle = false; f.policy.snapshot([])
+  assert.equal(f.closed.length, 0)
+  await f.policy.dispose()
+})
+
 test("queued questions wait for the front before their initial notification and full reminder interval", async () => {
   const f = fixture(false, true, true, { staleReminderSeconds: 10 })
   f.policy.pending(new Map([["root", { kind: "question", id: "first" }]]))

@@ -227,6 +227,8 @@ boundaries. A zero-second setting still approves without that grace.
 descendants. The setting is saved for resume. Both commands are also in the command
 palette. Disabling stops unapproved reviews and countdowns while native permission
 controls remain available. Already-approved fast-mode reports finish in the background.
+The commands remain available when review configuration or the companion is unavailable;
+they save the preference without starting reviews.
 
 At startup, the reviewer retries timed-out or not-yet-available companion handshakes
 for up to 10 seconds. If it remains unavailable, history and notifications still work;
@@ -350,7 +352,8 @@ terminal is focused:
   wait for the previous player to finish, so successive alerts do not overlap.
 - **Session error:** an unrecovered session/provider failure, not a review failure.
 - **Session ended:** a completed root-agent response, not a question/permission
-  pause or an explicit user interruption.
+  pause or an explicit user interruption. Waits until the conversation's subagents,
+  shells and terminals have finished, including work the main agent stopped waiting for.
 
 Permission attention, Unsafe and question notifications, including their reminders,
 apply only to the current native input blocker in each visited root conversation.

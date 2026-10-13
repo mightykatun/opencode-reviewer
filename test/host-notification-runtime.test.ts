@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { setImmediate as tick } from "node:timers/promises"
-import type { FormInfo, OpenCodeEvent, PermissionRequest, SessionInfo } from "@opencode/client"
+import type { FormInfo, OpenCodeEvent, PermissionRequest, SessionInfo, ShellInfo, PersistentPtyInfo } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { CliPluginState } from "../src/cli-plugin.js"
 import type { setupHostHistory } from "../src/host-history-runtime.js"
@@ -38,6 +38,7 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", i
   ])
   const permissions = new Map<string, PermissionRequest[] | undefined>([["root", initial]])
   const forms = new Map<string, FormInfo[] | undefined>()
+  const background = { active: new Set<string>(), shells: [] as ShellInfo[], terminals: [] as PersistentPtyInfo[] }
   const syncs: string[] = [], unexpected: string[] = []
   let listener: ((event: { details: OpenCodeEvent }) => void) | undefined
   let current = "root", serial = 0, backendDisposed = 0
@@ -48,13 +49,16 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", i
   }) as AncestryReader }
   const ctx = {
     location,
-    client: new Proxy({}, { get: (_target, key) => { unexpected.push(String(key)); throw Error("No client transport") } }),
+    client: { session: { active: async () => Object.fromEntries([...background.active].map(id => [id, { type: "running" }])) },
+      shell: { list: async () => ({ location, data: background.shells }) },
+      experimental: { persistentPty: { list: async ({ sessionID }: { sessionID: string }) => background.terminals.filter(value => value.sessionID === sessionID) } } },
     data: {
       location: { default: () => location },
       listen: (callback: NonNullable<typeof listener>) => { listener = callback; return () => { listener = undefined } },
       session: {
         list: () => [...sessions.values()], get: (id: string) => sessions.get(id),
         family: (root: string) => root === "root" ? ["deep", "child"] : [],
+        status: (id: string) => background.active.has(id) ? "running" : "idle",
         sync: async (id: string) => { syncs.push(`session:${id}`); await hooks.sync(id) },
         permission: {
           list: (id: string) => permissions.has(id) ? permissions.get(id) : [],
@@ -99,10 +103,32 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", i
     emit("form.replied", { id: value.id, sessionID: value.sessionID, answer: {} })
   }
   const flush = async () => { await tick(); await runtime.refresh.refresh(); await tick() }
-  return { life, runtime, state, ctx, sessions, permissions, forms, banners, signals, syncs, unexpected, hooks,
+  return { life, runtime, state, ctx, sessions, permissions, forms, background, banners, signals, syncs, unexpected, hooks,
     emit, ask, reply, formReply, flush, listening: () => !!listener, backendDisposed: () => backendDisposed,
     route: (id: string) => { current = id; runtime.visit(id) } }
 }
+
+test("notification-only fallback waits for background family work and handles location-scoped shell events", async t => {
+  const f = fixture(); t.after(() => f.life.stop())
+  await f.flush()
+  f.background.active.add("deep")
+  f.background.shells.push({ id: "background", status: "running", metadata: { sessionID: "deep" },
+    command: "fixture", cwd: location.directory, shell: "bash", file: "/unused", time: { started: 1 } })
+  f.background.terminals.push({ id: "terminal", sessionID: "child", status: "running" } as PersistentPtyInfo)
+  f.emit("session.execution.started", { sessionID: "root" })
+  f.emit("session.execution.succeeded", { sessionID: "root" })
+  await f.flush(); assert.equal(f.banners.length, 0)
+  f.background.active.clear()
+  f.emit("session.execution.succeeded", { sessionID: "deep" })
+  await f.flush(); assert.equal(f.banners.length, 0)
+  f.background.shells.length = 0
+  f.emit("shell.deleted", { id: "background" })
+  await f.flush(); assert.equal(f.banners.length, 0)
+  f.background.terminals.length = 0
+  f.emit("persistent-pty.removed", { sessionID: "child", ptyID: "terminal" })
+  await f.flush(); assert.deepEqual(f.banners.map(value => value.kind), ["ended"])
+  await f.flush(); assert.equal(f.banners.length, 1)
+})
 
 for (const unavailable of ["configuration", "companion"] as const) {
   test(`notification-only event births notify without review ${unavailable}; baselines stay silent`, async t => {

@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { setImmediate as settle } from "node:timers/promises"
-import type { FormInfo, OpenCodeEvent, PermissionRequest, SessionInfo } from "@opencode/client"
+import type { FormInfo, OpenCodeEvent, PermissionRequest, SessionInfo, ShellInfo, PersistentPtyInfo } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { CliPluginState } from "../src/cli-plugin.js"
 import type { HostRequest } from "../src/host-types.js"
@@ -16,6 +16,8 @@ import { BUILTIN_PROMPTS } from "../src/prompts.js"
 import type { PluginDependencies } from "../src/plugin-dependencies.js"
 
 const request = (id: string, sessionID = "root"): HostRequest => ({ id, sessionID, action: "shell", resources: ["pwd"] })
+const runningShell = (id: string, sessionID: string): ShellInfo => ({ id, status: "running", metadata: { sessionID },
+  command: "fixture", cwd: "/project", shell: "bash", file: "/unused", time: { started: 1 } })
 type WireForm = Extract<OpenCodeEvent, { type: "form.created" }>["data"]["form"]
 const form = (id: string, sessionID = "root"): WireForm => ({ id, sessionID, title: "Question", fields: [{ type: "string", key: "answer" }] })
 type EventOf<T extends OpenCodeEvent["type"]> = Extract<OpenCodeEvent, { type: T }>
@@ -28,6 +30,10 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
   ])
   const permissions = new Map<string, HostRequest[] | undefined>()
   const forms = new Map<string, FormInfo[] | undefined>()
+  const active = new Set<string>(), shells: ShellInfo[] = [], terminals: PersistentPtyInfo[] = []
+  const work = { active: async () => Object.fromEntries([...active].map(id => [id, { type: "running" }])),
+    shells: async () => ({ location: { directory: "/project" }, data: shells }),
+    terminals: async (id: string) => terminals.filter(value => value.sessionID === id) }
   const banners: NotificationMessage[] = [], signals: AbortSignal[] = [], navigated: string[] = []
   const opened: { sessionID: string; target: HistoryTarget }[] = []
   let family = ["child", "deep"], mode = "base", current = "root", now = 0, serial = 0
@@ -41,9 +47,12 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
   } }
   const context = {
     location: { directory: "/project" },
+    client: { session: { active: () => work.active() }, shell: { list: () => work.shells() },
+      experimental: { persistentPty: { list: ({ sessionID }: { sessionID: string }) => work.terminals(sessionID) } } },
     data: { session: {
       get: (id: string) => sessions.get(id) as SessionInfo | undefined,
       family: (root: string) => root === "root" ? family : [],
+      status: (id: string) => active.has(id) ? "running" : "idle",
       permission: { list: (id: string) => (permissions.has(id) ? permissions.get(id) : []) as PermissionRequest[] | undefined },
       form: { list: (id: string) => forms.has(id) ? forms.get(id) : [] },
     }, location: { default: () => ({ directory: "/project" }) } },
@@ -97,7 +106,7 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
     for (const timer of [...timers]) if (timer.at <= now && timers.delete(timer)) timer.callback()
     await settle()
   }
-  return { host, state, context, abort, banners, signals, sessions, permissions, forms, opened, navigated, timers,
+  return { host, state, context, abort, banners, signals, sessions, permissions, forms, active, shells, terminals, work, opened, navigated, timers,
     emit, ask, reply, formBirth, formReply, advance, clicked: () => clicked,
     mode: (value: string) => { mode = value }, route: (value: string) => { current = value; host.routeChanged() },
     family: (ids: string[]) => { family = ids }, native: (value?: string) => { override = true; nativeOverride = value },
@@ -357,6 +366,105 @@ test("terminal execution delivery waits for healthy public permission/form recon
   f.host.snapshot([], true); f.host.snapshot([], true); await settle()
   assert.deepEqual(f.banners.map(value => value.kind), ["ended"])
   await f.host.dispose()
+})
+
+test("finished notifications wait for all root-family agents, shells and persistent terminals", async t => {
+  for (const kind of ["agent", "shell", "terminal"] as const) {
+    const f = fixture(); t.after(() => f.host.dispose())
+    f.host.visit("root"); f.host.snapshot([], true)
+    // Already running before this root execution: event-only bookkeeping would miss it.
+    if (kind === "agent") f.active.add("deep")
+    if (kind === "shell") f.shells.push(runningShell("background", "deep"))
+    if (kind === "terminal") f.terminals.push({ id: "terminal", sessionID: "child", status: "running" } as PersistentPtyInfo)
+    f.emit("session.execution.started", { sessionID: "root" })
+    f.emit("session.execution.succeeded", { sessionID: "root" })
+    await settle(); await f.advance(5000)
+    f.host.snapshot([], true); await settle()
+    assert.equal(f.banners.length, 0, kind)
+    f.active.clear(); f.shells.length = 0; f.terminals.length = 0
+    f.host.snapshot([], true); await settle()
+    assert.deepEqual(f.banners.map(value => value.kind), ["ended"], kind)
+    f.host.snapshot([], true); await settle()
+    assert.equal(f.banners.length, 1, "completion is delivered only once")
+  }
+})
+
+test("server activity blocks completion even when the native status cache says idle; unrelated work does not", async t => {
+  const f = fixture(); t.after(() => f.host.dispose())
+  f.context.data.session.status = () => "idle"
+  f.active.add("deep")
+  f.active.add("other")
+  f.shells.push(runningShell("other-shell", "other"))
+  f.terminals.push({ id: "other-terminal", sessionID: "other", status: "running" } as PersistentPtyInfo)
+  f.host.visit("root"); f.host.snapshot([], true)
+  f.emit("session.execution.started", { sessionID: "root" })
+  f.emit("session.execution.succeeded", { sessionID: "root" })
+  await settle(); assert.equal(f.banners.length, 0)
+  f.active.delete("deep"); f.host.snapshot([], true); await settle()
+  assert.deepEqual(f.banners.map(value => value.kind), ["ended"])
+})
+
+test("unavailable background observations suppress only completion, not manual attention or errors", async t => {
+  for (const kind of ["active", "shells", "terminals"] as const) {
+    const f = fixture(); t.after(() => f.host.dispose())
+    f.work[kind] = async () => { throw Error("Background state unavailable") }
+    f.host.visit("root"); f.host.snapshot([], true)
+    f.emit("session.execution.started", { sessionID: "root" })
+    f.emit("session.execution.succeeded", { sessionID: "root" })
+    await settle(); assert.equal(f.banners.length, 0, kind)
+    const value = request("manual")
+    f.permissions.set("root", [value]); f.ask(value)
+    f.host.snapshot([{ request: value, status: "unavailable" }], true)
+    await settle(); assert.deepEqual(f.banners.map(value => value.kind), ["attention"])
+    f.emit("session.execution.started", { sessionID: "root" })
+    f.emit("session.execution.failed", { sessionID: "root", error: { type: "api", message: "failed" } })
+    f.reply(value); f.host.snapshot([], true); await settle()
+    assert.deepEqual(f.banners.map(value => value.kind), ["attention", "error"])
+  }
+})
+
+test("malformed activity, shell scope and terminal ownership cannot prove completion", async t => {
+  for (const change of ["active", "shell-scope", "shell-status", "terminal-owner", "terminal-status"] as const) {
+    const f = fixture(); t.after(() => f.host.dispose())
+    if (change === "active") f.work.active = async () => ({ deep: { type: "unknown" } })
+    if (change === "shell-scope") f.work.shells = async () => ({ location: { directory: "/elsewhere" }, data: [] })
+    if (change === "shell-status") f.shells.push({ ...runningShell("bad", "root"), status: "unknown" } as unknown as ShellInfo)
+    if (change === "terminal-owner") f.work.terminals = async () => [{ id: "bad", sessionID: "other", status: "exited" } as PersistentPtyInfo]
+    if (change === "terminal-status") f.terminals.push({ id: "bad", sessionID: "root", status: "unknown" } as unknown as PersistentPtyInfo)
+    f.host.visit("root"); f.host.snapshot([], true)
+    f.emit("session.execution.started", { sessionID: "root" })
+    f.emit("session.execution.succeeded", { sessionID: "root" })
+    await settle(); assert.equal(f.banners.length, 0, change)
+  }
+})
+
+test("completion checks retain physical ownership after timeout and fence activity, new turns and disposal", async t => {
+  for (const change of ["activity", "turn", "timeout", "dispose"] as const) {
+    const f = fixture(); t.after(() => f.host.dispose())
+    let release!: (value: PersistentPtyInfo[]) => void, calls = 0
+    f.work.terminals = () => { calls++; return new Promise(resolve => { release = resolve }) }
+    f.host.visit("root"); f.host.snapshot([], true)
+    f.emit("session.execution.started", { sessionID: "root" })
+    f.emit("session.execution.succeeded", { sessionID: "root" })
+    await settle(); assert.equal(calls, 1)
+    let disposed = false, disposal: Promise<void> | undefined
+    if (change === "activity") f.emit("session.shell.started", { sessionID: "deep", shell: { id: "new" } as ShellInfo })
+    if (change === "turn") f.emit("session.execution.started", { sessionID: "root" })
+    if (change === "timeout") {
+      await new Promise(resolve => setTimeout(resolve, 5100))
+      f.host.snapshot([], true); await settle()
+      assert.equal(calls, 1, "timeout does not release physical read ownership")
+    }
+    if (change === "dispose") {
+      disposal = f.host.dispose().then(() => { disposed = true })
+      await settle(); assert.equal(disposed, false)
+    }
+    // Only the first transaction is held; subsequent family reads settle normally.
+    f.work.terminals = async () => []
+    release([]); await settle()
+    assert.equal(f.banners.length, 0, change)
+    if (disposal) { await disposal; assert.equal(disposed, true) }
+  }
 })
 
 test("latest action lease waits for native keymap mode, clones targets and never blindly toggles sidebar", async () => {

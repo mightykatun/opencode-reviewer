@@ -88,7 +88,12 @@ All commands below use the installed five-file archive and production runtime.
 
 Notification fixtures isolate process I/O and inject the desktop backend. They do
 not prove actual audio playback, GNOME focus, live-provider judgment or provider
-latency. `npx tsx scripts/smoke-notification-desktop.ts --sounds` is an actual local
+latency. Behavioral review/notification fixtures activate through public CLI
+configuration after observing an owned prompt-free probe's exact native birth and
+deletion on the connected event stream. They do not prove pre-connection startup;
+the separate lifecycle fixture checks startup. Reconnect still revokes an active
+generation, including notification-only fallback.
+`npx tsx scripts/smoke-notification-desktop.ts --sounds` is an actual local
 playback check. Report exact fixture runs rather than full-matrix coverage.
 History fixtures use a new private state directory under sticky `/tmp` because
 `/tmp/opencode` can be group writable; never weaken SQLite ancestor checks or chmod
@@ -119,6 +124,9 @@ existing user directories.
   are single fixed outer mappings injected into the payload; the Linux/audio backend
   is bundled only there. The notification-process embedding factory is forwarded
   as a dependency and constructed only by that CLI backend, never by the server.
+  `bundled-history-worker.mjs` inspects AST/data to prove both actual worker
+  consumers and the fixed loader reference the same source. Its helper tests and
+  dependencies must remain in active release-policy validation's sparse checkout.
 - Preserve exactly five package files: `dist/tui.js`, `package.json`, `README.md`,
   `LICENSE`, `THIRD_PARTY_NOTICES.md`. `dist/` is generated and ignored. `npm pack`
   rebuilds via `prepack`; verified CI packing uses `--ignore-scripts`.

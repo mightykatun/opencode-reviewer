@@ -180,5 +180,5 @@ export function setupHostHistoryOnly(ctx: Plugin.Context, state: CliPluginState,
   // first. There are no review/accounting finalizers in this composition.
   life.addCleanup(() => records.settled())
   life.addCleanup(() => records.dispose())
-  return { records, routes, rootRoute, sidebar, geometry }
+  return { records, routes, rootRoute, sidebar, geometry, active: () => !disconnected && !life.signal.aborted }
 }

@@ -13,6 +13,7 @@ import { NotificationPolicy } from "./notification-policy.js"
 import { notificationClock, type NotificationClock, type NotificationClick, type NotificationClickLease,
   type NotificationInteraction } from "./notification-types.js"
 import { uiText } from "./ui-text.js"
+import { hostBackgroundIdle } from "./host-background-work.js"
 
 type Target = { root: string; sessionID: string; title: string }
 type Birth = { sessionID: string; received: number; target?: Target }
@@ -50,6 +51,8 @@ export class HostNotifications {
   private deletedSessions = new Set<string>()
   private dispatches = new Map<string, { request: HostRequest; target: Target; approval?: string; automatic: boolean }>()
   private executions = new Map<string, Execution>()
+  private completionReads = new Map<string, Promise<void>>()
+  private activityRevision = 0
   private views: readonly View<HostRequest>[] = []
   private healthy = false
   private clickOwner?: ClickOwner
@@ -203,6 +206,44 @@ export class HostNotifications {
     const queue = this.options.nativeQueue(root)
     return queue.state === "empty" && !this.formFront(queue.family)
   }
+  private finish(root: string, execution: Execution) {
+    if (execution.terminal === "error") {
+      execution.done = true
+      this.policy.turn("error", execution.id, this.target(root))
+      return
+    }
+    if (this.completionReads.has(root) || this.completionReads.size >= 2) return
+    const queue = this.options.nativeQueue(root)
+    if (queue.state !== "empty" || queue.family.some(id => this.context.data.session.status(id) !== "idle")) return
+    const family = [...queue.family], revision = this.activityRevision
+    let worker: Promise<boolean> | undefined
+    const read = withDeadline(AbortSignal.any([this.abort.signal, this.options.signal]), 5000, signal => {
+      worker = hostBackgroundIdle(this.context.client, this.location, family, signal)
+      return worker
+    }).then(idle => this.guard(() => {
+      if (!idle || revision !== this.activityRevision || this.executions.get(root) !== execution || execution.done
+        || !this.clearQueue(root)) return
+      const current = this.options.nativeQueue(root)
+      if (current.state !== "empty" || current.family.length !== family.length
+        || current.family.some((id, index) => id !== family[index] || this.context.data.session.status(id) !== "idle")) return
+      execution.done = true
+      this.policy.turn("ended", execution.id, this.target(root), () => {
+        try {
+          const queue = this.options.nativeQueue(root)
+          if (!this.stopped && revision === this.activityRevision && this.executions.get(root) === execution
+            && this.clearQueue(root) && queue.state === "empty" && queue.family.length === family.length
+            && queue.family.every((id, index) => id === family[index] && this.context.data.session.status(id) === "idle")) return true
+        } catch {}
+        execution.done = false
+        return false
+      })
+    })).catch(() => {}).then(async () => {
+      // A timeout bounds the caller, not the underlying public client transaction.
+      await worker?.catch(() => {})
+      if (this.completionReads.get(root) === read) this.completionReads.delete(root)
+    })
+    this.completionReads.set(root, read)
+  }
   private publish() {
     // Registration changes only maps, never publishes recursively. Healthy
     // publications retry unresolved visits using their original event boundary.
@@ -220,8 +261,7 @@ export class HostNotifications {
     for (const [root, execution] of this.executions) {
       try {
         if (!execution.done && execution.terminal && this.clearQueue(root)) {
-          execution.done = true
-          this.policy.turn(execution.terminal, execution.id, this.target(root))
+          this.finish(root, execution)
         }
       } catch {}
     }
@@ -229,7 +269,10 @@ export class HostNotifications {
   snapshot(views: readonly View<HostRequest>[], healthy?: boolean) {
     this.guard(() => {
       this.routeChanged()
-      if (healthy !== undefined) this.healthy = healthy
+      if (healthy !== undefined) {
+        if (!healthy) this.activityRevision++
+        this.healthy = healthy
+      }
       this.views = views.filter(view => !view.resolved && !view.retained)
       if (this.healthy) {
         const pending = new Set(this.views.map(view => view.request.id))
@@ -268,6 +311,7 @@ export class HostNotifications {
   }
   event(event: OpenCodeEvent) {
     this.guard(() => {
+      if (!event.type.startsWith("session.execution.")) this.activityRevision++
       if (event.type === "permission.asked" || event.type === "form.created") {
         const kind = event.type === "permission.asked" ? "permission" : "question"
         const value = event.type === "permission.asked" ? event.data : event.data.form
@@ -283,11 +327,15 @@ export class HostNotifications {
         const root = event.data.sessionID
         // Child failures may be recovered by the root. Never promote them.
         if (!this.roots.has(root) || conversationRoot(root, id => this.context.data.session.get(id)) !== root
-          || event.durable.aggregateID !== root) return
+          || event.durable.aggregateID !== root) { this.activityRevision++; this.publish(); return }
         const previous = this.executions.get(root)
         if (previous && event.durable.seq <= previous.seq) return
-        if (event.type === "session.execution.started") this.executions.set(root, { id: event.id, seq: event.durable.seq })
+        if (event.type === "session.execution.started") {
+          this.activityRevision++
+          this.executions.set(root, { id: event.id, seq: event.durable.seq })
+        }
         else if (previous && !previous.done && !previous.terminal) {
+          this.activityRevision++
           previous.seq = event.durable.seq
           if (event.type === "session.execution.interrupted" || (event.type === "session.execution.failed" && event.data.error.type === "aborted")) previous.done = true
           else previous.terminal = event.type === "session.execution.failed" ? "error" : "ended"
@@ -363,7 +411,8 @@ export class HostNotifications {
     this.options.signal.removeEventListener("abort", this.onAbort)
     this.roots.clear(); this.permissions.clear(); this.forms.clear(); this.dispatches.clear(); this.executions.clear()
     this.visits.clear(); this.ancestry.clear(); this.retryAt.clear(); this.closed.clear(); this.deletedSessions.clear(); this.views = []
-    this.disposal = Promise.allSettled([this.policy.dispose(), ...[...this.reads.values()].map(read => read.settled)]).then(() => {})
+    this.disposal = Promise.allSettled([this.policy.dispose(), ...this.completionReads.values(),
+      ...[...this.reads.values()].map(read => read.settled)]).then(() => {})
     return this.disposal
   }
 }

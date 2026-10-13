@@ -14,6 +14,7 @@ import { PendingRefresh } from "./pending-refresh.js"
 import { conversationRoot } from "./route-approval.js"
 import { TransportOwnership } from "./transport-ownership.js"
 import type { AncestryReader } from "./session-ancestry.js"
+import { notificationWorkEvent } from "./host-background-work.js"
 
 /** Native cache data supplies notification identity, not review provenance. */
 function request(value: PermissionRequest): HostRequest {
@@ -151,14 +152,14 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
     if (stopped || signal.aborted) return
     if (event.location && !sameLocation(event.location, location)) return
     if (event.type !== "permission.asked" && event.type !== "permission.replied" && event.type !== "session.deleted"
-      && !event.type.startsWith("form.") && !event.type.startsWith("session.execution.")) return
+      && !event.type.startsWith("form.") && !notificationWorkEvent(event)) return
     try {
       observeRoute()
       let id: string | undefined
       if (event.type === "form.created") id = event.data.form.sessionID
       else if ("sessionID" in event.data && typeof event.data.sessionID === "string") id = event.data.sessionID
-      else return
-      if (id !== "global") {
+      else if (!notificationWorkEvent(event) || !event.location) return
+      if (id && id !== "global") {
         const cached = ctx.data.session.get(id)
         if (cached && !session(id)) return
         if (!event.location && !session(id)) return
@@ -168,7 +169,7 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
       // Revoke stale native ownership before publishing births or terminal facts.
       revision++; publish(false)
       notifications.event(event)
-      if (event.type === "session.deleted") { remember(deleted, id); sessions.delete(id); visited.delete(id) }
+      if (event.type === "session.deleted") { remember(deleted, event.data.sessionID); sessions.delete(event.data.sessionID); visited.delete(event.data.sessionID) }
       void refresh.refresh()
     } catch { publish(false) }
   })

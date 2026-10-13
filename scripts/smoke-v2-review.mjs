@@ -57,7 +57,7 @@ async function monitorSetup(ctx) {
   const { CliRenderEvents } = await import("@opentui/core")
   const rpc = ctx.client.rpc(Rpc.define(rpcDefinition()))
   const publisher = observationPublisher(fixture.monitor), abort = new AbortController()
-  const record = { version: ctx.app.version, ready: true, errors: [], asked: [], replied: [], interrupted: [], replies: {}, cleaned: false }
+  const record = { version: ctx.app.version, ready: true, connectionBirths: [], connectionDeletes: [], errors: [], asked: [], replied: [], interrupted: [], replies: {}, cleaned: false }
   const unregisterDashboard = ctx.ui.router.register({ name: "fixture.dashboard", render: () => null })
   const location = { directory: fixture.initial }
   const options = () => ({ location, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15000)]) })
@@ -87,6 +87,8 @@ async function monitorSetup(ctx) {
   }
   ctx.renderer.on(CliRenderEvents.FRAME, frame)
   const off = ctx.data.listen(({ details }) => {
+    if (details.type === "session.created") record.connectionBirths.push(JSON.parse(JSON.stringify(details)))
+    if (details.type === "session.deleted") record.connectionDeletes.push(JSON.parse(JSON.stringify(details)))
     if (details.type === "permission.asked") record.asked.push(details.data)
     if (details.type === "permission.replied") record.replied.push(details.data)
     if (details.type === "session.step.failed" && details.data.error.type === "aborted") record.interrupted.push(details.data)
@@ -104,7 +106,12 @@ async function monitorSetup(ctx) {
           try { value.handshake = await rpc.handshake(location, options()) }
           catch (error) { value.failure = JSON.parse(JSON.stringify(error)) }
         }
-        else if (command.type === "start") {
+        else if (command.type === "connection-probe") {
+          value = await ctx.client.session.create({ title: "Review connection probe", location,
+            model: { providerID: "fixture", id: "fixture" } }, options())
+        } else if (command.type === "remove-probe") {
+          await ctx.client.session.remove({ sessionID: command.sessionID }, options())
+        } else if (command.type === "start") {
           value = await ctx.client.session.create({ title: "V2 production review fixture", location,
             model: { providerID: "fixture", id: "fixture" } }, options())
           ctx.ui.router.navigate({ type: "session", sessionID: value.id })
@@ -140,7 +147,9 @@ async function monitorSetup(ctx) {
              native: { root: ctx.data.session.root(command.sessionID), family: ctx.data.session.family(command.sessionID),
                session: ctx.data.session.get(command.sessionID), permissions: ctx.data.session.permission.list(command.sessionID),
                route: ctx.ui.router.current() } }
-         } else if (command.type === "prompt") {
+          } else if (command.type === "runtime-ready") {
+            value = { registered: ctx.keymap.commands().some(item => item.id === "reviewer.disable") }
+          } else if (command.type === "prompt") {
            value = await ctx.client.session.prompt({ sessionID: command.sessionID, text: command.text }, options())
          } else if (command.type === "message") value = await ctx.client.session.message.get({ sessionID: command.sessionID,
           messageID: command.messageID }, options())
@@ -266,6 +275,7 @@ async function observedReviewerSetup(ctx) {
     }
     facts.stateRoot = ready.state.stateRoot
     facts.scope = runtime.scope
+    facts.ready = !!ready.state.config && !!ready.state.companion
     const admit = runtime.store.admit.bind(runtime.store)
     runtime.store.admit = event => {
       const accepted = admit(event)
@@ -791,6 +801,7 @@ const releaseNativeCall = () => {
   }
 }
 const limits = [
+   "Behavioral review activates through public CLI configuration only after an owned prompt-free session's exact genuine birth and deletion are observed on the native data stream. This is not pre-connection startup acceptance; the separate lifecycle fixture checks startup. No runtime reconnect policy is overridden.",
      "One installed default archive with separate server companion and global CLI configuration. The independent monitor never imports production code or replies to permissions.",
   `One standalone Linux OpenCode V2 verification host, ${nativeCallCount} direct native ${editCase ? "write" : "shell"} call(s), ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal, disconnect or tab-switch acceptance.`,
   "Mouse capture is explicitly configured only by the isolated fixture, never forced by production. UI changes use real native commands/navigation, keyboard choices or actual tmux resize; no synthesized paint, modes, hits or geometry. Individual cases do not imply full UI-matrix acceptance.",
@@ -974,9 +985,10 @@ try {
        ...(directoryEditCase ? { reviewExternalDirectories: true } : {}),
        timeoutMs: 120000, notify: notificationCase, notifySound: false, staleReminderSeconds: 0,
        ...(notificationCase ? { notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } : {}) } }, monitor] }
-  await publish(path.join(project, "opencode.json"), config); await publish(cliPath, cli)
+  const startupCli = { ...cli, plugins: ["-opencode-reviewer", monitor] }
+  await publish(path.join(project, "opencode.json"), config); await publish(cliPath, startupCli)
   await publish(path.join(artifacts, "setup.json"), { version, scenario, temp, archive, packed, installed,
-    moduleURL: pathToFileURL(path.join(installed, "dist/tui.js")).href, config, cli, limits,
+    moduleURL: pathToFileURL(path.join(installed, "dist/tui.js")).href, config, cli, startupCli, limits,
     environment: { HOME: env.HOME, XDG_STATE_HOME: env.XDG_STATE_HOME }, stateRoot, historyFile,
     ...(defaultHomeCase ? { oldHistoryFile, hostStateMode: "0775" } : {}),
     socket: runtime.socket, supervisorPID: runtime.supervisorPID })
@@ -985,6 +997,21 @@ try {
     host, "--standalone", initial)
   const ready = await until("independent monitor", record => record?.ready && record)
   assert.equal(ready.version, version.slice("opencode v".length))
+  const probe = await command({ type: "connection-probe" })
+  assert.ok(probe.id)
+  const birth = await until("actual native connection probe birth before reviewer activation", record =>
+    record.connectionBirths.find(event => event.data.sessionID === probe.id))
+  assert.equal(birth.data.location.directory, initial)
+  assert.equal(birth.durable.aggregateID, probe.id)
+  await command({ type: "remove-probe", sessionID: probe.id })
+  const deletion = await until("actual native connection probe deletion before reviewer activation", record =>
+    record.connectionDeletes.find(event => event.data.sessionID === probe.id))
+  await publish(path.join(artifacts, "connection-probe.json"), { sessionID: probe.id, birth, deletion, prompted: false })
+  await publish(cliPath, cli)
+  await until("actual configured production CLI runtime", async () =>
+    (await command({ type: "runtime-ready" })).registered)
+  if (automatic) await until("actual production storage observer readiness", async () =>
+    (await readObservation(path.join(artifacts, "storage-observations.json"), { optional: true }))?.ready)
    const status = await until("active production companion", async () => {
      const value = await command({ type: "status" })
      return value.handshake && value.plugins.data.find(item => item.id === "opencode-reviewer")?.state.status === "active" && value
