@@ -239,6 +239,14 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     }
     if (disconnected) return
     if (event.location && !sameLocation(event.location, scope.location)) return
+    const interrupted = event.type === "session.step.failed" && event.data.error.type === "aborted"
+    if (interrupted || event.type === "permission.asked" || event.type === "permission.replied"
+      || event.type === "session.deleted" || event.type.startsWith("session.execution.") || event.type.startsWith("form.")) {
+      // Withdraw deferred deliveries before publishing events against stale
+      // native caches. Observer health remains separate from approval admission.
+      permissionHealthy = false; formHealthy = false
+      notificationSnapshot()
+    }
     const notificationSession = event.type === "form.created" ? event.data.form.sessionID
       : "sessionID" in event.data ? event.data.sessionID : undefined
     if (event.type === "session.deleted") notificationSessions.delete(event.data.sessionID)
@@ -252,6 +260,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     } else if (event.type === "permission.replied") {
       events++
       if (eventOwners.get(event.data.requestID) === event.data.sessionID) {
+        transport.resolved({ sessionID: event.data.sessionID, requestID: event.data.requestID, decision: event.data.reply })
         try { records.history.reply(event.data) } catch {}
         controller.permissionReplied({ sessionID: event.data.sessionID, requestID: event.data.requestID, decision: event.data.reply })
       }
@@ -267,6 +276,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       void refresh.refresh()
     } else if (event.type === "session.step.failed" && event.data.error.type === "aborted") {
       try { records.history.interrupted({ sessionID: event.data.sessionID, assistantID: event.data.assistantMessageID }) } catch {}
+      events++; void refresh.refresh(); void formRefresh?.refresh()
     } else if (event.type.startsWith("session.execution.") || event.type.startsWith("form.")) {
       events++; void refresh.refresh(); void formRefresh?.refresh()
     }

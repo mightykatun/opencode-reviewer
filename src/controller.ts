@@ -8,13 +8,14 @@ import { withDeadline } from "./reviewer.js"
 import { candidateEnabled, type ReviewOptions } from "./classification.js"
 import type { SessionModeGate } from "./session-mode.js"
 import { SCANNER_INTERVAL_MS } from "./appearance.js"
-import { remainingTime, reviewStage } from "./deadline.js"
+import { reviewStage } from "./deadline.js"
 import { uiText } from "./ui-text.js"
 import type { HistoryTarget } from "./history-records.js"
 import type { PresentationCheck } from "./review-presentation.js"
 import { conversationRoot, type ApprovalPresentation, type ApprovalPresentationState } from "./route-approval.js"
 import { ReviewAdmission, type ReviewEvaluation } from "./review-admission.js"
 import type { NativeApprovalTransport } from "./host-permissions.js"
+import { ApprovalTransaction } from "./approval-transaction.js"
 
 export type AutoApproval = { status: "countdown"; seconds: number } | { status: "checking" | "allowing" | "cancelled" | "failed" | "approved" }
 
@@ -83,12 +84,6 @@ export interface NativeApproval<R extends RequestIdentity> extends NativeApprova
   presentation?(check?: PresentationCheck): ApprovalPresentation
 }
 export interface NativePermissionReply { sessionID: string; requestID: string; decision: string }
-interface NativeConfirmation<R> {
-  request: R
-  reply?: string
-  resolve: (decision: string) => void
-  event: Promise<string>
-}
 
 export type ApprovalFact<R extends RequestIdentity = PermissionRequest> = { type: "dispatched" | "confirmed" | "settled"; request: R; automatic: boolean;
   approval?: string; review?: string; result?: "not-sent" | "uncertain" }
@@ -138,7 +133,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
   private manual = new Map<string, "cancelled" | "failed">()
   private workers = new Set<Promise<unknown>>()
   private admission = new ReviewAdmission(root => this.nativeFront(root))
-  private acknowledgements = new Map<AbortController, { request: R; root?: string }>()
+  private approvalTransactions = new Set<ApprovalTransaction<R>>()
   private approvalWorkers = new Set<Promise<unknown>>()
   private approvalRead?: Promise<R[]>
   private reconciliation = 0
@@ -146,7 +141,6 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
   private options: Options
   private approval?: Approval<R>
   private nativeApproval?: NativeApproval<R>
-  private nativeReplies = new Map<string, NativeConfirmation<R>>()
   private time: ApprovalClock
   private modes?: SessionModeGate
   private session?: ControllerOptions<R>["session"]
@@ -501,12 +495,9 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     entry.approvalPaintPending = false
     entry.view = { ...entry.view, autoApproval: { status: "checking" } }
     this.publish()
-    let dispatched = false
-    let confirmed = false
-    const approvalID = randomUUID()
-    const fact = (type: ApprovalFact<R>["type"]) => this.approvalFact({ type, request: entry.view.request, automatic,
-      approval: approvalID, review: entry.review,
-      ...(type === "settled" && !confirmed ? { result: dispatched ? "uncertain" as const : "not-sent" as const } : {}) })
+    const transaction = new ApprovalTransaction(entry.view.request, entry.root, entry.review, automatic, permissionResolved,
+      fact => this.approvalFact(fact))
+    this.approvalTransactions.add(transaction)
     try {
       await withDeadline(AbortSignal.any([entry.abort.signal, abort.signal]), 5000, async (signal) => {
         // Three sequential reads bound churn without accepting a stale snapshot
@@ -532,101 +523,46 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
             entry.view = { ...entry.view, autoApproval: { status: "allowing" } }
             this.publish()
           }
-          const remaining = remainingTime(signal)
-          const acknowledgement = new AbortController()
-          const abort = () => { if (!dispatched || signal.reason !== permissionResolved) acknowledgement.abort(signal.reason) }
-          signal.addEventListener("abort", abort, { once: true })
-          if (signal.aborted) abort()
-          const write = withDeadline(acknowledgement.signal, remaining, async (bounded) => {
-            reviewStage(signal, "Approval verification")
-            reviewStage(bounded, "Approval acknowledgement")
-            if (!this.approvalEligible(entry)) return
-            if (verifiedRevision !== this.version) return
-            if (!isDeepStrictEqual(verified, entry.view.request)) throw requestChanged
-            reviewStage(signal, "Approval verification")
-            reviewStage(bounded, "Approval acknowledgement")
-            // No observer, publication or await may separate this guard and once.
-            // Mark actual invocation first so synchronous native resolution inside
-            // the transport keeps the same bounded acknowledgement/fast response.
-            const dispatch = () => {
-              if (dispatched) return false
-              reviewStage(signal, "Approval verification")
-              reviewStage(bounded, "Approval acknowledgement")
+          const write = transaction.submit(signal, this.nativeApproval ? { native: this.nativeApproval } : { legacy: this.approval! }, {
+            guard: () => {
               if (!this.approvalEligible(entry) || verifiedRevision !== this.version) return false
               if (!isDeepStrictEqual(verified, entry.view.request)) throw requestChanged
+              return true
+            },
+            dispatch: () => {
               this.manual.set(id, "failed")
-              dispatched = true
               entry.approvalDispatched = true
               if (this.options.fastMode && automatic) {
                 entry.fastApproval = "pending"
                 entry.view = { ...entry.view, retained: true }
               }
-              this.acknowledgements.set(acknowledgement, { request: entry.view.request, root: entry.root })
-              return true
-            }
-            try {
-              if (this.nativeApproval) {
-                let confirmation: NativeConfirmation<R> | undefined
-                const result = await this.nativeApproval.once(entry.view.request, bounded, () => {
-                  if (!dispatch()) return false
-                  let resolve!: (decision: string) => void
-                  const event = new Promise<string>(done => {
-                    const abort = () => resolve("unavailable")
-                    resolve = decision => { bounded.removeEventListener("abort", abort); done(decision) }
-                    bounded.addEventListener("abort", abort, { once: true })
-                    if (bounded.aborted) abort()
-                  })
-                  confirmation = { request: entry.view.request, resolve, event }
-                  this.nativeReplies.set(id, confirmation)
-                  // No observer/publication between the admission and native call.
-                  queueMicrotask(() => {
-                    fact("dispatched")
-                    if (this.active(entry) && entry.view.autoApproval?.status === "checking") {
-                      entry.view = { ...entry.view, autoApproval: { status: "allowing" } }
-                      this.publish()
-                    }
-                  })
-                  return true
-                })
-                if (!dispatched) {
-                  if (this.active(entry) && !this.manual.has(id)) {
-                    entry.approvalRefresh = true
-                    entry.view = { ...entry.view, autoApproval: { status: "checking" } }
-                    this.publish()
-                  }
-                  return
-                }
-                if (result.status !== "submitted" || !confirmation) throw Error("Native approval acknowledgement uncertain")
-                // A matching event can arrive inside reply(), before its HTTP ack.
-                // Neither ack alone nor another client's once event confirms us.
-                if (await confirmation.event !== "once") throw Error("Native approval reply did not match once")
-              } else {
-                if (!dispatch()) return
-                let response: Promise<void>
-                try { response = this.approval!.once(entry.view.request, bounded) }
-                finally { fact("dispatched") } // Even a synchronous throw is an invoked, uncertain write.
-                await response
+            },
+            dispatched: () => {
+              if (this.nativeApproval && this.active(entry) && entry.view.autoApproval?.status === "checking") {
+                entry.view = { ...entry.view, autoApproval: { status: "allowing" } }
+                this.publish()
               }
-              if (!bounded.aborted) {
-                confirmed = true
-                if (entry.fastApproval && this.active(entry)) {
-                  entry.fastApproval = "confirmed"
-                  entry.view = { ...entry.view, resolved: true, autoApproval: { status: "approved" } }
-                }
-                fact("confirmed")
-                if (entry.fastApproval && this.active(entry)) { this.publish(); this.finishFast(entry) }
+            },
+            confirming: () => {
+              if (entry.fastApproval && this.active(entry)) {
+                entry.fastApproval = "confirmed"
+                entry.view = { ...entry.view, resolved: true, autoApproval: { status: "approved" } }
               }
-            } finally { if (dispatched) fact("settled") }
-          }).finally(() => {
-            if (this.nativeApproval && dispatched) this.nativeReplies.delete(id)
-            this.acknowledgements.delete(acknowledgement)
-            signal.removeEventListener("abort", abort)
-          })
+            },
+            confirmed: () => {
+              if (entry.fastApproval && this.active(entry)) { this.publish(); this.finishFast(entry) }
+            },
+          }).finally(() => { if (transaction.dispatched) this.approvalTransactions.delete(transaction) })
           this.approvalWorkers.add(write)
           void write.then(() => this.approvalWorkers.delete(write), () => this.approvalWorkers.delete(write))
           await write
           signal.throwIfAborted()
-          if (dispatched) { if (!this.nativeApproval) this.replied(id); return }
+          if (transaction.dispatched) { if (!this.nativeApproval) this.replied(id); return }
+          if (this.nativeApproval && transaction.state === "not-sent" && this.active(entry) && !this.manual.has(id)) {
+            entry.approvalRefresh = true
+            entry.view = { ...entry.view, autoApproval: { status: "checking" } }
+            this.publish()
+          }
           if (entry.approvalRefresh) return
           if (!this.approvalEligible(entry)) return
           entry.view = { ...entry.view, autoApproval: { status: "checking" } }
@@ -644,7 +580,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     } catch (error) {
       // A native reply may abort our in-flight HTTP response after accepting it.
       if (!this.active(entry) || entry.view.autoApproval?.status === "cancelled") return
-      if (!dispatched && error !== requestChanged && !this.manual.has(id)) {
+      if (!transaction.dispatched && error !== requestChanged && !this.manual.has(id)) {
         if (entry.approvalPaused) return
         entry.approvalRefresh = true
         entry.view = { ...entry.view, autoApproval: { status: "checking" } }
@@ -669,8 +605,9 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
         this.reconcile(pending, revision)
       } catch { /* Periodic read-only reconciliation remains active. */ }
     } finally {
-      if (!dispatched) {
-        fact("settled")
+      if (!transaction.dispatched) {
+        transaction.finish()
+        this.approvalTransactions.delete(transaction)
         if (entry.approvalPaused) await this.afterApprovalRead(entry, abort, () => {
           entry.approvalAbort = undefined
           entry.approvalPaused = false
@@ -800,7 +737,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
    * Session and request ownership must both match; events carry no client ID. */
   permissionReplied(event: NativePermissionReply) {
     if (this.stopped || !this.nativeApproval) return
-    const confirmation = this.nativeReplies.get(event.requestID)
+    const confirmation = [...this.approvalTransactions].find(transaction => transaction.dispatched && transaction.request.id === event.requestID)
     const entry = this.entries.get(event.requestID)
     if ((confirmation && confirmation.request.sessionID !== event.sessionID)
       || (entry && entry.view.request.sessionID !== event.sessionID)) return
@@ -810,10 +747,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
       this.version++
       return
     }
-    if (confirmation && confirmation.reply === undefined) {
-      confirmation.reply = event.decision
-      confirmation.resolve(event.decision)
-    }
+    confirmation?.resolved(event)
     this.replied(event.requestID)
   }
 
@@ -827,8 +761,8 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     if (this.stopped) return
     // A startup snapshot may contain requests for a session not yet tracked here.
     this.version++
-    for (const [abort, value] of this.acknowledgements)
-      if (value.request.sessionID === sessionID || value.root === sessionID) abort.abort()
+    for (const transaction of this.approvalTransactions)
+      if (transaction.request.sessionID === sessionID || transaction.root === sessionID) transaction.abort()
     for (const entry of this.entries.values()) if (entry.view.request.sessionID === sessionID || entry.root === sessionID) this.replied(entry.view.request.id, false)
   }
 
@@ -879,7 +813,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
 
   async dispose() {
     this.stopped = true
-    for (const abort of this.acknowledgements.keys()) abort.abort()
+    for (const transaction of this.approvalTransactions) transaction.abort()
     for (const entry of this.entries.values()) {
       this.lifecycleFact({ type: "removed", request: entry.view.request, reason: "disposed" })
       entry.cancelTimer?.(); this.clearProgress(entry); entry.abort.abort()
@@ -888,7 +822,7 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
     await Promise.allSettled([...this.workers])
     await this.admission.settled()
     await Promise.allSettled([...this.approvalWorkers])
-    this.nativeReplies.clear()
+    this.approvalTransactions.clear()
     this.manual.clear()
   }
 }

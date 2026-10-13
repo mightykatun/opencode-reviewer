@@ -6,16 +6,19 @@ import { setupHostRuntime } from "../src/host-runtime.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import { parseConfig } from "../src/config.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
+import type { NotificationBackend } from "../src/notification-types.js"
 
 const location = { directory: "/server/project" }
 const companion = { protocol: 1 as const, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location,
   project: { id: "project", directory: "/server", canonical: "/server" } }
 const pending = (id: string) => ({ id, sessionID: "root", action: "unknown", resources: ["scope"] })
-async function fixture(options: { notify?: boolean; formSync?: () => Promise<void>; sessionSync?: () => Promise<void> } = {}) {
+async function fixture(options: { notify?: boolean; formSync?: () => Promise<void>; sessionSync?: () => Promise<void>;
+  backend?: NotificationBackend } = {}) {
   const life = new PluginLifecycle(), calls: string[] = []
   const commands: { id: string; run: () => Promise<void> }[] = []
   let listen!: (event: any) => void
   const state = { requests: [pending("first")], epoch: companion.epoch, list: async () => ({ location, data: state.requests }),
+    nativeRequests: undefined as ReturnType<typeof pending>[] | undefined,
     route: { type: "home" } as { type: "home" } | { type: "session"; sessionID: string } }
   const ctx = {
     location,
@@ -26,7 +29,7 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
       session: { get: (id: string) => ({ id, location }), family: () => ["root"],
         sync: async (id: string) => { calls.push("session:" + id); await options.sessionSync?.() },
         permission: { invalidate: (id: string) => calls.push("invalidate:" + id), sync: async (id: string) => { calls.push("sync:" + id) },
-          list: () => state.requests }, form: { sync: async () => { calls.push("form"); await options.formSync?.() }, list: () => [] } } },
+           list: () => state.nativeRequests ?? state.requests }, form: { sync: async () => { calls.push("form"); await options.formSync?.() }, list: () => [] } } },
     keymap: { mode: { current: () => "base" }, layer: (factory: () => { commands: typeof commands }) => { commands.push(...factory().commands) } },
     renderer: { on: () => {}, off: () => {}, width: 140, height: 40 },
     ui: { slot: () => () => {}, router: { current: () => state.route }, toast: { show: () => {} } },
@@ -34,10 +37,55 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
   const root = await mkdtemp("/tmp/opencode/reviewer-runtime-source-")
   const runtime = setupHostRuntime(ctx, { config: parseConfig({ baseURL: "http://localhost:40999", model: "unused", notify: options.notify ?? false }),
     companion, stateRoot: root, prompts: BUILTIN_PROMPTS,
-    dependencies: { notifications: () => ({ show: async () => undefined, dispose: () => {} }) } }, life)!
-  return { life, runtime, state, calls, commands, event: (type: string, data: unknown) => listen({ details: { type, data } }) }
+    dependencies: { notifications: () => options.backend ?? ({ show: async () => undefined, dispose: () => {} }) } }, life)!
+  let sequence = 0
+  return { life, runtime, state, calls, commands, event: (type: string, data: unknown) => {
+    sequence++
+    listen({ details: { type, data, location, id: `event-${sequence}`, created: sequence,
+      durable: { aggregateID: (data as { sessionID?: string }).sessionID, seq: sequence, version: 1 } } })
+  } }
 }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+
+for (const invalidation of ["interruption", "permission churn"] as const) test(`scoped ${invalidation} revokes deferred notification delivery before held native reconciliation`, async () => {
+  let releasePreparation!: () => void, releaseSync!: () => void, started!: () => void
+  const preparation = new Promise<void>(resolve => { releasePreparation = resolve })
+  const synchronization = new Promise<void>(resolve => { releaseSync = resolve })
+  const deliveryStarted = new Promise<void>(resolve => { started = resolve })
+  let deliverySignal!: AbortSignal, dispatched = 0
+  const options = { notify: true, sessionSync: async () => {}, backend: {
+    async show(_message: unknown, signal: AbortSignal) {
+      deliverySignal = signal; started()
+      await preparation
+      signal.throwIfAborted()
+      dispatched++
+      return { close() {} }
+    }, dispose() { releasePreparation() },
+  } }
+  const f = await fixture(options)
+  try {
+    await tick(); await tick(); await tick()
+    f.state.route = { type: "session", sessionID: "root" }
+    f.runtime.notifications!.visit("root")
+    f.event("permission.asked", pending("first"))
+    await deliveryStarted
+    assert.equal(deliverySignal.aborted, false)
+    f.state.nativeRequests = [...f.state.requests]
+    f.state.requests = invalidation === "interruption" ? [] : [pending("second")]
+    options.sessionSync = () => synchronization
+    if (invalidation === "interruption") {
+      f.event("session.step.failed", { sessionID: "root", assistantMessageID: "assistant", error: { type: "aborted", message: "Stopped" } })
+    } else f.event("permission.asked", pending("second"))
+    assert.equal(deliverySignal.aborted, true, "stale queue ownership must be revoked synchronously, before cache synchronization")
+    releasePreparation(); await tick()
+    assert.equal(dispatched, 0, "deferred banner/audio preparation cannot dispatch from the old healthy snapshot")
+    f.state.requests = []
+    f.state.nativeRequests = []
+    if (invalidation === "permission churn") f.event("permission.replied", { sessionID: "root", requestID: "second", reply: "once" })
+    releaseSync(); await f.runtime.refresh.refresh(); await tick(); await tick()
+    assert.equal(dispatched, 0)
+  } finally { releasePreparation(); releaseSync(); await f.life.stop() }
+})
 test("production runtime keeps disabled requests as blockers and reconciles actual native caches before admission", async () => {
   const f = await fixture()
   try {

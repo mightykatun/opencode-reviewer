@@ -14,6 +14,10 @@ export interface NativeApprovalTransport<R> {
   once(request: R, signal: AbortSignal, dispatch: () => boolean): Promise<OnceSubmission>
 }
 export interface HostPermissionTransport extends NativeApprovalTransport<HostRequestSnapshot> {
+  /** Caller-admitted native resolution from this connected location/epoch only. */
+  resolved(event: { sessionID: string; requestID: string; decision: string }): void
+  /** Local source-test/embedding count, not configuration or UI diagnostics. */
+  readonly retainedReservations: number
   /** Complete location snapshot, not one session's native queue. */
   listScope(signal: AbortSignal): Promise<readonly HostRequestSnapshot[]>
   list(sessionID: string, signal: AbortSignal): Promise<readonly HostRequestSnapshot[]>
@@ -26,7 +30,15 @@ export interface HostPermissionTransport extends NativeApprovalTransport<HostReq
 export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): HostPermissionTransport {
   const scope = readHostScope(at)
   if (!scope) throw Error("Permission connection scope unavailable")
-  const writes = new Set<string>()
+  type Reservation = { dispatched: boolean; acknowledged: boolean; resolution?: string }
+  const reservations = new Map<string, Reservation>()
+  // Keep original snapshots spent without strongly retaining successful IDs.
+  // Other snapshots still need a fresh native get, which fails after resolution.
+  const dispatchedSnapshots = new WeakSet<HostRequestSnapshot>()
+  const identity = (sessionID: string, requestID: string) => JSON.stringify([sessionID, requestID])
+  const prune = (key: string, reservation: Reservation) => {
+    if (reservation.acknowledged && reservation.resolution === "once") reservations.delete(key)
+  }
   const owned = <T>(signal: AbortSignal, work: Promise<T>): Promise<T> => transportOwnership(signal)?.track(work) ?? work
   const options = (signal: AbortSignal) => ({ location: scope.location, signal })
   const session = async (sessionID: string, signal: AbortSignal) => {
@@ -49,6 +61,15 @@ export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): 
   }
   return {
     get,
+    get retainedReservations() { return reservations.size },
+    resolved(event) {
+      const key = identity(event.sessionID, event.requestID), reservation = reservations.get(key)
+      // Preparation and unrelated events cannot confirm our physical write.
+      if (!reservation?.dispatched) return
+      // A non-once outcome stays protected, even if another event follows it.
+      if (reservation.resolution === undefined || event.decision !== "once") reservation.resolution = event.decision
+      prune(key, reservation)
+    },
     async listScope(signal) {
       if (!await currentEpoch(signal)) throw Error("Pending permission scope unavailable")
       const raw = boundedHostJSON(await owned(signal, client.permission.request.list({ location: scope.location }, options(signal))))
@@ -81,13 +102,13 @@ export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): 
       return requests
     },
     async once(snapshot, signal, dispatch) {
-      const key = JSON.stringify([snapshot.request.sessionID, snapshot.request.id])
+      const key = identity(snapshot.request.sessionID, snapshot.request.id)
       const bound = snapshotRequest(hostRequestWire(snapshot), scope)
-      if (!bound || !sameRequest(bound, snapshot) || writes.has(key)) return { status: "unavailable" }
+      if (!bound || !sameRequest(bound, snapshot) || reservations.has(key) || dispatchedSnapshots.has(snapshot)) return { status: "unavailable" }
       // Reserve before awaited reads so concurrent contenders cannot race past
       // the fresh identity check. No retries after dispatch, even on rejection.
-      writes.add(key)
-      let dispatched = false
+      const reservation: Reservation = { dispatched: false, acknowledged: false }
+      reservations.set(key, reservation)
       try {
         signal.throwIfAborted()
         const current = await get(snapshot.request.sessionID, snapshot.request.id, signal)
@@ -97,14 +118,21 @@ export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): 
         // asynchronous may separate it from the fixed native reply call.
         const input = { sessionID: snapshot.request.sessionID, requestID: snapshot.request.id, decision: "once" as const }
         const requestOptions = options(signal)
+        // Allocate the weak receipt before final admission, not in the native
+        // callback-to-invocation gap. An unsent reservation removes it below.
+        dispatchedSnapshots.add(snapshot)
         if (!dispatch()) return { status: "unavailable" }
-        dispatched = true
+        reservation.dispatched = true
         await owned(signal, client.permission.reply(input, requestOptions))
+        // An ignored abort followed by a late physical ACK is still uncertain.
+        signal.throwIfAborted()
+        reservation.acknowledged = true
+        prune(key, reservation)
         return { status: "submitted" }
       } catch {
-        return { status: dispatched ? "uncertain" : "unavailable" }
+        return { status: reservation.dispatched ? "uncertain" : "unavailable" }
       } finally {
-        if (!dispatched) writes.delete(key)
+        if (!reservation.dispatched) { reservations.delete(key); dispatchedSnapshots.delete(snapshot) }
       }
     },
   }

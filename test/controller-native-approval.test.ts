@@ -172,6 +172,17 @@ for (const fast of [false, true]) {
     assert.equal(f.controller.views.length, 0)
   })
 
+  for (const first of ["once", "reject"]) test(`${mode}: first exact native resolution wins while local acknowledgement is held (${first})`, async t => {
+    const f = await fixture(fast, { acknowledgement: true }); t.after(() => f.dispose())
+    const attempt = f.start(); await settle()
+    f.reply(first); f.reply(first === "once" ? "reject" : "once"); await settle()
+    assert.deepEqual(f.facts.map(fact => fact.type), ["dispatched"])
+    f.acknowledgement.resolve({ status: "submitted" }); await attempt; await settle()
+    assert.equal(f.writes(), 1)
+    assert.equal(f.facts.filter(fact => fact.type === "confirmed").length, first === "once" ? 1 : 0)
+    assert.equal(f.facts.at(-1)?.result, first === "once" ? undefined : "uncertain")
+  })
+
   test(`${mode}: acknowledgement timeout cannot gain confirmation from a late successful ack/event`, async t => {
     t.mock.timers.enable({ apis: ["setTimeout"] })
     const f = await fixture(fast, { acknowledgement: true }); t.after(() => f.dispose())

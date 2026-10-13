@@ -5,22 +5,54 @@ import { hostPermissionTransport } from "../src/host-permissions.js"
 import { snapshotRequest } from "../src/host-request.js"
 
 const location = { directory: "/invocation", workspaceID: "workspace" }, scope = { location, epoch: "10000000-1000-4000-8000-100000000000" }
-const raw = () => ({ id: "request", sessionID: "session", action: "shell", resources: ["python3 fixture.py"], save: ["python3 *"] })
+const raw = (id = "request", sessionID = "session") => ({ id, sessionID, action: "shell", resources: ["python3 fixture.py"], save: ["python3 *"] })
 const signal = () => new AbortController().signal
+const key = (sessionID: string, requestID: string) => JSON.stringify([sessionID, requestID])
+const resolution = (request = raw(), decision = "once") => ({ sessionID: request.sessionID, requestID: request.id, decision })
+function gate() {
+  let release!: () => void
+  const promise = new Promise<void>(resolve => { release = resolve })
+  return { promise, release }
+}
 function fixture() {
-  const state = { epoch: scope.epoch, directory: location.directory, request: raw(), calls: [] as unknown[], reject: false }
+  const request = raw(), child = raw("child-request", "child")
+  const state = {
+    epoch: scope.epoch, directory: location.directory, request, calls: [] as unknown[], reject: false, reads: 0,
+    pending: new Map([request, child].map(item => [key(item.sessionID, item.id), item])),
+    replyGate: undefined as Promise<void> | undefined, getGate: undefined as Promise<void> | undefined,
+    onReply: undefined as (() => void) | undefined,
+  }
   const client = {
     rpc: () => ({ handshake: async () => ({ protocol: 1, hostVersion: "2.0.26", epoch: state.epoch, location,
       project: { id: "project", directory: "/project", canonical: "/canonical" } }) }),
     session: { get: async () => ({ id: "session", location: { directory: state.directory } }) },
     permission: {
-      request: { list: async () => ({ location: { directory: state.directory }, data: [state.request, { ...state.request, id: "child-request", sessionID: "child" }] }) },
-      get: async () => state.request,
-      list: async () => [state.request],
-      reply: async (input: unknown, options: unknown) => { state.calls.push({ input, options }); if (state.reject) throw Error("uncertain delivery") },
+      request: { list: async () => ({ location: { directory: state.directory }, data: [...state.pending.values()] }) },
+      get: async ({ sessionID, requestID }: { sessionID: string; requestID: string }) => {
+        state.reads++
+        if (state.getGate) await state.getGate
+        const request = state.pending.get(key(sessionID, requestID))
+        if (!request) throw Error("Permission not pending")
+        return state.request.id === requestID && state.request.sessionID === sessionID ? state.request : request
+      },
+      list: async ({ sessionID }: { sessionID: string }) => [...state.pending.values()].filter(item => item.sessionID === sessionID),
+      reply: async (input: { sessionID: string; requestID: string }, options: unknown) => {
+        state.calls.push({ input, options })
+        state.onReply?.()
+        if (state.replyGate) await state.replyGate
+        if (state.reject) throw Error("uncertain delivery")
+        state.pending.delete(key(input.sessionID, input.requestID))
+      },
     },
   }
-  return { state, transport: hostPermissionTransport(client as unknown as OpenCodeClient, scope) }
+  return {
+    state, transport: hostPermissionTransport(client as unknown as OpenCodeClient, scope),
+    add(request: ReturnType<typeof raw>) {
+      state.request = request
+      state.pending.set(key(request.sessionID, request.id), request)
+      return snapshotRequest(request, scope)!
+    },
+  }
 }
 
 test("permission transport retains exact ordered pending data and only submits once in invocation scope", async () => {
@@ -96,5 +128,131 @@ test("failed epoch/source checks and aborted preparation never invoke the dispat
     assert.equal((await f.transport.once(snapshot, controller.signal, () => { dispatched++; return true })).status, "unavailable")
     assert.equal(dispatched, 0)
     assert.deepEqual(f.state.calls, [])
+  }
+})
+
+test("successful physical replies and exact native once events prune many reservations in either order", async () => {
+  const f = fixture()
+  for (let index = 0; index < 200; index++) {
+    const request = raw(`request-${index}`), snapshot = f.add(request)
+    f.state.onReply = index % 2 ? () => f.transport.resolved(resolution(request)) : undefined
+    assert.equal((await f.transport.once(snapshot, signal(), () => true)).status, "submitted")
+    assert.equal(f.transport.retainedReservations, index % 2 ? 0 : 1)
+    f.transport.resolved(resolution(request))
+    assert.equal(f.transport.retainedReservations, 0)
+    assert.equal(f.state.pending.has(key(request.sessionID, request.id)), false)
+    await assert.rejects(f.transport.get(request.sessionID, request.id, signal()), /not pending/)
+    const reads = f.state.reads
+    assert.equal((await f.transport.once(snapshot, signal(), () => assert.fail("old snapshot retried"))).status, "unavailable")
+    assert.equal(f.state.reads, reads, "original dispatched snapshot is blocked before another host read")
+    const fresh = snapshotRequest(request, scope)!
+    assert.equal((await f.transport.once(fresh, signal(), () => assert.fail("resolved native ID retried"))).status, "unavailable")
+    assert.equal(f.transport.retainedReservations, 0)
+  }
+  assert.equal(f.state.calls.length, 200)
+})
+
+test("an admitted once event cannot release the reservation before physical reply settlement", async () => {
+  const f = fixture(), snapshot = snapshotRequest(raw(), scope)!, physical = gate(), invoked = gate()
+  f.state.replyGate = physical.promise
+  f.state.onReply = () => { f.transport.resolved(resolution()); invoked.release() }
+  const pending = f.transport.once(snapshot, signal(), () => true)
+  await invoked.promise
+  assert.equal(f.transport.retainedReservations, 1)
+  assert.equal(f.state.pending.has(key("session", "request")), true)
+  assert.equal((await f.transport.once(snapshotRequest(raw(), scope)!, signal(), () => assert.fail("parallel write"))).status, "unavailable")
+  physical.release()
+  assert.equal((await pending).status, "submitted")
+  assert.equal(f.transport.retainedReservations, 0)
+  assert.equal(f.state.calls.length, 1)
+})
+
+test("unknown identities and pre-dispatch events cannot release scoped reservations", async () => {
+  const f = fixture(), snapshot = snapshotRequest(raw(), scope)!, preparation = gate()
+  f.state.getGate = preparation.promise
+  f.transport.resolved(resolution())
+  const pending = f.transport.once(snapshot, signal(), () => {
+    // Even an event observed inside admission precedes actual native dispatch.
+    f.transport.resolved(resolution())
+    return true
+  })
+  assert.equal(f.transport.retainedReservations, 1, "reservation is synchronous before host preparation")
+  f.transport.resolved(resolution())
+  f.transport.resolved(resolution(raw("unknown")))
+  f.transport.resolved(resolution(raw("request", "other-session")))
+  assert.equal(f.transport.retainedReservations, 1)
+  preparation.release()
+  assert.equal((await pending).status, "submitted")
+  assert.equal(f.transport.retainedReservations, 1, "pre-dispatch events do not pair with the later ACK")
+  f.transport.resolved(resolution(raw("unknown")))
+  f.transport.resolved(resolution(raw("request", "other-session")))
+  assert.equal(f.transport.retainedReservations, 1)
+  f.transport.resolved(resolution())
+  assert.equal(f.transport.retainedReservations, 0)
+})
+
+test("an ACK alone remains reserved and disappearance is not native resolution proof", async () => {
+  const f = fixture(), snapshot = snapshotRequest(raw(), scope)!
+  assert.equal((await f.transport.once(snapshot, signal(), () => true)).status, "submitted")
+  assert.equal(f.transport.retainedReservations, 1)
+  assert.deepEqual(await f.transport.list("session", signal()), [])
+  await assert.rejects(f.transport.get("session", "request", signal()), /not pending/)
+  assert.equal(f.transport.retainedReservations, 1)
+  assert.equal((await f.transport.once(snapshotRequest(raw(), scope)!, signal(), () => assert.fail("ACK-only retry"))).status, "unavailable")
+  f.transport.resolved(resolution())
+  assert.equal(f.transport.retainedReservations, 0)
+})
+
+test("uncertain physical failures remain protected despite exact once resolution and later new requests", async () => {
+  const f = fixture(), snapshot = snapshotRequest(raw(), scope)!
+  f.state.reject = true
+  f.state.onReply = () => f.transport.resolved(resolution())
+  assert.equal((await f.transport.once(snapshot, signal(), () => true)).status, "uncertain")
+  assert.equal(f.transport.retainedReservations, 1, "event alone cannot confirm physical success")
+  f.state.reject = false
+  f.transport.resolved(resolution())
+  assert.equal((await f.transport.once(snapshotRequest(raw(), scope)!, signal(), () => assert.fail("uncertain retry"))).status, "unavailable")
+  const request = raw("new-request"), next = f.add(request)
+  f.state.onReply = () => f.transport.resolved(resolution(request))
+  assert.equal((await f.transport.once(next, signal(), () => true)).status, "submitted")
+  assert.equal(f.transport.retainedReservations, 1, "new success prunes only its own reservation")
+  assert.equal(f.state.calls.length, 2)
+})
+
+test("non-once native outcomes never release dispatched identities", async () => {
+  for (const decision of ["always", "reject", "unknown"]) {
+    for (const eventFirst of [false, true]) {
+      const f = fixture(), snapshot = snapshotRequest(raw(), scope)!
+      if (eventFirst) f.state.onReply = () => f.transport.resolved(resolution(raw(), decision))
+      assert.equal((await f.transport.once(snapshot, signal(), () => true)).status, "submitted")
+      if (!eventFirst) f.transport.resolved(resolution(raw(), decision))
+      f.transport.resolved(resolution())
+      assert.equal(f.transport.retainedReservations, 1)
+      assert.equal((await f.transport.once(snapshotRequest(raw(), scope)!, signal(), () => assert.fail("non-once retry"))).status, "unavailable")
+      assert.equal(f.state.calls.length, 1)
+    }
+  }
+})
+
+test("deadline abort followed by a late successful physical ACK remains uncertain in either event order", async () => {
+  for (const eventFirst of [false, true]) {
+    const f = fixture(), snapshot = snapshotRequest(raw(), scope)!, controller = new AbortController()
+    const physical = gate(), invoked = gate()
+    f.state.replyGate = physical.promise
+    f.state.onReply = () => {
+      if (eventFirst) f.transport.resolved(resolution())
+      invoked.release()
+    }
+    const pending = f.transport.once(snapshot, controller.signal, () => true)
+    await invoked.promise
+    controller.abort(Error("review deadline expired"))
+    assert.equal(f.transport.retainedReservations, 1)
+    physical.release()
+    assert.equal((await pending).status, "uncertain")
+    assert.equal(f.state.pending.has(key("session", "request")), false, "native reply did physically settle")
+    f.transport.resolved(resolution())
+    assert.equal(f.transport.retainedReservations, 1, "late ACK is not accepted as successful local settlement")
+    assert.equal((await f.transport.once(snapshotRequest(raw(), scope)!, signal(), () => assert.fail("late-ACK retry"))).status, "unavailable")
+    assert.equal(f.state.calls.length, 1)
   }
 })

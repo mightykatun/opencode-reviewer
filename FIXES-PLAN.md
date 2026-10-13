@@ -55,15 +55,15 @@ implementation and fixtures as migration inputs. Keep exactly five package files
 - [x] Reduce repeated normalization/canonicalization of validated immutable records.
 - [x] Add missing-preview, aggregate-boundary, exact-linkage and cancellation regressions.
 - [x] Verify focused tests, build and production invocation/evidence fixture.
-- [ ] Commit verified phase and record evidence.
+- [x] Commit verified phase and record evidence.
 
 ## Phase 5: notification coherence and approval transaction ownership
 
-- [ ] Reproduce or resolve stale notification health during scoped event invalidation.
-- [ ] Prune only safely resolved and physically settled approval reservations.
-- [ ] Extract explicit approval transaction ownership without changing dispatch invariants.
-- [ ] Add delayed-delivery, churn, successful cleanup and uncertain-retention tests.
-- [ ] Verify focused approval/notification tests, build and relevant V2 fixtures.
+- [x] Reproduce or resolve stale notification health during scoped event invalidation.
+- [x] Prune only safely resolved and physically settled approval reservations.
+- [x] Extract explicit approval transaction ownership without changing dispatch invariants.
+- [x] Add delayed-delivery, churn, successful cleanup and uncertain-retention tests.
+- [x] Verify focused approval/notification tests, build and relevant V2 fixtures.
 - [ ] Commit verified phase and record evidence.
 
 ## Phase 6: production coverage and fixture structure
@@ -175,3 +175,27 @@ databases remain untouched; their namespace cannot authorize migration reads.
   `.runtime/v2-invocation-gP7q5x`, `.runtime/v2-invocation-6TIYS7`; results:
   `.runtime/runtime-run-4MB8K5/results.json`,
   `.runtime/runtime-run-kxTYqA/results.json`.
+- Commit: `4f9c10d`, `fix: retain complete target coverage and bound RPC components independently`.
+
+### Phase 5 evidence
+
+- The stale-notification risk was reproduced: deferred delivery's signal remained
+  active immediately after a scoped interruption while native synchronization was
+  held (`.runtime/phase5-notification-red.log`, one expected failing regression).
+- Full runtime now withdraws stale observer health before publishing scoped queue,
+  execution, form and interruption events. Interruption refreshes native caches.
+  This health gate does not participate in approval admission.
+- ApprovalTransaction owns explicit preparation, dispatch, acknowledgement,
+  confirmation and uncertain/not-sent states. Controller retains presentation,
+  countdown, verification and recovery policy; transport-specific nesting and
+  parallel acknowledgement/native-reply maps were removed.
+- Successful transport reservations prune only after physical non-aborted ACK
+  plus caller-admitted exact once resolution. Original snapshots stay weakly spent;
+  uncertain/unresolved/non-once reservations remain protected. 200 success cycles
+  return retained reservations to zero.
+- Combined transaction/approval/transport/notification tests: 308 passed, 0 failed
+  (`.runtime/phase5-source-tests.log`). Typecheck and build passed.
+- Stock OpenCode 2.0.27 `normal`, `fast-notifications`, `normal-cancel`: passed.
+  Results: `.runtime/runtime-run-lQrC7f/results.json`,
+  `.runtime/runtime-run-NZ8iek/results.json`,
+  `.runtime/runtime-run-3IuBwy/results.json`.
