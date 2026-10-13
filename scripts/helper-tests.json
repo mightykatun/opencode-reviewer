@@ -11,6 +11,7 @@
   "test/runtime-inventory.test.mjs",
   "test/runtime-runner.test.mjs",
   "test/smoke-helpers.test.mjs",
+  "test/smoke-monitor.test.mjs",
   "test/smoke-desktop-playback.test.mjs",
   "test/smoke-measurements.test.mjs",
   "test/theme-syntax-adapter.test.mjs",

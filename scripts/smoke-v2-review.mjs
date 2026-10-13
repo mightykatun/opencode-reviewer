@@ -57,7 +57,11 @@ async function monitorSetup(ctx) {
   const { CliRenderEvents } = await import("@opentui/core")
   const rpc = ctx.client.rpc(Rpc.define(rpcDefinition()))
   const publisher = observationPublisher(fixture.monitor), abort = new AbortController()
-  const record = { version: ctx.app.version, ready: true, connectionBirths: [], connectionDeletes: [], errors: [], asked: [], replied: [], interrupted: [], replies: {}, cleaned: false }
+  // Keep real observations and consumed controls across public CLI hot reloads.
+  const [memory, update] = ctx.storage.memory("review-monitor", { initial: { sequence: 0,
+    record: { version: ctx.app.version, ready: true, connectionBirths: [], connectionDeletes: [], errors: [], asked: [], replied: [], interrupted: [], replies: {}, cleaned: false } } })
+  const record = JSON.parse(JSON.stringify(memory.record))
+  record.cleaned = false
   const unregisterDashboard = ctx.ui.router.register({ name: "fixture.dashboard", render: () => null })
   const location = { directory: fixture.initial }
   const options = () => ({ location, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15000)]) })
@@ -77,6 +81,7 @@ async function monitorSetup(ctx) {
     record.terminal = { width: ctx.renderer.width, height: ctx.renderer.height }
     const sidebar = ctx.keymap.commands().find(item => item.id === "session.sidebar.toggle")
     record.sidebarCommand = sidebar && { id: sidebar.id, title: sidebar.title }
+    update(draft => { draft.record = JSON.parse(JSON.stringify(record)) })
     return publisher.publish(record)
   }
   // Read genuine native frames only. Never request, suppress or synthesize paint.
@@ -94,12 +99,15 @@ async function monitorSetup(ctx) {
     if (details.type === "session.step.failed" && details.data.error.type === "aborted") record.interrupted.push(details.data)
     void save()
   })
-  let sequence = 0
   const loop = (async () => {
     while (!abort.signal.aborted) {
       const command = await readObservation(fixture.control, { optional: true })
-      if (command && command.sequence > sequence) {
-        sequence = command.sequence
+      abort.signal.throwIfAborted()
+      if (command && command.sequence > memory.sequence) {
+        const sequence = command.sequence
+        const readonly = ["status", "pending", "inspect", "message", "runtime-ready"].includes(command.type)
+          || (command.type === "keymap" && !command.dispatch)
+        if (!readonly) update(draft => { draft.sequence = sequence })
         let value
         if (command.type === "status") {
           value = { plugins: await ctx.client.plugin.list({ location }, options()) }
@@ -177,6 +185,7 @@ async function monitorSetup(ctx) {
          else if (command.type === "interrupt") await ctx.client.session.interrupt({ sessionID: command.sessionID, continue: false }, options())
         else throw Error("Unknown V2 review fixture control: " + command.type)
         record.replies[sequence] = { value: value ?? null }
+        update(draft => { draft.sequence = sequence })
          await save(); await publisher.flush()
        }
        // Observe native keyboard modal transitions as well as server events.

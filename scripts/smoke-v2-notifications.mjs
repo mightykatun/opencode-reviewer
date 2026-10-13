@@ -43,6 +43,7 @@ async function monitorSetup(ctx) {
   const save = () => {
     record.route = JSON.parse(JSON.stringify(ctx.ui.router.current()))
     record.mode = ctx.keymap.mode.current()
+    record.controlSequence = memory.sequence
     update(draft => { draft.record = JSON.parse(JSON.stringify(record)) })
     return publisher.publish(record)
   }
@@ -60,14 +61,15 @@ async function monitorSetup(ctx) {
   const loop = (async () => {
     while (!abort.signal.aborted) {
       const command = await readObservation(fixture.control, { optional: true })
+      abort.signal.throwIfAborted()
       if (command && command.sequence > memory.sequence) {
         const sequence = command.sequence
-        update(draft => { draft.sequence = sequence })
+        const readonly = ["plugins", "snapshot", "message", "form"].includes(command.type)
+        // A reloaded monitor can repeat an interrupted read, never a write.
+        if (!readonly) update(draft => { draft.sequence = sequence })
+        record.control = { sequence, type: command.type, state: "started" }
         let value
         if (command.type === "connection-probe") {
-          // Its exact real event on the native data stream is a startup barrier,
-          // even when initial server.connected preceded this monitor's setup.
-          // No prompt, tool invocation or model call is created.
           value = await ctx.client.session.create({ title: "Notification connection probe", location,
             model: { providerID: "fixture", id: "fixture" } }, options())
         } else if (command.type === "remove-probe") {
@@ -138,6 +140,8 @@ async function monitorSetup(ctx) {
           value = await ctx.client.plugin.list({ location }, options())
         } else throw Error("Unknown notification monitor control: " + command.type)
         record.replies[sequence] = { value: value ?? null }
+        update(draft => { draft.sequence = sequence })
+        record.control = { sequence, type: command.type, state: "settled" }
         await save(); await publisher.flush()
       }
       await save()
