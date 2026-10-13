@@ -3,12 +3,12 @@
 ## Execution checklist
 
 - [x] 1. Read the complete plan and identify completed work.
-- [ ] 2. Read the files required by each phase before editing them.
+- [x] 2. Read the files required by each phase before editing them.
 - [x] 3. Derive concrete ordered implementation tasks and success criteria.
-- [ ] 4. Implement phases sequentially and commit verified work.
-- [ ] 5. Run each phase's checks and resolve failures before proceeding.
-- [ ] 6. Update this plan as each item is verified.
-- [ ] 7. Record and escalate only unresolved mismatches.
+- [x] 4. Implement phases sequentially and commit verified work.
+- [x] 5. Run each phase's checks and resolve failures before proceeding.
+- [x] 6. Update this plan as each item is verified.
+- [x] 7. Record and escalate only unresolved mismatches.
 
 ## Scope and constraints
 
@@ -75,15 +75,15 @@ implementation and fixtures as migration inputs. Keep exactly five package files
 - [x] Add execution terminal distinctions and unavailable-review notification-only coverage.
 - [x] Register cases, preserve classifications and include active-policy helper dependencies.
 - [x] Verify helper inventory and run each new stock-V2 production case.
-- [ ] Commit verified phase and record evidence.
+- [x] Commit verified phase and record evidence.
 
 ## Phase 7: final verification
 
-- [ ] Run npm run check.
-- [ ] Run npm run check:package and built archive/provenance smoke tests.
-- [ ] Run the current V2 CI profile including registered new acceptance cases.
-- [ ] Review documentation, notices, plan evidence and git diff.
-- [ ] Commit the final verified plan and report exact acceptance limits.
+- [x] Run npm run check.
+- [x] Run npm run check:package and built archive/provenance smoke tests.
+- [x] Run the current V2 CI profile including registered new acceptance cases.
+- [x] Review documentation, notices, plan evidence and git diff.
+- [x] Commit the final verified plan and report exact acceptance limits.
 
 ## Evidence and dispositions
 
@@ -246,3 +246,36 @@ databases remain untouched; their namespace cannot authorize migration reads.
 - These additions exercise genuine native events/operations with real held
   responses and sustained negative windows. They do not prove native edit/patch
   variants, desktop/audio playback, multi-terminal races or live-provider judgment.
+- Commit: `fe8af6c`, `test: cover native write continuation and production notification lifecycles`.
+
+### Phase 7 evidence
+
+- `npm run check`: typecheck, 1,583 source tests, 129 helper tests and build passed;
+  zero failures/cancellations (`.runtime/final-check.log`).
+- `npm run check:package`: reproducible bundle SHA-256
+  `a5b2883107b9d3545b433b6b69e416bb55b7473a2454917efd24d4d55b4c9329`;
+  exactly five archive files, 1,554,907 unpacked bytes. An interrupted network-error
+  invocation was rerun to completion; no verification was bypassed.
+- Built archive/provenance/npm CLI checks: 10 passed, 0 failed. These are offline
+  boundary tests and dry runs, not package publication or real OIDC signing.
+- `node scripts/test-runtime.mjs --profile ci`: all 30 cases passed on stock
+  OpenCode 2.0.27, serially, in 11.39 minutes. Exact classification: 27 production
+  host cases and 3 synthetic host probes. Logs, invocations and results:
+  `.runtime/runtime-run-PpYgvL/results.json` and its adjacent numbered logs.
+  Every new acceptance case ran again against the final rebuilt archive.
+- README now documents keyboard-only history and cancellable native preparation;
+  storage behavior, theme notices, fixture inventory and active-policy sparse
+  dependencies match the implementation. `git diff --check e8c3cfa` passed.
+- All implementation and fixture changes are committed. No unresolved mismatch
+  remains. No publication, version bump, tag, push or live-install mutation was
+  performed; generated build and fixture artifacts remain ignored.
+
+### Exact acceptance limits
+
+This run verifies the current 30-case V2 selection on stock OpenCode 2.0.27 with
+Node 24.21.0 and npm 12.2.0. It does not verify the full historical V1 matrix, a
+local run of the 2.0.26 CI lane, native edit/patch variants beyond the write cases,
+all family/fullscreen/multi-terminal permutations, actual desktop/audio/focus,
+live-provider judgment or real package publication/provenance signing. Safely
+accessible existing storage remains in place; unsafe legacy namespaces stay
+untouched rather than being read, chmodded or guessed into a migration.
