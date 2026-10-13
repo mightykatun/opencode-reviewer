@@ -43,21 +43,21 @@ function fixture(sessions: SessionInfo[], pages: SessionMessagesResponse[]) {
 const page = (...data: SessionMessageInfo[]): SessionMessagesResponse => ({ data, cursor: { next: null, previous: null } })
 
 test("V2 root reads delivered projection in durable order, not timestamp or ID order", async () => {
-  const f = fixture([session()], [page(user("msg_a", "latest", 1), user("msg_z", "older", 999))])
+  const f = fixture([session()], [page(user("msg_a", "latest", 1))])
   const result = await loadHostConversationContext(scope, f.reader, signal())
   assert.equal(result.userPrompt, "latest")
   assert.equal(result.rootMessageID, "msg_a")
   assert.equal(result.delegation, undefined)
   assert.deepEqual(result.limitations, [])
   assert.deepEqual(f.gets, ["ses_root"])
-  assert.deepEqual(f.lists, [{ sessionID: "ses_root", limit: 100, order: "desc" }])
+  assert.deepEqual(f.lists, [{ sessionID: "ses_root", type: "user", limit: 1, order: "desc" }])
   assert.deepEqual(result.current, { id: "ses_root", projectID: "project", location: { directory: "/project" } })
 })
 
 for (const text of ["", "   "]) test(`latest empty/attachment user blocks older text: ${JSON.stringify(text)}`, async () => {
   const latest: SessionMessageInfo = { id: "latest", type: "user", text,
     files: [{ data: "", source: { type: "uri", uri: "file:///project/image.png" }, mime: "image/png" }], time: { created: 2 } }
-  const f = fixture([session()], [page(latest, user("older", "old ask"))])
+  const f = fixture([session()], [page(latest)])
   const result = await loadHostConversationContext(scope, f.reader, signal())
   assert.equal(result.userPrompt, null)
   assert.equal(result.rootMessageID, "latest")
@@ -65,19 +65,18 @@ for (const text of ["", "   "]) test(`latest empty/attachment user blocks older 
 })
 
 test("synthetic, system and skill instructions are never genuine user intent", async () => {
-  const f = fixture([session()], [page(
+  for (const message of [
     { id: "synthetic", type: "synthetic", text: "background", time: { created: 9 } },
     { id: "system", type: "system", text: "system", time: { created: 8 } },
     { id: "skill", type: "skill", text: "instructions", skill: "skill", name: "Skill", time: { created: 7 } },
-    user("genuine", "root intent"),
-  )])
-  const result = await loadHostConversationContext(scope, f.reader, signal())
-  assert.equal(result.rootMessageID, "genuine")
-  assert.equal(result.userPrompt, "root intent")
+  ] as SessionMessageInfo[]) {
+    const f = fixture([session()], [page(message)])
+    await assert.rejects(loadHostConversationContext(scope, f.reader, signal()), /message invalid/)
+  }
 })
 
 test("a delivered empty user message without attachments also blocks older intent", async () => {
-  const f = fixture([session()], [page(user("empty", ""), user("older", "old task"))])
+  const f = fixture([session()], [page(user("empty", ""))])
   const result = await loadHostConversationContext(scope, f.reader, signal())
   assert.equal(result.rootMessageID, "empty")
   assert.equal(result.userPrompt, null)
@@ -136,21 +135,21 @@ test("16 ancestry edges are accepted and a seventeenth is rejected", async () =>
   }
 })
 
-test("older pages use opaque next cursor with no order parameter", async () => {
-  const f = fixture([session()], [
-    { data: [{ id: "system", type: "system", text: "instructions", time: { created: 1 } }], cursor: { next: "older:opaque", previous: "newer" } },
-    page(user("root-request", "task")),
-  ])
+test("the latest filtered user does not traverse older users", async () => {
+  const f = fixture([session()], [{ data: [user("root-request", "task")], cursor: { next: "older:opaque" } }])
   assert.equal((await loadHostConversationContext(scope, f.reader, signal())).userPrompt, "task")
-  assert.deepEqual(f.lists[1], { sessionID: "ses_root", limit: 100, cursor: "older:opaque" })
+  assert.equal(f.lists.length, 1)
 })
 
-test("repeated cursors and the 20-page ceiling reject incomplete history", async () => {
-  const loop = fixture([session()], [{ data: [], cursor: { next: "again" } }, { data: [], cursor: { next: "again" } }])
-  await assert.rejects(loadHostConversationContext(scope, loop.reader, signal()), /repeated pagination cursor/)
-  const bounded = fixture([session()], Array.from({ length: 20 }, (_, i) => ({ data: [], cursor: { next: `cursor${i}` } })))
-  await assert.rejects(loadHostConversationContext(scope, bounded.reader, signal()), /20-page limit/)
-  assert.equal(bounded.lists.length, 20)
+test("malformed and unfiltered responses fail without falling back to older intent", async () => {
+  for (const response of [null, { data: [user("a", "latest"), user("b", "older")], cursor: {} },
+    { data: [], cursor: null }, { data: [], cursor: [] }, { data: [{}], cursor: {} },
+    { data: [{ id: "latest", type: "user" }], cursor: {} }]) {
+    const f = fixture([session()], [response as SessionMessagesResponse])
+    f.reader.message.list = async input => { f.lists.push(input); return response as SessionMessagesResponse }
+    await assert.rejects(loadHostConversationContext(scope, f.reader, signal()), /history response|message invalid/)
+    assert.equal(f.lists.length, 1)
+  }
 })
 
 test("exhausted delivered history reports absence", async () => {
@@ -163,7 +162,7 @@ test("exhausted delivered history reports absence", async () => {
 
 test("64 KiB UTF-8 prompt boundary preserves exact identity and omits whole oversized text", async () => {
   for (const text of ["x".repeat(65536), "é".repeat(32768), "é".repeat(32769), "x".repeat(65537)]) {
-    const f = fixture([session()], [page(user("latest", text), user("old", "older"))])
+    const f = fixture([session()], [page(user("latest", text))])
     const result = await loadHostConversationContext(scope, f.reader, signal())
     assert.equal(result.rootMessageID, "latest")
     if (Buffer.byteLength(text) <= 65536) assert.equal(result.userPrompt, text)

@@ -29,37 +29,21 @@ function sessionSnapshot(info: SessionInfo, expectedID: string): HostContextSess
 }
 
 async function latestDeliveredUser(reader: HostContextReader, sessionID: string, signal: AbortSignal): Promise<SessionMessageUser | undefined> {
-  let cursor: string | undefined
-  const seen = new Set<string>()
-  for (let page = 0; page < 20; page++) {
-    signal.throwIfAborted()
-    // 2.0.26 message.list is the delivered projection, not session.context or inbox.
-    // Its durable sequence order is preserved within/across pages, independently
-    // of message IDs and timestamps. With desc, cursor.next traverses older items.
-    const pending = reader.message.list({ sessionID, limit: 100,
-      ...(cursor === undefined ? { order: "desc" as const } : { cursor }) }, { signal })
-    transportOwnership(signal)?.track(pending)
-    const result = await pending
-    signal.throwIfAborted()
-    if (!result || !Array.isArray(result.data) || result.data.length > 100 || !result.cursor) {
-      throw new Error("Root-user history page unavailable or invalid")
-    }
-    const next = result.cursor.next
-    if (next !== undefined && next !== null && (typeof next !== "string" || !next || seen.has(next))) {
-      throw new Error("Root-user history traversal incomplete: invalid or repeated pagination cursor")
-    }
-    for (const message of result.data) {
-      if (!message || typeof message.id !== "string" || !message.id) throw new Error("Root-user history message invalid")
-      if (message.type !== "user") continue
-      if (typeof message.text !== "string") throw new Error("Root-user message text unavailable")
-      // An empty/attachment-only latest user message still blocks every older ask.
-      return message
-    }
-    if (next === undefined || next === null) return
-    seen.add(next)
-    cursor = next
-  }
-  throw new Error("Root-user history traversal incomplete: 20-page limit reached")
+  signal.throwIfAborted()
+  // The delivered projection filters before pagination and orders by durable
+  // sequence, not timestamps or IDs. Pending inbox inputs are not user intent.
+  const pending = reader.message.list({ sessionID, type: "user", order: "desc", limit: 1 }, { signal })
+  transportOwnership(signal)?.track(pending)
+  const result = await pending
+  signal.throwIfAborted()
+  if (!result || !Array.isArray(result.data) || result.data.length > 1 || !result.cursor
+    || typeof result.cursor !== "object" || Array.isArray(result.cursor)) throw new Error("Root-user history response unavailable or invalid")
+  const message = result.data[0]
+  if (message === undefined) return
+  if (!message || message.type !== "user" || typeof message.id !== "string" || !message.id
+    || typeof message.text !== "string") throw new Error("Root-user history message invalid")
+  // An empty/attachment-only latest user message still blocks every older ask.
+  return message
 }
 
 /** Read only public, session-scoped metadata and delivered root intent.
