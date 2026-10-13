@@ -7,7 +7,7 @@ import type { HistoryQuery } from "../src/history-records.js"
 import { opaque } from "../src/history-records.js"
 import { historyLayout, historyMetadata } from "../src/history-layout.js"
 import { uiText } from "../src/ui-text.js"
-import { SessionModes } from "../src/session-mode.js"
+import { SessionAncestry } from "../src/session-ancestry.js"
 import { HistoryCoordinator } from "../src/history-coordinator.js"
 
 const tick = async () => { for (let n = 0; n < 8; n++) await Promise.resolve() }
@@ -56,18 +56,17 @@ test("historical metadata order, fallback, usage independence and control saniti
 })
 test("real bounded ancestry is available without loading disabled or invalid mode records", async t => {
   let loads = 0
-  const modes = new SessionModes({ load: async () => { loads++; throw Error("invalid saved mode") } } as any,
-    async id => ({ id, ...(id === "child" ? { parentID: "root" } : {}) }) as any)
-  const f = fixture(t, (id, signal) => modes.root(id, signal))
+  const ancestry = new SessionAncestry(async id => ({ id, ...(id === "child" ? { parentID: "root" } : {}) }))
+  const f = fixture(t, (id, signal) => ancestry.root(id, signal))
   f.controller.open("child"); await tick()
   assert.equal(loads, 0); assert.equal((f.pending[0]!.query as any).root, "root")
 })
 for (const kind of ["missing", "cycle", "depth"] as const) test(`history rejects actual ${kind} ancestry without mode loads or guessed queries`, async t => {
-  const modes = new SessionModes({ load: async () => { throw Error("must not load") } } as any, async id => {
+  const ancestry = new SessionAncestry(async id => {
     if (kind === "missing") return undefined
     return { id, parentID: kind === "cycle" ? id : String(Number(id) + 1) } as any
   })
-  const f = fixture(t, (id, signal) => modes.root(id, signal))
+  const f = fixture(t, (id, signal) => ancestry.root(id, signal))
   f.controller.open("0"); await settle()
   assert.equal(f.controller.state.status, "error"); assert.equal(f.pending.length, 0)
 })
@@ -310,9 +309,8 @@ test("targeted history waits through maintenance and retains actual read cleanup
 
 test("production ancestry composition coalesces history reopen storms until the actual read settles", async t => {
   const pending: { id: string; resolve: (v: { id: string }) => void }[] = []
-  const modes = new SessionModes({ read: async () => { throw Error("must not load mode") }, write: async () => {}, flush: async () => {} },
-    id => new Promise(resolve => pending.push({ id, resolve })))
-  const h = new HistoryCoordinator("/project", { admit: () => true, query: async () => ({}), onCommit: () => () => {} }, (id, signal) => modes.root(id, signal))
+  const ancestry = new SessionAncestry(id => new Promise(resolve => pending.push({ id, resolve })))
+  const h = new HistoryCoordinator("/project", { admit: () => true, query: async () => ({}), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
     f.controller.open("old"); await settle()
@@ -334,10 +332,10 @@ for (const outcome of ["resolve", "reject"] as const) test(`production history d
   let release!: (v: { id: string }) => void, reject!: (e: Error) => void, cleanup!: () => void, calls = 0
   const actual = new Promise<{ id: string }>((yes, no) => { release = yes; reject = no })
   const cleaning = new Promise<void>(yes => { cleanup = yes })
-  const modes = new SessionModes({ read: async () => true, write: async () => {}, flush: async () => {} }, async () => {
+  const ancestry = new SessionAncestry(async () => {
     calls++; try { return await actual } finally { await cleaning }
   })
-  const h = new HistoryCoordinator("/project", { admit: () => true, query: async () => ({}), onCommit: () => () => {} }, (id, signal) => modes.root(id, signal))
+  const h = new HistoryCoordinator("/project", { admit: () => true, query: async () => ({}), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
     f.controller.open("old"); await settle(); t.mock.timers.tick(5000); await settle()

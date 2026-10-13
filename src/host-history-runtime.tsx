@@ -10,7 +10,8 @@ import { HistoryStore, type HistoryStoreOptions } from "./history-store.js"
 import { HistoryCoordinator, drainHistory } from "./history-coordinator.js"
 import { HistoryController, type HistoryViewState } from "./history-controller.js"
 import { StatisticsController, type StatisticsState } from "./statistics-controller.js"
-import { SessionModes, type AncestryReader } from "./session-mode.js"
+import { SessionAncestry, type AncestryReader } from "./session-ancestry.js"
+import { TransportOwnership } from "./transport-ownership.js"
 import { HostHistoryView, type HostHistoryInput } from "./host-history-view.js"
 import { setupHostStatistics } from "./host-statistics-view.js"
 import { uiText } from "./ui-text.js"
@@ -25,6 +26,8 @@ export interface HostHistoryRuntimeOptions {
   sidebarGeometry(): HostPanelBounds | undefined
   /** Explicit source-test/embedding transport seam, never plugin configuration. */
   storeOptions?: HistoryStoreOptions
+  /** Scope-pinned metadata only, shared with review but never saved-mode admission. */
+  ancestry?: SessionAncestry
 }
 
 /** Stable V2 indexing only. Neither this key nor the pathname proves server
@@ -46,16 +49,11 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
   const store = new HistoryStore(historyStateRoot(pluginState.stateRoot), options.storeOptions)
   const generation = new AbortController()
   const [connected, setConnected] = createSignal(true)
-  const reads = new Set<Promise<unknown>>()
-  const owned = <T,>(work: Promise<T>): Promise<T> => {
-    reads.add(work)
-    void work.then(() => reads.delete(work), () => reads.delete(work))
-    return work
-  }
+  const reads = new TransportOwnership()
+  const owned = <T,>(work: Promise<T>): Promise<T> => reads.track(work)
   // Reuse the bounded ancestry traversal and its physical-settlement ownership,
   // never its mode load gate. No session-mode files are read or written here.
-  const ancestry = new SessionModes({ read: async () => true, write: async () => {}, flush: async () => {} },
-    async (id, signal) => {
+  const ancestry = options.ancestry ?? new SessionAncestry(async (id, signal) => {
       signal.throwIfAborted()
       // Native session.get is session-addressed, with no location input. Validate
       // its public location afterward rather than inventing a request option.
@@ -127,9 +125,7 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
     statistics.dispose()
   }
   /** Actual ancestry completion, even when dispose's shared budget expires. */
-  const settled = async () => {
-    while (reads.size) await Promise.allSettled([...reads])
-  }
+  const settled = () => reads.settled()
   let disposal: Promise<void> | undefined
   const dispose = (finalizers: Promise<unknown> = Promise.resolve(), abortAt = performance.now()) => {
     if (disposal) return disposal

@@ -4,7 +4,8 @@ import { createEffect, createMemo, createSignal, Show, untrack } from "solid-js"
 import path from "node:path"
 import { Controller, visibleReview, type View } from "./controller.js"
 import { hostPermissionTransport } from "./host-permissions.js"
-import { hostQueueFront } from "./host-queue.js"
+import { hostQueueFront, hostQueueSnapshot, type HostQueueReader } from "./host-queue.js"
+import { refreshNativeFamily } from "./host-native-observations.js"
 import { evaluateHostReview } from "./host-evaluate.js"
 import { PendingRefresh } from "./pending-refresh.js"
 import { SessionModes, SessionModeStore } from "./session-mode.js"
@@ -22,6 +23,8 @@ import type { PricingLookup } from "./usage.js"
 import { setupHostNotificationOnly } from "./host-notification-runtime.js"
 import { hostApprovalReady, nativeDecisionPending } from "./host-approval-ready.js"
 import { setupHostModeCommands } from "./host-mode-commands.js"
+import { SessionAncestry } from "./session-ancestry.js"
+import { TransportOwnership } from "./transport-ownership.js"
 
 /** One scope-pinned controller. A replaced companion never adopts old evidence. */
 export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle) {
@@ -35,36 +38,28 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   const transport = hostPermissionTransport(ctx.client, scope)
   const snapshots = new Map<string, HostRequestSnapshot>()
   const eventOwners = new Map<string, string>()
-  const reads = new Set<Promise<unknown>>()
-  const owned = <T,>(work: Promise<T>) => {
-    reads.add(work)
-    void work.then(() => reads.delete(work), () => reads.delete(work))
-    return work
-  }
-  life.addCleanup(async () => { while (reads.size) await Promise.allSettled([...reads]) })
+  const reads = new TransportOwnership()
+  const owned = <T,>(work: Promise<T>) => reads.track(work)
+  life.addCleanup(() => reads.settled())
   const routes = new RouteSessions(id => ctx.data.session.get(id))
   const store = new SessionModeStore(path.join(state.stateRoot, "session-mode-v2"), JSON.stringify(scope.location))
-  const modes = new SessionModes(store, async (id, signal) => {
+  const ancestry = new SessionAncestry(async (id, signal) => {
     const options = { location: scope.location, signal }
     const session = await owned(ctx.client.session.get({ sessionID: id }, options))
+    signal.throwIfAborted()
     if (session.id !== id || session.location.directory !== scope.location.directory) return
     routes.remember(session)
     return session
   })
+  const modes = new SessionModes(store, ancestry)
   const [views, setViews] = createSignal<View<HostRequest>[]>([])
-  const front = (root: string) => hostQueueFront(root, {
+  const queueReader: HostQueueReader = {
     session: id => routes.get(id), family: id => ctx.data.session.family(id),
-    permissions: id => {
-      const raw = ctx.data.session.permission.list(id)
-      if (!raw || raw.length > 16384) return
-      // Native Solid caches are reactive objects, not wire evidence. Queue
-      // ownership needs only their public identities and array order. Mandatory
-      // operation data is independently verified from the scoped server snapshot.
-      const values = raw.map(value => ({ id: value.id, sessionID: value.sessionID }))
-      return values.every(value => typeof value.id === "string" && !!value.id && value.id.length <= 16384
-        && value.sessionID === id) && new Set(values.map(value => value.id)).size === values.length ? values : undefined
-    },
-  })?.id
+    // Shared queue observations read only public identities from reactive native
+    // caches. Mandatory operation data comes from the scoped server snapshot.
+    permissions: id => ctx.data.session.permission.list(id),
+  }
+  const front = (root: string) => hostQueueFront(root, queueReader)?.id
   const rootRoute = () => {
     const route = ctx.ui.router.current()
     if (route.type !== "session" || conversationRoot(route.sessionID, id => routes.get(id)) !== route.sessionID) return
@@ -72,11 +67,11 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   }
   const select = () => visibleReview(views(), rootRoute(), id => routes.get(id), root => front(root))
   const { sidebar, geometry } = setupHostSidebar(ctx, life, rootRoute)
-  const records = setupHostHistory(ctx, state, life, { rootRoute, sidebarOwner: sidebar, sidebarGeometry: geometry })
+  const records = setupHostHistory(ctx, state, life, { rootRoute, sidebarOwner: sidebar, sidebarGeometry: geometry, ancestry })
   let cancelReveal = () => {}
   life.addCleanup(() => cancelReveal())
   const notifications = setupHostNotifications(ctx, state, { signal: life.signal,
-    resolveRoot: (id, signal) => records.history.root(id, signal), nativeFront: front,
+    resolveRoot: (id, signal) => records.history.root(id, signal), nativeQueue: root => hostQueueSnapshot(root, queueReader),
     openHistory: (root, target, lease) => {
       cancelReveal()
       records.browser.close()
@@ -149,6 +144,12 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   const revision = () => controller.revision + events
   let permissionHealthy = false, formHealthy = false
   const notificationSessions = new Set<string>()
+  const familyReader = {
+    resolveRoot: (id: string, signal: AbortSignal) => records.history.root(id, signal),
+    session: (id: string) => routes.get(id),
+    family: (root: string) => ctx.data.session.family(root),
+    sync: (id: string) => ctx.data.session.sync(id), owned,
+  }
   const notificationSnapshot = () => notifications?.snapshot(controller.pendingViews, permissionHealthy && formHealthy)
   // Forms are optional observer evidence. Their failures must never hold up
   // permission admission or an otherwise eligible automatic reply.
@@ -159,18 +160,8 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     const route = ctx.ui.router.current()
     const sessions = new Set([...notificationSessions, ...controller.pendingViews.map(view => view.request.sessionID),
       ...(route.type === "session" ? [route.sessionID] : [])])
-    const ids = new Set<string>()
-    for (const id of sessions) {
-      signal.throwIfAborted()
-      const root = await records.history.root(id, signal)
-      signal.throwIfAborted()
-      ids.add(root)
-      for (const member of ctx.data.session.family(root)) ids.add(member)
-      if (ids.size > 16384) throw Error("Native notification family unavailable")
-    }
+    const ids = await refreshNativeFamily(sessions, familyReader, signal)
     for (const id of ids) {
-      signal.throwIfAborted()
-      await ctx.data.session.sync(id)
       signal.throwIfAborted()
       await ctx.data.session.form.sync(id)
     }
@@ -199,18 +190,9 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     signal.throwIfAborted()
     const all = await owned(transport.listScope(signal))
     // Public native caches must be refreshed as well as the server snapshot.
-    const ids = new Set([...all.map(value => value.request.sessionID), ...controller.pendingViews.map(value => value.request.sessionID)])
-    for (const id of [...ids]) {
-      signal.throwIfAborted()
-      const root = await modes.root(id, signal)
-      signal.throwIfAborted()
-      ids.add(root)
-      for (const member of ctx.data.session.family(root)) ids.add(member)
-      if (ids.size > 16384) throw Error("Native permission family unavailable")
-    }
+    const ids = await refreshNativeFamily(new Set([...all.map(value => value.request.sessionID),
+      ...controller.pendingViews.map(value => value.request.sessionID)]), familyReader, signal)
     for (const id of ids) {
-      signal.throwIfAborted()
-      await owned(ctx.data.session.sync(id))
       signal.throwIfAborted()
       ctx.data.session.permission.invalidate(id)
       await owned(ctx.data.session.permission.sync(id))
@@ -269,7 +251,6 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       events++
       if (!routes.get(event.data.sessionID)) return
       routes.deleted(event.data.sessionID)
-      modes.deleted(event.data.sessionID)
       records.invalidateSession(event.data.sessionID)
       controller.deleted(event.data.sessionID)
       void refresh.refresh()

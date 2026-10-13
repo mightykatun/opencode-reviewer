@@ -16,7 +16,7 @@ const companion = { protocol: 1 as const, hostVersion: "2.0.26", epoch: "1000000
 const pending = (id: string) => ({ id, sessionID: "root", action: "unknown", resources: ["scope"] })
 async function fixture(options: { notify?: boolean; formSync?: () => Promise<void>; sessionSync?: () => Promise<void>;
   backend?: NotificationBackend } = {}) {
-  const life = new PluginLifecycle(), calls: string[] = []
+  const life = new PluginLifecycle(), calls: string[] = [], ancestryReads: string[] = []
   const commands: { id: string; run: () => Promise<void> }[] = []
   const renderer = Object.assign(new EventEmitter(), { width: 140, height: 40, requestRender: () => calls.push("render") })
   let listen!: (event: any) => void
@@ -26,7 +26,7 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
   const ctx = {
     location,
     client: { rpc: () => ({ handshake: async () => ({ ...companion, epoch: state.epoch }) }),
-      session: { get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID, location }) },
+      session: { get: async ({ sessionID }: { sessionID: string }) => { ancestryReads.push(sessionID); return { id: sessionID, location } } },
       permission: { request: { list: () => state.list() } } },
     data: { listen: (callback: typeof listen) => { listen = callback; return () => calls.push("off") },
       session: { get: (id: string) => ({ id, location }), family: () => ["root"],
@@ -45,13 +45,31 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
     companion, stateRoot: root, prompts: BUILTIN_PROMPTS,
     dependencies: { notifications: () => options.backend ?? ({ show: async () => undefined, dispose: () => {} }) } }, life)!
   let sequence = 0
-  return { life, runtime, state, calls, commands, renderer, event: (type: string, data: unknown) => {
+  return { life, runtime, state, calls, ancestryReads, commands, renderer, event: (type: string, data: unknown) => {
     sequence++
     listen({ details: { type, data, location, id: `event-${sequence}`, created: sequence,
       durable: { aggregateID: (data as { sessionID?: string }).sessionID, seq: sequence, version: 1 } } })
   } }
 }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+
+test("review and history share bounded metadata ancestry without history loading saved review modes", async () => {
+  const f = await fixture()
+  try {
+    await tick(); await tick()
+    let loads = 0
+    f.runtime.modes.load = async () => { loads++; throw Error("History must not load saved mode") }
+    const signal = new AbortController().signal
+    assert.equal(await f.runtime.records.history.root("root", signal), "root")
+    assert.equal(await f.runtime.modes.root("root", signal), "root")
+    assert.deepEqual(f.ancestryReads, ["root"], "both consumers reuse the same verified metadata cache")
+    assert.equal(loads, 0)
+    assert.equal(f.runtime.modes.enabled("root"), false)
+    f.runtime.records.invalidateSession("root")
+    assert.equal(await f.runtime.modes.root("root", signal), "root")
+    assert.deepEqual(f.ancestryReads, ["root", "root"], "history invalidation also revokes review's ancestry cache")
+  } finally { await f.life.stop() }
+})
 
 test("a retained approval click reveals an absent sidebar only on a genuine root frame, without history lookup", async () => {
   const f = await fixture({ notify: true })

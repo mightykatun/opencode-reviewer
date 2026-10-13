@@ -6,9 +6,8 @@ import { empty } from "../src/lifetime.js"
 import type { HistoryRead } from "../src/history-store.js"
 import type { HistoryResult } from "../src/history-schema.js"
 import type { HistoryQuery } from "../src/history-records.js"
-import { SessionModes } from "../src/session-mode.js"
+import { SessionAncestry, type AncestryReader } from "../src/session-ancestry.js"
 import { HistoryCoordinator } from "../src/history-coordinator.js"
-import type { AncestryReader } from "../src/session-mode.js"
 
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: Error) => void
@@ -242,9 +241,8 @@ test("write failures and actual read cleanup guard scoped snapshots and recover 
 
 test("production ancestry composition retains physical ownership through statistics reopen storms", async t => {
   const pending: { id: string; resolve: (v: { id: string }) => void }[] = []
-  const modes = new SessionModes({ read: async () => { throw Error("must not load mode") }, write: async () => {}, flush: async () => {} },
-    id => new Promise(resolve => pending.push({ id, resolve })))
-  const h = new HistoryCoordinator("/host", { admit: () => true, query: async () => ({}), onCommit: () => () => {} }, (id, signal) => modes.root(id, signal))
+  const ancestry = new SessionAncestry(id => new Promise(resolve => pending.push({ id, resolve })))
+  const h = new HistoryCoordinator("/host", { admit: () => true, query: async () => ({}), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
     f.finish(0); await settle()
@@ -266,10 +264,10 @@ test("production ancestry composition retains physical ownership through statist
 for (const outcome of ["resolve", "reject"] as const) test(`production statistics deadline and disposal retain actual ancestry through late ${outcome}`, async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] })
   const actual = deferred<{ id: string }>(), cleanup = deferred<void>(); let calls = 0
-  const modes = new SessionModes({ read: async () => true, write: async () => {}, flush: async () => {} }, async () => {
+  const ancestry = new SessionAncestry(async () => {
     calls++; try { return await actual.promise } finally { await cleanup.promise }
   })
-  const h = new HistoryCoordinator("/host", { admit: () => true, query: async () => ({}), onCommit: () => () => {} }, (id, signal) => modes.root(id, signal))
+  const h = new HistoryCoordinator("/host", { admit: () => true, query: async () => ({}), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
     f.finish(0); await settle(); f.controller.open("old"); f.controller.select("conversation"); await settle()

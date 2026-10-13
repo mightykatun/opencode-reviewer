@@ -3,8 +3,9 @@ import type { Plugin } from "@opencode/plugin/tui"
 import type { CliPluginState } from "./cli-plugin.js"
 import type { ApprovalFact, View } from "./controller.js"
 import type { HostRequest } from "./host-types.js"
+import { hostPermissionIdentities, type HostQueueSnapshot } from "./host-queue.js"
 import type { HistoryTarget } from "./history-records.js"
-import type { AncestryRead, AncestryReader } from "./session-mode.js"
+import type { AncestryRead, AncestryReader } from "./session-ancestry.js"
 import { conversationRoot } from "./route-approval.js"
 import { withDeadline } from "./deadline.js"
 import { LinuxNotifications } from "./notification-linux.js"
@@ -21,7 +22,7 @@ type ClickOwner = { sessionID: string; history?: HistoryTarget; route?: string; 
 export interface HostNotificationOptions {
   resolveRoot: AncestryReader
   /** Actual public native ownership, including disabled/unsupported permissions. */
-  nativeFront(root: string): string | Pick<HostRequest, "id" | "sessionID"> | undefined
+  nativeQueue(root: string): HostQueueSnapshot
   signal: AbortSignal
   openHistory?(sessionID: string, target: HistoryTarget, lease: NotificationClickLease): void | Promise<void>
   clock?: NotificationClock
@@ -172,39 +173,21 @@ export class HostNotifications {
     else this.policy.question(id, birth.target, true)
   }
 
-  private family(root: string) {
-    const ids = [root, ...this.context.data.session.family(root).filter(id => id !== root)]
-    if (ids.length > 16384 || new Set(ids).size !== ids.length
-      || ids.some(id => conversationRoot(id, value => this.context.data.session.get(value)) !== root)) return
-    return ids
-  }
   private blocker(root: string): NotificationInteraction | undefined {
     if (!this.healthy) return
-    const ids = this.family(root)
-    if (!ids) return
-    const pending: Pick<HostRequest, "id" | "sessionID">[] = []
-    for (const id of ids) {
-      const permissions = this.context.data.session.permission.list(id)
-      if (!permissions || permissions.length > 16384 || permissions.some(value => !value.id || value.sessionID !== id)
-        || new Set(permissions.map(value => value.id)).size !== permissions.length) return
-      pending.push(...permissions)
-      if (pending.length > 16384) return
-    }
-    // An undefined callback is not proof of an empty queue. The independently
-    // readable public family must be empty before any form can take ownership.
-    const native = this.options.nativeFront(root)
-    const id = typeof native === "string" ? native : native?.id
-    if (pending.length || id) {
-      if (!id || !pending.some(value => value.id === id && (typeof native === "string" || value.sessionID === native?.sessionID))) return
-      return { kind: "permission", id }
-    }
+    const queue = this.options.nativeQueue(root)
+    if (queue.state === "unknown") return
+    if (queue.state === "front") return { kind: "permission", id: queue.request.id }
+    return this.formFront(queue.family)
+  }
+  private formFront(family: readonly string[]): NotificationInteraction | undefined {
     // Pinned stock V2: family forms in public root-first order, then global forms.
     // Global forms block delivery but have no proven conversation notification target.
-    for (const sessionID of [...ids, "global"]) {
+    for (const sessionID of [...family, "global"]) {
       const forms = this.context.data.session.form.list(sessionID, sessionID === "global" ? this.location : undefined)
-      if (!forms || forms.length > 16384 || forms.some(form => !form.id || form.sessionID !== sessionID)
-        || new Set(forms.map(form => form.id)).size !== forms.length) return
-      if (forms.length) return { kind: "question", id: forms[0]!.id }
+      const values = hostPermissionIdentities(sessionID, forms)
+      if (!values) throw Error("Native forms unavailable")
+      if (values.length) return { kind: "question", id: values[0]!.id }
     }
   }
   private blockers() {
@@ -215,12 +198,9 @@ export class HostNotifications {
     return blockers
   }
   private clearQueue(root: string) {
-    const ids = this.family(root)
-    if (!this.healthy || !ids) return false
-    if (this.options.nativeFront(root)) return false
-    return ids.every(id => this.context.data.session.permission.list(id)?.length === 0
-      && this.context.data.session.form.list(id)?.length === 0)
-      && this.context.data.session.form.list("global", this.location)?.length === 0
+    if (!this.healthy) return false
+    const queue = this.options.nativeQueue(root)
+    return queue.state === "empty" && !this.formFront(queue.family)
   }
   private publish() {
     // Registration changes only maps, never publishes recursively. Healthy

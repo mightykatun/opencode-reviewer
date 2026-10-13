@@ -5,6 +5,7 @@ import path from "node:path"
 import { tmpdir } from "node:os"
 import { setImmediate as settle } from "node:timers/promises"
 import { SessionModes, SessionModeStore, type ModeStore } from "../src/session-mode.js"
+import { SessionAncestry } from "../src/session-ancestry.js"
 
 const signal = () => new AbortController().signal
 function deferred<T>() {
@@ -31,7 +32,7 @@ function readFixture(t: import("node:test").TestContext) {
       try { await call.cleanup.promise }
       finally { actual--; perRoot.set(root, perRoot.get(root)! - 1) }
     }
-  } }, async (id) => ({ id }))
+  } }, new SessionAncestry(async (id) => ({ id })))
   const finish = (index: number, value = true) => { calls[index]!.value.resolve(value); calls[index]!.cleanup.resolve() }
   t.after(async () => {
     for (const call of calls) { call.value.resolve(false); call.cleanup.resolve() }
@@ -54,7 +55,7 @@ test("atomic mode records survive restart, serialize toggles and isolate host/ro
   assert.equal(await resumed.read("root", signal()), false)
   assert.equal(await resumed.read("other", signal()), true)
   assert.equal(await new SessionModeStore(directory, "/other-host").read("root", signal()), true)
-  const resumedModes = new SessionModes(resumed, async (id) => ({ id, ...(id === "child" ? { parentID: "root" } : {}) }))
+  const resumedModes = new SessionModes(resumed, new SessionAncestry(async (id) => ({ id, ...(id === "child" ? { parentID: "root" } : {}) })))
   const inherited = await resumedModes.root("child", signal())
   await resumedModes.load(inherited, signal())
   assert.equal(resumedModes.enabled(inherited), false, "a resumed descendant inherits persisted root mode")
@@ -112,7 +113,7 @@ test("replaceable mode ancestors fail closed even when a disabled record disappe
   await chmod(host, 0o777)
   await rename(directory, path.join(host, "displaced"))
   await mkdir(directory, { mode: 0o700 })
-  const resumed = new SessionModes(new SessionModeStore(directory, "host"), async id => ({ id }))
+  const resumed = new SessionModes(new SessionModeStore(directory, "host"), new SessionAncestry(async id => ({ id })))
   await assert.rejects(resumed.load("root", signal()), /Untrusted session mode ancestor/)
   assert.equal(resumed.enabled("root"), false)
   await assert.rejects(store.write("root", true), /Untrusted session mode ancestor/)
@@ -147,12 +148,12 @@ test("mode records reject writable permissions and hard links without repairing 
   assert.equal(await readFile(file, "utf8"), '{"version":1,"enabled":false}')
 })
 
-test("bounded ancestry resolves all descendants using only session metadata", async () => {
+test("injected ancestry resolves descendant modes and delegates deletion", async () => {
   const calls: string[] = []
-  const modes = new SessionModes(memory(), async (id) => {
+  const modes = new SessionModes(memory(), new SessionAncestry(async (id) => {
     calls.push(id)
     return { id, ...(id === "root" ? {} : { parentID: id === "grandchild" ? "child" : "root" }) }
-  })
+  }))
   assert.equal(await modes.root("grandchild", signal()), "root")
   assert.deepEqual(calls, ["grandchild", "child", "root"])
   assert.equal(modes.enabled("root"), false)
@@ -166,74 +167,9 @@ test("bounded ancestry resolves all descendants using only session metadata", as
   assert.equal(calls.length, 5)
 })
 
-for (const failure of ["missing", "mismatch", "cycle", "depth", "empty parent"] as const) {
-  test(`ancestry ${failure} remains closed`, async () => {
-    let calls = 0
-    const modes = new SessionModes(memory(), async (id) => {
-      calls++
-      if (failure === "missing") return undefined
-      if (failure === "mismatch") return { id: "wrong" }
-      return { id, parentID: failure === "cycle" ? "root" : failure === "empty parent" ? "" : `${id}-next` }
-    })
-    await assert.rejects(modes.root("root", signal()))
-    assert.ok(calls <= 17)
-    assert.equal(modes.enabled("root"), false)
-  })
-}
-
-for (const warm of [undefined, 0, 1, 8, 16]) test(`${warm === undefined ? "cold" : `depth-${warm} warm`} ancestry accepts 16 edges and rejects 17 without caching rejected prefixes`, async () => {
-  const calls: string[] = []
-  const modes = new SessionModes(memory(), async (id) => {
-    calls.push(id)
-    const depth = Number(id.slice(1))
-    return { id, ...(depth ? { parentID: `s${depth - 1}` } : {}) }
-  })
-  if (warm !== undefined) assert.equal(await modes.root(`s${warm}`, signal()), "s0")
-  calls.length = 0
-  await assert.rejects(modes.root("s17", signal()), /Session ancestry limit reached/)
-  assert.ok(calls.length <= 17)
-  calls.length = 0
-  assert.equal(await modes.root("s16", signal()), "s0")
-  assert.ok(calls.length <= 17)
-  calls.length = 0
-  assert.equal(await modes.root("s16", signal()), "s0")
-  assert.deepEqual(calls, [], "accepted prefixes retain their full cached distances")
-  await assert.rejects(modes.root("s17", signal()), /Session ancestry limit reached/)
-  assert.deepEqual(calls, ["s17"], "an over-depth request must not seed a shortcut")
-})
-
-test("incrementally warming descendants cannot extend the ancestry depth limit", async () => {
-  let calls = 0
-  const modes = new SessionModes(memory(), async (id) => {
-    calls++
-    const depth = Number(id.slice(1))
-    return { id, ...(depth ? { parentID: `s${depth - 1}` } : {}) }
-  })
-  for (let depth = 0; depth <= 16; depth++) {
-    assert.equal(await modes.root(`s${depth}`, signal()), "s0")
-    assert.equal(calls, depth + 1, "each new child uses one read and the validated cached suffix")
-  }
-  for (let i = 0; i < 2; i++) await assert.rejects(modes.root("s17", signal()), /Session ancestry limit reached/)
-  assert.equal(calls, 19)
-})
-
-test("ancestry cache stays bounded and deletion invalidates distance-aware records", async () => {
-  let calls = 0
-  const modes = new SessionModes(memory(), async (id) => { calls++; return { id } })
-  for (let i = 0; i <= 4096; i++) await modes.root(`root${i}`, signal())
-  const before = calls
-  await modes.root("root4096", signal())
-  assert.equal(calls, before)
-  await modes.root("root0", signal())
-  assert.equal(calls, before + 1, "exceeding the cap clears older cache entries")
-  modes.deleted("root4096")
-  await modes.root("root4096", signal())
-  assert.equal(calls, before + 2)
-})
-
 test("late initial store read cannot overwrite a local disabled switch", async () => {
   const read = deferred<boolean>()
-  const modes = new SessionModes({ ...memory(), read: () => read.promise }, async (id) => ({ id }))
+  const modes = new SessionModes({ ...memory(), read: () => read.promise }, new SessionAncestry(async (id) => ({ id })))
   const loading = modes.load("root", signal())
   await modes.set("root", false)
   read.resolve(true)
@@ -241,24 +177,43 @@ test("late initial store read cannot overwrite a local disabled switch", async (
   assert.equal(modes.enabled("root"), false)
 })
 
-test("store errors remain closed, and bounded metadata reads honor parent cancellation", async () => {
-  const modes = new SessionModes({ ...memory(), read: async () => { throw new Error("broken") } }, async () => new Promise(() => {}))
-  await assert.rejects(modes.load("root", signal()))
+test("mode root forwarding preserves shared ancestry settlement without reading saved modes", async () => {
+  const value = deferred<{ id: string }>(), cleanup = deferred<void>()
+  let loads = 0
+  const ancestry = new SessionAncestry(async () => {
+    try { return await value.promise } finally { await cleanup.promise }
+  })
+  const modes = new SessionModes({ ...memory(), read: async () => { loads++; return true } }, ancestry)
+  const owner = ancestry.root("root", signal())
+  const joiner = new AbortController()
+  const joined = modes.root("root", joiner.signal)
+  assert.ok(owner.settled)
+  assert.equal(joined.settled, owner.settled, "a synchronous forward retains actual ownership")
+  const canceled = assert.rejects(joined, { name: "AbortError" })
+  joiner.abort(); await canceled
+  let settled = false
+  void joined.settled!.then(() => { settled = true })
+  value.resolve({ id: "root" }); await settle()
+  assert.equal(settled, false)
+  cleanup.resolve(); assert.equal(await owner, "root"); await joined.settled
+  assert.equal(settled, true)
+  assert.equal(loads, 0)
   assert.equal(modes.enabled("root"), false)
-  const abort = new AbortController()
-  const lookup = modes.root("root", abort.signal)
-  abort.abort()
-  await assert.rejects(lookup)
 })
 
-test("noncooperative ancestry and mode reads expire within their five-second budgets", async (t) => {
+test("store errors remain closed", async () => {
+  const modes = new SessionModes({ ...memory(), read: async () => { throw new Error("broken") } }, new SessionAncestry(async (id) => ({ id })))
+  await assert.rejects(modes.load("root", signal()))
+  assert.equal(modes.enabled("root"), false)
+})
+
+test("noncooperative mode reads expire within their five-second budget", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] })
-  const modes = new SessionModes({ ...memory(), read: () => new Promise(() => {}) }, async () => new Promise(() => {}))
-  const lookup = assert.rejects(modes.root("root", signal()), /Session mode ancestry timed out/)
+  const modes = new SessionModes({ ...memory(), read: () => new Promise(() => {}) }, new SessionAncestry(async (id) => ({ id })))
   const loading = assert.rejects(modes.load("root", signal()), /Session mode loading timed out/)
   await Promise.resolve()
   t.mock.timers.tick(5000)
-  await Promise.all([lookup, loading])
+  await loading
   assert.equal(modes.enabled("root"), false)
 })
 
@@ -455,90 +410,11 @@ test("failed cleanup and synchronous store errors free read capacity for later r
     reads++
     if (!available) throw new Error("store unavailable")
     return Promise.resolve(false)
-  } }, async (id) => ({ id }))
+  } }, new SessionAncestry(async (id) => ({ id })))
   for (let i = 0; i < 20; i++) await assert.rejects(modes.load(`root${i}`, signal()), /store unavailable/)
   available = true
   await modes.load("root", signal())
   for (let i = 0; i < 20; i++) await modes.load("root", signal())
   assert.equal(reads, 21)
   assert.equal(modes.enabled("root"), false)
-})
-
-function ancestryFixture(t: import("node:test").TestContext) {
-  const calls: { id: string; signal: AbortSignal; value: ReturnType<typeof deferred<{ id: string; parentID?: string }>>;
-    cleanup: ReturnType<typeof deferred<void>> }[] = []
-  let active = 0, maximum = 0
-  const modes = new SessionModes(memory(), async (id, signal) => {
-    active++; maximum = Math.max(maximum, active)
-    const call = { id, signal, value: deferred<{ id: string; parentID?: string }>(), cleanup: deferred<void>() }
-    calls.push(call)
-    try { return await call.value.promise }
-    finally { try { await call.cleanup.promise } finally { active-- } }
-  })
-  const finish = (n: number) => { calls[n]!.value.resolve({ id: calls[n]!.id }); calls[n]!.cleanup.resolve() }
-  t.after(async () => {
-    calls.forEach((_, n) => finish(n)); await settle()
-    assert.equal(active, 0); assert.ok(maximum <= 2)
-  })
-  return { modes, calls, finish, active: () => active }
-}
-
-for (const outcome of ["resolve", "reject"] as const) test(`ancestry deadlines retain two actual reads through late ${outcome} and cleanup without caching`, async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
-  const f = ancestryFixture(t)
-  const a = f.modes.root("a", signal()), b = f.modes.root("b", signal())
-  const expired = Promise.all([assert.rejects(a, /timed out/), assert.rejects(b, /timed out/)])
-  let settled = false; void a.settled!.then(() => { settled = true })
-  await settle(); t.mock.timers.tick(5000); await expired
-  for (let n = 0; n < 25; n++) {
-    await assert.rejects(f.modes.root("a", signal()), /timed out/)
-    await assert.rejects(f.modes.root(`other-${n}`, signal()), /capacity/)
-    t.mock.timers.tick(5000)
-  }
-  assert.equal(f.calls.length, 2); assert.equal(settled, false)
-  if (outcome === "resolve") f.calls[0]!.value.resolve({ id: "a" })
-  else f.calls[0]!.value.reject(Error("late metadata failure"))
-  await settle()
-  assert.equal(f.active(), 2); assert.equal(settled, false)
-  f.calls[0]!.cleanup.resolve(); await a.settled
-  assert.equal(settled, true)
-  const fresh = f.modes.root("a", signal()); await settle()
-  assert.equal(f.calls.length, 3, "an expired result cannot populate ancestry cache")
-  f.finish(2); assert.equal(await fresh, "a")
-  f.finish(1); await b.settled
-})
-
-test("ancestry joins share actual ownership but a joining abort never cancels the owner's operation", async t => {
-  const f = ancestryFixture(t), parent = new AbortController()
-  const owner = f.modes.root("root", signal()); await settle()
-  const join = f.modes.root("root", parent.signal)
-  assert.equal(join.settled, owner.settled)
-  const rejected = assert.rejects(join, { name: "AbortError" }); parent.abort(); await rejected
-  assert.equal(f.calls[0]!.signal.aborted, false)
-  const more = Array.from({ length: 50 }, () => f.modes.root("root", signal()))
-  assert.equal(f.calls.length, 1)
-  f.finish(0); assert.equal(await owner, "root"); await Promise.all(more)
-  assert.equal(await f.modes.root("root", signal()), "root"); assert.equal(f.calls.length, 1)
-})
-
-test("ancestry owner abort and deletion suppress late caches while retaining physical slots", async t => {
-  const f = ancestryFixture(t), abort = new AbortController()
-  const first = f.modes.root("old", abort.signal), second = f.modes.root("deleted", signal())
-  const canceled = assert.rejects(first, { name: "AbortError" })
-  const deleted = assert.rejects(second, /ancestry changed/)
-  await settle(); abort.abort(); f.modes.deleted("deleted"); await canceled
-  assert.equal(f.active(), 2)
-  f.finish(0); f.finish(1); await deleted; await Promise.all([first.settled, second.settled])
-  const fresh = f.modes.root("deleted", signal()); await settle()
-  assert.equal(f.calls.length, 3); f.finish(2); assert.equal(await fresh, "deleted")
-})
-
-test("ancestry cancellation before dispatch reserves no abandoned read", async t => {
-  const f = ancestryFixture(t), abort = new AbortController()
-  const read = f.modes.root("root", abort.signal)
-  const canceled = assert.rejects(read, { name: "AbortError" }); abort.abort()
-  await canceled; await read.settled
-  assert.equal(f.calls.length, 0)
-  const next = f.modes.root("root", signal()); await settle(); f.finish(0)
-  assert.equal(await next, "root")
 })

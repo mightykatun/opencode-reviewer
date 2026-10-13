@@ -6,10 +6,11 @@ import type { Plugin } from "@opencode/plugin/tui"
 import type { CliPluginState } from "../src/cli-plugin.js"
 import type { HostRequest } from "../src/host-types.js"
 import type { View } from "../src/controller.js"
-import type { AncestryReader } from "../src/session-mode.js"
+import type { AncestryReader } from "../src/session-ancestry.js"
 import type { HistoryTarget } from "../src/history-records.js"
 import type { NotificationBackend, NotificationClick, NotificationMessage } from "../src/notification-types.js"
 import { HostNotifications, setupHostNotifications } from "../src/host-notifications.js"
+import { hostQueueSnapshot, type HostQueueSnapshot } from "../src/host-queue.js"
 import { parseConfig } from "../src/config.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
 
@@ -30,6 +31,7 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
   const opened: { sessionID: string; target: HistoryTarget }[] = []
   let family = ["child", "deep"], mode = "base", current = "root", now = 0, serial = 0
   let nativeOverride: string | undefined, override = false
+  let observedQueue: ((root: string) => HostQueueSnapshot) | undefined
   let clicked!: NotificationClick
   const abort = new AbortController()
   const timers = new Set<{ at: number; callback: () => void }>()
@@ -58,9 +60,18 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
       return backend ?? { async show(message, signal) { banners.push(message); signals.push(signal); return { close() {} } }, dispose() {} }
     } },
   }
-  const nativeFront = (root: string) => override ? nativeOverride : [root, ...(root === "root" ? family : [])]
-    .flatMap(id => permissions.get(id) ?? [])[0]
-  const host = new HostNotifications(context, state, { resolveRoot, nativeFront, signal: abort.signal, clock,
+  const nativeQueue = (root: string): HostQueueSnapshot => {
+    if (observedQueue) return observedQueue(root)
+    const queue = hostQueueSnapshot(root, {
+      session: id => context.data.session.get(id), family: id => context.data.session.family(id),
+      permissions: id => context.data.session.permission.list(id),
+    })
+    if (!override || queue.state === "unknown") return queue
+    if (!nativeOverride) return queue.state === "empty" ? queue : { state: "unknown" }
+    const value = queue.family.flatMap(id => permissions.get(id) ?? []).find(value => value.id === nativeOverride)
+    return value ? { state: "front", family: queue.family, request: { id: value.id, sessionID: value.sessionID } } : { state: "unknown" }
+  }
+  const host = new HostNotifications(context, state, { resolveRoot, nativeQueue, signal: abort.signal, clock,
     openHistory: (sessionID, target) => { opened.push({ sessionID, target }) } })
   function emit<T extends OpenCodeEvent["type"]>(type: T, data: EventOf<T>["data"], seq = ++serial, eventID = `event-${serial}`) {
     const sessionID = (data as { sessionID?: string }).sessionID
@@ -88,7 +99,8 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
   return { host, state, context, abort, banners, signals, sessions, permissions, forms, opened, navigated, timers,
     emit, ask, reply, formBirth, formReply, advance, clicked: () => clicked,
     mode: (value: string) => { mode = value }, route: (value: string) => { current = value; host.routeChanged() },
-    family: (ids: string[]) => { family = ids }, native: (value?: string) => { override = true; nativeOverride = value } }
+    family: (ids: string[]) => { family = ids }, native: (value?: string) => { override = true; nativeOverride = value },
+    nativeQueue: (read: (root: string) => HostQueueSnapshot) => { observedQueue = read } }
 }
 
 test("V2 event births, not startup/retained snapshots, authorize root-family attention", async () => {
@@ -140,6 +152,91 @@ test("supplied native permission ownership includes unsupported blockers and unr
   assert.equal(f.signals[0]?.aborted, true)
   f.permissions.set("root", []); f.native(); f.host.snapshot([{ request: second, status: "unavailable" }])
   await settle(); assert.equal(f.banners.length, 1, "undefined native front is not empty while native permissions remain")
+  await f.host.dispose()
+})
+
+test("native fixture overrides cannot conceal unhealthy later queues or duplicated permission identities", async () => {
+  for (const change of ["missing", "owner", "duplicate", "ancestry"] as const) {
+    const f = fixture(); f.host.visit("root")
+    const front = request("front")
+    f.permissions.set("root", [front]); f.native("front"); f.ask(front)
+    f.host.snapshot([{ request: front, status: "unavailable" }], true); await settle()
+    assert.equal(f.banners.length, 1)
+    if (change === "missing") f.permissions.set("deep", undefined)
+    if (change === "owner") f.permissions.set("deep", [request("later", "other")])
+    if (change === "duplicate") f.permissions.set("deep", [request("front", "deep")])
+    if (change === "ancestry") f.sessions.delete("child")
+    f.host.snapshot([{ request: front, status: "unavailable" }], true)
+    assert.equal(f.signals[0]?.aborted, true, change)
+    await f.host.dispose()
+  }
+})
+
+test("bridge trusts explicit queue observations without independently scanning family or permission caches", async () => {
+  const f = fixture(); f.host.visit("root")
+  const value = request("front")
+  f.nativeQueue(() => ({ state: "front", family: ["root", "deep", "child"], request: value }))
+  f.context.data.session.family = () => { throw Error("Bridge must not rescan native family") }
+  f.context.data.session.permission.list = () => { throw Error("Bridge must not rescan permissions") }
+  f.ask(value); f.host.snapshot([{ request: value, status: "unavailable" }], true); await settle()
+  assert.equal(f.banners.length, 1)
+  f.nativeQueue(() => ({ state: "empty", family: ["root", "deep", "child"] }))
+  f.reply(value); f.host.snapshot([], true)
+  f.emit("session.execution.started", { sessionID: "root" }, 10)
+  f.emit("session.execution.succeeded", { sessionID: "root" }, 11)
+  await settle(); assert.deepEqual(f.banners.map(value => value.kind), ["attention", "ended"])
+  await f.host.dispose()
+})
+
+test("unknown permission observations never authorize forms or queued terminal notifications", async () => {
+  const f = fixture(); f.host.visit("root")
+  const question = form("question")
+  f.forms.set("root", [question]); f.nativeQueue(() => ({ state: "unknown" }))
+  f.formBirth(question); f.host.snapshot([], true)
+  f.emit("session.execution.started", { sessionID: "root" }, 10)
+  f.emit("session.execution.succeeded", { sessionID: "root" }, 11)
+  await settle(); assert.equal(f.banners.length, 0)
+  f.nativeQueue(() => ({ state: "empty", family: ["root", "deep", "child"] }))
+  f.host.snapshot([], true); await settle()
+  assert.deepEqual(f.banners.map(value => value.kind), ["question"])
+  f.formReply(question); await settle()
+  assert.deepEqual(f.banners.map(value => value.kind), ["question", "ended"])
+  await f.host.dispose()
+})
+
+test("malformed and over-budget optional form identities cannot prove an empty queue", async () => {
+  for (const change of ["missing", "owner", "duplicate", "empty-id", "budget"] as const) {
+    const f = fixture(); f.host.visit("root")
+    if (change === "missing") f.forms.set("deep", undefined)
+    if (change === "owner") f.forms.set("deep", [form("wrong", "other")])
+    if (change === "duplicate") { f.forms.set("deep", [form("shared", "deep")]); f.forms.set("global", [form("shared", "global")]) }
+    if (change === "empty-id") f.forms.set("deep", [form("", "deep")])
+    if (change === "budget") f.forms.set("deep", Array.from({ length: 16385 }, (_, index) => form(`form-${index}`, "deep")))
+    f.host.snapshot([], true)
+    f.emit("session.execution.started", { sessionID: "root" }, 10)
+    f.emit("session.execution.succeeded", { sessionID: "root" }, 11)
+    await settle(); assert.equal(f.banners.length, 0, change)
+    f.forms.clear(); f.host.snapshot([], true); await settle()
+    assert.deepEqual(f.banners.map(value => value.kind), ["ended"], change)
+    await f.host.dispose()
+  }
+})
+
+test("a known earlier form owns attention while an unreadable later form still cannot prove empty", async () => {
+  const f = fixture(); f.host.visit("root")
+  const first = form("root-question")
+  f.forms.set("root", [first]); f.forms.set("child", undefined)
+  f.host.snapshot([], true); f.formBirth(first)
+  await settle()
+  assert.deepEqual(f.banners.map(value => value.kind), ["question"])
+  f.emit("session.execution.started", { sessionID: "root" })
+  f.emit("session.execution.succeeded", { sessionID: "root" })
+  f.formReply(first)
+  await settle()
+  assert.deepEqual(f.banners.map(value => value.kind), ["question"])
+  f.forms.set("child", []); f.host.snapshot([], true)
+  await settle()
+  assert.deepEqual(f.banners.map(value => value.kind), ["question", "ended"])
   await f.host.dispose()
 })
 
@@ -379,10 +476,10 @@ test("a failed public metadata observer revokes attention without throwing into 
 test("optional notification factory failures and disabled config cannot stop runtime setup", () => {
   const f = fixture()
   f.state.dependencies.notifications = () => { throw new Error("observer failure") }
-  assert.equal(setupHostNotifications(f.context, f.state, { resolveRoot: async id => id, nativeFront: () => undefined,
+  assert.equal(setupHostNotifications(f.context, f.state, { resolveRoot: async id => id, nativeQueue: () => ({ state: "unknown" }),
     signal: f.abort.signal }), undefined)
   f.state.config!.notify = false
-  assert.equal(setupHostNotifications(f.context, f.state, { resolveRoot: async id => id, nativeFront: () => undefined,
+  assert.equal(setupHostNotifications(f.context, f.state, { resolveRoot: async id => id, nativeQueue: () => ({ state: "unknown" }),
     signal: f.abort.signal }), undefined)
   void f.host.dispose()
 })

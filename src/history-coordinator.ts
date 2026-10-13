@@ -5,7 +5,7 @@ import type { ReviewKind, ReviewObservation } from "./types.js"
 import type { HistoryEvent, HistoryOutcome, HistoryPayload, HistoryReview, HistoryScope } from "./history-records.js"
 import type { HistoryStore } from "./history-store.js"
 import type { HistoryResolution, HistorySession } from "./history-schema.js"
-import type { AncestryReader } from "./session-mode.js"
+import type { AncestryReader } from "./session-ancestry.js"
 
 type Store = Pick<HistoryStore, "admit" | "query" | "onCommit"> & Partial<Pick<HistoryStore, "markMaintenanceDirty">>
 interface Candidate {

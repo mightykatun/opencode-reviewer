@@ -191,6 +191,8 @@ existing user directories.
   requests/invocations, `host-evidence.ts` for server-only operation collection and
   `host-context.ts` for public conversation context.
 - `controller.ts` owns V2 request lifecycle, evaluation, cancellation and approval;
+  `session-ancestry.ts` owns bounded metadata traversal and actual read settlement;
+  review and history share a scope-pinned instance without sharing saved-mode admission.
   `session-mode.ts` gates work before enrichment, and `host-mode-commands.ts`
   registers local native palette/slash commands. `reviewer.ts` owns model transport.
   Defaults/validation live in `config.ts`; `host-types.ts` defines native requests,
@@ -218,6 +220,11 @@ existing user directories.
   or the companion is unavailable, without a second UI surface, model calls or replies.
   Optional form reads must stay outside permission admission; own their complete
   transactions through abort/settlement, and fail notification health closed on errors.
+- `host-native-observations.ts` refreshes roots/seeds before reading native family
+  rosters, then all member metadata before ancestry validation. Permission and form
+  callers retain separate budgets and health. `host-queue.ts` keeps early native
+  priority separate from complete unknown/empty/front notification observations.
+  Native reactive caches supply public identities, never mandatory operation evidence.
 - `host-sidebar.tsx` measures native FRAME geometry; `host-review-panel.tsx` and
   `host-history-view.tsx` prove actual hit ownership for UI/fixture observations,
   not V2 approval eligibility. `host-approval-ready.ts` owns the public native

@@ -7,10 +7,13 @@ import type { setupHostHistory } from "./host-history-runtime.js"
 import type { HostRequest } from "./host-types.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
 import { sameLocation } from "./companion-protocol.js"
-import { hostQueueFront } from "./host-queue.js"
+import { hostQueueSnapshot, hostPermissionIdentities } from "./host-queue.js"
+import { refreshNativeFamily } from "./host-native-observations.js"
 import { setupHostNotifications } from "./host-notifications.js"
 import { PendingRefresh } from "./pending-refresh.js"
 import { conversationRoot } from "./route-approval.js"
+import { TransportOwnership } from "./transport-ownership.js"
+import type { AncestryReader } from "./session-ancestry.js"
 
 /** Native cache data supplies notification identity, not review provenance. */
 function request(value: PermissionRequest): HostRequest {
@@ -26,32 +29,25 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   const location = records.location
   const abort = new AbortController()
   const signal = AbortSignal.any([life.signal, abort.signal])
-  const reads = new Set<Promise<unknown>>()
+  const reads = new TransportOwnership()
   const sessions = new Set<string>(), visited = new Set<string>(), deleted = new Set<string>()
   let revision = 0, stopped = false
   let views: View<HostRequest>[] = []
-  const owned = <T>(work: Promise<T>) => {
-    reads.add(work)
-    void work.then(() => reads.delete(work), () => reads.delete(work))
-    return work
-  }
-  const settled = async () => { while (reads.size) await Promise.allSettled([...reads]) }
+  const owned = <T>(work: Promise<T>) => reads.track(work)
+  const settled = () => reads.settled()
   const session = (id: string) => {
     if (deleted.has(id)) return
     const value = ctx.data.session.get(id)
     return value?.id === id && sameLocation(value.location, location) ? value : undefined
   }
   const permissions = (id: string) => {
-    const values = ctx.data.session.permission.list(id)
-    if (!values || values.length > 16384 || values.some(value => !value.id || value.sessionID !== id)
-      || new Set(values.map(value => value.id)).size !== values.length) return
-    return values
+    return hostPermissionIdentities(id, ctx.data.session.permission.list(id))
   }
-  const front = (root: string) => hostQueueFront(root, {
+  const front = (root: string) => hostQueueSnapshot(root, {
     session, family: id => ctx.data.session.family(id), permissions,
   })
   const notifications = setupHostNotifications(ctx, state, {
-    signal, nativeFront: front, resolveRoot: (id, parent) => records.history.root(id, parent),
+    signal, nativeQueue: front, resolveRoot: (id, parent) => records.history.root(id, parent),
   })
   // Failed/disabled desktop setup is isolated from the read-only history owner.
   if (!notifications) return
@@ -61,9 +57,9 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
     if (!id || set.has(id) || set.size >= 16384) return false
     set.add(id); return true
   }
-  const root = async (id: string, parent: AbortSignal) => {
+  const root: AncestryReader = (id, parent) => {
     const cached = conversationRoot(id, session)
-    if (cached) return cached
+    if (cached) return Promise.resolve(cached)
     const read = records.history.root(id, parent)
     if (read.settled) owned(read.settled)
     return owned(read)
@@ -85,36 +81,13 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
       if (ctx.data.session.permission.list(value.id)?.length || ctx.data.session.form.list(value.id)?.length)
         remember(sessions, value.id)
     }
-    const roots = new Set<string>()
-    for (const id of new Set([...visited, ...sessions])) {
-      if (deleted.has(id)) continue
-      const resolved = await root(id, parent)
-      parent.throwIfAborted()
-      if (!resolved || deleted.has(resolved)) throw Error("Native ancestry unavailable")
-      roots.add(resolved)
-    }
-    const members = new Set<string>()
-    for (const id of roots) {
-      parent.throwIfAborted()
-      await owned(ctx.data.session.sync(id))
-      parent.throwIfAborted()
-      if (conversationRoot(id, session) !== id) throw Error("Native root scope unavailable")
-      const family = [id, ...ctx.data.session.family(id).filter(value => value !== id)]
-      if (family.length > 16384 || new Set(family).size !== family.length) throw Error("Native family unavailable")
-      for (const member of family) members.add(member)
-      if (members.size > 16384) throw Error("Native family unavailable")
-    }
-    // Public family order need not be ancestry order. Refresh all metadata before
-    // validating a deep member whose immediate parent may appear later.
-    for (const id of members) {
-      parent.throwIfAborted()
-      if (!roots.has(id)) await owned(ctx.data.session.sync(id))
-      parent.throwIfAborted()
-    }
+     const members = await refreshNativeFamily(new Set([...visited, ...sessions].filter(id => !deleted.has(id))), {
+       resolveRoot: root, session, family: id => ctx.data.session.family(id),
+       sync: id => ctx.data.session.sync(id), owned,
+     }, parent)
     const values: HostRequest[] = [], identities = new Set<string>()
     for (const id of members) {
       parent.throwIfAborted()
-      if (!roots.has(conversationRoot(id, session) ?? "")) throw Error("Native family scope unavailable")
       ctx.data.session.permission.invalidate(id)
       await owned(ctx.data.session.permission.sync(id))
       parent.throwIfAborted()

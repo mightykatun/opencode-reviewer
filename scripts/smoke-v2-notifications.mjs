@@ -32,7 +32,7 @@ async function titleSetup(ctx) {
 
 async function monitorSetup(ctx) {
   const publisher = observationPublisher(fixture.monitor), abort = new AbortController()
-  const record = { ready: true, version: ctx.app.version, events: [], replies: {}, manual: [], errors: [], cleaned: false }
+  const record = { ready: true, version: ctx.app.version, connections: [], events: [], replies: {}, manual: [], errors: [], cleaned: false }
   const location = { directory: fixture.project }
   const options = () => ({ location, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15000)]) })
   const save = () => {
@@ -41,6 +41,7 @@ async function monitorSetup(ctx) {
     return publisher.publish(record)
   }
   const off = ctx.data.listen(({ details }) => {
+    if (details.type === "server.connected") record.connections.push(JSON.parse(JSON.stringify(details)))
     if (details.type.startsWith("permission.") || details.type.startsWith("form.")
       || details.type.startsWith("session.execution.") || details.type.startsWith("session.step.")) {
       record.events.push(JSON.parse(JSON.stringify(details)))
@@ -332,6 +333,7 @@ const limits = [
   "Only the exported desktop-backend seam is injected. No actual desktop processes, GNOME focus, audible playback, live-provider judgment or audio/desktop acceptance.",
   "One isolated standalone host/terminal and public client user controls. Manual once replies and form answers are explicit fixture actions, never reviewer automatic replies. No Always/reject or permission-rule mutation.",
   "Native question tool creates the production form. Pinned public SessionFormReplyInput uses session.form.reply with formID and an answer object; there is no guessed form.submit API.",
+  ...(scenario === "unavailable-review" ? ["The independent monitor observes the real initial server.connected event before public CLI configuration activates notification-only fallback. Reconnect still revokes an active generation; pre-connection plugin startup is not acceptance evidence from this case."] : []),
 ]
 
 try {
@@ -446,14 +448,25 @@ try {
     session: { permissions: "prompt" }, plugins: [{ package: reviewer,
       options: { ...options, ...(phase === "invalid" ? { fileIO: {} } : {}) } }, monitor] }
   await publish(setupControl, { phase })
-  await publish(path.join(project, "opencode.json"), config); await publish(cliPath, cli)
+  // The unavailable-review check activates a fresh generation after the actual
+  // initial connection. A pre-connection runtime is correctly revoked by that
+  // event; this fixture does not claim pre-connection startup acceptance.
+  const startupCli = scenario === "unavailable-review" ? { ...cli, plugins: ["-opencode-reviewer", monitor] } : cli
+  await publish(path.join(project, "opencode.json"), config); await publish(cliPath, startupCli)
   await publish(path.join(artifacts, "setup.json"), { version, scenario, archive, packed, installed, moduleURL, config, cli,
-    temp, environment: { HOME: env.HOME, XDG_STATE_HOME: env.XDG_STATE_HOME }, socket: runtime.socket, supervisorPID: runtime.supervisorPID, limits })
+    startupCli, temp, environment: { HOME: env.HOME, XDG_STATE_HOME: env.XDG_STATE_HOME }, socket: runtime.socket, supervisorPID: runtime.supervisorPID, limits })
   await runtime.start("-d", "-s", "v2-notifications", "-x", "160", "-y", "40", "-c", project,
     "env", "XDG_STATE_HOME=" + env.XDG_STATE_HOME, host, "--standalone", project)
   const ready = await until("independent observer", record => record?.ready && record)
   assert.equal(ready.version, version.slice("opencode v".length))
-  const productionReady = await until("actual production notification runtime", async () => { const value = await attention(); return value?.ready && value })
+  if (scenario === "unavailable-review") {
+    await until("actual initial connection before notification-only activation", record => record.connections?.length === 1)
+    await publish(cliPath, cli)
+  }
+  const productionReady = await until("actual production notification runtime", async () => {
+    const value = await attention()
+    return value?.ready && !value.disposed && value.config?.staleReminderSeconds === reminderMs / 1000 && value
+  })
   assert.equal(productionReady.config.staleReminderSeconds, reminderMs / 1000)
   assert.equal(productionReady.state.runtime, scenario !== "unavailable-review")
   if (scenario !== "unavailable-review") {

@@ -3,7 +3,7 @@ import type { HistoryStore } from "./history-store.js"
 import type { ConversationTotals } from "./history-schema.js"
 import type { LifetimeTotals } from "./lifetime.js"
 import { withDeadline } from "./deadline.js"
-import type { AncestryRead, AncestryReader } from "./session-mode.js"
+import type { AncestryRead, AncestryReader } from "./session-ancestry.js"
 
 export type StatisticsScope = "conversation" | "lifetime"
 export interface StatisticsState {

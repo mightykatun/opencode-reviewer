@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import type { Plugin } from "@opencode/plugin/tui"
 import { SessionModes, type ModeStore } from "../src/session-mode.js"
+import { SessionAncestry } from "../src/session-ancestry.js"
 import { setupHostModeCommands } from "../src/host-mode-commands.js"
 
 const memory = (): ModeStore => ({ read: async () => true, write: async () => {}, flush: async () => {} })
@@ -29,7 +30,7 @@ test("local palette/slash commands capture session, persist, report failures and
   const writes: boolean[] = []
   let fail = false
   const modes = new SessionModes({ ...memory(), write: async (_, enabled) => { writes.push(enabled); if (fail) throw new Error("private") } },
-    async id => ({ id, ...(id === "child" ? { parentID: "root" } : {}) }))
+    new SessionAncestry(async id => ({ id, ...(id === "child" ? { parentID: "root" } : {}) })))
   const f = fixture(modes, { type: "home" }), commands = f.layer.commands
   assert.equal(f.layer.mode, "global")
   assert.deepEqual(commands.map(c => [c.id, c.title, c.group, c.palette, c.slash.name]), [
@@ -54,7 +55,7 @@ test("local palette/slash commands capture session, persist, report failures and
 
 test("enable cannot bypass corrupt persisted mode", async () => {
   let writes = 0
-  const modes = new SessionModes({ ...memory(), read: async () => { throw new Error("private record") }, write: async () => { writes++ } }, async id => ({ id }))
+  const modes = new SessionModes({ ...memory(), read: async () => { throw new Error("private record") }, write: async () => { writes++ } }, new SessionAncestry(async id => ({ id })))
   const f = fixture(modes)
   await f.layer.commands[0]!.run()
   assert.equal(modes.enabled("root"), false)
@@ -67,7 +68,7 @@ test("newer root command defeats an older descendant lookup and pending persiste
   const lookup = deferred<{ id: string; parentID: string }>(), persistence = deferred<void>()
   const writes: boolean[] = []
   const modes = new SessionModes({ ...memory(), write: async (_, enabled) => { writes.push(enabled); await persistence.promise } },
-    async id => id === "child" ? lookup.promise : { id })
+    new SessionAncestry(async id => id === "child" ? lookup.promise : { id }))
   const f = fixture(modes, { type: "session", sessionID: "child" })
   const oldEnable = f.layer.commands[0]!.run()
   f.route({ type: "session", sessionID: "root" })
@@ -84,7 +85,7 @@ test("newer root command defeats an older descendant lookup and pending persiste
 test("unchanged Enable still supersedes an older descendant Disable awaiting ancestry", async () => {
   const lookup = deferred<{ id: string; parentID: string }>(), writes: boolean[] = []
   const modes = new SessionModes({ ...memory(), write: async (_, enabled) => { writes.push(enabled) } },
-    async id => id === "child" ? lookup.promise : { id })
+    new SessionAncestry(async id => id === "child" ? lookup.promise : { id }))
   const f = fixture(modes, { type: "session", sessionID: "child" })
   const disable = f.layer.commands[1]!.run()
   f.route({ type: "session", sessionID: "root" })
@@ -98,7 +99,7 @@ test("unchanged Enable still supersedes an older descendant Disable awaiting anc
 
 for (const action of ["abort", "disconnect"] as const) test(`${action} prevents an in-flight ancestry command from switching locally`, async () => {
   const lookup = deferred<{ id: string }>(), writes: boolean[] = []
-  const modes = new SessionModes({ ...memory(), write: async (_, enabled) => { writes.push(enabled) } }, () => lookup.promise)
+  const modes = new SessionModes({ ...memory(), write: async (_, enabled) => { writes.push(enabled) } }, new SessionAncestry(() => lookup.promise))
   const f = fixture(modes)
   const disable = f.layer.commands[1]!.run()
   if (action === "abort") f.abort.abort()

@@ -5,6 +5,7 @@ import { Controller, displayText, visibleReview, type ControllerOptions, type Re
 import type { HostRequest } from "../src/host-types.js"
 import type { ReviewProgress, ReviewResult, ReviewTiming } from "../src/types.js"
 import { SessionModes } from "../src/session-mode.js"
+import { SessionAncestry } from "../src/session-ancestry.js"
 
 const request = (id: string, sessionID = "root", action = "shell"): HostRequest => ({ id, sessionID, action,
   resources: [id], source: { assistantID: "assistant", id: "shared-call" } })
@@ -19,7 +20,7 @@ function deferred<T>() {
 function modes(read: () => Promise<boolean> = async () => true,
   lookup = async (id: string): Promise<{ id: string; parentID?: string } | undefined> =>
     ({ id, ...(id === "child" ? { parentID: "root" } : id === "deep" ? { parentID: "child" } : {}) })) {
-  return new SessionModes({ read, write: async () => {}, flush: async () => {} }, lookup)
+  return new SessionModes({ read, write: async () => {}, flush: async () => {} }, new SessionAncestry(lookup))
 }
 
 test("deduplicates permission IDs, not shared tool calls, and binds concurrent assessments", async t => {
@@ -194,7 +195,7 @@ test("expired saved-mode loading owns actual settlement and cannot replace recov
   t.mock.timers.enable({ apis: ["setTimeout"] })
   const held = deferred<boolean>(); let reads = 0, calls = 0, signal!: AbortSignal
   const gate = new SessionModes({ read: (_root, parent) => { signal = parent; return ++reads === 1 ? held.promise : Promise.resolve(true) },
-    write: async () => {}, flush: async () => {} }, async id => ({ id }))
+    write: async () => {}, flush: async () => {} }, new SessionAncestry(async id => ({ id })))
   const controller = new Controller(async () => { calls++; return safe }, () => {}, { ...options, modes: gate })
   t.after(() => controller.dispose()); controller.asked(request("a")); await settle(); t.mock.timers.tick(5000); await settle()
   assert.ok(signal.aborted); controller.reconcile([request("a")], controller.revision); await settle(); assert.equal(reads, 1)
@@ -237,7 +238,7 @@ for (const outcome of ["resolve", "reject"] as const) test(`many reconciliation 
     if (available) { settled(); return true }
     const value = deferred<boolean>(), cleanup = deferred<void>(); pending.push({ root, signal, value, cleanup })
     try { return await value.promise } finally { try { await cleanup.promise } finally { settled() } }
-  }, write: async () => {}, flush: async () => {} }, async id => ({ id }))
+  }, write: async () => {}, flush: async () => {} }, new SessionAncestry(async id => ({ id })))
   const controller = new Controller(async req => { evaluated.push(req.id); return safe }, () => {}, { ...options, modes: gate })
   t.after(async () => {
     await controller.dispose()

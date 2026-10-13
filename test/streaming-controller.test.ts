@@ -5,6 +5,7 @@ import type { HostRequest } from "../src/host-types.js"
 import { Controller, displayText, visibleReview, type ApprovalClock } from "../src/controller.js"
 import type { ReviewProgress, ReviewResult } from "../src/types.js"
 import { SessionModes } from "../src/session-mode.js"
+import { SessionAncestry } from "../src/session-ancestry.js"
 
 const request: HostRequest = { id: "a", sessionID: "root", action: "shell", resources: ["fixture"] }
 const final: ReviewResult = { safe: true, desc: "Final report" }
@@ -139,7 +140,7 @@ test("failed assessment removes preview and queued text without retaining a fabr
 })
 
 for (const action of ["reply", "delete", "dispose", "disable"] as const) test(`${action} defeats queued text, late progress and completion`, async () => {
-  const modes = new SessionModes({ read: async () => true, write: async () => {}, flush: async () => {} }, async (id) => ({ id }))
+  const modes = new SessionModes({ read: async () => true, write: async () => {}, flush: async () => {} }, new SessionAncestry(async (id) => ({ id })))
   const f = await fixture({ modes })
   const worker = f.workers[0]!
   worker.progress({ attempt: 0, phase: "evaluating" })
@@ -163,7 +164,7 @@ for (const action of ["reply", "delete", "dispose", "disable"] as const) test(`$
 })
 
 test("fresh enabled entry rejects prior entry callbacks even with the same attempt and request ID", async () => {
-  const modes = new SessionModes({ read: async () => true, write: async () => {}, flush: async () => {} }, async (id) => ({ id }))
+  const modes = new SessionModes({ read: async () => true, write: async () => {}, flush: async () => {} }, new SessionAncestry(async (id) => ({ id })))
   const f = await fixture({ modes })
   const old = f.workers[0]!
   old.progress({ attempt: 0, phase: "evaluating" })
@@ -186,7 +187,7 @@ test("fresh enabled entry rejects prior entry callbacks even with the same attem
 })
 
 test("root mode is checked again when coalesced text is delivered", async () => {
-  const modes = new SessionModes({ read: async () => true, write: async () => {}, flush: async () => {} }, async (id) => ({ id }))
+  const modes = new SessionModes({ read: async () => true, write: async () => {}, flush: async () => {} }, new SessionAncestry(async (id) => ({ id })))
   const f = await fixture({ modes })
   f.workers[0]!.progress({ attempt: 0, phase: "evaluating" })
   f.workers[0]!.progress({ attempt: 0, phase: "streaming", preview: { desc: "queued" } })

@@ -2,7 +2,7 @@ import { HistoryRefresh } from "./history-refresh.js"
 import type { HistoryStore } from "./history-store.js"
 import type { HistorySelection } from "./history-schema.js"
 import { opaque, type HistoryQuery, type HistoryTarget } from "./history-records.js"
-import type { AncestryRead, AncestryReader } from "./session-mode.js"
+import type { AncestryRead, AncestryReader } from "./session-ancestry.js"
 
 export interface HistoryViewState {
   open: boolean; status: "loading" | "ready" | "error"; selection?: HistorySelection; reset: number
