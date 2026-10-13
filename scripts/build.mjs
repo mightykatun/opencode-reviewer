@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises"
 import { isBuiltin } from "node:module"
 import inventory from "../src/prompt-files.json" with { type: "json" }
 import { soundBanner } from "./bundled-sounds.mjs"
+import { themeSyntaxOnlyPlugin, verifyThemeSyntaxBuild } from "./theme-syntax-adapter.mjs"
 
 const prompts = Object.fromEntries(await Promise.all(
   Object.entries(inventory).map(async ([name, file]) => [
@@ -77,8 +78,9 @@ const hostModules = ["solid-js", "@opentui/core", "@opentui/solid", "@opencode/p
 const hostRuntime = await build({
   entryPoints: ["src/host-runtime.tsx"], bundle: true, write: false, metafile: true,
   platform: "node", format: "cjs", target: "es2023", external: hostModules,
-  define, plugins: [decoderPlugin, jsxPlugin, embeddedPromptsPlugin],
+  define, plugins: [decoderPlugin, themeSyntaxOnlyPlugin, jsxPlugin, embeddedPromptsPlugin],
 })
+verifyThemeSyntaxBuild(hostRuntime.metafile)
 for (const output of Object.values(hostRuntime.metafile.outputs)) {
   for (const dependency of output.imports) {
     if (dependency.external && !hostModules.includes(dependency.path) && !isBuiltin(dependency.path)) {

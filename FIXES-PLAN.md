@@ -32,10 +32,10 @@ implementation and fixtures as migration inputs. Keep exactly five package files
 
 ## Phase 2: dependency and distribution hygiene
 
-- [ ] Repair the resolved Seroval override and assert clean-install resolution.
-- [ ] Narrow unnecessary theme dependency bundling where the public API permits it.
-- [ ] Include all notices required by retained bundled dependencies.
-- [ ] Verify clean installation, dependency audit, helpers and reproducible five-file package.
+- [x] Repair the resolved Seroval override and assert clean-install resolution.
+- [x] Narrow unnecessary theme dependency bundling where the public API permits it.
+- [x] Include all notices required by retained bundled dependencies.
+- [x] Verify clean installation, dependency audit, helpers and reproducible five-file package.
 - [ ] Commit verified phase and record evidence.
 
 ## Phase 3: approval, history input and statistics recovery
@@ -99,6 +99,7 @@ stable. Existing mode records remain in their original location. Unsafe legacy
 databases remain untouched; their namespace cannot authorize migration reads.
 
 - `npm run typecheck`: passed.
+
 - Focused state/storage/history/protocol tests: 57 passed, 0 failed.
 - `npm run test:helpers`: 123 passed, 0 failed.
 - `npm run build`: passed.
@@ -107,3 +108,22 @@ databases remain untouched; their namespace cannot authorize migration reads.
   host permissions. Artifacts: `.runtime/v2-review-normal-history-default-home-WHXwqz`;
   invocation/results: `.runtime/runtime-run-5B1gxZ/results.json`.
 - Commit: `fix: recover history storage under writable host state directories`.
+
+### Phase 2 evidence
+
+- Replaced the nested serializer override with an explicit Seroval override;
+  regenerated lockfile changes only Seroval version, URL and integrity.
+- `npm ci --ignore-scripts`: clean installation passed; actual Solid resolution
+  regression passed with Seroval 1.6.3.
+- `npm audit --json`: 0 vulnerabilities, including development dependencies.
+- `npm run typecheck`: passed.
+- `npm run test:helpers`: 126 passed, 0 failed, including sparse-policy closure.
+- `npm run check:package`: reproducible SHA-256
+  `677978c9fbeb105fe560d8aa4665a46c7658647e096eea44b7f1ec14f3708c35`;
+  exactly five files, 1,535,994 unpacked bytes.
+- Built archive/provenance tests: 10 passed, 0 failed. The actual terminal payload
+  contains no Effect or theme parsers, preserves public mappings, and matches
+  upstream syntax semantics. Existing theme MIT notice covers retained code.
+- Stock OpenCode 2.0.27 `normal-history`: passed with the narrowed payload.
+  Artifacts: `.runtime/v2-review-normal-history-bQQXMw`;
+  results: `.runtime/runtime-run-YCBiLX/results.json`.

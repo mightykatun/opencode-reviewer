@@ -83,8 +83,6 @@
     "@opentui/keymap": {
       "solid-js": "$solid-js"
     },
-    "solid-js": {
-      "seroval": "1.6.3"
-    }
+    "seroval": "1.6.3"
   }
 }

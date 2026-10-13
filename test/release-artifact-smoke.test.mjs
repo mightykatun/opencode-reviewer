@@ -4,11 +4,81 @@ import { execFileSync } from "node:child_process"
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { createRequire } from "node:module"
+import { createRequire, isBuiltin } from "node:module"
 import { packageFiles, inspectPackageArchive } from "../scripts/release-artifact.mjs"
 import { archiveIntegrity } from "../scripts/npm-publication.mjs"
 import { soundBanner, verifyBundledSounds } from "../scripts/bundled-sounds.mjs"
 import { archiveFixture } from "./release-fixture.mjs"
+
+test("terminal payload excludes Effect/theme parsing, preserves public module mapping and upstream syntax semantics", async () => {
+  const { parseSync } = createRequire(path.resolve("package.json"))("@babel/core")
+  const parse = (source, sourceType) => parseSync(source, { sourceType, babelrc: false, configFile: false })
+  const nodesOf = ast => {
+    const nodes = []
+    const walk = node => {
+      if (!node || typeof node !== "object") return
+      if (node.type) nodes.push(node)
+      for (const [key, value] of Object.entries(node)) {
+        if (["loc", "start", "end", "leadingComments", "trailingComments", "innerComments", "tokens"].includes(key)) continue
+        if (Array.isArray(value)) value.forEach(walk)
+        else if (value && typeof value === "object") walk(value)
+      }
+    }
+    walk(ast.program)
+    return nodes
+  }
+  const bundle = await readFile("dist/tui.js", "utf8")
+  const outer = nodesOf(parse(bundle, "module"))
+  const payloads = outer.filter(node => node.type === "CallExpression" && node.callee.type === "MemberExpression"
+    && node.callee.object.name === "Buffer" && node.callee.property.name === "from"
+    && node.arguments[0]?.type === "StringLiteral" && node.arguments[1]?.value === "base64")
+  assert.equal(payloads.length, 1, "one fixed terminal payload must feed the CLI loader")
+  const terminal = Buffer.from(payloads[0].arguments[0].value, "base64").toString("utf8")
+  assert.doesNotMatch(terminal, /node_modules\/effect\/|Symbol\.for\(["']effect\//)
+  assert.doesNotMatch(terminal, /@opencode\/theme\/dist\/tui\/(?:schema|resolve|expand|select|color|v1-migrate)\.js/)
+  assert.doesNotMatch(terminal, /\b(?:ThemeDocument|parseThemeDocument|themeDecodeError)\b/)
+  const nodes = nodesOf(parse(terminal, "script"))
+  const requires = nodes.filter(node => node.type === "CallExpression" && node.callee.name === "require"
+    && node.arguments[0]?.type === "StringLiteral").map(node => node.arguments[0].value)
+  const hostModules = ["@opencode/plugin/rpc", "@opentui/core", "@opentui/solid", "solid-js"]
+  assert.deepEqual([...new Set(requires.filter(name => !isBuiltin(name)))].sort(), hostModules)
+  const imports = outer.filter(node => node.type === "CallExpression" && node.callee.type === "Import")
+    .map(node => node.arguments[0]?.value).filter(name => hostModules.includes(name))
+  assert.deepEqual([...new Set(imports)].sort(), hostModules)
+
+  // Execute only the two extracted fixed helper functions with a recording
+  // SyntaxStyle stub, never the package or terminal runtime. Compare every
+  // upstream rule, foreground, background and flag, including categorical fallback.
+  const functions = (all, source) => ["generateSyntax", "rule"].map(name => {
+    const matches = all.filter(node => node.type === "FunctionDeclaration" && node.id.name === name)
+    assert.equal(matches.length, 1, `one upstream ${name} function must remain`)
+    return source.slice(matches[0].start, matches[0].end)
+  }).join("\n")
+  const syntax = await readFile("node_modules/@opencode/theme/dist/tui/syntax.js", "utf8")
+  const coreReferences = nodes.filter(node => node.type === "MemberExpression" && node.property.name === "SyntaxStyle"
+    && node.object.type === "Identifier")
+  const generate = nodes.find(node => node.type === "FunctionDeclaration" && node.id.name === "generateSyntax")
+  const syntaxCore = coreReferences.filter(node => node.start >= generate.start && node.end <= generate.end)
+  assert.equal(syntaxCore.length, 1)
+  const coreBinding = nodes.find(node => node.type === "VariableDeclarator" && node.id.name === syntaxCore[0].object.name)
+  assert.equal(coreBinding?.init.callee.name, "require")
+  assert.equal(coreBinding.init.arguments[0].value, "@opentui/core")
+  const SyntaxStyle = { fromTheme: rules => rules }
+  const upstream = new Function("SyntaxStyle", `${functions(nodesOf(parse(syntax, "module")), syntax)}\nreturn generateSyntax`)(SyntaxStyle)
+  const emitted = new Function(syntaxCore[0].object.name, `${functions(nodes, terminal)}\nreturn generateSyntax`)({ SyntaxStyle })
+  const tokens = (names, prefix) => Object.fromEntries(names.split(" ").map(name => [name, `${prefix}.${name}`]))
+  const theme = {
+    syntax: tokens("comment string number keyword type function operator variable punctuation", "syntax"),
+    markdown: tokens("heading strong emphasis listItem blockQuote code link linkText", "markdown"),
+    text: { base: "text.base", muted: "text.muted", action: { primary: { focused: "action.focused" } },
+      feedback: Object.fromEntries(["error", "warning", "info", "success"].map(kind => [kind, { base: `${kind}.base` }])) },
+    background: { base: "background.base" }, hue: { accent: { 200: "hue.accent.200" } },
+    diff: { text: tokens("added removed context", "diff.text"), background: tokens("added removed context", "diff.background") },
+  }
+  for (const categorical of [[{ 200: "first" }], [{ 200: "first" }, { 200: "second" }]]) {
+    assert.deepEqual(emitted({ ...theme, categorical }), upstream({ ...theme, categorical }))
+  }
+})
 
 test("the built audio constructor consumes the inspected mapping and actual bundle/archive mutations fail", async () => {
   const bundle = await readFile("dist/tui.js", "utf8")

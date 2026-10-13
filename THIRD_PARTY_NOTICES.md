@@ -31,8 +31,10 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 https://github.com/anomalyco/opencode/tree/v2.0.26/packages/theme
 
-The pinned theme helper is bundled in the terminal payload. Solid and OpenTUI
-remain host-provided external dependencies.
+The pinned theme syntax helper is bundled unchanged in the terminal payload.
+A build-time adapter replaces its public barrel with a syntax-only re-export;
+unused theme parsers, schemas and their Effect dependency are not bundled.
+Solid and OpenTUI remain host-provided external dependencies.
 
 License source: https://github.com/anomalyco/opencode/blob/v2.0.26/LICENSE
 
