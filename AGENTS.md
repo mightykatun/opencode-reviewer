@@ -212,6 +212,10 @@ existing user directories.
   vanished prompt or successful submission alone. Uncertain writes stay manual and
   are never retried. Reconnect closes the old controller;
   restart/reload is required rather than mixing old clients with new caches.
+- CLI startup handshakes alone recover within one 10-second budget: 1.5-second
+  attempts, 250 ms backoff, timeout/`rpc.unavailable` only. Own physical settlement
+  before retry; fence pre-admission connection changes. Invalid replies stay manual.
+  Choose runtime/fallback once, never promote fallback or revive an active generation.
 - `host-history-runtime.tsx` owns the indexed worker, history, totals and shutdown.
   History/statistics also initialize when review configuration or the companion is
   unavailable. The absolute V2 namespace is an index, not deletion authority.

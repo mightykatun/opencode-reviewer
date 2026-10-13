@@ -6,7 +6,9 @@ import { uiText } from "./ui-text.js"
 import type { PluginDependencies } from "./plugin-dependencies.js"
 import { localStateRoot } from "./local-state.js"
 import { BUILTIN_PROMPTS, loadPrompts } from "./prompts.js"
-import { withDeadline } from "./deadline.js"
+import { DeadlineError, remainingTime, withDeadline } from "./deadline.js"
+import { TransportOwnership } from "./transport-ownership.js"
+import timers from "node:timers/promises"
 import { loadHostRuntime } from "./host-runtime-loader.js"
 import { parseNotificationConfig, type NotificationConfig } from "./notification-config.js"
 import type { setupHostRuntime } from "./host-runtime.js"
@@ -46,19 +48,59 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
   }
   const current = context.location ?? context.data.location.default()
   const location = { directory: current.directory, ...(current.workspaceID ? { workspaceID: current.workspaceID } : {}) }
-  // Uses this terminal's connected client. No service discovery, credentials or
-  // terminal-local evidence fallback when the companion is unavailable.
+  // Load before admission so no asynchronous import separates the scoped
+  // handshake from installing the runtime's permanent reconnect revocation.
+  const runtime = dependencies.adapterOnly ? undefined : await loadHostRuntime()
+  lifecycle.signal.throwIfAborted()
+  const reads = new TransportOwnership()
+  lifecycle.addCleanup(() => reads.settled())
+  let generation = 0, connection = new AbortController()
+  let off = context.data.on("server.connected", () => {
+    generation++
+    connection.abort()
+    connection = new AbortController()
+  })
+  const stop = () => { off(); off = () => {}; connection.abort() }
+  lifecycle.addCleanup(stop)
+  // Startup only: one fixed budget, sequential physical reads, no fallback
+  // promotion or reuse of a controller after a connection changes.
   try {
-    const response = await context.client.rpc(companionRpc).handshake(location, {
-      location, signal: AbortSignal.any([lifecycle.signal, AbortSignal.timeout(1500)]),
-    })
-    lifecycle.signal.throwIfAborted()
-    state.companion = readHandshake(response, location)
+    const admission = await withDeadline(lifecycle.signal, 10000, async signal => {
+      while (!signal.aborted) {
+        const turn = generation, connected = connection.signal
+        let pending: Promise<unknown> | undefined
+        try {
+          const response = await withDeadline(signal, 1500, attempt => {
+            const request = AbortSignal.any([attempt, connected])
+            request.throwIfAborted()
+            return pending = reads.track(context.client.rpc(companionRpc).handshake(location, { location, signal: request }))
+          }, "Companion handshake")
+          signal.throwIfAborted()
+          if (turn === generation) {
+            // Invalid protocol/scope/epoch data is terminal, never retried.
+            return { companion: readHandshake(response, location), generation: turn }
+          }
+        } catch (error) {
+          signal.throwIfAborted()
+          if (!state.config || (turn === generation && !(error instanceof DeadlineError)
+            && (!error || typeof error !== "object" || !("type" in error) || error.type !== "rpc.unavailable"))) return
+        }
+        // Abort ends the caller's wait, not the transaction. Do not overlap
+        // attempts even when a client ignores cancellation or settles late.
+        await pending?.then(() => {}, () => {})
+        signal.throwIfAborted()
+        if (remainingTime(signal) <= 250) return
+        await timers.setTimeout(250, undefined, { signal })
+      }
+    }, "Companion startup")
+    // Deadline callbacks produce data only. Fence the final promise handoff
+    // before installing the runtime's permanent reconnect revocation.
+    if (admission?.generation === generation) state.companion = admission.companion
   } catch { lifecycle.signal.throwIfAborted() }
-  if (!dependencies.adapterOnly) {
-    const { setupHostRuntime } = await loadHostRuntime()
+  finally { stop() }
+  if (runtime) {
     lifecycle.signal.throwIfAborted()
-    Object.defineProperty(state, "runtime", { value: setupHostRuntime(context, state, lifecycle) })
+    Object.defineProperty(state, "runtime", { value: runtime.setupHostRuntime(context, state, lifecycle) })
   }
   return state
 }

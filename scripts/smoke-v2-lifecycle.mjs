@@ -1,7 +1,7 @@
 // Phase 1: the actual five-file production archive, not the W6 synthetic package.
 // Inventory owner: default scenario, no flags; linux/git/tmux/bundle/npm-pack/tar.
 // Host execution requires the inventory owner's registration and execution grant.
-// No reviewer, controller, approval, notification or storage-integration coverage.
+// No permission-review, approval, notification or storage-activity coverage.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { createServer } from "node:http"
@@ -118,13 +118,29 @@ async function observedSetup(ctx) {
   // Override only public context members, retaining real host ownership for
   // slots, listeners, RPC and renderer. Response mutations are explicit controls.
   let context = ctx
-  if (cli && phase.startsWith("response-")) {
+  if (cli && (phase.startsWith("response-") || phase === "startup-recovery")) {
     const client = new Proxy(ctx.client, { get(target, key) {
       if (key !== "rpc") return Reflect.get(target, key)
       return definition => {
         assert.deepEqual(definition, handshakeDefinition())
         const rpc = target.rpc(definition)
         return { ...rpc, handshake: async (...args) => {
+          if (phase === "startup-recovery") {
+            result.handshakeCalls = (result.handshakeCalls ?? 0) + 1
+            if (result.handshakeCalls === 1) {
+              const started = performance.now(), signal = args[1].signal
+              await new Promise((_, reject) => {
+                const aborted = () => {
+                  result.firstHandshakeAborted = signal.aborted
+                  result.firstHandshakeMs = performance.now() - started
+                  reject(signal.reason)
+                }
+                signal.addEventListener("abort", aborted, { once: true })
+                if (signal.aborted) aborted()
+              })
+            }
+            return rpc.handshake(...args)
+          }
           const actual = await rpc.handshake(...args)
           result.originalHandshake = actual
           const changed = structuredClone(actual)
@@ -192,6 +208,13 @@ async function observedSetup(ctx) {
         assert.equal(ready.state.companion.protocol, 1)
         assert.equal(ready.state.companion.hostVersion, fixture.hostVersion)
         assert.equal(ready.state.companion.location.directory, fixture.project)
+      }
+      if (phase === "startup-recovery") {
+        assert.equal(result.handshakeCalls, 2)
+        assert.equal(result.firstHandshakeAborted, true)
+        assert.ok(result.firstHandshakeMs >= 1400 && result.firstHandshakeMs < 5000)
+        assert.ok(ready.state.runtime?.controller, "Recovery installs the actual production reviewer, not notification-only fallback")
+        result.recoveredController = true
       }
       const { TextRenderable } = await import("@opentui/core")
       const { onCleanup } = await import("solid-js")
@@ -465,7 +488,7 @@ try {
   }
   // Default server stays untouched throughout the first repeated CLI cycles.
   const cycles = []
-  for (const phase of ["cycle-1", "cycle-2", "cycle-3"]) {
+  for (const phase of ["cycle-1", "cycle-2", "cycle-3", "startup-recovery"]) {
     const ready = await cliOn(phase)
     assert.equal(ready.state.companion.epoch, initial.handshake.epoch)
     await until("exactly one painted fixture slot", async () => {
@@ -522,12 +545,14 @@ try {
     assertions: ["Actual repository npm archive with unchanged five files and shared exports", "Default package configured in server and global CLI before embedding controls",
       "Public scoped protocol-1 handshake and exact archived RPC schema", "Production CLI option parsing and rejected user-config dependency key",
       "Three CLI disable/reload cycles retain server epoch", "Owned real slot/listener/timer cleanup after abort, repeated cleanup and partial setup failure",
+      "A canceled first CLI handshake recovers to an actual production controller through a second scoped RPC",
       "Invalid epoch/location/workspace/version/protocol response controls", "Server unload removes RPC and reload creates new epoch",
       "Negative model/review POST and permission/execution event windows"],
-    limits: ["Phase 1 lifecycle shell only; no reviewer/controller/approval/notification or history integration is exercised.",
+    limits: ["Lifecycle and recovered production-controller construction only; no permission review, approval, notification or history activity is exercised.",
       "One standalone host and terminal; no shared-service, multi-terminal, disconnect or authoritative deletion proof.",
       "Default CLI is loaded through global configuration; its inert setup has no public per-plugin completion observer.",
       "Response mismatch controls alter a real public handshake response in the fixture wrapper, not the server implementation.",
+      "Startup recovery injects a first client-side read held until its real production timeout; it does not delay host initialization or exercise an active-runtime reconnect.",
       "Current with* helpers do not compose with withPluginSetup, so injected state.dependencies identity is not observable through the archive seam.",
       "No worker is acquired before production storage integration; the exported legacy worker probe is not production history coverage."] })
   console.log(`PASS V2 production archive lifecycle: ${artifacts}`)

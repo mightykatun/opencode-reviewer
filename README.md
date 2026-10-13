@@ -228,6 +228,10 @@ descendants. The setting is saved for resume. Both commands are also in the comm
 palette. Disabling stops unapproved reviews and countdowns while native permission
 controls remain available. Already-approved fast-mode reports finish in the background.
 
+At startup, the reviewer retries timed-out or not-yet-available companion handshakes
+for up to 10 seconds. If it remains unavailable, history and notifications still work;
+reload the plugin to try again. Invalid handshake data is not retried.
+
 If the server reconnects or the companion is replaced, reviews and auto-approval
 stop. Reload the plugin or restart OpenCode to resume. This keeps cached permissions
 from the old connection separate from the new one.
