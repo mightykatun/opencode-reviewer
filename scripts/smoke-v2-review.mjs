@@ -830,7 +830,7 @@ const limits = [
       : dialogCase ? "Stock command.palette.show owns a real native modal. Normal and fast automatic replies proceed underneath it without closing it; final report and usage are verified in SQLite. No other modal-family acceptance."
       : visibilityLoss ? "One actual normal countdown continues through native sidebar hide or a real 160x8 tmux window. A single native once reply and saved report occur without restoring presentation first. No other geometry-family acceptance."
       : hiddenComplete ? "A never-displayed normal report completes on a real child route and approves after its delay without returning to root. SQLite verifies the saved report and aggregates. No descendant-owned permission queue acceptance."
-      : keyboardMouseOffCase ? "Two real automatic requests with configured mouse on, then disable mouse via its public setter only after both entries save and no request is pending. Real palette/history input, exact two-entry Left/Right selection and Up/Down/PageUp/PageDown scroll use the long second fixed reviewer response. The mounted production history view proves mouse-off keyboard ownership only after genuine native FRAME geometry. Input ownership is independent of approval. No synthesized paint/hits, statistics dialog or multi-client acceptance."
+      : keyboardMouseOffCase ? "Two real automatic requests with configured mouse on, then disable mouse via its public setter only after both entries save and no request is pending. Real palette/history input, legacy Alt+H toggling, untouched BS/DEL prompt editing, exact two-entry Left/Right selection and Up/Down/PageUp/PageDown scroll use the long second fixed reviewer response. The mounted production history view proves mouse-off keyboard ownership only after genuine native FRAME geometry. Input ownership is independent of approval. No synthesized paint/hits, statistics dialog or multi-client acceptance."
       : coverCase ? "Two real root-owned native shell permissions, two real reviewer POSTs and worker-saved validated automatic entries. Public production history stays selected on the first entry while normal or fast automatic approval proceeds. No descendant-owned queue, offline deletion, statistics dialog, notification or multi-client acceptance."
      : historyCase ? "History/statistics acceptance is one actual automatic saved entry and its real read-only SQLite aggregates, public command browsing and native dialog. Child history invocation is disabled; root return explicitly reopens the same saved entry. No approval while browsing history, offline deletion, multiple entries or multi-client acceptance."
     : notificationCase ? "Production host with an injected desktop boundary only: one actual fast native approval, retained SSE response, approved banner and lease-based simulated clicks, including revealing a deliberately hidden native sidebar for the retained report. No real GNOME activation, desktop processes, audio, live-provider latency, advisory/unsafe attention, reminders or multi-request queue acceptance. Exact-key history selection is observed without a competing newer entry; multi-entry not-latest behavior is not accepted by this single-entry fixture."
@@ -1766,19 +1766,41 @@ try {
           } catch { return false }
         }, 15000)
         await saveCapture("history-keyboard-mouse-off-latest")
-        // Legacy tmux C-h is byte 0x08, which native OpenTUI treats as Backspace.
-        // Send the actual xterm modifyOtherKeys encoding for an unambiguous Ctrl+H.
-        runtime.tmux("send-keys", "-t", "v2-review", "-l", "\x1b[27;5;104~")
-        await until("Ctrl+H closes mouse-off history", async record => record?.mode === "base"
-          && !capture().includes("Analysis history") && !(await coverState()).history.open)
-        runtime.tmux("send-keys", "-t", "v2-review", "-l", "\x1b[27;5;104~")
-        await until("Ctrl+H reopens the latest saved report with mouse off", async record => {
-          try {
-            const history = await selected(2, record, capture())
-            assert.equal(history.scroll, 0)
-            return history
-          } catch { return false }
-        }, 15000)
+         // Actual legacy Alt+H requires no extended keyboard protocol. Do not
+         // substitute encoded Ctrl+H, which hid the ordinary-terminal failure.
+         runtime.tmux("send-keys", "-t", "v2-review", "-l", "\x1bh")
+         await until("Alt+H closes mouse-off history", async record => record?.mode === "base"
+           && !capture().includes("Analysis history") && !(await coverState()).history.open)
+         let promptText = "V2_HISTORY_INPUT_ABC"
+         runtime.tmux("send-keys", "-t", "v2-review", "-l", promptText)
+         await until("native prompt accepts unsent text", () => capture().includes(promptText))
+         coverEvidence.keyboard.editing = []
+         for (const [byte, expected] of [["\x08", "V2_HISTORY_INPUT_AB"], ["\x7f", "V2_HISTORY_INPUT_A"]]) {
+           const before = promptText
+           runtime.tmux("send-keys", "-t", "v2-review", "-l", byte)
+           await until("native Backspace byte " + byte.charCodeAt(0) + " edits rather than opening history", async record =>
+             record?.mode === "base" && capture().includes(expected) && !capture().includes(before)
+               && !capture().includes("Analysis history") && !(await coverState()).history.open)
+           promptText = expected
+           coverEvidence.keyboard.editing.push({ byte: byte.charCodeAt(0), before, after: expected })
+           await negativeWindow("Backspace keeps native prompt ownership without new work", [], replies, markerLine.repeat(2), 2,
+             1500, async (record, screen) => {
+               assert.equal(record.mode, "base")
+               assert.ok(screen.includes(expected) && !screen.includes(before))
+               assert.equal((await coverState()).history.open, false)
+               assert.deepEqual(await savedPair(), coverEvidence.pair)
+               assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 4)
+             })
+         }
+         runtime.tmux("send-keys", "-t", "v2-review", "-l", "\x1bh")
+         await until("Alt+H reopens the latest saved report with mouse off and preserves the unsent prompt", async record => {
+           try {
+             const history = await selected(2, record, capture())
+             assert.equal(history.scroll, 0)
+             assert.ok(capture().includes(promptText))
+             return history
+           } catch { return false }
+         }, 15000)
         for (const [key, rank] of [["Left", 1], ["Right", 2]]) {
           const prior = (await coverState()).history
           runtime.tmux("send-keys", "-t", "v2-review", key)
@@ -1822,6 +1844,7 @@ try {
              assert.equal(record.mouse, false)
              assert.doesNotMatch(screen, /Analysis history|Permission analysis/)
              assert.equal((await coverState()).historyInput.keyboard, false, "Closed history no longer owns keyboard input")
+             assert.ok(screen.includes(promptText), "History navigation preserves the unsent native prompt")
             assert.deepEqual(await savedPair(), coverEvidence.pair)
             assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 4)
           })

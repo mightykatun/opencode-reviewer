@@ -136,7 +136,7 @@ for (const unavailable of ["configuration", "companion"] as const) {
   test(`history/statistics remain available without review ${unavailable}, using current indexed samples`, async t => {
     const f = fixture(unavailable)
     t.after(async () => { await f.life.stop(); await f.life.settled() })
-    assert.deepEqual(f.commands.filter(value => value.id).map(value => value.id), ["reviewer.lifetime", "reviewer.history"])
+    assert.deepEqual(f.commands.filter(value => value.id).map(value => value.id), ["reviewer.lifetime", "reviewer.history", "reviewer.history.toggle"])
     assert.deepEqual(f.slots.map(slot => slot.prepend ?? slot.append), ["sidebar.content", "app"])
     assert.equal(f.command("reviewer.history").enabled!(), true)
     assert.equal(f.command("reviewer.lifetime").enabled!(), true)
@@ -162,16 +162,20 @@ for (const unavailable of ["configuration", "companion"] as const) {
   })
 }
 
-test("Ctrl+H toggles history only on an active root in base mode without changing UI commands", async t => {
+test("Alt+H toggles history only on an active root in base mode, with a configurable named binding and no Backspace interception", async t => {
   const f = fixture()
   t.after(() => f.life.stop())
-  const layer = f.layers.find(value => value.commands?.some(command => command.bind === "ctrl+h"))!
+  const layer = f.layers.find(value => value.commands?.some(command => command.id === "reviewer.history.toggle"))!
   const toggle = layer.commands![0]
   assert.ok(toggle)
   assert.equal(layer.mode, "base")
   assert.equal(layer.priority, 100)
-  assert.equal(toggle.id, undefined)
+  assert.equal(toggle.id, "reviewer.history.toggle")
+  assert.equal(toggle.title, "Reviewer: Toggle report history")
+  assert.equal(toggle.bind, "alt+h")
   assert.equal(toggle.palette, undefined)
+  assert.equal(toggle.slash, undefined)
+  assert.ok(f.commands.every(command => !["ctrl+h", "backspace", "ctrl+backspace"].includes(String(command.bind))))
   assert.equal(f.command("reviewer.history").bind, undefined)
   toggle.run()
   assert.equal(f.runtime.records.state().open, true)

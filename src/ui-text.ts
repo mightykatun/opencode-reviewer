@@ -41,6 +41,7 @@ export const uiText = {
   },
   commands: {
     history: "Reviewer: Report history",
+    toggleHistory: "Reviewer: Toggle report history",
     category: "Reviewer",
     enable: "Reviewer: Enable for conversation",
     disable: "Reviewer: Disable for conversation",

@@ -250,6 +250,8 @@ from the old connection separate from the new one.
 
 Use `/reviewer-history` or **Reviewer: Report history** in the command palette to
 open the newest saved report for the current conversation and its descendants.
+**Alt+H** toggles report history from the main conversation. Its shortcut can be
+remapped with `keybinds["reviewer.history.toggle"]` in global `cli.json`.
 Left/Right or the arrow buttons select older/newer entries; Up/Down and
 PageUp/PageDown scroll. Close or Escape closes history. Repeating the command
 returns to the newest report. History remains available with review disabled or

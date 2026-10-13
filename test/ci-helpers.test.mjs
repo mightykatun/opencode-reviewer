@@ -109,16 +109,25 @@ test("CI chooses the newest stable V2 regardless of dist-tags, excluding prerele
   assert.throws(() => latestV2Host(malformed))
 })
 
-test("history fixture sends native Ctrl+H rather than tmux's ambiguous Backspace byte", async () => {
+test("history uses portable Alt+H input and retains both legacy Backspace encodings", async () => {
   const { parseKeypress } = await import("@opentui/core")
-  const legacy = parseKeypress("\x08"), extended = parseKeypress("\x1b[27;5;104~")
-  assert.equal(legacy.name, "backspace")
-  assert.equal(legacy.ctrl, false)
-  assert.equal(extended.name, "h")
-  assert.equal(extended.ctrl, true)
+  for (const sequence of ["\x1bh", "\x1b[27;3;104~", "\x1b[104;3u"]) {
+    const key = parseKeypress(sequence, { useKittyKeyboard: true })
+    assert.equal(key.name, "h")
+    assert.equal(key.meta, true)
+    assert.equal(key.ctrl, false)
+    assert.equal(key.shift, false)
+  }
+  for (const sequence of ["\x08", "\x7f"]) {
+    const key = parseKeypress(sequence)
+    assert.equal(key.name, "backspace")
+    assert.equal(key.ctrl, false)
+    assert.equal(key.meta, false)
+  }
   const fixture = await readFile(new URL("../scripts/smoke-v2-review.mjs", import.meta.url), "utf8")
-  assert.equal(fixture.split('runtime.tmux("send-keys", "-t", "v2-review", "-l", "\\x1b[27;5;104~")').length - 1, 2)
-  assert.doesNotMatch(fixture, /runtime\.tmux\("send-keys", "-t", "v2-review", "C-h"\)/)
+  assert.equal(fixture.split('runtime.tmux("send-keys", "-t", "v2-review", "-l", "\\x1bh")').length - 1, 2)
+  assert.match(fixture, /\[\["\\x08", "V2_HISTORY_INPUT_AB"\], \["\\x7f", "V2_HISTORY_INPUT_A"\]\]/)
+  assert.doesNotMatch(fixture, /runtime\.tmux\("send-keys", "-t", "v2-review", "C-h"\)|\\x1b\[27;5;104~/)
 })
 
 test("connection barrier retires missed startup probes and requires exact real birth and deletion", async () => {

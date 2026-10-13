@@ -98,7 +98,8 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
     run: () => { const session = selected(); if (session) browser.open(session) },
   }] }))
   context.keymap.layer(() => ({ priority: 100, mode: "base", enabled: () => !!selected(), commands: [{
-    bind: "ctrl+h",
+    id: "reviewer.history.toggle", title: uiText.commands.toggleHistory, group: uiText.commands.category,
+    bind: "alt+h",
     run: () => {
       const session = selected()
       if (!session || context.keymap.mode.current() !== "base") return

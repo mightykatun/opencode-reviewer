@@ -316,6 +316,10 @@ existing user directories.
   actual native queue ownership. Preserve native keyboard input ownership, FRAME
   geometry, scroll restoration and real hit tests for UI behavior only.
   Sanitize report text and streamed prefixes through `displayText`.
+- On 2026-10-14 the user selected Alt+H for history rather than reserving legacy
+  Ctrl+H/Backspace byte 0x08. Keep both BS and DEL native prompt editing untouched.
+  The base-mode, root-only toggle is the configurable public command
+  `reviewer.history.toggle`; palette/slash opening still selects the newest report.
 - Returning to root must not re-review, restart timers, rearm canceled requests or
   resurrect completed reports. Verify route ancestry and native priority independently
   of panel mounting; never fabricate visible IDs, FRAME events or hit-test proof.
