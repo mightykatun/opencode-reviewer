@@ -7,6 +7,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { requireReleaseCI } from "../scripts/release-ci.mjs"
 import { runtimeSummary } from "../scripts/runtime-summary.mjs"
+import { latestV2Host, verifyInstalledHost } from "../scripts/ci-host.mjs"
 
 const identity = { repository: "owner/repo", commit: "a".repeat(40), branch: "main", token: "fixture" }
 const run = overrides => ({ id: 10, head_sha: identity.commit, head_branch: "main", event: "push",
@@ -88,4 +89,33 @@ test("runtime summary CLI tolerates pre-start failure and incomplete directories
   assert.equal(await readFile(file, "utf8"), data)
   await writeFile(file, "{")
   assert.throws(invoke)
+})
+
+test("CI chooses the newest stable V2 regardless of dist-tags, excluding prereleases and V3", () => {
+  const entry = version => ({ name: "@opencode/cli-linux-x64", version,
+    dist: { integrity: `sha512-${"a".repeat(86)}==`, tarball: `https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-${version}.tgz` } })
+  const metadata = { name: "@opencode/cli-linux-x64", "dist-tags": { latest: "3.0.0" },
+    versions: Object.fromEntries(["2.0.9", "2.0.10", "2.1.0", "2.2.0-beta.1", "3.0.0"].map(version => [version, entry(version)])) }
+  const selected = latestV2Host(metadata)
+  assert.equal(selected.version, "2.1.0")
+  const installed = { ...selected, resolved: selected.tarball }
+  const lock = value => ({ packages: { "node_modules/@opencode/cli-linux-x64": value } })
+  verifyInstalledHost(lock(installed), selected)
+  for (const key of ["version", "integrity", "resolved"]) assert.throws(() => verifyInstalledHost(lock({ ...installed, [key]: "wrong" }), selected))
+  assert.throws(() => latestV2Host({ ...metadata, versions: { "3.0.0": entry("3.0.0") } }), /No stable OpenCode V2/)
+  const malformed = structuredClone(metadata)
+  malformed.versions["2.1.0"].dist.integrity = "sha1-unverified"
+  assert.throws(() => latestV2Host(malformed))
+})
+
+test("history fixture sends native Ctrl+H rather than tmux's ambiguous Backspace byte", async () => {
+  const { parseKeypress } = await import("@opentui/core")
+  const legacy = parseKeypress("\x08"), extended = parseKeypress("\x1b[27;5;104~")
+  assert.equal(legacy.name, "backspace")
+  assert.equal(legacy.ctrl, false)
+  assert.equal(extended.name, "h")
+  assert.equal(extended.ctrl, true)
+  const fixture = await readFile(new URL("../scripts/smoke-v2-review.mjs", import.meta.url), "utf8")
+  assert.equal(fixture.split('runtime.tmux("send-keys", "-t", "v2-review", "-l", "\\x1b[27;5;104~")').length - 1, 2)
+  assert.doesNotMatch(fixture, /runtime\.tmux\("send-keys", "-t", "v2-review", "C-h"\)/)
 })

@@ -5,7 +5,7 @@ import { createServer } from "node:http"
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
-import { runtimeArguments } from "./runtime-inventory.mjs"
+import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
@@ -57,10 +57,10 @@ function cliSetup(ctx) {
   return async () => { off(); abort.abort(); await loop; record.cleaned = true; await publish(); await publisher.close() }
 }
 
-const { hostVersions } = runtimeArguments("smoke-v2-native-queue.mjs")
+runtimeArguments("smoke-v2-native-queue.mjs")
 const host = process.env.OPENCODE_BIN ?? "opencode"
 const version = execFileSync(host, ["--version"], { encoding: "utf8", timeout: 10000 }).trim()
-assert.ok(hostVersions.includes(version), "An explicitly selected verification host")
+assertV2HostVersion(version)
 const root = path.resolve(import.meta.dirname, "..")
 await mkdir(path.join(root, ".runtime"), { recursive: true })
 const artifacts = await mkdtemp(path.join(root, ".runtime/v2-native-queue-"))

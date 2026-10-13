@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readFile, readdir, lstat, writeFile } from "node:fs/pro
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
-import { runtimeArguments } from "./runtime-inventory.mjs"
+import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
@@ -283,7 +283,7 @@ async function monitorSetup(ctx, reviewerState) {
   }
 }
 
-const { scenario, hostVersions } = runtimeArguments("smoke-v2-invocation.mjs")
+const { scenario } = runtimeArguments("smoke-v2-invocation.mjs")
 const root = path.resolve(import.meta.dirname, "..")
 await mkdir(path.join(root, ".runtime"), { recursive: true })
 const artifacts = await mkdtemp(path.join(root, ".runtime/v2-invocation-"))
@@ -432,7 +432,7 @@ const limits = [
 ]
 try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
-  assert.ok(hostVersions.includes(version), "An explicitly selected verification host")
+  assertV2HostVersion(version)
   await Promise.all([inputs, external, observationDirectory, path.dirname(cliPath)].map(directory => mkdir(directory, { recursive: true })))
   execFileSync("git", ["init", "--quiet", project], { env, timeout: 10000 })
   await writeFile(path.join(inputs, "fixture.py"), 'with open("executed", "a") as output:\n    output.write("PHASE2 UNEXPECTED EXECUTION\\n")\n')

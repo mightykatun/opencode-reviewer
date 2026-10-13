@@ -7,16 +7,16 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { transformAsync } from "@babel/core"
-import { runtimeArguments } from "./runtime-inventory.mjs"
+import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
-const { scenario, hostVersions } = runtimeArguments("smoke-v2-root-presentation.mjs")
+const { scenario } = runtimeArguments("smoke-v2-root-presentation.mjs")
 assert.ok(["mouse-on", "mouse-off"].includes(scenario))
 const mouse = scenario === "mouse-on"
 const root = path.resolve(import.meta.dirname, ".."), host = process.env.OPENCODE_BIN ?? "opencode"
 const version = execFileSync(host, ["--version"], { encoding: "utf8", timeout: 10000 }).trim()
-assert.ok(hostVersions.includes(version), "An explicitly selected verification host")
+assertV2HostVersion(version)
 await mkdir("/tmp/opencode", { recursive: true })
 await mkdir(path.join(root, ".runtime"), { recursive: true })
 const temp = await mkdtemp("/tmp/opencode/reviewer-v2-root-presentation-")

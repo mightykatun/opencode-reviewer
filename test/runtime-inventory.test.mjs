@@ -87,7 +87,7 @@ test("V2 acceptance includes each production review case exactly once and retain
   assert.deepEqual(reviews.map(value => value.scenario).sort(), expectedReviews)
   assert.deepEqual([...runtimeInventory["smoke-v2-review.mjs"].scenarios].sort(), expectedReviews)
   assert.ok(reviews.every(value => value.classification === "production-host"))
-  assert.ok(cases.every(value => value.hostVersion === "opencode v2.0.26" && value.hosts <= 2))
+  assert.ok(cases.every(value => value.hostMajor === 2 && value.hosts <= 2))
   assert.deepEqual(profilePlan("ci").map(value => value.id).sort(), cases.map(value => value.id).sort(),
     "Current CI contains the exact locally verified acceptance selection")
   for (const id of ["smoke-v2-root-presentation/mouse-on", "smoke-v2-root-presentation/mouse-off", "smoke-v2-native-queue/default"])
@@ -105,16 +105,13 @@ test("V2 acceptance includes each production review case exactly once and retain
   assert.ok(notifications.every(value => value.classification === "production-host" && value.requires.includes("bundle")))
 })
 
-test("fixture verification pins are distinct from plugin activation and require one actual binary for the entire run", () => {
+test("fixtures accept stable V2 releases without a host-version allowlist", () => {
   const ci = profilePlan("ci")
-  for (const version of ["opencode v2.0.26", "opencode v2.0.27"]) assert.doesNotThrow(() => assertRuntimeHostVersion(ci, version))
-  for (const version of ["opencode v2.0.28", "opencode v2.0.27-beta.1", "2.0.27"])
-    assert.throws(() => assertRuntimeHostVersion(ci, version), /unsupported/)
+  for (const version of ["opencode v2.0.28", "opencode v2.99.99"]) assert.doesNotThrow(() => assertRuntimeHostVersion(ci, version))
+  for (const version of ["opencode v3.0.0", "opencode v2.0.27-beta.1", "2.0.27"])
+    assert.throws(() => assertRuntimeHostVersion(ci, version), /stable OpenCode V2/)
   const historical = runtimePlan("smoke-v2-direct-tools.mjs")
-  assert.throws(() => assertRuntimeHostVersion([...ci, historical], "opencode v2.0.27"), /unsupported/)
-  const copy = runtimePlan("smoke-v2-review.mjs", ["normal"])
-  copy.hostVersions.push("opencode v9.0.0")
-  assert.deepEqual(runtimePlan("smoke-v2-review.mjs", ["normal"]).hostVersions, ["opencode v2.0.26", "opencode v2.0.27"])
+  assert.doesNotThrow(() => assertRuntimeHostVersion([...ci, historical], "opencode v2.99.99"))
 })
 
 test("listing and all profile planning work with no host, fixture directory, or bundle access", () => {
@@ -127,7 +124,7 @@ test("listing and all profile planning work with no host, fixture directory, or 
   const ci = profilePlan("ci")
   for (const file of ["smoke-v2-lifecycle", "smoke-v2-invocation", "smoke-v2-root-presentation", "smoke-v2-native-queue"])
     assert.ok(ci.some(item => item.id.startsWith(file + "/")))
-  assert.ok(ci.every(item => item.hostVersion === "opencode v2.0.26" && item.hosts <= 2))
+  assert.ok(ci.every(item => item.hostMajor === 2 && item.hosts <= 2))
   assert.ok(ci.some(item => item.id === "smoke-v2-invocation/review"))
 })
 
@@ -137,7 +134,7 @@ test("only V2 host fixtures and profiles remain; permissions selects invocation 
   for (const name of ["smoke.mjs", "smoke-permissions.mjs", "audit-usage-history.mjs"]) assert.throws(() => runtimePlan(name), /Unknown runnable fixture/)
   for (const [file, entry] of Object.entries(runtimeInventory)) if (entry.hosts) {
     assert.ok(file.startsWith("smoke-v2-"))
-    assert.equal(entry.hostVersion, "opencode v2.0.26")
+    assert.equal(entry.hostMajor, 2)
   }
   assert.deepEqual(profilePlan("v2-permissions").map(item => item.id), ["smoke-v2-invocation/default", "smoke-v2-invocation/review",
     "smoke-v2-review/normal-edit", "smoke-v2-review/normal-directory-edit"])

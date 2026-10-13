@@ -86,6 +86,7 @@ jobs:
           sparse-checkout: |
             /scripts/release-version.mjs
             /scripts/release-ci.mjs
+            /scripts/ci-host.mjs
             /scripts/runtime-summary.mjs
             /scripts/lint-workflows.sh
             /scripts/test-helpers.mjs

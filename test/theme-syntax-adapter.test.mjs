@@ -5,9 +5,9 @@ import path from "node:path"
 import { themeSyntaxOnlyPlugin, verifyThemeSyntaxInputs, verifyThemeSyntaxBuild } from "../scripts/theme-syntax-adapter.mjs"
 
 const manifest = {
-  name: "@opencode/theme", version: "2.0.26",
+  name: "@opencode/theme", version: "2.0.28",
   exports: { "./tui": { import: "./dist/tui/index.js" } },
-  dependencies: { "@opentui/core": "0.5.17", effect: "4.0.0-rc.112" },
+  dependencies: { "@opentui/core": "0.5.17", effect: "4.0.1" },
 }
 // Independent published-input expectations, not imported adapter constants.
 const digests = {
@@ -18,7 +18,8 @@ const digests = {
 
 test("theme adapter admits only the reviewed package identity and exact public build inputs", () => {
   verifyThemeSyntaxInputs(manifest, digests)
-  for (const mutate of [m => { m.name = "other" }, m => { m.version = "2.0.27" },
+  verifyThemeSyntaxInputs({ ...manifest, version: "2.99.99" }, digests)
+  for (const mutate of [m => { m.name = "other" }, m => { m.version = "3.0.0" },
     m => { m.exports["./tui"].import = "./private.js" }, m => { delete m.exports },
     m => { m.dependencies.effect = "other" }, m => { m.dependencies["@opentui/core"] = "other" }]) {
     const changed = structuredClone(manifest); mutate(changed)

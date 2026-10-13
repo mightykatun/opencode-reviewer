@@ -65,8 +65,12 @@
 
 ### Focused V2 host checks (build first)
 
-Set `OPENCODE_BIN` to a stock verification binary (2.0.26 or 2.0.27).
-Fixture pins are test targets, not a plugin runtime version allowlist.
+Always develop and verify against the latest stable OpenCode V2 (`2.x`) release.
+Do not pin OpenCode to a particular patch/minor release or add a host-version
+allowlist. CI resolves the newest stable V2 once per run, verifies npm archive
+integrity, and records the exact resolved version. Set `OPENCODE_BIN` to that
+stock release for local checks. Keep lockfiles for reproducible dependency installs,
+but refresh OpenCode dependencies to the latest stable V2 when doing development.
 All commands below use the installed five-file archive and production runtime.
 
 | Area | Command |
@@ -107,9 +111,9 @@ existing user directories.
   On 2026-10-13 the user explicitly rejected a runtime host-version allowlist.
   Do not gate activation, companion admission or evidence reads on version numbers.
   Preserve protocol/location/epoch, mandatory evidence and approval eligibility checks;
-  incompatible public API data stays manual rather than being guessed. Test pins
-  remain separate from runtime activation. Development uses pinned
-  `@opencode/plugin`, `@opencode/client` and
+  incompatible public API data stays manual rather than being guessed. Development
+  and CI target the latest stable V2, not a fixed host release. Development uses V2
+  ranges for `@opencode/plugin`, `@opencode/client` and
   `@opencode/theme`. OpenTUI is 0.5.17 and Solid is 1.9.15, matching the host.
   Use public APIs/slots, never private UI imports or native approval-dialog patches.
 - Package and plugin ID are `opencode-reviewer`. The build starts at `src/plugin.ts`;
@@ -120,7 +124,7 @@ existing user directories.
   restart; config/custom prompt changes require restart.
 - `scripts/build.mjs` uses Solid's **universal OpenTUI** JSX transform, not React or
   Solid DOM. TypeScript only checks types. The ESM bundle leaves Solid/OpenTUI/OpenCode
-  external and embeds prompts, sounds, the MP3 decoder, the pinned theme helper
+  external and embeds prompts, sounds, the MP3 decoder, the reviewed theme helper
   and a CJS history worker. Terminal code is an opaque base64 CJS payload loaded
   only in the CLI role, with fixed public-module mappings. Sounds and worker source
   are single fixed outer mappings injected into the payload; the Linux/audio backend

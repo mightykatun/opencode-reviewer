@@ -56,7 +56,7 @@ if (args[0] === "--list") {
         const result = await executeFixture(process.execPath, [item.entrypoint, ...item.args], { cwd: root,
           signal: abort.signal, timeoutMs: item.timeoutMs, output: (chunk, channel) => { output.push(chunk); process[channel].write(chunk) } })
         await writeFile(log, Buffer.concat(output))
-        results.push({ ...item, defaultHostVersion: item.hostVersion, hostVersion: item.hosts ? hostVersion : item.hostVersion,
+        results.push({ ...item, hostVersion: item.hosts ? hostVersion : undefined,
           ...result, durationMs: Date.now() - start, log,
           invocation: [process.execPath, item.entrypoint, ...item.args],
            status: result.code === 0 && !result.timedOut && !result.interrupted ? "passed" : "failed" })

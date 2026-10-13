@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, readFile, rename, readdir, lstat, writeFile } from "nod
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
-import { runtimeArguments } from "./runtime-inventory.mjs"
+import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
 import { readObservation } from "./smoke-observations.mjs"
 
@@ -239,7 +239,7 @@ let registry
 const registryRequests = []
 try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
-  assert.equal(version, "opencode v2.0.26")
+  assertV2HostVersion(version)
   const source = path.join(temp, "package-source"), install = path.join(temp, "installed")
   await mkdir(path.join(source, "dist"), { recursive: true })
   await mkdir(install)

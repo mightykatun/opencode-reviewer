@@ -7,7 +7,7 @@ import { createServer } from "node:http"
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
-import { runtimeArguments } from "./runtime-inventory.mjs"
+import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
@@ -138,7 +138,7 @@ const { scenario } = runtimeArguments("smoke-v2-delegation.mjs")
 assert.ok(["initial-resume", "coalesced"].includes(scenario))
 const host = process.env.OPENCODE_BIN ?? "opencode"
 const version = execFileSync(host, ["--version"], { encoding: "utf8", timeout: 10000 }).trim()
-assert.equal(version, "opencode v2.0.26")
+assertV2HostVersion(version)
 const root = path.resolve(import.meta.dirname, "..")
 await mkdir(path.join(root, ".runtime"), { recursive: true })
 const artifacts = await mkdtemp(path.join(root, `.runtime/v2-delegation-${scenario}-`))

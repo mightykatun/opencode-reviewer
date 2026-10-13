@@ -2,8 +2,8 @@ import { createHash } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 
-// These are the published 2.0.26 bytes, not a runtime host-version gate.
-// Review all three files before updating the adapter for another build pin.
+// Reviewed upstream source fingerprints, not an OpenCode version allowlist.
+// Review all three files when newer upstream source changes these inputs.
 const fingerprints = {
   "index.js": "70f5649897f56c66ab0cbf095915c68f6ac7a1e2089ff215504d0d77a347e317",
   "schema.js": "36bbc83a5f0dc13013aea26463a11accfbaff84b0e2fbaea22fea8099b703c19",
@@ -11,10 +11,10 @@ const fingerprints = {
 }
 
 export function verifyThemeSyntaxInputs(manifest, digests) {
-  if (manifest?.name !== "@opencode/theme" || manifest.version !== "2.0.26"
+  if (manifest?.name !== "@opencode/theme" || !/^2\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(manifest.version)
     || manifest.exports?.["./tui"]?.import !== "./dist/tui/index.js"
     || manifest.dependencies?.["@opentui/core"] !== "0.5.17"
-    || manifest.dependencies?.effect !== "4.0.0-rc.112") {
+    || manifest.dependencies?.effect !== "4.0.1") {
     throw new Error("Pinned theme package identity or public barrel changed")
   }
   if (!digests || Object.keys(digests).length !== Object.keys(fingerprints).length) {

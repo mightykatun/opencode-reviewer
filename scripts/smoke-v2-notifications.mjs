@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, readFile, lstat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
-import { runtimeArguments } from "./runtime-inventory.mjs"
+import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
@@ -216,7 +216,7 @@ async function reviewerSetup(ctx) {
   }
 }
 
-const { scenario, hostVersions } = runtimeArguments("smoke-v2-notifications.mjs")
+const { scenario } = runtimeArguments("smoke-v2-notifications.mjs")
 const root = path.resolve(import.meta.dirname, ".."), host = process.env.OPENCODE_BIN ?? "opencode"
 await mkdir(path.join(root, ".runtime"), { recursive: true })
 const artifacts = await mkdtemp(path.join(root, `.runtime/v2-notifications-${scenario}-`))
@@ -385,7 +385,7 @@ const limits = [
 
 try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
-  assert.ok(hostVersions.includes(version), "An explicitly selected stock verification host")
+  assertV2HostVersion(version)
   await mkdir(project); await mkdir(path.dirname(cliPath), { recursive: true })
   execFileSync("git", ["init", "--quiet", project], { env, timeout: 10000 })
   await writeFile(path.join(project, "fixture.py"), script)

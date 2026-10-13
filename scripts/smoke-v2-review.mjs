@@ -17,7 +17,7 @@ import { chmod, mkdir, mkdtemp, readFile, lstat, writeFile } from "node:fs/promi
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
-import { runtimeArguments } from "./runtime-inventory.mjs"
+import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 import { activatePalette } from "./smoke-ui.mjs"
@@ -335,7 +335,7 @@ async function observedReviewerSetup(ctx) {
   }
 }
 
-const { scenario, hostVersions } = runtimeArguments("smoke-v2-review.mjs")
+const { scenario } = runtimeArguments("smoke-v2-review.mjs")
 const streaming = scenario !== "advisory", automatic = scenario !== "advisory", fast = scenario.startsWith("fast")
 const defaultHomeCase = scenario === "normal-history-default-home"
 const historyCase = scenario === "normal-history" || defaultHomeCase
@@ -829,7 +829,7 @@ const limits = [
 ]
 try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
-  assert.ok(hostVersions.includes(version), "An explicitly selected verification host")
+  assertV2HostVersion(version)
   await Promise.all([inputs, path.dirname(cliPath)].map(directory => mkdir(directory, { recursive: true })))
   execFileSync("git", ["init", "--quiet", project], { env, timeout: 10000 })
   await writeFile(path.join(inputs, "fixture.py"), script)
@@ -1698,10 +1698,12 @@ try {
           } catch { return false }
         }, 15000)
         await saveCapture("history-keyboard-mouse-off-latest")
-        runtime.tmux("send-keys", "-t", "v2-review", "C-h")
+        // Legacy tmux C-h is byte 0x08, which native OpenTUI treats as Backspace.
+        // Send the actual xterm modifyOtherKeys encoding for an unambiguous Ctrl+H.
+        runtime.tmux("send-keys", "-t", "v2-review", "-l", "\x1b[27;5;104~")
         await until("Ctrl+H closes mouse-off history", async record => record?.mode === "base"
           && !capture().includes("Analysis history") && !(await coverState()).history.open)
-        runtime.tmux("send-keys", "-t", "v2-review", "C-h")
+        runtime.tmux("send-keys", "-t", "v2-review", "-l", "\x1b[27;5;104~")
         await until("Ctrl+H reopens the latest saved report with mouse off", async record => {
           try {
             const history = await selected(2, record, capture())

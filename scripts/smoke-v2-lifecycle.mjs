@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readFile, readdir, lstat, writeFile } from "node:fs/pro
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
-import { runtimeArguments } from "./runtime-inventory.mjs"
+import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
@@ -265,7 +265,7 @@ async function observedSetup(ctx) {
   }
 }
 
-const { hostVersions } = runtimeArguments("smoke-v2-lifecycle.mjs")
+runtimeArguments("smoke-v2-lifecycle.mjs")
 const root = path.resolve(import.meta.dirname, "..")
 await mkdir(path.join(root, ".runtime"), { recursive: true })
 await mkdir("/tmp/opencode", { recursive: true })
@@ -331,7 +331,7 @@ const walk = async (directory, prefix = "") => {
 }
 try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
-  assert.ok(hostVersions.includes(version), "An explicitly selected verification host")
+  assertV2HostVersion(version)
   await mkdir(project)
   await mkdir(observations)
   await mkdir(path.dirname(cliPath), { recursive: true })

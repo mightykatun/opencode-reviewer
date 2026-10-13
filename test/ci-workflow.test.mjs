@@ -26,7 +26,8 @@ test("PR CI is read-only, pinned, and checks the supported development Node floo
   const check = workflow.split("\n  check:\n")[1].split("\n  runtime:\n")[0]
   const commands = [...check.matchAll(/^      - run: (.+)$/gm)].map((match) => match[1])
   assert.deepEqual(commands, ["npm ci --ignore-scripts", "mkdir -p /tmp/opencode", "npm run typecheck && npm test && npm run test:helpers", "npm run check:package",
-    "node --test test/release-artifact-smoke.test.mjs", "npm install --global npm@12.2.0 --ignore-scripts", "node --test test/npm-cli-smoke.test.mjs",
+    "node --test test/release-artifact-smoke.test.mjs", 'npm install --prefix "$RUNNER_TEMP/reviewer-npm" npm@12.2.0 --ignore-scripts --no-audit --no-fund',
+    'echo "$RUNNER_TEMP/reviewer-npm/node_modules/.bin" >> "$GITHUB_PATH"', "node --test test/npm-cli-smoke.test.mjs",
     "sudo apt-get update && sudo apt-get install --yes tmux", "npm run test:runtime-cleanup"])
   const runtime = workflow.split("\n  runtime:\n")[1]
   assert.doesNotMatch(runtime.split("    steps:\n")[0], /\$\{\{\s*runner\./,
@@ -34,14 +35,14 @@ test("PR CI is read-only, pinned, and checks the supported development Node floo
   assert.deepEqual([...runtime.matchAll(/^      - run: (.+)$/gm)].map(m => m[1]), ["npm ci --ignore-scripts",
     "sudo apt-get update && sudo apt-get install --yes tmux git python3",
     'echo "OPENCODE_BIN=$RUNNER_TEMP/reviewer-host/node_modules/@opencode/cli-linux-x64/bin/opencode" >> "$GITHUB_ENV"',
-    'npm install --prefix "$RUNNER_TEMP/reviewer-host" --ignore-scripts --no-audit --no-fund "@opencode/cli-linux-x64@${{ matrix.host }}"',
-    'echo "${{ matrix.sha256 }}  $OPENCODE_BIN" | sha256sum --check',
+    'node scripts/ci-host.mjs resolve',
+    'npm install --prefix "$RUNNER_TEMP/reviewer-host" --ignore-scripts --no-audit --no-fund "@opencode/cli-linux-x64@$OPENCODE_HOST_VERSION"',
+    'node scripts/ci-host.mjs verify "$RUNNER_TEMP/reviewer-host"',
     "npm run build", "node scripts/test-runtime.mjs --profile ci"])
   assert.match(runtime, /if: always\(\)/)
   assert.match(runtime, /path: \.runtime\//)
-  assert.match(runtime, /host: "2\.0\.26"\n\s+sha256: "d9123b9bcdb0a31f7ab9fe9812b58a9dc1768ad6d97e7b276dff1181813218c9"/)
-  assert.match(runtime, /host: "2\.0\.27"\n\s+sha256: "e26aa101cfdc40f0e680baa609ff18f131bbc6b91c60fdc11b2b2e2cba7281a4"/)
-  assert.match(runtime, /name: pinned-host-runtime-\$\{\{ matrix\.host \}\}/)
+  assert.doesNotMatch(runtime, /matrix:|matrix\.host|2\.0\.26|2\.0\.27/)
+  assert.match(runtime, /name: latest-v2-runtime/)
   assert.match(check, /needs: workflows/)
   assert.match(runtime, /needs: workflows/)
   for (const job of [check, runtime]) assert.match(job, /cache: npm\n\s+cache-dependency-path: package-lock\.json/)
@@ -67,7 +68,11 @@ test("normal checks aggregate every pure helper while keeping host and built-pac
   assert.equal(lock.packages[""].engines.node, pkg.engines.node)
   assert.ok(!Object.keys(pkg.devDependencies).some(name => name.startsWith("@opencode-ai/")))
   assert.ok(!Object.keys(lock.packages).some(name => name.includes("node_modules/@opencode-ai/")))
-  for (const name of ["@opencode/plugin", "@opencode/client", "@opencode/theme"]) assert.equal(pkg.devDependencies[name], "2.0.26")
+  for (const name of ["@opencode/plugin", "@opencode/client", "@opencode/theme"]) {
+    assert.equal(pkg.devDependencies[name], "^2.0.0")
+    assert.match(lock.packages[`node_modules/${name}`].version, /^2\.\d+\.\d+$/)
+  }
+  assert.equal(lock.packages["node_modules/@opencode/client"].version, lock.packages["node_modules/@opencode/plugin"].version)
   for (const name of ["@opentui/core", "@opentui/keymap", "@opentui/solid"]) assert.equal(pkg.devDependencies[name], "0.5.17")
   assert.equal(pkg.devDependencies["solid-js"], "1.9.15")
   assert.equal(pkg.overrides.seroval, "1.6.3", "The patched serializer must also override peer-owned installations")
@@ -98,7 +103,7 @@ test("active release validation runs the same helper inventory with a complete s
     "test/release-fixture.mjs", "test/npm-cli-smoke.test.mjs", "package.json", "package-lock.json", "README.md", "AGENTS.md", ".github/workflows/ci.yml"]) {
     assert.ok(policy.includes(`/${file}\n`), `active policy checkout must include ${file}`)
   }
-  for (const file of ["scripts/release-ci.mjs", "scripts/runtime-summary.mjs", "scripts/lint-workflows.sh"])
+  for (const file of ["scripts/release-ci.mjs", "scripts/ci-host.mjs", "scripts/runtime-summary.mjs", "scripts/lint-workflows.sh"])
     assert.ok(policy.includes(`/${file}\n`), `active policy checkout must include ${file}`)
   assert.match(policy, /ref: \$\{\{ github\.workflow_sha \}\}/)
   // Execute the planning entrypoints using only the actual sparse-checkout

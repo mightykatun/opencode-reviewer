@@ -8,7 +8,7 @@ import { createServer } from "node:http"
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
-import { runtimeArguments } from "./runtime-inventory.mjs"
+import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
@@ -205,7 +205,7 @@ const artifacts = await mkdtemp(path.join(root, ".runtime/v2-profile-mapping-"))
 const temp = await mkdtemp("/tmp/opencode/reviewer-v2-profile-mapping-")
 await mkdir(path.join(temp, "state/opencode"), { recursive: true, mode: 0o700 })
 const version = execFileSync(host, ["--version"], { encoding: "utf8", timeout: 10000, env: smokeEnvironment(temp) }).trim()
-assert.equal(version, "opencode v2.0.26")
+assertV2HostVersion(version)
 const project = path.join(temp, "project"), plugin = path.join(temp, "probe")
 await Promise.all([mkdir(project), mkdir(plugin), mkdir(path.join(temp, "config/opencode"), { recursive: true })])
 execFileSync("git", ["init", "--quiet", project], { env: smokeEnvironment(temp) })

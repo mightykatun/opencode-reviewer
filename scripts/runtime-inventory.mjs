@@ -1,8 +1,7 @@
 import assert from "node:assert/strict"
 
 const host = (scenarios, flags = [], extra = {}) => ({ classification: "production-host", scenarios, default: scenarios[0], flags,
-  hostVersion: "opencode v2.0.26", requires: ["linux", "git", "tmux", "bundle"], hosts: 1, timeoutMs: 240000, rules: [], ...extra })
-const acceptanceHostVersions = ["opencode v2.0.26", "opencode v2.0.27"]
+  hostMajor: 2, requires: ["linux", "git", "tmux", "bundle"], hosts: 1, timeoutMs: 240000, rules: [], ...extra })
 
 /** All accepted CLI dimensions. Rules describe supported combinations, not an exhaustive run matrix. */
 export const runtimeInventory = {
@@ -12,16 +11,15 @@ export const runtimeInventory = {
   "smoke-v2-direct-tools.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux"] }),
   "smoke-v2-profile-mapping.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux"] }),
   "smoke-v2-effective-evidence.mjs": host(["shell-rewrite", "skill-reload", "moved-location", "edit-preview"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux"] }),
-  "smoke-v2-root-presentation.mjs": host(["mouse-on", "mouse-off"], [], { classification: "synthetic-host", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux", "babel"] }),
-  "smoke-v2-native-queue.mjs": host(["default"], [], { classification: "synthetic-host", hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux"] }),
+  "smoke-v2-root-presentation.mjs": host(["mouse-on", "mouse-off"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux", "babel"] }),
+  "smoke-v2-native-queue.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux"] }),
   "smoke-v2-delegation.mjs": host(["initial-resume", "coalesced"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux"] }),
   "smoke-v2-companion-package.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux", "npm-pack", "tar", "source"] }),
-  "smoke-v2-lifecycle.mjs": host(["default"], [], { hostVersions: acceptanceHostVersions, requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
-  "smoke-v2-invocation.mjs": host(["default", "review"], [], { hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
+  "smoke-v2-lifecycle.mjs": host(["default"], [], { requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
+  "smoke-v2-invocation.mjs": host(["default", "review"], [], { requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-review.mjs": host(["advisory", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant", "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
-    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit"], [], { hostVersions: acceptanceHostVersions, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
+    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit"], [], { requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
   "smoke-v2-notifications.mjs": host(["manual-handoff", "forms", "execution", "unavailable-review"], [], {
-    hostVersions: acceptanceHostVersions,
     requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"], timeoutMs: 360000 }),
   "smoke-v2-sidebar-state.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux"] }),
   "smoke-notification-desktop.ts": { classification: "interactive", scenarios: ["default"], default: "default", flags: ["all", "sounds", "click", "critical"],
@@ -43,8 +41,7 @@ export function runtimePlan(entrypoint, args = []) {
   if (entry.exactlyOne) assert.equal(flags.filter(f => entry.exactlyOne.includes(f)).length, 1, `Choose one of ${entry.exactlyOne.join(", ")}`)
   return { id: [entrypoint.replace(/\.(mjs|ts)$/, ""), scenario, ...[...flags].sort()].join("/"), entrypoint: `scripts/${entrypoint}`,
     args: [...(scenario === "default" ? [] : [scenario]), ...[...flags].sort().map(f => `--${f}`)], scenario,
-    flags: [...flags].sort(), classification: entry.classification, requires: entry.requires, hostVersion: entry.hostVersion,
-    ...(entry.hostVersions ? { hostVersions: [...entry.hostVersions] } : {}),
+    flags: [...flags].sort(), classification: entry.classification, requires: entry.requires, hostMajor: entry.hostMajor,
     hosts: entry.hosts, timeoutMs: entry.timeoutMs }
 }
 
@@ -54,11 +51,15 @@ export function runtimeArguments(entrypoint, args = process.argv.slice(2)) { ret
 /** One actual binary version must satisfy every selected host fixture. */
 export function assertRuntimeHostVersion(selected, actual) {
   for (const item of selected.filter(item => item.hosts)) {
-    assert.ok(item.hostVersion, "Host fixtures must declare their exact default version")
-    const allowed = item.hostVersions ?? [item.hostVersion]
-    assert.ok(Array.isArray(allowed) && allowed.length && allowed.includes(item.hostVersion), "Host versions must include the exact default version")
-    assert.ok(allowed.includes(actual), `${item.id}: host ${actual} is unsupported; expected ${allowed.join(" or ")}`)
+    assert.equal(item.hostMajor, 2)
+    assertV2HostVersion(actual)
   }
+}
+
+export function assertV2HostVersion(actual) {
+  assert.match(actual, /^opencode v2\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, "A stable OpenCode V2 verification host is required")
+  if (process.env.OPENCODE_HOST_VERSION) assert.equal(actual, `opencode v${process.env.OPENCODE_HOST_VERSION}`,
+    "Fixture host must match the version resolved once for this CI run")
 }
 
 export const runtimeProfiles = {
