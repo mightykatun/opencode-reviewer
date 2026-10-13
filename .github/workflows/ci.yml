@@ -45,8 +45,9 @@ jobs:
       - run: npm run typecheck && npm test && npm run test:helpers
       - run: npm run check:package
       - run: node --test test/release-artifact-smoke.test.mjs
-      - run: npm install --prefix "$RUNNER_TEMP/reviewer-npm" npm@12.2.0 --ignore-scripts --no-audit --no-fund
-      - run: echo "$RUNNER_TEMP/reviewer-npm/node_modules/.bin" >> "$GITHUB_PATH"
+      - run: npm install --global --prefix "$RUNNER_TEMP/reviewer-npm" npm@12.2.0 --ignore-scripts --no-audit --no-fund
+      - run: echo "$RUNNER_TEMP/reviewer-npm/bin" >> "$GITHUB_PATH"
+      - run: echo "NPM_CONFIG_PREFIX=$RUNNER_TEMP/reviewer-npm" >> "$GITHUB_ENV"
       - run: node --test test/npm-cli-smoke.test.mjs
       - run: sudo apt-get update && sudo apt-get install --yes tmux
       - run: npm run test:runtime-cleanup

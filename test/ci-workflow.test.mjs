@@ -26,8 +26,9 @@ test("PR CI is read-only, pinned, and checks the supported development Node floo
   const check = workflow.split("\n  check:\n")[1].split("\n  runtime:\n")[0]
   const commands = [...check.matchAll(/^      - run: (.+)$/gm)].map((match) => match[1])
   assert.deepEqual(commands, ["npm ci --ignore-scripts", "mkdir -p /tmp/opencode", "npm run typecheck && npm test && npm run test:helpers", "npm run check:package",
-    "node --test test/release-artifact-smoke.test.mjs", 'npm install --prefix "$RUNNER_TEMP/reviewer-npm" npm@12.2.0 --ignore-scripts --no-audit --no-fund',
-    'echo "$RUNNER_TEMP/reviewer-npm/node_modules/.bin" >> "$GITHUB_PATH"', "node --test test/npm-cli-smoke.test.mjs",
+    "node --test test/release-artifact-smoke.test.mjs", 'npm install --global --prefix "$RUNNER_TEMP/reviewer-npm" npm@12.2.0 --ignore-scripts --no-audit --no-fund',
+    'echo "$RUNNER_TEMP/reviewer-npm/bin" >> "$GITHUB_PATH"', 'echo "NPM_CONFIG_PREFIX=$RUNNER_TEMP/reviewer-npm" >> "$GITHUB_ENV"',
+    "node --test test/npm-cli-smoke.test.mjs",
     "sudo apt-get update && sudo apt-get install --yes tmux", "npm run test:runtime-cleanup"])
   const runtime = workflow.split("\n  runtime:\n")[1]
   assert.doesNotMatch(runtime.split("    steps:\n")[0], /\$\{\{\s*runner\./,

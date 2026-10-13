@@ -18,6 +18,7 @@ import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
+import { connectionProbe } from "./smoke-connection.mjs"
 import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 import { activatePalette } from "./smoke-ui.mjs"
@@ -1006,16 +1007,10 @@ try {
     host, "--standalone", initial)
   const ready = await until("independent monitor", record => record?.ready && record)
   assert.equal(ready.version, version.slice("opencode v".length))
-  const probe = await command({ type: "connection-probe" })
-  assert.ok(probe.id)
-  const birth = await until("actual native connection probe birth before reviewer activation", record =>
-    record.connectionBirths.find(event => event.data.sessionID === probe.id))
-  assert.equal(birth.data.location.directory, initial)
-  assert.equal(birth.durable.aggregateID, probe.id)
-  await command({ type: "remove-probe", sessionID: probe.id })
-  const deletion = await until("actual native connection probe deletion before reviewer activation", record =>
-    record.connectionDeletes.find(event => event.data.sessionID === probe.id))
-  await publish(path.join(artifacts, "connection-probe.json"), { sessionID: probe.id, birth, deletion, prompted: false })
+  const probe = await connectionProbe({ directory: initial, observe: observations,
+    create: () => command({ type: "connection-probe" }),
+    remove: sessionID => command({ type: "remove-probe", sessionID }) })
+  await publish(path.join(artifacts, "connection-probe.json"), probe)
   await publish(cliPath, cli)
   await until("actual configured production CLI runtime", async () =>
     (await command({ type: "runtime-ready" })).registered)

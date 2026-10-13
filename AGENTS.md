@@ -99,6 +99,10 @@ the separate lifecycle fixture checks startup. Reconnect still revokes an active
 generation, including notification-only fallback. Fixture-owned public memory
 retains actual observations and consumed controls across CLI plugin reloads; it
 cannot supply events or override production behavior.
+Connection barriers may retire missed prompt-free startup probes and create fresh
+owned probes within the same 60-second budget. Admission still requires the exact
+chosen probe's real native birth and deletion; snapshots or sibling events never
+substitute for either observation.
 `npx tsx scripts/smoke-notification-desktop.ts --sounds` is an actual local
 playback check. Report exact fixture runs rather than full-matrix coverage.
 History fixtures use a new private state directory under sticky `/tmp` because

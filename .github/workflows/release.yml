@@ -106,6 +106,7 @@ jobs:
             /scripts/runtime-runner.mjs
             /scripts/test-runtime.mjs
             /scripts/smoke-observations.mjs
+            /scripts/smoke-connection.mjs
             /scripts/smoke-ui.mjs
             /scripts/smoke-v2-mouse-proof.mjs
             /scripts/smoke-v2-contracts.mjs

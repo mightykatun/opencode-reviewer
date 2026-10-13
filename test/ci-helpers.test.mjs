@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url"
 import { requireReleaseCI } from "../scripts/release-ci.mjs"
 import { runtimeSummary } from "../scripts/runtime-summary.mjs"
 import { latestV2Host, verifyInstalledHost } from "../scripts/ci-host.mjs"
+import { connectionProbe } from "../scripts/smoke-connection.mjs"
 
 const identity = { repository: "owner/repo", commit: "a".repeat(40), branch: "main", token: "fixture" }
 const run = overrides => ({ id: 10, head_sha: identity.commit, head_branch: "main", event: "push",
@@ -118,4 +119,35 @@ test("history fixture sends native Ctrl+H rather than tmux's ambiguous Backspace
   const fixture = await readFile(new URL("../scripts/smoke-v2-review.mjs", import.meta.url), "utf8")
   assert.equal(fixture.split('runtime.tmux("send-keys", "-t", "v2-review", "-l", "\\x1b[27;5;104~")').length - 1, 2)
   assert.doesNotMatch(fixture, /runtime\.tmux\("send-keys", "-t", "v2-review", "C-h"\)/)
+})
+
+test("connection barrier retires missed startup probes and requires exact real birth and deletion", async () => {
+  let clock = 0, created = 0
+  const removed = [], directory = "/fixture"
+  const birth = id => ({ data: { sessionID: id, location: { directory } }, durable: { aggregateID: id } })
+  const value = await connectionProbe({ directory,
+    create: async () => ({ id: `probe${++created}` }), remove: async id => { removed.push(id) },
+    observe: async () => ({ connectionBirths: [birth("sibling"), ...(created >= 2 ? [birth("probe2")] : [])],
+      connectionDeletes: removed.map(sessionID => ({ data: { sessionID } })) }),
+  }, { now: () => clock, pause: async ms => { clock += ms } })
+  assert.deepEqual(value.attempts, ["probe1", "probe2"])
+  assert.equal(value.sessionID, "probe2")
+  assert.equal(value.birth.data.sessionID, "probe2")
+  assert.equal(value.deletion.data.sessionID, "probe2")
+  assert.deepEqual(removed, ["probe1", "probe2"])
+})
+
+test("connection barrier never substitutes snapshots, wrong location, missed deletion or late events", async () => {
+  for (const failure of ["absent", "location", "aggregate", "deletion", "late"]) {
+    let clock = 0, creates = 0, removes = 0
+    await assert.rejects(connectionProbe({ directory: "/fixture", create: async () => ({ id: `probe${++creates}` }),
+      remove: async () => { removes++ }, observe: async () => {
+        if (failure === "late") clock = 100
+        return { connectionBirths: failure === "absent" ? [] : [{ data: { sessionID: "probe1",
+          location: { directory: failure === "location" ? "/wrong" : "/fixture" } },
+          durable: { aggregateID: failure === "aggregate" ? "other" : "probe1" } }], connectionDeletes: [] }
+      } }, { timeoutMs: 100, now: () => clock, pause: async ms => { clock += ms } }))
+    assert.equal(creates, 1)
+    assert.equal(removes, 1, "Each owned probe is retired exactly once, including failures")
+  }
 })
