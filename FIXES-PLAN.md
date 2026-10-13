@@ -36,16 +36,16 @@ implementation and fixtures as migration inputs. Keep exactly five package files
 - [x] Narrow unnecessary theme dependency bundling where the public API permits it.
 - [x] Include all notices required by retained bundled dependencies.
 - [x] Verify clean installation, dependency audit, helpers and reproducible five-file package.
-- [ ] Commit verified phase and record evidence.
+- [x] Commit verified phase and record evidence.
 
 ## Phase 3: approval, history input and statistics recovery
 
-- [ ] Preserve Cancel through native preparation and publish Allowing only after dispatch.
-- [ ] Separate mouse-independent keyboard browsing from strict approval-cover proof.
-- [ ] Retry transient Conversation ancestry failures with bounded coalesced ownership.
-- [ ] Correct the live-panel mount/scroll comment.
-- [ ] Add independent regression tests for each behavior.
-- [ ] Verify focused tests, build and relevant installed V2 fixtures.
+- [x] Preserve Cancel through native preparation and publish Allowing only after dispatch.
+- [x] Separate mouse-independent keyboard browsing from strict approval-cover proof.
+- [x] Retry transient Conversation ancestry failures with bounded coalesced ownership.
+- [x] Correct the live-panel mount/scroll comment.
+- [x] Add independent regression tests for each behavior.
+- [x] Verify focused tests, build and relevant installed V2 fixtures.
 - [ ] Commit verified phase and record evidence.
 
 ## Phase 4: evidence completeness and large-record boundaries
@@ -127,3 +127,27 @@ databases remain untouched; their namespace cannot authorize migration reads.
 - Stock OpenCode 2.0.27 `normal-history`: passed with the narrowed payload.
   Artifacts: `.runtime/v2-review-normal-history-bQQXMw`;
   results: `.runtime/runtime-run-YCBiLX/results.json`.
+- Commit: `e75c7e5`, `fix: resolve patched serializer and bundle only theme syntax`.
+
+### Phase 3 source verification
+
+- Native preparation retains Checking/Cancel; Allowing is published only after
+  the dispatch callback and native invocation. Historical V1 reservation behavior
+  remains unchanged.
+- Focused native/legacy approval and panel tests: 180 passed, 0 failed.
+- Statistics recovery tests: 20 passed, 0 failed, including delayed physical
+  settlement, dequeued callbacks, close/disposal and latest-root ownership.
+- Combined source verification: 215 passed, 0 failed; log
+  `.runtime/phase3-source-tests.log`. Typecheck and build passed.
+- Mouse-enabled keyboard browsing still requires strict hit ownership; only
+  mouse-disabled browsing uses independent real-frame geometry. Automatic cover
+  never accepts that keyboard proof.
+- Helpers: 126 passed, 0 failed (`.runtime/phase3-helper-tests.log`).
+- Stock OpenCode 2.0.27 `normal-history-keyboard-mouse-off`: passed, including two
+  real saved entries, exact Left/Right selection, all four scrolling keys and
+  rejected approval-cover queries. Artifacts:
+  `.runtime/v2-review-normal-history-keyboard-mouse-off-pxXiL0`;
+  results: `.runtime/runtime-run-udQTei/results.json`.
+- Stock `normal-cancel` and `fast-notifications`: passed; results respectively
+  `.runtime/runtime-run-a2rE77/results.json` and
+  `.runtime/runtime-run-uCH7RG/results.json`.

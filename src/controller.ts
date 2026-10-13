@@ -526,10 +526,12 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
           this.reconcile(pending, revision)
           const verifiedRevision = this.version
           if (!this.approvalEligible(entry)) return
-          // This is only a cancellable reservation. Publication may schedule
-          // microtasks that change eligibility before the deferred write callback.
-          entry.view = { ...entry.view, autoApproval: { status: "allowing" } }
-          this.publish()
+          // Legacy writers have no separate preparation boundary. Native writers
+          // keep Checking and Cancel until their synchronous dispatch callback.
+          if (!this.nativeApproval) {
+            entry.view = { ...entry.view, autoApproval: { status: "allowing" } }
+            this.publish()
+          }
           const remaining = remainingTime(signal)
           const acknowledgement = new AbortController()
           const abort = () => { if (!dispatched || signal.reason !== permissionResolved) acknowledgement.abort(signal.reason) }
@@ -577,7 +579,13 @@ class ControllerCore<R extends RequestIdentity = PermissionRequest> {
                   confirmation = { request: entry.view.request, resolve, event }
                   this.nativeReplies.set(id, confirmation)
                   // No observer/publication between the admission and native call.
-                  queueMicrotask(() => fact("dispatched"))
+                  queueMicrotask(() => {
+                    fact("dispatched")
+                    if (this.active(entry) && entry.view.autoApproval?.status === "checking") {
+                      entry.view = { ...entry.view, autoApproval: { status: "allowing" } }
+                      this.publish()
+                    }
+                  })
                   return true
                 })
                 if (!dispatched) {

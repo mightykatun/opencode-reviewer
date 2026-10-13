@@ -19,7 +19,7 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  verified 23-case production/foundation selection from PR CI, including history,
+  verified 24-case production/foundation selection from PR CI, including history,
   statistics, approval notifications and explicitly classified synthetic probes.
   `--profile v2-acceptance` currently selects the same cases. Neither proves the
   complete historical V1 matrix or real desktop/audio acceptance. `--profile ci-v1` retains the

@@ -132,6 +132,7 @@ for (const fast of [false, true]) {
       const f = await fixture(fast, { preparation: true }); t.after(() => f.dispose())
       const attempt = f.start(); await settle()
       assert.equal(f.preparations(), 1)
+      assert.equal(f.view()?.autoApproval?.status, "checking", "unsent native preparation must retain the Cancel controls")
       assert.equal(f.view()?.retained, undefined, "async preparation is not fast retention")
       assert.equal(f.facts.length, 0)
       if (guard === "presentation") f.proof({ state: "route-hidden", root: "root", id: request.id })
@@ -224,6 +225,37 @@ for (const fast of [false, true]) {
     assert.equal(other.facts.at(-1)?.result, "uncertain")
   })
 }
+
+test("native Allowing publication happens after actual invocation, never during cancellable preparation", async t => {
+  const preparation = deferred<void>(), acknowledgement = deferred<OnceSubmission>()
+  let calls = 0
+  const publications: { status: string | undefined; calls: number }[] = []
+  const controller = new Controller<HostRequest>(async () => safe, views => {
+    publications.push({ status: views[0]?.autoApproval?.status, calls })
+  }, { candidate: () => true, allowHiddenRoute: false,
+    reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, autoApproveDelaySeconds: 15 },
+    clock: { now: () => 0, after: () => () => {} }, nativeApproval: {
+      visibleID: () => request.id, list: async () => [request],
+      async once(_request, signal, dispatch) {
+        await preparation.promise
+        if (signal.aborted || !dispatch()) return { status: "unavailable" }
+        calls++
+        return acknowledgement.promise
+      },
+    },
+  })
+  t.after(async () => { preparation.resolve(); acknowledgement.resolve({ status: "uncertain" }); await controller.dispose() })
+  controller.asked(request); await settle(); controller.presented(request.id)
+  const attempt = controller.approveNow(request.id, true); await settle()
+  assert.equal(controller.views[0]?.autoApproval?.status, "checking")
+  assert.equal(publications.some(value => value.status === "allowing"), false)
+  preparation.resolve(); await settle()
+  assert.equal(calls, 1)
+  assert.ok(publications.filter(value => value.status === "allowing").every(value => value.calls === 1))
+  assert.equal(controller.views[0]?.autoApproval?.status, "allowing")
+  controller.permissionReplied({ sessionID: request.sessionID, requestID: request.id, decision: "once" })
+  acknowledgement.resolve({ status: "submitted" }); await attempt
+})
 
 test("native dispatch tombstones survive read-only disappearance and reappearance", async t => {
   const f = await fixture(false, { acknowledgement: true }); t.after(() => f.dispose())

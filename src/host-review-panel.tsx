@@ -201,9 +201,9 @@ function HostReviewFooter(props: Pick<HostReviewPanelProps, "context" | "onAppro
   </Show>
 }
 
-/** Mount once per request ID in the public app slot. The caller owns the key and
- * the sidebar anchor, including its measured height. Route hiding never remounts
- * Markdown or resets scrolling; it always revokes automatic-write presentation. */
+/** The app-slot parent stays stable, but the caller mounts this panel only on the
+ * root route. Navigation may dispose Markdown and scrolling state. Controller
+ * reports can survive disposal; automatic-write presentation is always revoked. */
 export function HostReviewPanel(props: HostReviewPanelProps) {
   const { context, id, view } = props
   let panel: BoxRenderable | undefined, heading: Renderable | undefined, ratingRegion: BoxRenderable | undefined

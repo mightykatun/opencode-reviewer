@@ -85,11 +85,11 @@ test("a multi-scenario fixture can retain its default while explicitly selecting
 
 test("V2 acceptance includes each production review case exactly once and retains explicit synthetic classifications", () => {
   const cases = profilePlan("v2-acceptance")
-  assert.equal(cases.length, 23, "Exact current production/foundation acceptance selection")
+  assert.equal(cases.length, 24, "Exact current production/foundation acceptance selection")
   assert.equal(cases.length, new Set(cases.map(value => value.id)).size)
   const reviews = cases.filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs")
   const expectedReviews = ["advisory", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant",
-    "normal-history", "normal-history-default-home", "normal-history-cover", "fast-history-cover", "fast-notifications",
+    "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
     "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete"].sort()
   assert.deepEqual(reviews.map(value => value.scenario).sort(), expectedReviews)
   assert.deepEqual([...runtimeInventory["smoke-v2-review.mjs"].scenarios].sort(), expectedReviews)
@@ -103,6 +103,10 @@ test("V2 acceptance includes each production review case exactly once and retain
   assert.equal(defaultHome.classification, "production-host")
   assert.deepEqual(defaultHome.args, ["normal-history-default-home"])
   assert.ok(defaultHome.requires.includes("bundle"), "Uses the prior build rather than rebuilding implicitly")
+  const keyboardMouseOff = cases.find(value => value.id === "smoke-v2-review/normal-history-keyboard-mouse-off")
+  assert.equal(keyboardMouseOff.classification, "production-host")
+  assert.deepEqual(keyboardMouseOff.args, ["normal-history-keyboard-mouse-off"])
+  assert.ok(keyboardMouseOff.requires.includes("bundle"), "Exercises real production history and approvals from the parent's fresh build")
 })
 
 test("fixture verification pins are distinct from plugin activation and require one actual binary for the entire run", () => {

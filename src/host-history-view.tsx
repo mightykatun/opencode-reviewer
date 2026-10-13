@@ -35,34 +35,54 @@ function fits(node: HostPanelNode | undefined, parent: HostPanelBounds): node is
     && node.x + node.width <= parent.x + parent.width && node.y + node.height <= parent.y + parent.height
 }
 
-/** History cover and keyboard browsing share real heading/footer paint. A mounted
- * root overlay, remembered geometry or mouse-disabled hit grid is not proof. */
+function historyGeometry(input: HostHistoryProofInput) {
+  const { anchor, panel, heading, footer, bounds } = input
+  if (!input.current || input.root !== input.session || input.route.type !== "session"
+    || input.route.sessionID !== input.session || input.mode !== "base"
+    || !anchor || anchor.sessionID !== input.session || !bounds
+    || !fits(anchor.node, { x: 0, y: 0, width: input.width, height: input.height })
+    || !fits(panel, anchor.node) || !sameBounds(panel, anchor.node) || !sameBounds(bounds, anchor.node)
+    || panel.width < 4 || panel.height < 4 || !fits(heading, panel) || !fits(footer, panel)
+    || heading.width < 2 || heading.height < 1 || footer.width < 2 || footer.height < 1
+    || heading.y + heading.height > footer.y) return
+  const footerFits = (node: HostPanelNode): boolean => node.getChildren().filter(child => child.visible && !child.isDestroyed)
+    .every(child => fits(child, footer) && footerFits(child))
+  if (!footerFits(footer)) return
+  const nodes = [anchor.node, panel, heading, footer]
+  return { owner: anchor.owner, session: input.session, nodes,
+    bounds: [input.width, input.height, ...nodes.flatMap(node => coordinates.map(key => node[key]))] }
+}
+
+type HistoryPaint = NonNullable<ReturnType<typeof historyGeometry>>
+function samePaint(painted: HistoryPaint | undefined, current: HistoryPaint): boolean {
+  return !!painted && painted.owner === current.owner && painted.session === current.session
+    && current.nodes.every((node, i) => node === painted.nodes[i])
+    && current.bounds.every((value, i) => value === painted.bounds[i])
+}
+
+/** Keyboard ownership uses genuine FRAME geometry in the native root sidebar.
+ * Approval cover separately requires mouse-enabled heading/footer hit ownership. */
 export class HostHistoryPresentationProof {
-  private painted?: { owner: unknown; session: string; nodes: HostPanelNode[]; bounds: number[]; hits: number[] }
-  invalidate() { this.painted = undefined }
+  private painted?: HistoryPaint & { hits: number[] }
+  private keyboardPainted?: HistoryPaint
+  invalidate() { this.painted = undefined; this.keyboardPainted = undefined }
+  keyboard(input: HostHistoryProofInput, frame = false): boolean {
+    const geometry = historyGeometry(input)
+    if (!geometry || (input.mouse && !this.visible(input, frame))) { this.keyboardPainted = undefined; return false }
+    if (frame) this.keyboardPainted = geometry
+    if (!samePaint(this.keyboardPainted, geometry)) { this.keyboardPainted = undefined; return false }
+    return true
+  }
   visible(input: HostHistoryProofInput, frame = false): boolean {
-    const fail = () => { this.invalidate(); return false }
-    const { anchor, panel, heading, footer, bounds } = input
-    if (!input.current || input.root !== input.session || input.route.type !== "session"
-      || input.route.sessionID !== input.session || input.mode !== "base" || !input.mouse
-      || !anchor || anchor.sessionID !== input.session || !bounds
-      || !fits(anchor.node, { x: 0, y: 0, width: input.width, height: input.height })
-      || !fits(panel, anchor.node) || !sameBounds(panel, anchor.node) || !sameBounds(bounds, anchor.node)
-      || panel.width < 4 || panel.height < 4 || !fits(heading, panel) || !fits(footer, panel)
-      || heading.width < 2 || heading.height < 1 || footer.width < 2 || footer.height < 1
-      || heading.y + heading.height > footer.y) return fail()
-    const footerFits = (node: HostPanelNode): boolean => node.getChildren().filter(child => child.visible && !child.isDestroyed)
-      .every(child => fits(child, footer) && footerFits(child))
-    if (!footerFits(footer)) return fail()
+    const fail = () => { this.painted = undefined; return false }
+    const geometry = historyGeometry(input)
+    if (!input.mouse || !geometry) return fail()
+    const heading = input.heading!, footer = input.footer!
     const hits = [heading, footer].map(node => input.hitTest(node.x + 1, node.y + (node === footer && node.height > 1 ? 1 : 0)))
     if (!hostPanelOwnsHit(heading, hits[0]!) || !hostPanelOwnsHit(footer, hits[1]!)) return fail()
-    const nodes = [anchor.node, panel, heading, footer]
-    const geometry = [input.width, input.height, ...nodes.flatMap(node => coordinates.map(key => node[key]))]
-    if (frame) this.painted = { owner: anchor.owner, session: input.session, nodes, bounds: geometry, hits }
+    if (frame) this.painted = { ...geometry, hits }
     const painted = this.painted
-    if (!painted || painted.owner !== anchor.owner || painted.session !== input.session
-      || nodes.some((node, i) => node !== painted.nodes[i])
-      || geometry.some((value, i) => value !== painted.bounds[i]) || hits.some((hit, i) => hit !== painted.hits[i])) return fail()
+    if (!samePaint(painted, geometry) || hits.some((hit, i) => hit !== painted!.hits[i])) return fail()
     return true
   }
 }
@@ -70,6 +90,34 @@ export class HostHistoryPresentationProof {
 export interface HostHistoryInput {
   interactive(): boolean
   scroll(amount: number, page: boolean): void
+}
+
+/** Shared production registration seam: no mounted-state keyboard bypass and no
+ * keyboard proof passed to the automatic-approval cover. */
+export function setupHostHistoryBrowsing(context: Plugin.Context, session: string, input: () => HostHistoryProofInput,
+  cover: HistoryCover, actions: { navigate(direction: "older" | "newer"): void; scroll(amount: number, page: boolean): void; onPresented?(): void }) {
+  const proof = new HostHistoryPresentationProof()
+  const interactive = () => proof.keyboard(input())
+  const navigate = (direction: "older" | "newer") => { if (interactive()) actions.navigate(direction) }
+  const scroll = (amount: number, page: boolean) => { if (interactive()) actions.scroll(amount, page) }
+  context.keymap.layer(() => ({ priority: 100, mode: "base", enabled: interactive, commands: [
+    { bind: "left", run: () => navigate("older") }, { bind: "right", run: () => navigate("newer") },
+    { bind: "up", run: () => scroll(-1, false) }, { bind: "down", run: () => scroll(1, false) },
+    { bind: "pageup", run: () => scroll(-1, true) }, { bind: "pagedown", run: () => scroll(1, true) },
+  ] }))
+  const release = cover.mount(session, hit => {
+    const value = input()
+    return proof.visible(value) && hostPanelOwnsHit(value.panel, hit)
+  }, () => { proof.visible(input(), true) })
+  const invalidate = () => { proof.invalidate(); cover.frame() }
+  const frame = () => { const value = input(); proof.keyboard(value, true); proof.visible(value, true); actions.onPresented?.() }
+  const resize = () => { invalidate(); actions.onPresented?.() }
+  context.renderer.on(CliRenderEvents.FRAME, frame)
+  context.renderer.on(CliRenderEvents.RESIZE, resize)
+  return { interactive, navigate, scroll, invalidate, dispose() {
+    context.renderer.off(CliRenderEvents.FRAME, frame); context.renderer.off(CliRenderEvents.RESIZE, resize)
+    proof.invalidate(); release()
+  } }
 }
 export interface HostHistoryViewProps {
   context: Plugin.Context
@@ -117,42 +165,37 @@ export function HostHistoryView(props: HostHistoryViewProps) {
   let panel: BoxRenderable | undefined, heading: BoxRenderable | undefined, footer: BoxRenderable | undefined
   let scroll: ScrollBoxRenderable | undefined, description: MarkdownRenderable | undefined
   let restored = false, measured = "", reset = props.state().reset
-  const proof = new HostHistoryPresentationProof()
   const rootRoute = () => {
     const route = context.ui.router.current()
     return props.rootSession() === props.session && route.type === "session" && route.sessionID === props.session
       && props.state().open && controller.isCurrent(props.session)
   }
   const visible = () => rootRoute() && props.sidebarOwner()?.sessionID === props.session && !!props.sidebarGeometry()
-  const interactive = (frame = false) => {
+  const proofInput = (): HostHistoryProofInput => {
     const anchor = props.sidebarOwner()
-    return proof.visible({ session: props.session, root: props.rootSession(), current: props.state().open && controller.isCurrent(props.session),
+    return { session: props.session, root: props.rootSession(), current: props.state().open && controller.isCurrent(props.session),
       route: context.ui.router.current(), mode: context.keymap.mode.current(), mouse: context.renderer.useMouse,
       width: context.renderer.width, height: context.renderer.height, bounds: props.sidebarGeometry(),
       anchor: anchor && { ...anchor, node: anchor.node as HostPanelNode }, panel: panel as HostPanelNode | undefined,
       heading: heading as HostPanelNode | undefined, footer: footer as HostPanelNode | undefined,
-      hitTest: (x, y) => context.renderer.hitTest(x, y) }, frame)
+      hitTest: (x, y) => context.renderer.hitTest(x, y) }
   }
-  const release = props.cover.mount(props.session, hit => interactive() && hostPanelOwnsHit(panel as HostPanelNode | undefined, hit), () => { interactive(true) })
   const record = () => props.state().status === "ready" ? props.state().selection?.record : undefined
   const selection = () => props.state().status === "ready" ? props.state().selection : undefined
   const index = () => uiText.history.index(selection()?.rank ?? 0, selection()?.total ?? 0)
   const layout = createMemo(() => historyLayout(record() ? uiText.history.outcomes[record()!.outcome] : undefined, index(),
     Math.max(0, (props.sidebarGeometry()?.width ?? 42) - 4)))
   const scrollBy = (amount: number, page: boolean) => {
-    if (!interactive() || !scroll || scroll.isDestroyed) return
+    if (!scroll || scroll.isDestroyed) return
     scroll.scrollBy(amount * (page ? Math.max(1, scroll.height - 1) : 1))
     // Do not replace a saved offset with the collapsed loading/Markdown extent.
     if (restored) controller.recordScroll(scroll.scrollTop)
   }
-  if (props.input) { props.input.interactive = interactive; props.input.scroll = scrollBy }
-  const navigate = (direction: "older" | "newer") => { if (interactive()) controller.navigate(direction) }
+  const browsing = setupHostHistoryBrowsing(context, props.session, proofInput, props.cover,
+    { navigate: direction => controller.navigate(direction), scroll: scrollBy, onPresented: props.onPresented })
+  const { interactive, navigate } = browsing
+  if (props.input) { props.input.interactive = interactive; props.input.scroll = browsing.scroll }
   const close = () => { if (rootRoute() && context.keymap.mode.current() === "base") controller.close() }
-  context.keymap.layer(() => ({ priority: 100, mode: "base", enabled: () => interactive(), commands: [
-    { bind: "left", run: () => navigate("older") }, { bind: "right", run: () => navigate("newer") },
-    { bind: "up", run: () => scrollBy(-1, false) }, { bind: "down", run: () => scrollBy(1, false) },
-    { bind: "pageup", run: () => scrollBy(-1, true) }, { bind: "pagedown", run: () => scrollBy(1, true) },
-  ] }))
   // Explicit close remains available with mouse:false; it grants no cover or
   // browsing proof and cannot consume Escape from an unrelated native modal.
   context.keymap.layer(() => ({ priority: 100, mode: "base", enabled: rootRoute,
@@ -164,11 +207,9 @@ export function HostHistoryView(props: HostHistoryViewProps) {
   })
   createEffect(() => {
     context.ui.router.current(); context.keymap.mode.current(); props.rootSession(); props.sidebarOwner(); props.sidebarGeometry()
-    untrack(() => { proof.invalidate(); props.cover.frame(); props.onPresented?.() })
+    untrack(() => { browsing.invalidate(); props.onPresented?.() })
   })
   const frame = () => {
-    interactive(true)
-    props.onPresented?.()
     if (!scroll || scroll.isDestroyed || !visible() || props.state().status !== "ready") return
     if (!restored) {
       if (record() && (!description || description.isDestroyed || !description.getChildrenCount() || !highlightingComplete(description))) return
@@ -179,12 +220,10 @@ export function HostHistoryView(props: HostHistoryViewProps) {
       scroll.scrollTo(controller.scroll); restored = true
     } else controller.recordScroll(scroll.scrollTop)
   }
-  const resize = () => { proof.invalidate(); props.cover.frame(); props.onPresented?.() }
   context.renderer.on(CliRenderEvents.FRAME, frame)
-  context.renderer.on(CliRenderEvents.RESIZE, resize)
   onCleanup(() => {
-    context.renderer.off(CliRenderEvents.FRAME, frame); context.renderer.off(CliRenderEvents.RESIZE, resize)
-    proof.invalidate(); release()
+    context.renderer.off(CliRenderEvents.FRAME, frame)
+    browsing.dispose()
     if (props.input?.interactive === interactive) { props.input.interactive = () => false; props.input.scroll = () => {} }
     props.onPresented?.()
   })

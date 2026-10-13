@@ -1,20 +1,38 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { setImmediate as settle } from "node:timers/promises"
-import { StatisticsController } from "../src/statistics-controller.js"
+import { StatisticsController, type StatisticsClock } from "../src/statistics-controller.js"
 import { empty } from "../src/lifetime.js"
 import type { HistoryRead } from "../src/history-store.js"
 import type { HistoryResult } from "../src/history-schema.js"
 import type { HistoryQuery } from "../src/history-records.js"
 import { SessionModes } from "../src/session-mode.js"
 import { HistoryCoordinator } from "../src/history-coordinator.js"
+import type { AncestryReader } from "../src/session-mode.js"
 
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: Error) => void
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
   return { promise, resolve, reject }
 }
-function fixture(t: any, ancestry: (session: string, signal: AbortSignal) => Promise<string> = async session => session === "child" ? "root" : session) {
+function fakeClock() {
+  let now = 0
+  const pending = new Set<{ at: number; callback: () => void }>()
+  const clock: StatisticsClock = { schedule(callback, delay) {
+    const timer = { at: now + delay, callback }; pending.add(timer)
+    return () => { pending.delete(timer) }
+  } }
+  return { clock, pending, tick(ms: number) {
+    now += ms
+    for (const timer of [...pending]) if (timer.at <= now) { pending.delete(timer); timer.callback() }
+  }, dequeue() {
+    const timer = [...pending][0]!
+    assert.ok(timer, "expected a retry callback")
+    pending.delete(timer)
+    return timer.callback
+  } }
+}
+function fixture(t: any, ancestry: AncestryReader = async session => session === "child" ? "root" : session, clock?: StatisticsClock) {
   const queries: HistoryQuery[] = [], calls: { value: ReturnType<typeof deferred<HistoryResult>>; cleanup: ReturnType<typeof deferred<void>> }[] = []
   const commits = new Set<() => void>(), failures = new Set<() => void>()
   const controller = new StatisticsController("/host", {
@@ -25,7 +43,7 @@ function fixture(t: any, ancestry: (session: string, signal: AbortSignal) => Pro
     },
     onCommit(fn) { commits.add(fn); return () => { commits.delete(fn) } },
     onWriteFailure(fn) { failures.add(fn); return () => { failures.delete(fn) } },
-  }, ancestry, () => {})
+  }, ancestry, () => {}, clock)
   const finish = (index: number, input = 10) => {
     const totals = { ...empty(), requests: 1, tokenRequests: 1, input, output: 2, since: 1 }
     const q = queries[index]!
@@ -76,6 +94,120 @@ test("ancestry failures do not guess a root and home has no fabricated conversat
   assert.equal(f.queries.some(q => q.type === "totals" && q.conversation), false)
   f.controller.open(); f.controller.select("conversation")
   assert.equal(f.controller.state.ancestry, "none"); assert.equal(f.controller.state.conversation, undefined)
+})
+
+test("Conversation retries transient ancestry failures every two seconds without reselecting or redoing a settled root", async t => {
+  const time = fakeClock(); let count = 0
+  const f = fixture(t, async () => { if (++count < 3) throw Error("transient"); return "root" }, time.clock)
+  f.finish(0); await settle()
+  f.controller.open("child"); f.controller.select("conversation"); await settle()
+  assert.equal(f.state().ancestry, "unavailable"); assert.equal(count, 1); assert.equal(time.pending.size, 1)
+  for (let i = 0; i < 20; i++) f.controller.select("conversation")
+  time.tick(1999); await settle(); assert.equal(count, 1); assert.equal(time.pending.size, 1)
+  time.tick(1); await settle(); assert.equal(count, 2); assert.equal(f.state().ancestry, "unavailable")
+  assert.equal(time.pending.size, 1)
+  time.tick(2000); await settle(); assert.equal(count, 3); assert.equal(f.state().ancestry, "ready")
+  assert.equal(time.pending.size, 0)
+  f.finish(1); await settle()
+  assert.deepEqual(f.queries[2], { type: "totals", conversation: { scope: "/host", root: "root" } })
+  f.finish(2, 30); await settle()
+  time.tick(20000); f.controller.select("lifetime"); f.controller.select("conversation"); await settle()
+  assert.equal(count, 3); assert.equal(f.state().conversation?.totals.input, 30)
+})
+
+for (const outcome of ["resolve", "reject"] as const) test(`timed-out noncooperative ancestry starts retry delay only after late ${outcome} and settled ownership end`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] })
+  const time = fakeClock(), root = deferred<string>(), cleanup = deferred<void>(); let count = 0
+  const f = fixture(t, () => ++count === 1 ? Object.assign(root.promise, { settled: cleanup.promise }) : Promise.resolve("root"), time.clock)
+  f.finish(0); await settle()
+  f.controller.open("child"); f.controller.select("conversation"); await settle()
+  t.mock.timers.tick(5000); await settle()
+  assert.equal(f.state().ancestry, "unavailable")
+  for (let i = 0; i < 20; i++) { f.controller.select("conversation"); time.tick(2000); await settle() }
+  assert.equal(count, 1); assert.equal(time.pending.size, 0)
+  if (outcome === "resolve") root.resolve("late-root"); else root.reject(Error("late failure"))
+  await settle()
+  time.tick(2000); await settle(); assert.equal(count, 1); assert.equal(time.pending.size, 0)
+  assert.equal(f.state().ancestry, "unavailable")
+  cleanup.resolve(); await settle(); assert.equal(time.pending.size, 1)
+  time.tick(1999); await settle(); assert.equal(count, 1)
+  time.tick(1); await settle(); assert.equal(count, 2); assert.equal(f.state().ancestry, "ready")
+  f.finish(1); await settle()
+  assert.deepEqual(f.queries[2], { type: "totals", conversation: { scope: "/host", root: "root" } })
+  time.tick(20000); await settle(); assert.equal(count, 2)
+})
+
+for (const action of ["close", "lifetime", "dispose", "open"] as const) {
+  test(`${action} cancels ancestry retry and invalidates even a dequeued callback`, async t => {
+    const time = fakeClock(); let count = 0
+    const f = fixture(t, async () => { count++; throw Error("transient") }, time.clock)
+    f.finish(0); await settle()
+    let token = f.controller.open("child"); f.controller.select("conversation"); await settle()
+    const dequeued = time.dequeue()
+    const stop = () => {
+      if (action === "close") f.controller.close(token)
+      else if (action === "lifetime") f.controller.select("lifetime")
+      else if (action === "dispose") f.controller.dispose()
+      else token = f.controller.open("new")
+    }
+    stop(); dequeued(); time.tick(20000); await settle()
+    assert.equal(count, 1); assert.equal(time.pending.size, 0)
+    if (action === "dispose") return
+    if (action === "close") token = f.controller.open("child")
+    f.controller.select("conversation"); await settle()
+    assert.equal(count, 2); assert.equal(time.pending.size, 1)
+    stop(); assert.equal(time.pending.size, 0)
+    time.tick(20000); await settle(); assert.equal(count, 2)
+  })
+}
+
+for (const action of ["close", "lifetime", "dispose"] as const) {
+  test(`${action} prevents retry from being rearmed by late ancestry settlement`, async t => {
+    const time = fakeClock(), failure = deferred<string>(), cleanup = deferred<void>(); let count = 0
+    const f = fixture(t, () => { count++; return Object.assign(failure.promise, { settled: cleanup.promise }) }, time.clock)
+    f.finish(0); await settle()
+    const token = f.controller.open("child"); f.controller.select("conversation"); await settle()
+    failure.reject(Error("transient")); await settle()
+    assert.equal(f.state().ancestry, "unavailable"); assert.equal(time.pending.size, 0)
+    if (action === "close") f.controller.close(token)
+    else if (action === "lifetime") f.controller.select("lifetime")
+    else f.controller.dispose()
+    cleanup.resolve(); await settle()
+    assert.equal(time.pending.size, 0)
+    time.tick(20000); await settle(); assert.equal(count, 1)
+    assert.equal(f.queries.some(q => q.type === "totals" && q.conversation), false)
+  })
+}
+
+test("a new root dominates an old dequeued ancestry retry without another lookup", async t => {
+  const time = fakeClock(), sessions: string[] = []
+  const f = fixture(t, async session => { sessions.push(session); if (session === "old") throw Error("transient"); return session }, time.clock)
+  f.finish(0); await settle()
+  const old = f.controller.open("old"); f.controller.select("conversation"); await settle()
+  const dequeued = time.dequeue()
+  f.controller.open("new"); f.controller.select("conversation"); await settle()
+  dequeued(); f.controller.close(old); time.tick(20000); await settle()
+  assert.deepEqual(sessions, ["old", "new"]); assert.equal(f.state().ancestry, "ready"); assert.equal(f.state().open, true)
+  f.finish(1); await settle()
+  assert.deepEqual(f.queries[2], { type: "totals", conversation: { scope: "/host", root: "new" } })
+})
+
+test("a new root supersedes a failed ancestry lookup only after its actual settlement", async t => {
+  const time = fakeClock(), failure = deferred<string>(), cleanup = deferred<void>(), sessions: string[] = []
+  const f = fixture(t, session => {
+    sessions.push(session)
+    return session === "old" ? Object.assign(failure.promise, { settled: cleanup.promise }) : Promise.resolve(session)
+  }, time.clock)
+  f.finish(0); await settle()
+  f.controller.open("old"); f.controller.select("conversation"); await settle()
+  failure.reject(Error("transient")); await settle()
+  assert.equal(f.state().ancestry, "unavailable"); assert.equal(time.pending.size, 0)
+  for (let i = 0; i < 20; i++) { f.controller.open(`new-${i}`); f.controller.select("conversation") }
+  time.tick(20000); await settle(); assert.deepEqual(sessions, ["old"])
+  cleanup.resolve(); await settle()
+  assert.deepEqual(sessions, ["old", "new-19"]); assert.equal(time.pending.size, 0)
+  f.finish(1); await settle()
+  assert.deepEqual(f.queries[2], { type: "totals", conversation: { scope: "/host", root: "new-19" } })
 })
 
 test("noncooperative ancestry retains one actual lookup through rapid reopen and disposal", async t => {

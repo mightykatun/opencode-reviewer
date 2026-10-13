@@ -4,6 +4,7 @@
 // normal-hide, normal-dialog, normal-resize, fast-dialog, normal-hidden-complete,
 // normal-history / normal-history-default-home (actual saved report, browsing and native statistics dialog),
 // normal-history-cover / fast-history-cover (two genuine native requests in one root),
+// normal-history-keyboard-mouse-off (two actual saved reports, mouse-off keys and no approval cover),
 // fast-notifications (injected desktop boundary, retained/live and exact history clicks).
 // Build first. Do not execute a host until the main session grants approval.
 import assert from "node:assert/strict"
@@ -18,6 +19,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments } from "./runtime-inventory.mjs"
 import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
+import { activatePalette } from "./smoke-ui.mjs"
 
 // Independent public wire schema. No production imports in either observer.
 function rpcDefinition() {
@@ -128,6 +130,17 @@ async function monitorSetup(ctx) {
             value = { id: command.id, title: registered?.title, registered: !!registered, enabled, mode: ctx.keymap.mode.current() }
            if (command.dispatch && enabled) ctx.keymap.dispatch(command.id)
          }
+         else if (command.type === "mouse") {
+           assert.equal(fixture.keyboardMouseOff, true, "Mouse user control is restricted to the saved-history keyboard case")
+           assert.equal(command.value, false, "The fixture may only disable mouse, never force it on")
+           assert.equal(record.asked.length, 2)
+           assert.equal(record.replied.length, 2, "Both actual automatic approvals precede mouse user control")
+           assert.ok(record.asked.every(request => request.sessionID === command.sessionID))
+           assert.deepEqual(ctx.ui.router.current(), { type: "session", sessionID: command.sessionID })
+           assert.deepEqual(await ctx.client.permission.list({ sessionID: command.sessionID }, options()), [], "No pending request at mouse disable")
+           ctx.renderer.useMouse = false // Public renderer setter, not production configuration or presentation proof.
+           value = { mouse: ctx.renderer.useMouse }
+         }
          else if (command.type === "interrupt") await ctx.client.session.interrupt({ sessionID: command.sessionID, continue: false }, options())
         else throw Error("Unknown V2 review fixture control: " + command.type)
         record.replies[sequence] = { value: value ?? null }
@@ -153,7 +166,7 @@ async function observedReviewerSetup(ctx) {
   const notifications = reviewerPaths.notifications ? observationPublisher(reviewerPaths.notifications) : undefined
   const abort = new AbortController(), handles = new Map()
   const attention = { events: [], errors: [], replies: {}, owned: 0, disposed: false, cleaned: false, historyCalls: [] }
-  let injectionClick, records, notificationSequence = 0
+  let injectionClick, records, queryCover, notificationSequence = 0
   const saveNotifications = () => {
     if (records) {
       const state = records.state()
@@ -167,6 +180,16 @@ async function observedReviewerSetup(ctx) {
       const state = records.state()
       facts.history = { open: state.open, status: state.status, entry: state.selection?.entry,
         rank: state.selection?.rank, total: state.selection?.total, context: state.selection?.record?.context }
+      if (reviewerPaths.keyboardMouseOff) {
+        facts.history.scroll = records.browser.scroll
+        // Read-only query with the exact heading/footer hits previously proven by
+        // production. No new owner, hit IDs, FRAME or painted state is supplied.
+        if (!ctx.renderer.useMouse && state.open && state.status === "ready" && facts.provenCover?.hits) {
+          facts.keyboardCover = { frame: ctx.renderer.frameId, mode: ctx.keymap.mode.current(), mouse: ctx.renderer.useMouse,
+            session: state.selection.record.context.root, hits: [...facts.provenCover.hits],
+            result: queryCover(state.selection.record.context.root, facts.provenCover.hits) }
+        }
+      }
     }
     return storage.publish(facts)
   }
@@ -215,9 +238,11 @@ async function observedReviewerSetup(ctx) {
       // Observe only the existing production query and its actual hit IDs. Never
       // mount an owner, synthesize FRAME, call beginFrame or substitute a result.
       const covers = runtime.cover.covers.bind(runtime.cover)
+      queryCover = covers
       runtime.cover.covers = (session, hits) => {
         const result = covers(session, hits)
         facts.cover = { session, hits: [...hits], result }
+        if (reviewerPaths.keyboardMouseOff && result) facts.provenCover = { session, hits: [...hits] }
         void saveStorage()
         return result
       }
@@ -286,7 +311,8 @@ const { scenario, hostVersions } = runtimeArguments("smoke-v2-review.mjs")
 const streaming = scenario !== "advisory", automatic = scenario !== "advisory", fast = scenario.startsWith("fast")
 const defaultHomeCase = scenario === "normal-history-default-home"
 const historyCase = scenario === "normal-history" || defaultHomeCase
-const coverCase = ["normal-history-cover", "fast-history-cover"].includes(scenario)
+const keyboardMouseOffCase = scenario === "normal-history-keyboard-mouse-off"
+const coverCase = ["normal-history-cover", "fast-history-cover"].includes(scenario) || keyboardMouseOffCase
 const dialogCase = ["normal-dialog", "fast-dialog"].includes(scenario)
 const visibilityLoss = ["normal-hide", "normal-dialog", "normal-resize"].includes(scenario)
 const hiddenComplete = scenario === "normal-hidden-complete"
@@ -341,6 +367,11 @@ const archiveFiles = ["dist/tui.js", "package.json", "README.md", "LICENSE", "TH
 const prompt = "Run python3 fixture.py once in inputs. It appends the isolated V2_REVIEW_EXECUTED marker and prints it."
 const script = 'from pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write("V2_REVIEW_EXECUTED\\n")\nprint("V2_REVIEW_EXECUTED")\n'
 const description = "V2 local marker report.\n\nThe script writes one isolated marker."
+// Only the second keyboard-case response is long. The first genuine report keeps
+// all existing history-cover text/metadata and selected-original assertions intact.
+const keyboardDescription = description + "\n\n" + Array.from({ length: 80 }, (_, index) =>
+  `Keyboard scroll line ${String(index + 1).padStart(2, "0")}: one isolated marker.`).join("\n\n")
+const reportDescription = index => keyboardMouseOffCase && index === 2 ? keyboardDescription : description
 const assessment = { safe: true, desc: description }
 const reviewUsage = { prompt_tokens: 23, completion_tokens: 11, total_tokens: 34 }
 const toolCall = { id: "v2-production-review-shell", name: "shell", input: { command: "python3 fixture.py", workdir: "inputs" } }
@@ -603,7 +634,7 @@ const savedPair = async () => {
     assert.equal(row.outcome, "auto")
     assert.equal(row.resolution, "auto")
     assert.equal(row.approving, row.review)
-    assert.equal(payload.desc, description)
+    assert.equal(payload.desc, reportDescription(requests.indexOf(expected) + 1))
     assert.equal(payload.safe, true)
     assert.deepEqual(payload.usage, { input: 23, output: 11 })
     const review = value.reviews.find(review => review.id === row.review)
@@ -727,7 +758,7 @@ const sse = (res, content, finish_reason = null) => res.write(`data: ${JSON.stri
 const finishReview = () => {
   assert.ok(reviewResponse && !reviewCompleted)
   if (streaming) {
-    sse(reviewResponse, fast ? '"}' : JSON.stringify(assessment))
+    sse(reviewResponse, fast ? '"}' : JSON.stringify({ safe: true, desc: reportDescription(reviewPOSTs) }))
     sse(reviewResponse, undefined, "stop")
     if (savedCase) reviewResponse.write(`data: ${JSON.stringify({ choices: [], usage: reviewUsage })}\n\n`)
     reviewResponse.end("data: [DONE]\n\n")
@@ -759,6 +790,7 @@ const limits = [
     dialogCase ? "Stock command.palette.show owns a real native modal. Normal loss after an actual countdown permanently cancels; fast withholds SSE Safe preview until that cover, closes through real Escape and requires fresh physical root paint before once, with final usage verified in SQLite. No permission fullscreen or other modal-family acceptance."
       : visibilityLoss ? "One actual normal countdown, native sidebar hide or a real 160x8 tmux window, and restoration to the root. The unchanged native request remains manual beyond both the original and any hypothetical restarted deadline. No benign-width continuity or other geometry-family acceptance."
       : hiddenComplete ? "A never-armed normal report completes on a real child route. Read-only production storage confirms final acceptance while hidden; no write beyond the configured delay. Actual root return requires a fresh painted full countdown before a single once. No descendant-owned permission queue acceptance."
+      : keyboardMouseOffCase ? "Reuse normal-history-cover's two real automatic requests with configured mouse on, then disable mouse via its public setter only after both entries save and no request is pending. Real palette/history input, exact two-entry Left/Right selection and Up/Down/Page scroll use the long second fixed reviewer response. Mouse-off production cover queries reject previously proven heading/footer hits. No new approval eligibility, synthesized paint/hits, statistics dialog or multi-client acceptance."
       : coverCase ? "Two real root-owned native shell permissions, two real reviewer POSTs and worker-saved validated automatic entries. Public production history stays selected on the first entry. Normal requires actual production cover-query hit ownership and FRAME countdown proof; fast has no history-cover exception and requires real Escape plus fresh root paint. No descendant-owned queue, canceled countdown recovery, offline deletion, statistics dialog, notification or multi-client acceptance."
      : historyCase ? "History/statistics acceptance is one actual automatic saved entry and its real read-only SQLite aggregates, public command browsing and native dialog. Child history invocation is disabled; root return explicitly reopens the same saved entry. No production history-cover approval, offline deletion, multiple entries or multi-client acceptance."
     : notificationCase ? "Production host with an injected desktop boundary only: one actual fast native approval, retained SSE response, approved banner and lease-based simulated clicks. No real GNOME activation, desktop processes, audio, live-provider latency, advisory/unsafe attention, reminders or multi-request queue acceptance. Exact-key history selection is observed without a competing newer entry; multi-entry not-latest behavior is not accepted by this single-entry fixture."
@@ -863,7 +895,7 @@ try {
   })
   await new Promise(resolve => modelServer.listen(0, "127.0.0.1", resolve))
   const origin = `http://127.0.0.1:${modelServer.address().port}`
-  const fixture = { initial, monitor: monitorPath, control: controlPath }
+  const fixture = { initial, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase }
   const observer = path.join(temp, "observer"), monitor = path.join(temp, "monitor")
   const reviewer = path.join(temp, "reviewer")
   await mkdir(reviewer)
@@ -875,7 +907,8 @@ try {
     + '\nimport {setTimeout as sleep} from "node:timers/promises"\n'
     + `\nimport * as production from ${JSON.stringify(pathToFileURL(path.join(installed, "dist/tui.js")).href)}\n`
      + `\nconst reviewerPaths=${JSON.stringify({ presentation: presentationPath, storage: path.join(artifacts, "storage-observations.json"),
-        ...(notificationCase ? { notifications: notificationPath, notificationControl: notificationControlPath } : {}), historyCover: coverCase })}\n`
+         ...(notificationCase ? { notifications: notificationPath, notificationControl: notificationControlPath } : {}), historyCover: coverCase,
+         keyboardMouseOff: keyboardMouseOffCase })}\n`
      + observedReviewerSetup + '\nexport default {id:"opencode-reviewer",setup:observedReviewerSetup}\n'
     : archived))
   await Promise.all([observer, monitor].map(directory => mkdir(directory)))
@@ -1378,13 +1411,128 @@ try {
        await saveCapture("history-cover-normal-two-saved")
      }
      await phase("two-confirmed-once-writes-two-saved-reports", { entries: coverEvidence.pair.rows.map(row => row.id) })
-     await negativeWindow("second resolution cannot replay either approval or execution", [], (await observations()).replied, markerLine.repeat(2), 2, 1500, async (record, screen) => {
-       if (!fast) await selectedOriginal(record, screen, 2)
-       else assert.doesNotMatch(screen, /Analysis history|Permission analysis/)
-       assert.deepEqual(await savedPair(), coverEvidence.pair)
-       assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 4)
-     })
-   }
+      await negativeWindow("second resolution cannot replay either approval or execution", [], (await observations()).replied, markerLine.repeat(2), 2, 1500, async (record, screen) => {
+        if (!fast) await selectedOriginal(record, screen, 2)
+        else assert.doesNotMatch(screen, /Analysis history|Permission analysis/)
+        assert.deepEqual(await savedPair(), coverEvidence.pair)
+        assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 4)
+      })
+      if (keyboardMouseOffCase) {
+        const replies = (await observations()).replied, before = (await observations()).frame
+        assert.equal((await observations()).mouse, true, "Actual approvals and saves occurred with configured mouse on")
+        assert.deepEqual(await command({ type: "pending", sessionID }), [])
+        assert.deepEqual(await command({ type: "mouse", value: false, sessionID }), { mouse: false })
+        coverEvidence.keyboard = { beforeMouseDisable: before, selection: [], scrolling: [] }
+        // A real native palette open/close paints fresh frames without remounting
+        // history. Reject the same actual heading/footer hits that covered request
+        // two, rather than obtaining false from mismatched post-remount hit IDs.
+        await nativePresentationCommand("command.palette.show")
+        const paletteFrame = await until("mouse-off native palette paints a real modal frame", record =>
+          record?.mouse === false && record.mode === "modal" && record.frame?.id > before.id
+            && capture().includes("Commands") && record.frame, 15000)
+        runtime.tmux("send-keys", "-t", "v2-review", "Escape")
+        coverEvidence.keyboard.noCover = await until("same history owner rejects formerly proven approval hits after mouse-off root paint", async record => {
+          if (record?.mode !== "base" || !(record.frame?.id > paletteFrame.id) || capture().includes("Commands")) return false
+          const facts = await selectedOriginal(record, capture(), 2), proof = facts.keyboardCover
+          if (!proof || proof.frame <= paletteFrame.id || proof.mode !== "base") return false
+          assert.equal(proof.mouse, false)
+          assert.equal(proof.result, false, "Keyboard presentation never grants automatic approval cover")
+          assert.deepEqual(proof.hits, coverEvidence.coverProof.cover.hits, "Only genuine previously proven heading/footer hit IDs")
+          return proof
+        }, 15000)
+        await saveCapture("history-keyboard-mouse-off-no-cover")
+        const stableKeyboard = async (record, screen) => {
+          assert.deepEqual(record.route, { type: "session", sessionID })
+          assert.equal(record.mouse, false, "Production preserves the explicit mouse-off user control")
+          assert.equal(record.mode, "base")
+          assert.match(screen, /Analysis history/)
+          assert.match(screen, /✓ Safe/)
+          assert.match(screen, /Auto approved/)
+          assert.doesNotMatch(screen, /Permission analysis|Allowed in|Loading history|History could not be read|Commands/)
+          const facts = await coverState()
+          assert.equal(facts.history.open, true)
+          assert.equal(facts.history.status, "ready")
+          assert.equal(facts.history.total, 2)
+          assert.equal(facts.keyboardCover.mouse, false)
+          assert.equal(facts.keyboardCover.result, false)
+          assert.ok(facts.keyboardCover.frame > paletteFrame.id)
+          assert.deepEqual(await savedPair(), coverEvidence.pair, "Keyboard browsing never rewrites either report or accounting")
+          assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 4)
+          return facts.history
+        }
+        const selected = async (rank, record, screen) => {
+          const history = await stableKeyboard(record, screen), row = coverEvidence.pair.rows[rank - 1]
+          assert.equal(history.entry, row.id, "Keyboard selects the exact independently verified saved entry")
+          assert.equal(history.rank, rank)
+          assert.deepEqual(history.context, JSON.parse(row.context))
+          assert.match(screen, new RegExp(`${rank}/2`))
+          return history
+        }
+        // The production palette command reopens history on the latest real row.
+        // Its actual selected rendition and behavioral postcondition are required.
+        const historyCommand = await command({ type: "keymap", id: "reviewer.history" })
+        assert.equal(historyCommand.registered, true)
+        assert.equal(historyCommand.enabled, true)
+        await activatePalette({ send: (...keys) => runtime.tmux("send-keys", "-t", "v2-review", ...keys),
+          capture: () => runtime.tmux("capture-pane", "-p", "-e", "-t", "v2-review") }, historyCommand.title, async screen => {
+          try { return await selected(2, await observations(), screen) } catch { return false }
+        })
+        await until("fresh history paint exposes the long saved second report at scroll zero", async record => {
+          try {
+            const history = await selected(2, record, capture())
+            assert.equal(history.scroll, 0)
+            assert.match(capture(), /Keyboard scroll line 01/)
+            return history
+          } catch { return false }
+        }, 15000)
+        await saveCapture("history-keyboard-mouse-off-latest")
+        for (const [key, rank] of [["Left", 1], ["Right", 2]]) {
+          const prior = (await coverState()).history
+          runtime.tmux("send-keys", "-t", "v2-review", key)
+          const history = await until("mouse-off real " + key + " selects saved rank " + rank, async record => {
+            try {
+              const value = await selected(rank, record, capture())
+              assert.notEqual(value.entry, prior.entry)
+              assert.equal(value.scroll, 0)
+              return value
+            } catch { return false }
+          }, 15000)
+          coverEvidence.keyboard.selection.push({ key, before: prior, after: history })
+          await saveCapture("history-keyboard-mouse-off-" + key.toLowerCase())
+          await negativeWindow("mouse-off " + key + " selection has no approval or new work", [], replies, markerLine.repeat(2), 2,
+            1500, (record, screen) => selected(rank, record, screen))
+        }
+        for (const [key, direction, page] of [["Down", 1, false], ["Up", -1, false], ["PageDown", 1, true], ["PageUp", -1, true]]) {
+          const prior = await selected(2, await observations(), capture()), priorScreen = capture()
+          runtime.tmux("send-keys", "-t", "v2-review", key)
+          const history = await until("mouse-off real " + key + " changes production scroll", async record => {
+            try {
+              const value = await selected(2, record, capture()), delta = (value.scroll - prior.scroll) * direction
+              assert.ok(delta >= (page ? 2 : 1), "Actual production scroll changes in the requested direction, with a larger page step")
+              assert.notEqual(capture(), priorScreen, "Real terminal content changes, not just a stored offset")
+              return value
+            } catch { return false }
+          }, 15000)
+          coverEvidence.keyboard.scrolling.push({ key, before: prior.scroll, after: history.scroll, entry: history.entry })
+          await saveCapture("history-keyboard-mouse-off-" + key.toLowerCase())
+          await negativeWindow("mouse-off " + key + " scroll has no approval or new work", [], replies, markerLine.repeat(2), 2,
+            1500, async (record, screen) => {
+              const value = await selected(2, record, screen)
+              assert.equal(value.scroll, history.scroll, "The painted scroll offset remains stable")
+            })
+        }
+        await publish(path.join(artifacts, "history-keyboard-mouse-off-proof.json"), coverEvidence.keyboard)
+        runtime.tmux("send-keys", "-t", "v2-review", "Escape")
+        await until("mouse-off history closes through actual Escape", record => record?.mode === "base" && !capture().includes("Analysis history"))
+        await negativeWindow("closed mouse-off history cannot replay either once reply or execution", [], replies, markerLine.repeat(2), 2,
+          1500, async (record, screen) => {
+            assert.equal(record.mouse, false)
+            assert.doesNotMatch(screen, /Analysis history|Permission analysis/)
+            assert.deepEqual(await savedPair(), coverEvidence.pair)
+            assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 4)
+          })
+      }
+    }
    if (scenario === "fast-dialog") {
      historyEvidence = await until("fast native-modal final usage and saved report settle after preview approval", savedHistory, 20000)
      await publish(path.join(artifacts, "native-palette-fast-history.json"), historyEvidence)
@@ -1536,12 +1684,12 @@ try {
    assert.equal(final.asked.length, requestCount)
    assert.equal(final.replied.length, allowWrites ? requestCount : 0)
   assert.deepEqual(final.route, { type: "session", sessionID: fast && descendant ? childSession.id : sessionID })
-  if (automatic) assert.equal(final.mouse, !mouseOff)
+  if (automatic) assert.equal(final.mouse, !mouseOff && !keyboardMouseOffCase)
   if (negative) assert.equal(await executed(), null)
   await saveCapture("final")
   // Notification acceptance also verifies production/backend teardown while the
   // host is alive. Other cases disable only the independent observer as before.
-  await publish(cliPath, { ...cli, plugins: notificationCase ? ["-opencode-reviewer", "-fixture.review.monitor"]
+   await publish(cliPath, { ...cli, ...(keyboardMouseOffCase ? { mouse: false } : {}), plugins: notificationCase ? ["-opencode-reviewer", "-fixture.review.monitor"]
     : [cli.plugins[0], "-fixture.review.monitor"] })
   const cleaned = await until("monitor final flush/close", record => record?.cleaned && record)
   if (notificationCase) {
