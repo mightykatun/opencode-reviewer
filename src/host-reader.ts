@@ -1,11 +1,11 @@
 import type { OpenCodeClient } from "@opencode/client"
 import { companionRpc, readHandshake } from "./companion-protocol.js"
-import { boundedHostJSON, readHostInvocation, sameRequest, snapshotRequest } from "./host-request.js"
+import { hostJSONBytes, readHostEnvelope, readHostInvocation, sameRequest, snapshotRequest } from "./host-request.js"
 import { bindHostInvocation } from "./host-invocation.js"
 import { loadHostConversationContext, type HostConversationContext } from "./host-context.js"
 import { withDeadline } from "./deadline.js"
 import { transportOwnership } from "./transport-ownership.js"
-import type { HostInvocation, HostRequestSnapshot, HostScope, JSONObject } from "./host-types.js"
+import type { HostInvocation, HostRequestSnapshot, HostScope } from "./host-types.js"
 
 export interface HostInvocationRead {
   snapshot: HostRequestSnapshot
@@ -27,10 +27,8 @@ export async function readPendingInvocation(client: OpenCodeClient, at: HostScop
     const options = { location: scope.location, signal }
     const raw = await owned(client.rpc(companionRpc).invocation({ ...scope, sessionID: request.sessionID, requestID: request.id }, options))
     signal.throwIfAborted()
-    const data = boundedHostJSON(raw)
-    if (!data || typeof data !== "object" || Array.isArray(data)) return
-    const result = data as JSONObject
-    if (Object.keys(result).length !== 2) return
+    const result = readHostEnvelope(raw, { request: hostJSONBytes, invocation: hostJSONBytes })
+    if (!result) return
     const fresh = snapshotRequest(result.request, scope)
     if (!fresh || !sameRequest(snapshot, fresh)) return
     const captured = readHostInvocation(result.invocation)

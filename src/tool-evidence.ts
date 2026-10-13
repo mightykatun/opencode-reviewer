@@ -2,7 +2,8 @@ import type { DirectoryContext, DirectoryEvidence, Limits, ToolContext, ToolEvid
 import { patchOperations } from "./patch-summary.js"
 
 /** Bound traversal before copying/serializing hostile nested JSON. Preserve values exactly. */
-export function boundedCopy<T>(value: T, budget: number, valueBudget = 16384): { value: T; bytes: number; values: number } {
+export function boundedCopy<T>(value: T, budget: number, valueBudget = 16384,
+  measurements?: WeakMap<object, number>): { value: T; bytes: number; values: number } {
   let bytes = 0, nodes = 0
   const ancestors = new Set<object>()
   const add = (size: number) => { bytes += size; if (bytes > budget) throw new Error("Operation evidence exceeds configured byte budget") }
@@ -27,6 +28,7 @@ export function boundedCopy<T>(value: T, budget: number, valueBudget = 16384): {
     if (!value || typeof value !== "object" || (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)
       || ancestors.has(value)) throw new Error("Operation evidence is not a plain JSON record")
     ancestors.add(value)
+    const start = bytes
     add(2)
     const result: unknown[] | Record<string, unknown> = Array.isArray(value) ? [] : {}
     let count = 0
@@ -50,6 +52,9 @@ export function boundedCopy<T>(value: T, budget: number, valueBudget = 16384): {
       }
     }
     ancestors.delete(value)
+    // Sizes describe only newly constructed copies. Consumers can issue frozen
+    // components without scanning their large string values a second time.
+    measurements?.set(result, bytes - start)
     return result
   }
   return { value: visit(value, 0) as T, bytes, values: nodes }

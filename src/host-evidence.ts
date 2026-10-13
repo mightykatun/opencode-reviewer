@@ -5,7 +5,7 @@ import { collectEvidence } from "./evidence.js"
 import type { FileAccess } from "./file-access.js"
 import { DiffBudget, diffDelta, omittedFile } from "./files.js"
 import { sameLocation } from "./companion-protocol.js"
-import { boundedHostJSON, sameHostJSON } from "./host-request.js"
+import { boundedHostJSON, hostOperationJSONBytes, sameHostJSON } from "./host-request.js"
 import type { HostInvocationRead } from "./host-reader.js"
 import type { HostConversationContext } from "./host-context.js"
 import type { HostInvocation, HostRequest, JSONObject } from "./host-types.js"
@@ -41,7 +41,8 @@ export interface HostShellEvidence extends Base {
 }
 export interface HostEditChange {
   file: string
-  hostStatus: "added" | "deleted" | "modified"
+  /** Present only when supplied by native preview metadata. */
+  hostStatus?: "added" | "deleted" | "modified"
   status: "included" | "omitted"
   patch?: string
   reason?: string
@@ -224,16 +225,30 @@ function permissionMetadata(scope: Omit<HostRequest, "metadata">, metadata: JSON
   }
 }
 
-function editChanges(request: HostRequest, limits: Limits, signal: AbortSignal, limitations: string[]): HostEditChange[] {
-  const raw = request.metadata?.files
-  if (!Array.isArray(raw) || !raw.length) {
+function editChanges(request: HostRequest, proposed: Operation, limits: Limits, signal: AbortSignal, limitations: string[]): HostEditChange[] {
+  const supplied = request.metadata?.files
+  const raw = Array.isArray(supplied) ? supplied : []
+  if (!raw.length) {
     limitations.push("Pending host per-file diffs unavailable; no target files were read and no replacement diffs were constructed.")
-    return []
   }
   if (raw.length > 16384) throw new Error("Native edit scope exceeds normalization limit")
   let remaining = limits.maxEvidenceBytes, measurement = normalizationBytes
   const countsBudget = new DiffBudget(), selected = new Map<string, boolean>()
   const resources = new Set(request.resources)
+  const targets = new Set(resources)
+  if (typeof proposed.input.path === "string") targets.add(proposed.input.path)
+  for (const declared of proposed.patchOperations ?? []) {
+    targets.add(declared.path)
+    if (declared.movePath !== undefined) targets.add(declared.movePath)
+  }
+  // Preserve verbatim declarations, not guessed filesystem aliases or statuses.
+  // This also bounds identities absent from the optional preview array.
+  boundedCopy([...targets], normalizationBytes)
+  for (const target of targets) {
+    reviewStage(signal, "Evidence collection")
+    selected.set(target, selected.size < limits.maxFiles)
+  }
+  const previewed = new Set<string>()
   const changes: HostEditChange[] = []
   // Mandatory per-file identities have a separate normalization ceiling, as in
   // the legacy diff collector. Only whole optional bodies use the diff allowance.
@@ -247,8 +262,8 @@ function editChanges(request: HostRequest, limits: Limits, signal: AbortSignal, 
     if (typeof file.file !== "string" || !file.file || file.file.includes("\0")
       || !["added", "deleted", "modified"].includes(String(file.status))) throw new Error("Native edit file scope unavailable")
     if (!resources.has(file.file)) throw new Error("Pending edit preview falls outside the exact permission scope")
+    previewed.add(file.file)
     const change: HostEditChange = { file: file.file, hostStatus: file.status as HostEditChange["hostStatus"], status: "omitted" }
-    if (!selected.has(file.file)) selected.set(file.file, selected.size < limits.maxFiles)
     const diff = file.patch
     if (!selected.get(file.file)) change.reason = "file-count limit reached"
     else if (typeof diff !== "string" || !diff.length) change.reason = "pending host diff unavailable"
@@ -271,6 +286,18 @@ function editChanges(request: HostRequest, limits: Limits, signal: AbortSignal, 
       if (counts) change.delta = `[Δ] ${JSON.stringify(change.file)}: +${counts.added} −${counts.removed} lines`
     }
     changes.push(change)
+  }
+  let missing = false
+  for (const target of targets) {
+    reviewStage(signal, "Evidence collection")
+    if (!target || target.includes("\0")) throw new Error("Native edit target unavailable")
+    if (previewed.has(target)) continue
+    missing = true
+    changes.push({ file: target, status: "omitted", reason: "pending host preview unavailable for this exact declared target",
+      warning: omittedFile(target) })
+  }
+  if (missing) {
+    limitations.push("Some exact declared edit targets have no pending host preview; their changes and line counts are unavailable.")
   }
   if (countsBudget.exhausted) limitations.push("Some omitted-diff counts exceeded the bounded counting allowance; valid host counts were used when available.")
   return changes
@@ -302,7 +329,7 @@ export async function collectHostOperation(owned: OperationRead, options: HostEv
   if (kind === "edit") {
     base.limitations.push("Proposed diffs come from pending V2 metadata.files. Full target files and post-approval formatter changes are not inspected; host previews may normalize whitespace or omit BOMs.",
       "Targets are host-declared; filesystem aliases are not resolved and distinct declared file names count separately.")
-    const changes = editChanges(request, options, signal, base.limitations)
+    const changes = editChanges(request, proposed, options, signal, base.limitations)
     const partial = !changes.length || changes.some(change => change.status === "omitted")
     if (partial) base.limitations.push("Edit evidence is incomplete; omitted changes are not assessed by the supplied diffs.")
     reviewStage(signal, "Evidence collection")
@@ -402,7 +429,7 @@ export function readHostOperationEvidence(value: unknown, owned: OperationRead, 
   reviewStage(signal, "Evidence validation")
   try {
     assertOperationScope(owned)
-    const copy = boundedHostJSON(value), kind = operationKind(owned)
+    const copy = boundedHostJSON(value, hostOperationJSONBytes), kind = operationKind(owned)
     if (!kind || kind === "skill" || !(kind === "shell" ? options.reviewBash
       : kind === "edit" ? options.reviewEdits : options.reviewExternalDirectories)) return
     const common = ["kind", "tool", "permission", "location", "project", "operation", "limitations"]
@@ -423,7 +450,7 @@ export function readHostOperationEvidence(value: unknown, owned: OperationRead, 
       // Normalize the independently retained pending preview again, without any
       // file access or a second patch parser. This also checks count/byte limits,
       // exact resource membership and complete (never truncated) diff bodies.
-      const changes = editChanges(owned.snapshot.request, options, signal, [])
+      const changes = editChanges(owned.snapshot.request, proposed, options, signal, [])
       if (Object.hasOwn(copy.permission, "metadata") || !sameHostJSON(copy.changes, changes)
         || copy.partial !== (!changes.length || changes.some(change => change.status === "omitted"))) return
     } else {

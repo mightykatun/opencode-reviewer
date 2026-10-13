@@ -17,11 +17,11 @@ const request = { id: "request", sessionID: "session", action: "edit", resources
   metadata: { files: [{ file: "target.txt", status: "modified", patch: "@@ -1 +1 @@\n-old\n+new\n" }] } }
 const input = { path: "target.txt", content: "new\n" }
 
-async function fixture() {
+async function fixture(pending = request, proposed = input) {
   const lifecycle = new PluginLifecycle(), hooks = new Map<string, (event: any) => void>()
   let handlers: any
   const reads: string[] = [], queries: any[] = []
-  const state = { current: structuredClone(request), directory: location.directory, changeAfterCollection: false }
+  const state = { current: structuredClone(pending), directory: location.directory, changeAfterCollection: false }
   const server = {
     app: { version: "2.0.26" }, location: { ...location, project },
     tool: { hook: async (name: string, callback: (event: any) => void) => { hooks.set(name, callback); return { dispose() {} } } },
@@ -32,7 +32,7 @@ async function fixture() {
   const io = { realpath: async (path: string) => { reads.push(path); throw Error("Edit must not inspect filesystem") },
     open: async () => { throw Error("Edit must not read targets") } } as unknown as FileIO
   const handshake = await setupCompanion(server, lifecycle, io)
-  hooks.get("execute.before")!({ sessionID: "session", messageID: "assistant", id: "call", tool: "write", input })
+  hooks.get("execute.before")!({ sessionID: "session", messageID: "assistant", id: "call", tool: "write", input: proposed })
   const client = {
     rpc: () => ({
       handshake: async () => handshake,
@@ -45,7 +45,7 @@ async function fixture() {
       },
     }),
     session: { get: server.session.get, message: { get: async () => ({ id: "assistant", type: "assistant", content: [
-      { id: "call", type: "tool", name: "write", state: { status: "running", input } },
+      { id: "call", type: "tool", name: "write", state: { status: "running", input: proposed } },
     ] }) } },
     message: { list: async () => ({ data: [{ id: "user", type: "user", text: "Update target.txt" }], cursor: {} }) },
     permission: { get: async () => state.current },
@@ -110,4 +110,65 @@ test("collection options reject unknown paths, overflow, missing switches and ge
   const value = Object.defineProperty({ ...options }, "maxFiles", { get() { read = true; return 1 } })
   assert.equal(readHostEvidenceOptions(value), undefined)
   assert.equal(read, false)
+})
+
+test("large write content and optional preview cross both RPCs without a shared 16 MiB cap", async () => {
+  const content = "x".repeat(9 * 1024 * 1024), patch = "+" + "p".repeat(9 * 1024 * 1024)
+  const pending = { ...request, metadata: { files: [{ ...request.metadata.files[0]!, patch }] } }
+  const f = await fixture(pending, { ...input, content })
+  try {
+    const value = await readHostEvidence(f.client, f.scope, pending, options, new AbortController().signal)
+    assert.ok(value?.result.status === "ready" && value.result.evidence.kind === "edit")
+    assert.equal(value.invocation.input.content, content)
+    assert.deepEqual(value.snapshot.request.metadata, pending.metadata)
+    assert.deepEqual(value.result.evidence.operation.input, { path: "target.txt" })
+    assert.equal(value.result.evidence.changes[0]?.status, "omitted")
+    assert.equal(value.result.evidence.changes[0]?.patch, undefined, "Optional previews are omitted whole, never truncated")
+    assert.equal(value.result.evidence.partial, true)
+    assert.equal(value.result.evidence.userPrompt, "Update target.txt")
+    assert.deepEqual(f.reads, [])
+  } finally { await f.lifecycle.stop() }
+})
+
+test("evidence RPC admits a separately bounded result larger than 16 MiB without weakening fresh proof", async () => {
+  const f = await fixture(), reason = "r".repeat(18 * 1024 * 1024)
+  try {
+    const original = f.raw.rpc
+    f.raw.rpc = () => {
+      const methods = original()
+      return { ...methods, evidence: async (...args: Parameters<typeof methods.evidence>) => {
+        const value = await methods.evidence(...args)
+        return { ...value, result: { status: "unsupported", reason } }
+      } }
+    }
+    const value = await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal)
+    assert.deepEqual(value?.result, { status: "unsupported", reason })
+    f.state.changeAfterCollection = true
+    assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal), undefined)
+  } finally { await f.lifecycle.stop() }
+})
+
+test("evidence RPC rejects extra fields, accessors, proxies, over-cap components and invalid result framing", async () => {
+  let accessed = 0
+  for (const change of [
+    (value: any) => ({ ...value, extra: true }),
+    (value: any) => Object.defineProperty(value, "result", { get() { accessed++; return {} } }),
+    (value: any) => new Proxy(value, { ownKeys() { accessed++; throw Error("Must not run") } }),
+    (value: any) => ({ ...value, request: { ...value.request, metadata: { preview: "x".repeat(16 * 1024 * 1024) } } }),
+    (value: any) => ({ ...value, invocation: { ...value.invocation, input: { content: "x".repeat(16 * 1024 * 1024) } } }),
+    (value: any) => ({ ...value, result: { status: "unsupported", reason: "x".repeat(32 * 1024 * 1024 + 65536) } }),
+    (value: any) => ({ ...value, result: { ...value.result, extra: true } }),
+    (value: any) => ({ ...value, result: { status: "ready", reason: "Wrong fields" } }),
+  ]) {
+    const f = await fixture()
+    try {
+      const original = f.raw.rpc
+      f.raw.rpc = () => {
+        const methods = original()
+        return { ...methods, evidence: async (...args: Parameters<typeof methods.evidence>) => change(await methods.evidence(...args)) }
+      }
+      assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal), undefined)
+    } finally { await f.lifecycle.stop() }
+  }
+  assert.equal(accessed, 0)
 })

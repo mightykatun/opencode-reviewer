@@ -46,15 +46,15 @@ implementation and fixtures as migration inputs. Keep exactly five package files
 - [x] Correct the live-panel mount/scroll comment.
 - [x] Add independent regression tests for each behavior.
 - [x] Verify focused tests, build and relevant installed V2 fixtures.
-- [ ] Commit verified phase and record evidence.
+- [x] Commit verified phase and record evidence.
 
 ## Phase 4: evidence completeness and large-record boundaries
 
-- [ ] Represent missing declared edit previews as incomplete evidence at both boundaries.
-- [ ] Bound RPC envelopes separately from independently owned components.
-- [ ] Reduce repeated normalization/canonicalization of validated immutable records.
-- [ ] Add missing-preview, aggregate-boundary, exact-linkage and cancellation regressions.
-- [ ] Verify focused tests, build and production invocation/evidence fixture.
+- [x] Represent missing declared edit previews as incomplete evidence at both boundaries.
+- [x] Bound RPC envelopes separately from independently owned components.
+- [x] Reduce repeated normalization/canonicalization of validated immutable records.
+- [x] Add missing-preview, aggregate-boundary, exact-linkage and cancellation regressions.
+- [x] Verify focused tests, build and production invocation/evidence fixture.
 - [ ] Commit verified phase and record evidence.
 
 ## Phase 5: notification coherence and approval transaction ownership
@@ -151,3 +151,27 @@ databases remain untouched; their namespace cannot authorize migration reads.
 - Stock `normal-cancel` and `fast-notifications`: passed; results respectively
   `.runtime/runtime-run-a2rE77/results.json` and
   `.runtime/runtime-run-uCH7RG/results.json`.
+- Commit: `23f135d`, `fix: preserve cancellation and keyboard history ownership`.
+
+### Phase 4 evidence
+
+- Missing previews now produce exact omitted target entries, with neither invented
+  host status nor fabricated diffs/counts. Permission resources and declared
+  operation/move targets are retained verbatim; unavailable targets consume the
+  file allowance. Independent CLI validation rejects incomplete claims labeled
+  complete or missing omitted entries.
+- Initial missing-preview/source regressions: 17 passed, 0 failed.
+  Final edit/large-command regressions: 18 passed, 0 failed
+  (`.runtime/phase4-edit-tests.log`).
+- Combined RPC/evidence boundary tests: 52 passed, 0 failed
+  (`.runtime/phase4-source-tests.log`); shared tool/evidence tests: 17 passed,
+  0 failed (`.runtime/phase4-tool-tests.log`). Typecheck and build passed.
+- Copy measurements are captured during the original bounded traversal, not a
+  second large-string scan. Only privately issued, recursively frozen objects
+  reuse bounds and canonical forms; arbitrary frozen caller inputs are rechecked.
+- Local 8 MiB probe: issued-copy reuse 0.009 ms; ten exact owned comparisons
+  88 ms. This is a local measurement, not a portable performance assertion.
+- Stock OpenCode 2.0.27 invocation `default` and `review`: passed. Artifacts:
+  `.runtime/v2-invocation-gP7q5x`, `.runtime/v2-invocation-6TIYS7`; results:
+  `.runtime/runtime-run-4MB8K5/results.json`,
+  `.runtime/runtime-run-kxTYqA/results.json`.

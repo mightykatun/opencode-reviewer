@@ -72,6 +72,37 @@ test("argument rewrites, late permission mutation and companion replacement reje
   }
 })
 
+test("request previews and invocation arguments each receive their own 16 MiB RPC allowance", async () => {
+  const f = fixture(), command = "x".repeat(9 * 1024 * 1024)
+  const pending = { ...request(), metadata: { preview: "p".repeat(9 * 1024 * 1024) } }
+  f.state.response.request = pending
+  f.state.current = pending
+  f.state.response.invocation.input.command = command
+  f.state.input.command = command
+  const result = await readPendingInvocation(f.client, scope, pending, new AbortController().signal)
+  assert.equal(result?.invocation.input.command, command)
+  assert.deepEqual(result?.snapshot.request.metadata, pending.metadata)
+  assert.deepEqual(f.calls, ["capture", "message", "permission", "handshake"])
+})
+
+test("invalid invocation envelope framing and over-cap components stop before source/context reads", async () => {
+  let accessed = 0
+  for (const change of [
+    (value: unknown) => ({ ...(value as object), extra: true }),
+    (value: unknown) => Object.defineProperty(value, "invocation", { get() { accessed++; return invocation() } }),
+    (value: unknown) => new Proxy(value as object, { ownKeys() { accessed++; throw Error("Must not run") } }),
+    (value: unknown) => ({ ...(value as object), request: { ...request(), metadata: { preview: "x".repeat(16 * 1024 * 1024) } } }),
+    (value: unknown) => ({ ...(value as object), invocation: { ...invocation(), input: { command: "x".repeat(16 * 1024 * 1024) } } }),
+  ]) {
+    const f = fixture(), methods = f.rawClient.rpc()
+    f.rawClient.rpc = () => ({ ...methods, invocation: async (...args: Parameters<typeof methods.invocation>) =>
+      change(await methods.invocation(...args)) as typeof f.state.response })
+    assert.equal(await readPendingInvocation(f.client, scope, request(), new AbortController().signal), undefined)
+    assert.deepEqual(f.calls, ["capture"])
+  }
+  assert.equal(accessed, 0)
+})
+
 test("deadline expiry keeps the actual capture RPC owned until late settlement and prevents subsequent reads", async () => {
   const f = fixture(), abort = new AbortController(), ownership = new TransportOwnership()
   bindTransportOwnership(abort.signal, ownership)

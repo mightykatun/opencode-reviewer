@@ -3,7 +3,7 @@ import { companionRpc, readHandshake } from "./companion-protocol.js"
 import { readPendingInvocation, type HostInvocationRead } from "./host-reader.js"
 import { attachHostConversation, readHostOperationEvidence, type HostEvidenceOptions, type HostEvidenceResult } from "./host-evidence.js"
 import { hostEvidenceOptions, readHostEvidenceOptions } from "./host-evidence-options.js"
-import { boundedHostJSON, readHostInvocation, sameHostJSON, sameRequest, snapshotRequest } from "./host-request.js"
+import { hostJSONBytes, hostOperationJSONBytes, readHostEnvelope, readHostInvocation, sameHostJSON, sameRequest, snapshotRequest } from "./host-request.js"
 import { withDeadline, remainingTime } from "./deadline.js"
 import { transportOwnership } from "./transport-ownership.js"
 import type { HostScope, JSONObject } from "./host-types.js"
@@ -24,12 +24,11 @@ export async function readHostEvidence(client: OpenCodeClient, at: HostScope, pe
     const { snapshot } = current, { scope, request } = snapshot
     const owned = <T>(work: Promise<T>) => transportOwnership(signal)?.track(work) ?? work
     const rpcOptions = { location: scope.location, signal }
-    const raw = boundedHostJSON(await owned(client.rpc(companionRpc).evidence({ ...scope,
-      sessionID: request.sessionID, requestID: request.id, options: collection, timeoutMs: remainingTime(signal) }, rpcOptions)))
+    const raw = await owned(client.rpc(companionRpc).evidence({ ...scope,
+      sessionID: request.sessionID, requestID: request.id, options: collection, timeoutMs: remainingTime(signal) }, rpcOptions))
     signal.throwIfAborted()
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return
-    const data = raw as JSONObject
-    if (Object.keys(data).length !== 3) return
+    const data = readHostEnvelope(raw, { request: hostJSONBytes, invocation: hostJSONBytes, result: hostOperationJSONBytes })
+    if (!data) return
     const returned = snapshotRequest(data.request, scope)
     if (!returned || !sameRequest(snapshot, returned) || !sameHostJSON(readHostInvocation(data.invocation), current.invocation)) return
     const result = data.result as JSONObject | undefined

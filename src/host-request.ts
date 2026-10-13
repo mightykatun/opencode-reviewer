@@ -5,8 +5,15 @@ import type { HostInvocation, HostLocation, HostRequest, HostRequestSnapshot, Ho
 
 /** Preprocessing ceiling only; collectors still enforce maxEvidenceBytes. */
 export const hostJSONBytes = 16 * 1024 * 1024
+/** Operation results can duplicate a full command plus bounded operation evidence. */
+export const hostOperationJSONBytes = (hostJSONBytes * 2) + 65536
 const hostJSONValues = 16384
 const identities = new WeakMap<HostRequestSnapshot, string>()
+const issued = new WeakMap<object, { bytes: number; canonical?: string }>()
+
+function allowedBytes(bytes: number): boolean {
+  return bytes === hostJSONBytes || bytes === hostOperationJSONBytes
+}
 
 /** Reject properties JSON copying would silently discard, without running getters. */
 function inspectJSON(value: unknown, depth = 0, count = { values: 0 }): void {
@@ -42,11 +49,59 @@ function freeze<T>(value: T): T {
   return value
 }
 
-/** An immutable bounded copy, or undefined for any unsupported/lossy input. */
-export function boundedHostJSON(value: unknown): JSONValue | undefined {
+/** Record sizes only for our own deeply frozen copies, including their components. */
+function issue(value: JSONValue, measurements: WeakMap<object, number>): void {
+  if (value === null || typeof value !== "object") return
+  for (const item of Object.values(value)) issue(item, measurements)
+  Object.freeze(value)
+  issued.set(value, { bytes: measurements.get(value)! })
+}
+
+/** An immutable bounded copy. Only boundary-issued copies may bypass reinspection. */
+export function boundedHostJSON(value: unknown, maxBytes = hostJSONBytes): JSONValue | undefined {
+  if (!allowedBytes(maxBytes)) return
   try {
+    if (value && typeof value === "object") {
+      const owned = issued.get(value)
+      if (owned) return owned.bytes <= maxBytes ? value as JSONValue : undefined
+    }
     inspectJSON(value)
-    return freeze(boundedCopy(value, hostJSONBytes, hostJSONValues).value as JSONValue)
+    const measurements = new WeakMap<object, number>()
+    const copy = boundedCopy(value, maxBytes, hostJSONValues, measurements).value as JSONValue
+    issue(copy, measurements)
+    return copy
+  } catch { return undefined }
+}
+
+/** Fixed RPC framing has its own exact shape, not a shared component byte budget.
+ * The aggregate is at most request + invocation (+ result) caps plus fixed framing.
+ * Validate every outer descriptor before traversing or copying any component. */
+export function readHostEnvelope(value: unknown, componentBudgets: Readonly<Record<string, number>>): JSONObject | undefined {
+  try {
+    if (!componentBudgets || types.isProxy(componentBudgets)) return
+    const budgetKeys = Reflect.ownKeys(componentBudgets)
+    const expected = budgetKeys.length === 2 ? ["request", "invocation"] : ["request", "invocation", "result"]
+    if (budgetKeys.length !== expected.length || budgetKeys.some(key => typeof key !== "string" || !expected.includes(key))) return
+    const budgets = expected.map(key => {
+      const descriptor = Object.getOwnPropertyDescriptor(componentBudgets, key)
+      const cap = key === "result" ? hostOperationJSONBytes : hostJSONBytes
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value") || descriptor.value !== cap) throw new Error("Unsupported host envelope budget")
+      return cap
+    })
+    if (!value || typeof value !== "object" || types.isProxy(value) || Array.isArray(value)) return
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null) return
+    const keys = Reflect.ownKeys(value)
+    if (keys.length !== expected.length || keys.some(key => typeof key !== "string" || !expected.includes(key))) return
+    const descriptors = expected.map(key => Object.getOwnPropertyDescriptor(value, key)!)
+    if (descriptors.some(descriptor => !descriptor.enumerable || !Object.hasOwn(descriptor, "value"))) return
+    const result: JSONObject = {}
+    for (let index = 0; index < expected.length; index++) {
+      const copy = boundedHostJSON(descriptors[index]!.value, budgets[index]!)
+      if (copy === undefined) return
+      Object.defineProperty(result, expected[index]!, { value: copy, enumerable: true })
+    }
+    return Object.freeze(result)
   } catch { return undefined }
 }
 
@@ -137,10 +192,18 @@ export function readHostInvocation(value: unknown): HostInvocation | undefined {
 }
 
 /** Canonicalize only validated owned data: object order is irrelevant, array order is exact. */
-function canonical(value: JSONValue): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`
-  if (object(value)) return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key]!)}`).join(",")}}`
+function canonicalText(value: JSONValue): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalText).join(",")}]`
+  if (object(value)) return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalText(value[key]!)}`).join(",")}}`
   return Object.is(value, -0) ? "-0" : JSON.stringify(value)
+}
+
+function canonical(value: JSONValue): string {
+  const owned = value && typeof value === "object" ? issued.get(value) : undefined
+  if (owned?.canonical !== undefined) return owned.canonical
+  const result = canonicalText(value)
+  if (owned) owned.canonical = result
+  return result
 }
 
 /** Exact JSON equality for mandatory arguments, after independent bounded copies. */

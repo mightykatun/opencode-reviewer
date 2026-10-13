@@ -1,7 +1,8 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { boundedCopy } from "../src/tool-evidence.js"
 import type { PermissionRequest } from "@opencode/client"
-import { boundedHostJSON, hostJSONBytes, readHostInvocation, readHostRequest, readHostScope, sameRequest, snapshotRequest, serverRequestJSON, hostRequestWire } from "../src/host-request.js"
+import { boundedHostJSON, hostJSONBytes, hostOperationJSONBytes, readHostEnvelope, readHostInvocation, readHostRequest, readHostScope, sameHostJSON, sameRequest, snapshotRequest, serverRequestJSON, hostRequestWire } from "../src/host-request.js"
 
 const at = () => ({ location: { directory: "/project/A", workspaceID: "workspace-A" }, epoch: "connection-A" })
 
@@ -205,4 +206,136 @@ test("captured invocation retains independent location, project, epoch, input an
     { project: { id: "global", directory: "/project" } }, { project: { ...raw.project, canonical: "relative" } },
     { project: { ...raw.project, extra: true } }, { location: { directory: "/project", extra: true } }, { extra: true },
   ]) assert.equal(readHostInvocation({ ...invocation(), ...change }), undefined)
+})
+
+test("issued copies and their components are reused without trusting frozen caller inputs", () => {
+  const raw = { input: { array: ["before", -0], text: "exact" } }
+  const copy = boundedHostJSON(raw) as typeof raw
+  assert.notEqual(copy, raw)
+  assert.notEqual(copy.input, raw.input)
+  assert.equal(boundedHostJSON(copy), copy)
+  assert.equal(boundedHostJSON(copy.input), copy.input)
+  assert.equal(boundedHostJSON(copy.input.array), copy.input.array)
+  assert.equal(boundedHostJSON(copy, hostOperationJSONBytes), copy)
+  assert.ok(Object.isFrozen(copy) && Object.isFrozen(copy.input) && Object.isFrozen(copy.input.array))
+  assert.throws(() => { copy.input.array[0] = "after" }, TypeError)
+  raw.input.text = "changed"
+  raw.input.array.push("after")
+  assert.equal(copy.input.text, "exact")
+  assert.equal(copy.input.array.length, 2)
+  assert.equal(sameHostJSON(raw, copy), false)
+  const frozen = Object.freeze({ nested: { value: "before" } })
+  const first = boundedHostJSON(frozen)
+  assert.notEqual(first, frozen)
+  frozen.nested.value = "after"
+  assert.notDeepEqual(boundedHostJSON(frozen), first)
+  let accessed = false
+  const hostile = Object.freeze({ get input() { accessed = true; return copy } })
+  assert.equal(boundedHostJSON(hostile), undefined)
+  assert.equal(accessed, false)
+})
+
+test("copy measurements belong only to new records and preserve exact escaped UTF-8 component sizes", () => {
+  const raw = { nested: { text: '\0\b\t\n"\\é😀\ud800', array: [false, 0, -0, {}, []] } }
+  const measurements = new WeakMap<object, number>()
+  const copy = boundedCopy(raw, 1024, 16384, measurements)
+  assert.equal(copy.bytes, Buffer.byteLength(JSON.stringify(raw)))
+  assert.equal(measurements.get(copy.value), copy.bytes)
+  assert.equal(measurements.get(copy.value.nested), Buffer.byteLength(JSON.stringify(raw.nested)))
+  assert.equal(measurements.get(copy.value.nested.array), Buffer.byteLength(JSON.stringify(raw.nested.array)))
+  assert.equal(measurements.get(copy.value.nested.array[3] as object), 2)
+  assert.equal(measurements.get(copy.value.nested.array[4] as object), 2)
+  assert.equal(measurements.get(raw), undefined)
+  assert.equal(measurements.get(raw.nested), undefined)
+})
+
+test("only explicit finite byte caps are admitted and issued copies retain their byte ceiling", () => {
+  assert.equal(hostOperationJSONBytes, (16 * 1024 * 1024 * 2) + 65536)
+  for (const cap of [0, -1, 1, hostJSONBytes - 1, hostJSONBytes + 1, hostOperationJSONBytes + 1, Infinity, NaN]) {
+    assert.equal(boundedHostJSON({}, cap), undefined)
+  }
+  const large = { nested: { text: "x".repeat(hostJSONBytes) } }
+  const copy = boundedHostJSON(large, hostOperationJSONBytes) as typeof large
+  assert.ok(copy)
+  assert.equal(boundedHostJSON(copy), undefined)
+  assert.equal(boundedHostJSON(copy.nested), undefined)
+  assert.equal(boundedHostJSON(copy, Infinity), undefined)
+  assert.equal(boundedHostJSON(copy, hostOperationJSONBytes), copy)
+  assert.equal(boundedHostJSON(copy.nested, hostOperationJSONBytes), copy.nested)
+  assert.equal(boundedHostJSON("x".repeat(hostOperationJSONBytes - 2), hostOperationJSONBytes), "x".repeat(hostOperationJSONBytes - 2))
+  assert.equal(boundedHostJSON("x".repeat(hostOperationJSONBytes - 1), hostOperationJSONBytes), undefined)
+})
+
+test("canonical reuse preserves object order, array order, negative zero and mutable input equality", () => {
+  const raw = { nested: { b: [1, -0], a: "scope" } }
+  const issued = boundedHostJSON(raw)!
+  const reordered = boundedHostJSON({ nested: { a: "scope", b: [1, -0] } })!
+  for (let index = 0; index < 3; index++) {
+    assert.equal(sameHostJSON(issued, reordered), true)
+    assert.equal(sameHostJSON(issued, raw), true)
+    assert.equal(sameHostJSON(issued, { nested: { a: "scope", b: [-0, 1] } }), false)
+    assert.equal(sameHostJSON(issued, { nested: { a: "scope", b: [1, 0] } }), false)
+  }
+  raw.nested.b[1] = 0
+  assert.equal(sameHostJSON(issued, raw), false)
+  assert.equal(sameHostJSON(-0, 0), false)
+  assert.equal(sameHostJSON({ absent: undefined }, {}), false)
+  const frozen = Object.freeze({ nested: { value: "before" } })
+  assert.equal(sameHostJSON(frozen, { nested: { value: "before" } }), true)
+  frozen.nested.value = "after"
+  assert.equal(sameHostJSON(frozen, { nested: { value: "before" } }), false)
+})
+
+test("fixed envelopes independently own large request, invocation and operation-result components", () => {
+  const budgets = { request: hostJSONBytes, invocation: hostJSONBytes, result: hostOperationJSONBytes }
+  const content = "x".repeat(9 * 1024 * 1024)
+  const raw = {
+    request: { ...shell(), metadata: { preview: content } },
+    invocation: { ...invocation(), tool: "write", input: { path: "target.txt", content } },
+    result: { status: "ready", evidence: { command: content, operation: { input: { command: content } } } },
+  }
+  assert.equal(boundedHostJSON(raw), undefined)
+  const copy = readHostEnvelope(raw, budgets)!
+  assert.ok(copy)
+  assert.deepEqual(copy, raw)
+  assert.ok(Object.isFrozen(copy))
+  assert.equal(boundedHostJSON(copy.request), copy.request)
+  assert.equal(boundedHostJSON(copy.invocation), copy.invocation)
+  assert.equal(readHostInvocation(copy.invocation), copy.invocation)
+  assert.equal(boundedHostJSON(copy.result), undefined)
+  assert.equal(boundedHostJSON(copy.result, hostOperationJSONBytes), copy.result)
+  assert.equal(readHostEnvelope(copy, budgets)!.result, copy.result)
+  for (const [key, budget] of Object.entries(budgets)) {
+    assert.equal(readHostEnvelope({ ...raw, [key]: "x".repeat(budget) }, budgets), undefined, key)
+  }
+})
+
+test("outer envelope shape, descriptors and proxies are rejected before getters or components run", () => {
+  const budgets = { request: hostJSONBytes, invocation: hostJSONBytes }
+  const raw = { request: shell(), invocation: invocation() }
+  let evaluated = 0
+  const proxy = new Proxy(raw, { ownKeys() { evaluated++; throw Error("Must not run") }, getPrototypeOf() { evaluated++; throw Error("Must not run") } })
+  const getter = Object.defineProperty({ ...raw }, "invocation", { enumerable: true, get() { evaluated++; return invocation() } })
+  const hidden = Object.defineProperty({ ...raw }, "invocation", { enumerable: false, value: invocation() })
+  const frozenGetter = Object.freeze({ request: raw.request, get invocation() { evaluated++; return invocation() } })
+  for (const value of [null, [], {}, { request: raw.request, extra: raw.invocation }, { ...raw, result: {} },
+    { ...raw, [Symbol("extra")]: true }, Object.assign(Object.create({ inherited: true }), raw), proxy, getter, hidden, frozenGetter,
+    { ...raw, request: new Proxy(raw.request, { ownKeys() { evaluated++; throw Error("Must not run") } }) },
+  ]) assert.equal(readHostEnvelope(value, budgets), undefined)
+  assert.equal(evaluated, 0)
+  assert.ok(readHostEnvelope(Object.assign(Object.create(null), raw), budgets))
+  for (const invalid of [{ ...budgets, result: hostJSONBytes }, { ...budgets, request: Infinity },
+    { request: hostJSONBytes }, { ...budgets, extra: hostJSONBytes },
+  ]) assert.equal(readHostEnvelope(raw, invalid), undefined)
+})
+
+test("envelope components retain independent depth and value limits, including enlarged operation caps", () => {
+  const budgets = { request: hostJSONBytes, invocation: hostJSONBytes, result: hostOperationJSONBytes }
+  let deep: unknown = null
+  for (let index = 0; index < 32; index++) deep = { child: deep }
+  const accepted = { request: deep, invocation: Array(16383).fill(null), result: Array(16383).fill(null) }
+  assert.ok(readHostEnvelope(accepted, budgets))
+  assert.equal(readHostEnvelope({ ...accepted, request: { child: deep } }, budgets), undefined)
+  assert.equal(readHostEnvelope({ ...accepted, result: Array(16384).fill(null) }, budgets), undefined)
+  assert.equal(boundedHostJSON({ child: deep }, hostOperationJSONBytes), undefined)
 })

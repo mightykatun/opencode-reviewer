@@ -165,6 +165,23 @@ test("commands above 64 KiB remain lossless, and mandatory budget failure preced
   assert.deepEqual(blocked.calls, [])
 })
 
+test("large shell operation responses survive duplicated mandatory arguments without weakening configured evidence limits", async () => {
+  const command = ": #" + "x".repeat(9 * 1024 * 1024)
+  const value = shell(command), files = io()
+  const largeOptions = { ...options, maxEvidenceBytes: 16 * 1024 * 1024 }
+  const result = await collectHostOperation(value, largeOptions, signal(), files.access)
+  assert.ok(result.status === "ready" && result.evidence.kind === "shell")
+  const evidence = result.evidence
+  assert.equal(evidence.command, command)
+  assert.equal(evidence.operation.input.command, command)
+  assert.deepEqual(readHostOperationEvidence(evidence, value, largeOptions, signal()), evidence)
+  assert.equal(readHostOperationEvidence(evidence, value, { ...largeOptions, maxEvidenceBytes: 8 * 1024 * 1024 }, signal()), undefined)
+  assert.equal(readHostOperationEvidence({ ...evidence, files: [{ filename: "invented.py", path: location.directory + "/invented.py",
+    status: "captured", contents: "x".repeat(9 * 1024 * 1024) }] }, value, largeOptions, signal()), undefined,
+  "the larger preprocessing allowance cannot expand the configured file allowance")
+  assert.equal(files.calls.some(call => call.startsWith("open:")), false)
+})
+
 test("changed source, session, epoch, location and conversation identities reject before I/O", async () => {
   for (const change of ["assistant", "call", "session", "epoch", "location", "workspace", "conversation"] as const) {
     const value = shell("cat file.txt"), files = io()
@@ -215,13 +232,56 @@ test("edit has exact replacement scope and unavailable previews never trigger ta
   assert.ok(evidence.kind === "edit")
   assert.deepEqual(evidence.operation.input, { path: "target.txt", replaceAll: true })
   assert.equal(evidence.partial, true)
-  assert.deepEqual(evidence.changes, [])
+  assert.deepEqual(evidence.changes, [{ file: "target.txt", status: "omitted",
+    reason: "pending host preview unavailable for this exact declared target", warning: '[!] File "target.txt" not included in context.' }])
   assert.match(evidence.limitations.join("\n"), /Pending host per-file diffs unavailable/)
   assert.deepEqual(files.calls, [])
   await assert.rejects(ready(owned("write", { ...nativeInput, unexpectedTarget: "/other" }), options, files.access), /unsupported fields/)
   await assert.rejects(ready(owned("write", nativeInput, { ...nativeRequest,
     metadata: { files: [{ ...nativeFile, file: "unrelated.txt" }] } }), options, files.access), /outside the exact permission scope/)
   await assert.rejects(ready(owned("read", {}, externalRequest), options, files.access), /requires exact path/)
+  assert.deepEqual(files.calls, [])
+})
+
+test("absent patch previews are represented as incomplete at collection and independent validation boundaries", async () => {
+  const patchText = "*** Begin Patch\n*** Update File: target.txt\n@@\n-old\n+new\n*** Add File: second.txt\n+new contents\n*** End Patch"
+  const value = owned("patch", { patchText }, { ...nativeRequest, resources: ["target.txt", "second.txt"], metadata: { files: [nativeFile] } })
+  const files = io()
+  const result = await collectHostOperation(value, options, signal(), files.access)
+  assert.ok(result.status === "ready" && result.evidence.kind === "edit")
+  const evidence = result.evidence
+  assert.equal(evidence.partial, true)
+  assert.deepEqual(evidence.changes.map(change => [change.file, change.status]), [["target.txt", "included"], ["second.txt", "omitted"]])
+  const missing = evidence.changes[1]!
+  assert.equal(missing.hostStatus, undefined, "no preview status is invented from a patch header")
+  assert.equal(missing.delta, undefined, "missing previews provide no line-count evidence")
+  assert.equal(missing.patch, undefined)
+  assert.match(missing.reason!, /pending host preview unavailable/)
+  assert.match(evidence.limitations.join("\n"), /exact declared edit targets have no pending host preview/)
+  assert.deepEqual(readHostOperationEvidence(evidence, value, options, signal()), evidence)
+  assert.equal(readHostOperationEvidence({ ...evidence, partial: false }, value, options, signal()), undefined)
+  assert.equal(readHostOperationEvidence({ ...evidence, changes: evidence.changes.slice(0, 1) }, value, options, signal()), undefined)
+  assert.equal(readHostOperationEvidence({ ...evidence, changes: [...evidence.changes.slice(0, 1), { ...missing, delta: "+1 -0" }] }, value, options, signal()), undefined)
+  const missingFirst = owned("patch", { patchText }, { ...nativeRequest, resources: ["second.txt", "target.txt"], metadata: { files: [nativeFile] } })
+  const limited = await ready(missingFirst, { ...options, maxFiles: 1 }, files.access)
+  assert.ok(limited.kind === "edit")
+  assert.equal(limited.changes[0]!.status, "omitted", "an unavailable first declared target still consumes the file allowance")
+  assert.equal(limited.changes[0]!.reason, "file-count limit reached")
+  assert.deepEqual(files.calls, [])
+})
+
+test("missing write previews and both move declarations retain verbatim scope without filesystem alias guesses", async () => {
+  const value = owned("patch", { patchText: "*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n@@\n-old\n+new\n*** End Patch" },
+    { ...nativeRequest, resources: ["old.txt", "new.txt"], metadata: { files: [{ file: "new.txt", status: "added", patch: nativeDiff }] } })
+  const files = io(), evidence = await ready(value, options, files.access)
+  assert.ok(evidence.kind === "edit")
+  assert.equal(evidence.partial, true)
+  assert.deepEqual(evidence.changes.map(change => [change.file, change.status]), [["new.txt", "included"], ["old.txt", "omitted"]])
+  assert.equal(evidence.changes[1]!.hostStatus, undefined)
+  const alias = await ready(owned("write", { path: "./target.txt", content: "new" }), options, files.access)
+  assert.ok(alias.kind === "edit")
+  assert.equal(alias.partial, true, "lexically different declarations are not silently substituted")
+  assert.equal(alias.changes[1]!.file, "./target.txt")
   assert.deepEqual(files.calls, [])
 })
 
