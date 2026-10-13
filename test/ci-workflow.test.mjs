@@ -12,6 +12,7 @@ const read = async (file) => readFile(new URL(`../${file}`, import.meta.url), "u
 test("PR CI is read-only, pinned, and checks the supported development Node floors", async () => {
   const workflow = await read(".github/workflows/ci.yml")
   assert.match(workflow, /\n  pull_request:\n/)
+  assert.match(workflow, /\n  push:\n    branches: \[main\]\n/)
   assert.match(workflow, /\npermissions:\n  contents: read\n/)
   assert.doesNotMatch(workflow, /pull_request_target|contents: write|id-token:|secrets\.|GH_TOKEN|NODE_AUTH_TOKEN|npm publish/)
   assert.match(workflow, /persist-credentials: false/)
@@ -20,16 +21,19 @@ test("PR CI is read-only, pinned, and checks the supported development Node floo
   const pins = { checkout: "34e114876b0b11c390a56381ad16ebd13914f8d5", "setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020",
     "upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02" }
   const actions = [...workflow.matchAll(/uses: actions\/([\w-]+)@(\S+)/g)]
-  assert.equal(actions.length, 5)
+  assert.equal(actions.length, 6)
   for (const [, name, sha] of actions) assert.equal(sha, pins[name])
-  const check = workflow.split("\n  runtime:\n")[0]
+  const check = workflow.split("\n  check:\n")[1].split("\n  runtime:\n")[0]
   const commands = [...check.matchAll(/^      - run: (.+)$/gm)].map((match) => match[1])
-  assert.deepEqual(commands, ["npm ci --ignore-scripts", "mkdir -p /tmp/opencode", "npm run check", "npm run check:package",
+  assert.deepEqual(commands, ["npm ci --ignore-scripts", "mkdir -p /tmp/opencode", "npm run typecheck && npm test && npm run test:helpers", "npm run check:package",
     "node --test test/release-artifact-smoke.test.mjs", "npm install --global npm@12.2.0 --ignore-scripts", "node --test test/npm-cli-smoke.test.mjs",
     "sudo apt-get update && sudo apt-get install --yes tmux", "npm run test:runtime-cleanup"])
   const runtime = workflow.split("\n  runtime:\n")[1]
+  assert.doesNotMatch(runtime.split("    steps:\n")[0], /\$\{\{\s*runner\./,
+    "runner context is unavailable in job-level configuration")
   assert.deepEqual([...runtime.matchAll(/^      - run: (.+)$/gm)].map(m => m[1]), ["npm ci --ignore-scripts",
     "sudo apt-get update && sudo apt-get install --yes tmux git python3",
+    'echo "OPENCODE_BIN=$RUNNER_TEMP/reviewer-host/node_modules/@opencode/cli-linux-x64/bin/opencode" >> "$GITHUB_ENV"',
     'npm install --prefix "$RUNNER_TEMP/reviewer-host" --ignore-scripts --no-audit --no-fund "@opencode/cli-linux-x64@${{ matrix.host }}"',
     'echo "${{ matrix.sha256 }}  $OPENCODE_BIN" | sha256sum --check',
     "npm run build", "node scripts/test-runtime.mjs --profile ci"])
@@ -38,6 +42,16 @@ test("PR CI is read-only, pinned, and checks the supported development Node floo
   assert.match(runtime, /host: "2\.0\.26"\n\s+sha256: "d9123b9bcdb0a31f7ab9fe9812b58a9dc1768ad6d97e7b276dff1181813218c9"/)
   assert.match(runtime, /host: "2\.0\.27"\n\s+sha256: "e26aa101cfdc40f0e680baa609ff18f131bbc6b91c60fdc11b2b2e2cba7281a4"/)
   assert.match(runtime, /name: pinned-host-runtime-\$\{\{ matrix\.host \}\}/)
+  assert.match(check, /needs: workflows/)
+  assert.match(runtime, /needs: workflows/)
+  for (const job of [check, runtime]) assert.match(job, /cache: npm\n\s+cache-dependency-path: package-lock\.json/)
+  assert.match(runtime, /name: Report runtime durations\n\s+if: always\(\)\n\s+run: node scripts\/runtime-summary\.mjs >> "\$GITHUB_STEP_SUMMARY"/)
+  const lint = await read("scripts/lint-workflows.sh")
+  assert.match(workflow, /run: bash scripts\/lint-workflows\.sh/)
+  assert.match(lint, /actionlint\/releases\/download\/v1\.7\.12/)
+  assert.match(lint, /8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8/)
+  assert.match(lint, /sha256sum --check/)
+  assert.match(lint, /\.github\/workflows\/ci\.yml \.github\/workflows\/release\.yml/)
 })
 
 test("normal checks aggregate every pure helper while keeping host and built-package checks separate", async () => {
@@ -84,6 +98,8 @@ test("active release validation runs the same helper inventory with a complete s
     "test/release-fixture.mjs", "test/npm-cli-smoke.test.mjs", "package.json", "package-lock.json", "README.md", "AGENTS.md", ".github/workflows/ci.yml"]) {
     assert.ok(policy.includes(`/${file}\n`), `active policy checkout must include ${file}`)
   }
+  for (const file of ["scripts/release-ci.mjs", "scripts/runtime-summary.mjs", "scripts/lint-workflows.sh"])
+    assert.ok(policy.includes(`/${file}\n`), `active policy checkout must include ${file}`)
   assert.match(policy, /ref: \$\{\{ github\.workflow_sha \}\}/)
   // Execute the planning entrypoints using only the actual sparse-checkout
   // files. A full local checkout otherwise hides missing transitive imports.

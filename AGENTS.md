@@ -407,6 +407,14 @@ existing user directories.
 
 ## Releases
 
+- CI runs on pull requests and `main` pushes. Workflow syntax is checked with a
+  checksum-pinned actionlint binary before the test matrices. The release gate
+  requires successful default-branch push CI for the exact tagged commit; missing,
+  failed or canceled CI cannot authorize publication. Runtime job summaries expose
+  measured case durations without changing fixture budgets or host concurrency.
+  Run `bash scripts/lint-workflows.sh` after workflow edits. Its sole syntax
+  exception is actionlint 1.7.12's missing support for GitHub's `queue: max`, which
+  the release-policy helper tests enforce independently.
 - Update both manifests with `npm version X.Y.Z --no-git-tag-version`. The release
   workflow runs on pushed `v*` tags or manual dispatch from the default branch with
   an existing tag. Tag commit and canonical version must match the manifests;

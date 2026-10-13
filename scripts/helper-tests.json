@@ -2,6 +2,7 @@
   "test/bundled-sounds.test.mjs",
   "test/bundled-history-worker.test.mjs",
   "test/ci-workflow.test.mjs",
+  "test/ci-helpers.test.mjs",
   "test/npm-publication.test.mjs",
   "test/publish-release.test.mjs",
   "test/release-artifact.test.mjs",

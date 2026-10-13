@@ -1,6 +1,8 @@
-name: Pull request checks
+name: CI checks
 
 on:
+  push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -12,7 +14,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - run: bash scripts/lint-workflows.sh
+
   check:
+    needs: workflows
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -26,9 +38,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts
       - run: mkdir -p /tmp/opencode
-      - run: npm run check
+      - run: npm run typecheck && npm test && npm run test:helpers
       - run: npm run check:package
       - run: node --test test/release-artifact-smoke.test.mjs
       - run: npm install --global npm@12.2.0 --ignore-scripts
@@ -37,6 +51,7 @@ jobs:
       - run: npm run test:runtime-cleanup
 
   runtime:
+    needs: workflows
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -47,8 +62,6 @@ jobs:
             sha256: "d9123b9bcdb0a31f7ab9fe9812b58a9dc1768ad6d97e7b276dff1181813218c9"
           - host: "2.0.27"
             sha256: "e26aa101cfdc40f0e680baa609ff18f131bbc6b91c60fdc11b2b2e2cba7281a4"
-    env:
-      OPENCODE_BIN: ${{ runner.temp }}/reviewer-host/node_modules/@opencode/cli-linux-x64/bin/opencode
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -56,12 +69,18 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24.15.0
+          cache: npm
+          cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts
       - run: sudo apt-get update && sudo apt-get install --yes tmux git python3
+      - run: echo "OPENCODE_BIN=$RUNNER_TEMP/reviewer-host/node_modules/@opencode/cli-linux-x64/bin/opencode" >> "$GITHUB_ENV"
       - run: npm install --prefix "$RUNNER_TEMP/reviewer-host" --ignore-scripts --no-audit --no-fund "@opencode/cli-linux-x64@${{ matrix.host }}"
       - run: echo "${{ matrix.sha256 }}  $OPENCODE_BIN" | sha256sum --check
       - run: npm run build
       - run: node scripts/test-runtime.mjs --profile ci
+      - name: Report runtime durations
+        if: always()
+        run: node scripts/runtime-summary.mjs >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:

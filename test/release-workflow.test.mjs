@@ -49,7 +49,7 @@ test("workflow pins every action to the remotely verified release commit", () =>
   const verified = { checkout: "34e114876b0b11c390a56381ad16ebd13914f8d5", "setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020",
     "upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02", "download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093" }
   const actions = [...workflow.matchAll(/uses: actions\/([\w-]+)@(\S+)/g)]
-  assert.equal(actions.length, 7)
+  assert.equal(actions.length, 10)
   for (const [, name, sha] of actions) assert.equal(sha, verified[name])
 })
 
