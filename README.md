@@ -98,7 +98,7 @@ only in this server configuration, not in `cli.json`:
 }
 ```
 
-Merge these entries with your existing configuration. Rules are ordered; the last
+Merge these entries with your existing configuration. Rules are ordered and the last
 matching rule wins. Reviews run only when OpenCode asks for permission. Existing
 `allow` rules and native autoaccept skip review. See OpenCode's
 [server config](https://opencode.ai/v2/docs/config),
@@ -108,7 +108,7 @@ matching rule wins. Reviews run only when OpenCode asks for permission. Existing
 ## Options reference
 
 These are options inside the plugin's `options` object in global `cli.json`.
-Defaults apply only to omitted options; `null` is invalid. Boolean and integer
+Defaults apply only to omitted options. `null` is invalid. Boolean and integer
 options require JSON booleans and numbers, not quoted strings. Integer ranges are
 inclusive, fractions are invalid, and the maximum safe integer is
 9,007,199,254,740,991. Unknown option names are rejected.
