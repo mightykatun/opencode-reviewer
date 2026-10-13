@@ -12,7 +12,7 @@ export interface FileEvidence {
   warning?: string
 }
 
-export type ReviewKind = "shell" | "edit" | "external-directory"
+export type ReviewKind = "shell" | "edit" | "external-directory" | "skill"
 
 /** Standalone shell collection input/output, not a host invocation contract. */
 export interface Evidence {

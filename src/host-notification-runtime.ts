@@ -148,7 +148,10 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   life.signal.addEventListener("abort", onAbort, { once: true })
   if (life.signal.aborted) { void dispose(); return { notifications, refresh, front, visit, views: () => views, dispose, settled } }
   off = ctx.data.listen(({ details: event }) => {
-    if (event.type === "server.connected") { void dispose(); return }
+    if (event.type === "server.connected") {
+      if (state.connectionID !== undefined && event.id === state.connectionID) return
+      void dispose(); return
+    }
     if (stopped || signal.aborted) return
     if (event.location && !sameLocation(event.location, location)) return
     if (event.type !== "permission.asked" && event.type !== "permission.replied" && event.type !== "session.deleted"

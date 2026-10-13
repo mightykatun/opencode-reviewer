@@ -19,7 +19,7 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  33-case production/foundation selection from PR CI, including history,
+  36-case production/foundation selection from PR CI, including history,
   statistics, approval notifications and explicitly classified synthetic probes.
   `npm run test:runtime` selects `--profile v2-acceptance`, which currently selects
   the same cases. These profiles do not prove real desktop/audio acceptance.
@@ -75,6 +75,8 @@ All commands below use the installed five-file archive and production runtime.
 
 | Area | Command |
 | --- | --- |
+| Initial connection / delayed native marker echo | `node scripts/test-runtime.mjs smoke-v2-lifecycle.mjs cold-startup` |
+| Native skill loading / fast skill approval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-skill` / `fast-skill` |
 | Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
 | Saved history and statistics | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history` |
 | Default HOME with writable host state | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-default-home` |
@@ -193,10 +195,15 @@ existing user directories.
   host provenance or an enforceable registry seal. Preserve exact scope, source,
   native-priority, same-conversation eligibility and once-only write checks. Do not
   extend this assumption to unavailable skill/MCP/custom origin or catalog evidence.
-- When asked about extra skill-catalog mutation assumptions, the user said "keep
-  it simple". Keep requests manual when exact mandatory skill instructions are
-  unavailable; do not add a speculative catalog revision-guard subsystem or assume
-  catalog immutability. Ordinary optional-context omissions remain a separate policy.
+- On 2026-10-14 the user explicitly selected automatic native skill review using
+  the current scoped registered main instructions, accepting that the selected
+  definition stays unchanged while its permission is pending. This bounded
+  installation assumption is not global catalog immutability or an API snapshot
+  guarantee. Retain exact ID/source/scope/epoch and once-only approval checks;
+  missing, ambiguous or oversized complete main instructions stay manual. Read the
+  registry only through the scoped server companion, never fresh SKILL.md files.
+  Supporting files are optional and currently omitted factually. Do not add a
+  speculative revision-guard subsystem or extend this assumption to MCP/custom tools.
 - The user approved the shared server companion plus global CLI setup, factual
   omission of unavailable optional immediate delegation, and retention of history
   when offline deletion ownership is unproven. Preserve root intent and mandatory
@@ -230,7 +237,13 @@ existing user directories.
   vanished prompt or successful submission alone. Uncertain writes stay manual and
   are never retried. Reconnect closes the old controller;
   restart/reload is required rather than mixing old clients with new caches.
-- CLI startup handshakes alone recover within one 10-second budget: 1.5-second
+- CLI startup consumes the public client's current `server.connected` marker before
+  dispatching the first companion RPC, including when setup begins after connection.
+  Ignore the native data bridge's delayed echo only for that exact public event ID;
+  a distinct marker still fences startup and permanently revokes an active generation.
+  Own subscriber abort/return settlement; it never substitutes for scope/protocol/epoch
+  checks or replays business events. Connection waiting and startup handshakes recover
+  within one 10-second budget: 1.5-second
   attempts, 250 ms backoff, timeout/`rpc.unavailable` only. Own physical settlement
   before retry; fence pre-admission connection changes. Invalid replies stay manual.
   Choose runtime/fallback once, never promote fallback or revive an active generation.
@@ -330,12 +343,13 @@ existing user directories.
   collected only by the scoped server companion, never terminal-local I/O.
   Directory evidence retains exact declared scope/arguments without inspecting
   target directories or file contents; it is not a complete operation assessment.
-- `reviewSkills` defaults true, but exact mandatory main skill instructions are
-  unavailable to the V2 collector. Skill/MCP/custom-tool collection is unsupported
-  and stays manual regardless of category switches. Do not infer native origin from
-  action/name, guess MCP identity, read fresh SKILL.md files as captured instructions,
-  call MCP servers, import executors or inspect target files to fill missing evidence.
-  Missing mandatory instructions/origin/catalog evidence is not optional context.
+- `reviewSkills` defaults true and reviews native skill loading under the accepted
+  pending-definition stability assumption. The companion reads the current scoped
+  registry by exact ID; full main instructions and exact permission scope are
+  mandatory. No fresh file reads, registry mutations or catalog revision system.
+  MCP/custom-tool collection remains unsupported and manual regardless of switches.
+  Do not guess MCP identity, import executors, call MCP servers, or fill missing
+  mandatory origin/instructions with optional context.
 - Preserve exact mandatory scope/arguments or fail analysis. Omit whole optional
   files/diffs/definitions with factual reasons; do not truncate commands, invent
   missing line counts or synthesize ratings. Partial evidence alone is not an

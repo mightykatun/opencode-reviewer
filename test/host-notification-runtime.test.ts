@@ -27,7 +27,7 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function fixture(unavailable: "configuration" | "companion" = "configuration", initial: PermissionRequest[] = []) {
+function fixture(unavailable: "configuration" | "companion" = "configuration", initial: PermissionRequest[] = [], connectionID?: string) {
   const life = new PluginLifecycle(), banners: NotificationMessage[] = [], signals: AbortSignal[] = []
   const sessions = new Map<string, Pick<SessionInfo, "id" | "parentID" | "title" | "location">>([
     ["root", { id: "root", title: "Root title", location }],
@@ -79,7 +79,7 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", i
     keymap: { mode: { current: () => "base" } },
   } as unknown as Plugin.Context
   const options = { notifySound: false, staleReminderSeconds: 0 }
-  const state: CliPluginState = { stateRoot: "/unused", prompts: BUILTIN_PROMPTS,
+  const state: CliPluginState = { stateRoot: "/unused", prompts: BUILTIN_PROMPTS, connectionID,
     notificationConfig: parseNotificationConfig(options), dependencies: { notifications: () => ({
       async show(message, signal) { banners.push(message); signals.push(signal); return { close() {} } },
       dispose() { backendDisposed++ },
@@ -88,9 +88,9 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", i
   const records = { location, history: { root: (id: string, signal: AbortSignal) => hooks.ancestry(id, signal) } } as unknown as ReturnType<typeof setupHostHistory>
   const runtime = setupHostNotificationOnly(ctx, state, life, records)!
   assert.ok(runtime)
-  const emit = <T extends OpenCodeEvent["type"]>(type: T, data: EventOf<T>["data"], scope: typeof location | undefined = location) => {
+  const emit = <T extends OpenCodeEvent["type"]>(type: T, data: EventOf<T>["data"], scope: typeof location | undefined = location, eventID?: string) => {
     serial++
-    listener?.({ details: { type, data, id: `event-${serial}`, created: serial, ...(scope ? { location: scope } : {}),
+    listener?.({ details: { type, data, id: eventID ?? `event-${serial}`, created: serial, ...(scope ? { location: scope } : {}),
       durable: { aggregateID: (data as { sessionID?: string }).sessionID, seq: serial, version: 1 } } as unknown as EventOf<T> })
   }
   const ask = (value: PermissionRequest, scope = location) => emit("permission.asked", value, scope)
@@ -224,6 +224,23 @@ test("off-scope events are ignored and later visits cannot replay earlier births
   const fresh = permission("fresh", "unvisited")
   f.permissions.set("unvisited", [fresh]); f.ask(fresh); await f.flush()
   assert.deepEqual(f.banners.map(value => [value.kind, value.sessionID]), [["attention", "unvisited"]])
+})
+
+test("the admitted initial connection echo leaves notification fallback active, but a new marker revokes it", async () => {
+  const f = fixture("companion", [], "event-initial")
+  try {
+    await f.flush()
+    f.emit("server.connected", {}, location, "event-initial")
+    await f.flush()
+    assert.equal(f.listening(), true)
+    const pending = permission("after-initial-echo")
+    f.permissions.set("root", [pending]); f.ask(pending); await f.flush()
+    assert.equal(f.banners.length, 1)
+    f.emit("server.connected", {}, location, "event-replacement")
+    await f.flush()
+    assert.equal(f.listening(), false)
+    assert.equal(f.backendDisposed(), 1)
+  } finally { await f.life.stop() }
 })
 
 test("server.connected permanently shuts down the old notification generation", async () => {

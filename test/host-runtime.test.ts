@@ -17,7 +17,7 @@ const companion = { protocol: 1 as const, hostVersion: "2.0.26", epoch: "1000000
   project: { id: "project", directory: "/server", canonical: "/server" } }
 const pending = (id: string) => ({ id, sessionID: "root", action: "unknown", resources: ["scope"] })
 async function fixture(options: { notify?: boolean; formSync?: () => Promise<void>; sessionSync?: () => Promise<void>;
-  backend?: NotificationBackend; unavailable?: "configuration" | "companion" } = {}) {
+  backend?: NotificationBackend; unavailable?: "configuration" | "companion"; connectionID?: string } = {}) {
   const life = new PluginLifecycle(), calls: string[] = [], ancestryReads: string[] = []
   const commands: { id: string; run: () => Promise<void> }[] = []
   const renderer = Object.assign(new EventEmitter(), { width: 140, height: 40, requestRender: () => calls.push("render") })
@@ -46,12 +46,12 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
   const root = await mkdtemp("/tmp/reviewer-runtime-source-")
   const runtime = setupHostRuntime(ctx, { ...(options.unavailable === "configuration" ? { configError: "Invalid configuration" }
     : { config: parseConfig({ baseURL: "http://localhost:40999", model: "unused", notify: options.notify ?? false }) }),
-    ...(options.unavailable === "companion" ? {} : { companion }), stateRoot: root, prompts: BUILTIN_PROMPTS,
+    ...(options.unavailable === "companion" ? {} : { companion }), connectionID: options.connectionID, stateRoot: root, prompts: BUILTIN_PROMPTS,
     dependencies: { notifications: () => options.backend ?? ({ show: async () => undefined, dispose: () => {} }) } }, life)!
   let sequence = 0
-  return { life, runtime, state, calls, ancestryReads, commands, renderer, stateRoot: root, event: (type: string, data: unknown) => {
+  return { life, runtime, state, calls, ancestryReads, commands, renderer, stateRoot: root, event: (type: string, data: unknown, eventID?: string) => {
     sequence++
-    listen({ details: { type, data, location, id: `event-${sequence}`, created: sequence,
+    listen({ details: { type, data, location, id: eventID ?? `event-${sequence}`, created: sequence,
       durable: { aggregateID: (data as { sessionID?: string }).sessionID, seq: sequence, version: 1 } } })
   } }
 }
@@ -239,6 +239,26 @@ test("local mode commands persist conversation state without model calls, and re
     const revision = f.runtime.controller.revision
     await f.commands.find(command => command.id === "reviewer.enable")!.run()
     assert.equal(f.runtime.controller.revision, revision)
+  } finally { await f.life.stop() }
+})
+
+test("a delayed initial marker preserves the active reviewer while a distinct connection still permanently revokes it", async () => {
+  const f = await fixture({ connectionID: "event-initial" })
+  try {
+    await tick(); await tick()
+    assert.equal(f.runtime.views()[0]?.request.id, "first")
+    f.event("server.connected", {}, "event-initial")
+    f.state.requests = [pending("after-initial-echo")]
+    f.event("permission.asked", pending("after-initial-echo"))
+    await tick(); await tick()
+    await f.runtime.refresh.refresh()
+    assert.equal(f.runtime.views()[0]?.request.id, "after-initial-echo")
+    f.event("server.connected", {}, "event-new-connection")
+    f.state.requests = [pending("after-reconnect")]
+    f.event("permission.asked", pending("after-reconnect"))
+    f.event("server.connected", {}, "event-initial")
+    await f.runtime.refresh.refresh()
+    assert.equal(f.runtime.views().length, 0, "An old initial marker cannot revive a revoked generation")
   } finally { await f.life.stop() }
 })
 

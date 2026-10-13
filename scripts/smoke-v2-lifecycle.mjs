@@ -1,5 +1,5 @@
 // Phase 1: the actual five-file production archive, not the W6 synthetic package.
-// Inventory owner: default scenario, no flags; linux/git/tmux/bundle/npm-pack/tar.
+// Inventory owner: default/cold-startup scenarios, no flags; linux/git/tmux/bundle/npm-pack/tar.
 // Host execution requires the inventory owner's registration and execution grant.
 // No permission-review, approval, notification or storage-activity coverage.
 import assert from "node:assert/strict"
@@ -114,17 +114,38 @@ async function observedSetup(ctx) {
     errors: [], events: [], ticks: 0, mounts: 0, unmounts: 0, cleanups: {}, aborted: false, cleaned: false }
   const publisher = observationPublisher(fixture.observations + "/" + result.role + "-" + phase + "-" + instance + ".json")
   const save = () => publisher.publish(result)
+  const started = performance.now()
+  const connections = cli && phase === "cold-startup" ? ctx.data.on("server.connected", event => {
+    (result.connections ??= []).push({ id: event.id, received: performance.now() - started }); void save()
+  }) : () => {}
   let life, cleanup
   // Override only public context members, retaining real host ownership for
   // slots, listeners, RPC and renderer. Response mutations are explicit controls.
   let context = ctx
-  if (cli && (phase.startsWith("response-") || phase === "startup-recovery")) {
+  if (cli && (phase.startsWith("response-") || phase === "startup-recovery" || phase === "cold-startup")) {
     const client = new Proxy(ctx.client, { get(target, key) {
       if (key !== "rpc") return Reflect.get(target, key)
       return definition => {
         assert.deepEqual(definition, handshakeDefinition())
         const rpc = target.rpc(definition)
         return { ...rpc, handshake: async (...args) => {
+          if (phase === "cold-startup") {
+            const attempt = { started: performance.now() - started, startup: result.readyCalls === undefined }
+            const attempts = result.handshakes ??= []
+            attempts.push(attempt)
+            try {
+              const value = await rpc.handshake(...args)
+              attempt.success = true
+              return value
+            } catch (error) {
+              attempt.error = { type: error?.type, name: error?.name, message: String(error) }
+              throw error
+            } finally {
+              attempt.finished = performance.now() - started
+              attempt.aborted = args[1].signal.aborted
+              await save()
+            }
+          }
           if (phase === "startup-recovery") {
             result.handshakeCalls = (result.handshakeCalls ?? 0) + 1
             if (result.handshakeCalls === 1) {
@@ -171,6 +192,7 @@ async function observedSetup(ctx) {
     result.readyCalls = (result.readyCalls ?? 0) + 1
     result.role = ready.role
     result.state = ready.state
+    if (phase === "cold-startup") await save()
     assert.equal(ready.role, cli ? "cli" : "server")
     assert.equal(lifecycle.signal.aborted, false)
     lifecycle.signal.addEventListener("abort", () => { result.aborted = true }, { once: true })
@@ -200,7 +222,7 @@ async function observedSetup(ctx) {
         assert.equal(ready.state.config.autoApproveDelaySeconds, 7)
         assert.equal(ready.state.config.maxFiles, 3)
         assert.equal(ready.state.config.stream, true)
-        assert.equal(ready.state.prompts.shell.instructions, "PHASE1 CUSTOM PROMPT")
+        if (phase !== "cold-startup") assert.equal(ready.state.prompts.shell.instructions, "PHASE1 CUSTOM PROMPT")
         assert.ok(ready.state.prompts.edit.instructions.length > 0, "Absent overrides retain built-ins")
       }
       if (phase.startsWith("response-") || phase === "no-companion") assert.equal(ready.state.companion, undefined)
@@ -215,6 +237,12 @@ async function observedSetup(ctx) {
         assert.ok(result.firstHandshakeMs >= 1400 && result.firstHandshakeMs < 5000)
         assert.ok(ready.state.runtime?.controller, "Recovery installs the actual production reviewer, not notification-only fallback")
         result.recoveredController = true
+      }
+      if (phase === "cold-startup") {
+        const attempts = result.handshakes.filter(attempt => attempt.startup)
+        assert.ok(ready.state.runtime?.controller, "Cold startup installs the production reviewer")
+        assert.equal(attempts.length, 1, "Initial connection must not cancel a premature RPC")
+        assert.equal(attempts[0].success, true)
       }
       const { TextRenderable } = await import("@opentui/core")
       const { onCleanup } = await import("solid-js")
@@ -247,6 +275,7 @@ async function observedSetup(ctx) {
     result.setupReturned = true
     await save()
   } catch (error) {
+    connections()
     if (life) await life.settled()
     if (phase !== "partial-failure" || !String(error).includes("LIFECYCLE_EXPECTED_PARTIAL_FAILURE")) {
       // Cleanup may already have closed its publisher; report via a separate
@@ -258,6 +287,7 @@ async function observedSetup(ctx) {
     throw error
   }
   return async () => {
+    connections()
     // Repeat the returned production cleanup to prove its idempotence as well
     // as the host's real disable/reload boundary.
     await Promise.all([cleanup(), cleanup()])
@@ -265,7 +295,7 @@ async function observedSetup(ctx) {
   }
 }
 
-runtimeArguments("smoke-v2-lifecycle.mjs")
+const { scenario } = runtimeArguments("smoke-v2-lifecycle.mjs")
 const root = path.resolve(import.meta.dirname, "..")
 await mkdir(path.join(root, ".runtime"), { recursive: true })
 await mkdir("/tmp/opencode", { recursive: true })
@@ -296,7 +326,7 @@ const records = async (role, phase) => {
 const registryRequests = []
 const network = { modelPOSTs: 0, reviewPOSTs: 0, otherPOSTs: 0 }
 let registry, sentinel, version
-let control = { id: 0, cliPhase: "default", serverPhase: "default" }
+let control = { id: 0, cliPhase: scenario === "cold-startup" ? "cold-startup" : "default", serverPhase: "default" }
 const quietCheck = async () => {
   const monitor = await readMonitor()
   if (monitor) { assert.deepEqual(monitor.errors, []); assert.deepEqual(monitor.forbidden, []) }
@@ -410,6 +440,7 @@ try {
   const target = manifest.name + "@" + manifest.version
   const options = { baseURL: endpoint + "/review", model: "lifecycle-sentinel", autoApprove: true,
     autoApproveDelaySeconds: 7, maxFiles: 3, stream: true, notify: false, notifySound: false, instructions: promptDirectory }
+  if (scenario === "cold-startup") delete options.instructions
   const cliConfig = plugins => ({ animations: false, attention: { notifications: false, sound: false }, plugins })
   const serverConfig = plugins => ({ update: "disable", plugins, model: "fixture/fixture",
     providers: { fixture: { name: "Lifecycle sentinel", package: "@opencode/ai/providers/openai-compatible",
@@ -417,7 +448,7 @@ try {
   const serverPath = path.join(project, "opencode.json")
   await publish(controlPath, control)
   await publish(serverPath, serverConfig([{ package: target, options }]))
-  await publish(cliPath, cliConfig([{ package: target, options }, monitor]))
+  await publish(cliPath, cliConfig([{ package: scenario === "cold-startup" ? wrapper : target, options }, monitor]))
   await publish(path.join(artifacts, "setup.json"), { version, temp, archive, manifest, fixture,
     socket: runtime.socket, supervisorPID: runtime.supervisorPID })
   await runtime.start("-d", "-s", "v2-lifecycle", "-x", "160", "-y", "40", "-c", project, host, "--standalone", project)
@@ -435,6 +466,20 @@ try {
   assert.equal(defaultInfo.features.server, true)
   assert.equal(defaultInfo.features.tui, true)
   assert.equal(defaultInfo.source.type, "package")
+  let cold
+  if (scenario === "cold-startup") {
+    cold = await until("cold production CLI admission", async () => {
+      const value = await records("cli", "cold-startup")
+      return value?.setupReturned && value.connections?.length && value
+    })
+    assert.equal(cold.state.connectionID, cold.connections[0].id, "Startup and native bridge admit the same marker")
+    await window()
+    const log = await readFile(path.join(env.XDG_DATA_HOME, "opencode/log/opencode.log"), "utf8")
+    assert.equal(log.split("\n").some(line => line.includes("http.url=/api/rpc/opencode-reviewer/handshake")
+      && line.includes("http.status=499")), false, "Cold startup must not cancel an early handshake")
+    // Subsequent lifecycle controls still exercise the normal custom prompts.
+    options.instructions = promptDirectory
+  }
   await command("scope")
   await window()
   await writeFile(path.join(artifacts, "default.txt"), capture())
@@ -540,9 +585,10 @@ try {
   for (const record of cycles) assert.deepEqual(await records("cli", record.phase), record, "Earlier instances remain quiescent across later reloads")
   await publish(cliPath, cliConfig(["*", "-opencode-reviewer", "-fixture.lifecycle.monitor"]))
   await until("monitor cleanup", async () => (await readMonitor())?.cleaned)
-  await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, archiveFiles, installations, epochs,
+  await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, cold, archiveFiles, installations, epochs,
     cycles, registryRequests, network,
     assertions: ["Actual repository npm archive with unchanged five files and shared exports", "Default package configured in server and global CLI before embedding controls",
+      ...(cold ? ["Real initial client/native marker identity admits one successful startup handshake without HTTP 499"] : []),
       "Public scoped protocol-1 handshake and exact archived RPC schema", "Production CLI option parsing and rejected user-config dependency key",
       "Three CLI disable/reload cycles retain server epoch", "Owned real slot/listener/timer cleanup after abort, repeated cleanup and partial setup failure",
       "A canceled first CLI handshake recovers to an actual production controller through a second scoped RPC",
@@ -550,7 +596,8 @@ try {
       "Negative model/review POST and permission/execution event windows"],
     limits: ["Lifecycle and recovered production-controller construction only; no permission review, approval, notification or history activity is exercised.",
       "One standalone host and terminal; no shared-service, multi-terminal, disconnect or authoritative deletion proof.",
-      "Default CLI is loaded through global configuration; its inert setup has no public per-plugin completion observer.",
+      cold ? "Cold CLI uses a read-only embedding observer of the installed archive; native markers and RPC responses are not injected or delayed."
+        : "Default CLI is loaded through global configuration; its inert setup has no public per-plugin completion observer.",
       "Response mismatch controls alter a real public handshake response in the fixture wrapper, not the server implementation.",
       "Startup recovery injects a first client-side read held until its real production timeout; it does not delay host initialization or exercise an active-runtime reconnect.",
       "Current with* helpers do not compose with withPluginSetup, so injected state.dependencies identity is not observable through the archive seam.",

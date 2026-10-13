@@ -7,6 +7,74 @@ import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import type { FileIO } from "../src/file-access.js"
 import { withNotificationProcesses } from "../src/plugin.js"
 
+const skillOptions = { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
+  reviewSkills: true, reviewMcp: true, reviewCustomTools: true, maxFiles: 6, maxEvidenceBytes: 131072 }
+
+test("skill registry evidence cannot survive a changed pending permission identity", async () => {
+  const life = new PluginLifecycle(), hooks = new Map<string, (event: any) => void>()
+  let handlers: any, change = false, calls = 0
+  const location = { directory: "/project" }
+  const original = { id: "request", sessionID: "session", action: "skill", resources: ["review"],
+    source: { type: "tool", messageID: "assistant", id: "call" } }
+  let request = original
+  const context = { app: { version: "development" }, location: { ...location, project: { id: "project", directory: "/project", canonical: "/project" } },
+    tool: { hook: async (name: string, callback: (event: any) => void) => { hooks.set(name, callback); return { dispose() {} } } },
+    rpc: { register: async (_definition: unknown, value: unknown) => { handlers = value; return { dispose() {} } } },
+    permission: { get: async () => request }, session: { get: async () => ({ id: "session", location }) },
+    skill: { list: async () => {
+      calls++
+      if (change) request = { ...original, source: { ...original.source, id: "different-call" } }
+      return { location, data: [{ id: "review", name: "Review", path: "/project/review.md", content: "Summarize changes." }] }
+    } },
+  } as unknown as Plugin.Context
+  const state = await setupCompanion(context, life)
+  try {
+    hooks.get("execute.before")!({ sessionID: "session", messageID: "assistant", id: "call", tool: "skill", input: { id: "review" } })
+    const query = { epoch: state.epoch, location, sessionID: "session", requestID: "request", timeoutMs: 5000, options: skillOptions }
+    const valid = await handlers.evidence(query, { signal: life.signal })
+    assert.equal(valid.result.status, "ready"); assert.equal(valid.result.evidence.skill.content, "Summarize changes.")
+    change = true
+    assert.equal(await handlers.evidence(query, { signal: life.signal }), null)
+    assert.equal(calls, 2)
+  } finally { await life.stop() }
+})
+
+test("skill registry reads are scoped, read-only and retain physical ownership after abort", async () => {
+  const life = new PluginLifecycle(), hooks = new Map<string, (event: any) => void>()
+  let handlers: any, release!: (value: unknown) => void, dispatched!: () => void, reads = 0
+  const started = new Promise<void>(resolve => { dispatched = resolve })
+  const held = new Promise(resolve => { release = resolve })
+  const location = { directory: "/project" }
+  let request: any = { id: "request", sessionID: "session", action: "skill", resources: ["review"],
+    source: { type: "tool", messageID: "assistant", id: "call" } }
+  const context = { app: { version: "development" }, location: { ...location, project: { id: "project", directory: "/project", canonical: "/project" } },
+    tool: { hook: async (name: string, callback: (event: any) => void) => { hooks.set(name, callback); return { dispose() {} } } },
+    rpc: { register: async (_definition: unknown, value: unknown) => { handlers = value; return { dispose() {} } } },
+    permission: { get: async () => request }, session: { get: async () => ({ id: "session", location }) },
+    skill: { list: async (input: unknown, options: { signal: AbortSignal }) => {
+      assert.deepEqual(input, { location }); assert.equal(options.signal.aborted, false)
+      reads++; dispatched(); return held
+    } },
+  } as unknown as Plugin.Context
+  const handshake = await setupCompanion(context, life, { open() { assert.fail("Skill evidence must not open files") } } as any)
+  hooks.get("execute.before")!({ sessionID: "session", messageID: "assistant", id: "call", tool: "skill", input: { id: "review" } })
+  const query = { epoch: handshake.epoch, location, sessionID: "session", requestID: "request", timeoutMs: 5000, options: skillOptions }
+  try {
+    const disabled = await handlers.evidence({ ...query, options: { ...skillOptions, reviewSkills: false } }, { signal: life.signal })
+    assert.equal(disabled.result.status, "disabled"); assert.equal(reads, 0)
+    const abort = new AbortController()
+    const pending = handlers.evidence(query, { signal: abort.signal })
+    await started; abort.abort(); assert.equal(await pending, null)
+    let stopped = false
+    const stopping = life.stop().then(() => { stopped = true })
+    await tick(); assert.equal(stopped, false, "Catalog read remains owned through actual settlement")
+    request = null
+    release({ location, data: [{ id: "review", name: "Review", path: "/project/review.md", content: "Summarize changes." }] })
+    await stopping; await life.settled()
+    assert.equal(reads, 1)
+  } finally { release(undefined); await life.stop() }
+})
+
 test("the public notification-process seam stays dormant in the server lifecycle", async () => {
   const disposed: string[] = []
   let constructed = 0

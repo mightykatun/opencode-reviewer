@@ -18,6 +18,8 @@ export interface CliPluginState {
   configError?: string
   notificationConfig?: NotificationConfig
   companion?: CompanionHandshake
+  /** The public connected marker already admitted by startup, not a host epoch. */
+  connectionID?: string
   dependencies: PluginDependencies
   stateRoot: string
   prompts: typeof BUILTIN_PROMPTS
@@ -55,7 +57,13 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
   const reads = new TransportOwnership()
   lifecycle.addCleanup(() => reads.settled())
   let generation = 0, connection = new AbortController()
-  let off = context.data.on("server.connected", () => {
+  let markerID: string | undefined, nativeID: string | undefined
+  let off = context.data.on("server.connected", event => {
+    nativeID = event.id
+    // Client subscribers and the native data bridge deliver the same initial
+    // marker at different times. Its delayed echo is not another connection.
+    if (markerID !== undefined && event.id === markerID) return
+    markerID = event.id
     generation++
     connection.abort()
     connection = new AbortController()
@@ -66,6 +74,21 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
   // promotion or reuse of a controller after a connection changes.
   try {
     const admission = await withDeadline(lifecycle.signal, 10000, async signal => {
+      // Identify the initial connection before dispatching RPC so its delayed
+      // native echo cannot cancel our own read. Late subscribers receive the
+      // current marker, not business-event replay.
+      // Own this subscriber through abort/return, just like the physical RPCs.
+      const connected = await reads.track((async () => {
+        for await (const event of context.client.event.subscribe({ signal })) {
+          signal.throwIfAborted()
+          if (event.type === "server.connected" && typeof event.id === "string" && event.id.length > 0
+            && event.id.length <= 1024 && !event.id.includes("\0")) return event.id
+        }
+        return undefined
+      })())
+      signal.throwIfAborted()
+      if (!connected || (nativeID !== undefined && nativeID !== connected)) return
+      markerID = connected
       while (!signal.aborted) {
         const turn = generation, connected = connection.signal
         let pending: Promise<unknown> | undefined
@@ -95,7 +118,10 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
     }, "Companion startup")
     // Deadline callbacks produce data only. Fence the final promise handoff
     // before installing the runtime's permanent reconnect revocation.
-    if (admission?.generation === generation) state.companion = admission.companion
+    if (admission?.generation === generation) {
+      state.companion = admission.companion
+      state.connectionID = markerID
+    }
   } catch { lifecycle.signal.throwIfAborted() }
   finally { stop() }
   if (runtime) {

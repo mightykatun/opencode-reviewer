@@ -46,7 +46,7 @@ test("rules reject unsupported scenario/flag combinations instead of promising a
     ["smoke-v2-review.mjs", "normal-edit", "--auto"],
     ["smoke-v2-review.mjs", "normal", "--unknown"],
     ["smoke-v2-review.mjs", "invented"], ["smoke-v2-review.mjs", "normal", "extra"],
-    ["smoke-v2-lifecycle.mjs", "default"],
+    ["smoke-v2-lifecycle.mjs", "cold-startup", "extra"],
     ["smoke-notification-desktop.ts"], ["smoke-notification-desktop.ts", "--sounds", "--all"],
     ["smoke-notification-desktop.ts", "--sounds", "--sounds"], ["smoke-notification-desktop.ts", "--critical"],
   ]) assert.throws(() => runtimePlan(file, args), undefined, `${file} ${args.join(" ")}`)
@@ -76,20 +76,29 @@ test("a multi-scenario fixture can retain its default while explicitly selecting
   assert.throws(() => runtimePlan("smoke-v2-invocation.mjs", ["unsupported"]), /Unknown scenario/)
 })
 
+test("cold startup has an explicit production-host invocation with the normal lifecycle default retained", () => {
+  assert.equal(runtimePlan("smoke-v2-lifecycle.mjs").scenario, "default")
+  const cold = runtimePlan("smoke-v2-lifecycle.mjs", ["cold-startup"])
+  assert.equal(cold.classification, "production-host")
+  assert.deepEqual(cold.args, ["cold-startup"])
+  assert.ok(cold.requires.includes("bundle"))
+})
+
 test("V2 acceptance includes each production review case exactly once and retains explicit synthetic classifications", () => {
   const cases = profilePlan("v2-acceptance")
-  assert.equal(cases.length, 33, "Exact current production/foundation acceptance selection")
+  assert.equal(cases.length, 36, "Exact current production/foundation acceptance selection")
   assert.equal(cases.length, new Set(cases.map(value => value.id)).size)
   const reviews = cases.filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs")
   const expectedReviews = ["advisory", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant",
     "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
-    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit"].sort()
+    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill"].sort()
   assert.deepEqual(reviews.map(value => value.scenario).sort(), expectedReviews)
   assert.deepEqual([...runtimeInventory["smoke-v2-review.mjs"].scenarios].sort(), expectedReviews)
   assert.ok(reviews.every(value => value.classification === "production-host"))
   assert.ok(cases.every(value => value.hostMajor === 2 && value.hosts <= 2))
   assert.deepEqual(profilePlan("ci").map(value => value.id).sort(), cases.map(value => value.id).sort(),
     "Current CI contains the exact locally verified acceptance selection")
+  assert.ok(cases.some(value => value.id === "smoke-v2-lifecycle/cold-startup"), "CI prevents pre-connection handshake regression")
   for (const id of ["smoke-v2-root-presentation/mouse-on", "smoke-v2-root-presentation/mouse-off", "smoke-v2-native-queue/default"])
     assert.equal(cases.find(value => value.id === id)?.classification, "synthetic-host")
   const defaultHome = cases.find(value => value.id === "smoke-v2-review/normal-history-default-home")

@@ -219,6 +219,9 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   })
   const off = ctx.data.listen(({ details: event }) => {
     if (event.type === "server.connected") {
+      // Startup has already admitted this exact public marker. The native data
+      // bridge can deliver its initial echo after the controller is installed.
+      if (state.connectionID !== undefined && event.id === state.connectionID) return
       // Native caches can follow a new connection while the captured client still
       // targets its original server. Never combine those generations for a write.
       disconnected = true

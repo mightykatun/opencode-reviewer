@@ -8,6 +8,7 @@
 // normal-history-keyboard-mouse-off (two actual saved reports and real mouse-off keyboard browsing),
 // fast-notifications (injected desktop boundary, retained/live and exact history clicks).
 // normal-edit / normal-directory-edit (one native write; distinct directory/edit stages).
+// normal-skill / fast-skill (registered main instructions and actual native skill loading).
 // Build first. Do not execute a host until the main session grants approval.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
@@ -160,7 +161,7 @@ async function monitorSetup(ctx) {
             value = { registered: ctx.keymap.commands().some(item => item.id === "reviewer.disable") }
           } else if (command.type === "prompt") {
            value = await ctx.client.session.prompt({ sessionID: command.sessionID, text: command.text }, options())
-         } else if (command.type === "message") value = await ctx.client.session.message.get({ sessionID: command.sessionID,
+          } else if (command.type === "message") value = await ctx.client.session.message.get({ sessionID: command.sessionID,
           messageID: command.messageID }, options())
          else if (command.type === "keymap") {
             // Native IDs checked against stock 2.0.26's session-frame.tsx,
@@ -347,6 +348,7 @@ const visibilityLoss = ["normal-hide", "normal-dialog", "normal-resize"].include
 const hiddenComplete = scenario === "normal-hidden-complete"
 const routeWait = scenario === "normal-route-wait", decisionCase = scenario.endsWith("-decision")
 const editCase = ["normal-edit", "normal-directory-edit"].includes(scenario)
+const skillCase = ["normal-skill", "fast-skill"].includes(scenario)
 const directoryEditCase = scenario === "normal-directory-edit"
 const notificationCase = scenario === "fast-notifications", savedCase = automatic && scenario !== "normal-cancel"
 const requestCount = coverCase || directoryEditCase ? 2 : 1
@@ -404,7 +406,11 @@ const editActions = directoryEditCase ? ["external_directory", "edit"] : ["edit"
 const editDescriptions = editActions.map(action => action === "edit"
   ? "V2 native edit report.\n\nThe proposed diff replaces one isolated marker."
   : "V2 directory access report.\n\nAllow access to the isolated outside-project target for the pending write; edit contents are assessed separately.")
-const prompt = editCase ? `Use native write once to replace ${writeTarget} with exactly V2_EDIT_AFTER followed by a newline.`
+const skillID = "reviewer-fixture", skillPath = path.join(project, ".opencode/skills", skillID + ".md")
+const skillContent = "Summarize the user's requested changes in one short paragraph. Do not run commands or edit files.\n"
+const skillDescription = "V2 native skill report.\n\nThe main instructions request a bounded summary."
+const prompt = skillCase ? `Load the ${skillID} skill once with the native skill tool.`
+  : editCase ? `Use native write once to replace ${writeTarget} with exactly V2_EDIT_AFTER followed by a newline.`
   : "Run python3 fixture.py once in inputs. It appends the isolated V2_REVIEW_EXECUTED marker and prints it."
 const script = 'from pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write("V2_REVIEW_EXECUTED\\n")\nprint("V2_REVIEW_EXECUTED")\n'
 const description = "V2 local marker report.\n\nThe script writes one isolated marker."
@@ -412,10 +418,11 @@ const description = "V2 local marker report.\n\nThe script writes one isolated m
 // all existing saved-history text/metadata and selected-original assertions intact.
 const keyboardDescription = description + "\n\n" + Array.from({ length: 80 }, (_, index) =>
   `Keyboard scroll line ${String(index + 1).padStart(2, "0")}: one isolated marker.`).join("\n\n")
-const reportDescription = index => editCase ? editDescriptions[index - 1] : keyboardMouseOffCase && index === 2 ? keyboardDescription : description
+const reportDescription = index => skillCase ? skillDescription : editCase ? editDescriptions[index - 1] : keyboardMouseOffCase && index === 2 ? keyboardDescription : description
 const assessment = { safe: true, desc: editCase ? editDescriptions.at(-1) : description }
 const reviewUsage = { prompt_tokens: 23, completion_tokens: 11, total_tokens: 34 }
-const toolCall = editCase ? { id: "v2-production-review-write", name: "write", input: { path: writeTarget, content: afterEdit } }
+const toolCall = skillCase ? { id: "v2-production-review-skill", name: "skill", input: { id: skillID } }
+  : editCase ? { id: "v2-production-review-write", name: "write", input: { path: writeTarget, content: afterEdit } }
   : { id: "v2-production-review-shell", name: "shell", input: { command: "python3 fixture.py", workdir: "inputs" } }
 const publishers = new Map(), calls = [], errors = [], negativeWindows = []
 let version, modelServer, mainResponse, reviewResponse, sessionID, childSession, request, inspection, handshake, sequence = 0
@@ -813,10 +820,11 @@ const releaseNativeCall = () => {
 const limits = [
    "Behavioral review activates through public CLI configuration only after an owned prompt-free session's exact genuine birth and deletion are observed on the native data stream. This is not pre-connection startup acceptance; the separate lifecycle fixture checks startup. No runtime reconnect policy is overridden.",
      "One installed default archive with separate server companion and global CLI configuration. The independent monitor never imports production code or replies to permissions.",
-  `One standalone Linux OpenCode V2 verification host, ${nativeCallCount} direct native ${editCase ? "write" : "shell"} call(s), ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal, disconnect or tab-switch acceptance.`,
+  `One standalone Linux OpenCode V2 verification host, ${nativeCallCount} direct native ${skillCase ? "skill" : editCase ? "write" : "shell"} call(s), ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal, disconnect or tab-switch acceptance.`,
   "Mouse capture is explicitly configured only by the isolated fixture, never forced by production. UI changes use real native commands/navigation, keyboard choices or actual tmux resize; no synthesized paint, modes, hits or geometry. Individual cases do not imply full UI-matrix acceptance.",
   "Descendant cases navigate a real child while a root request is pending; they do not exercise descendant-owned native queue ordering. No disabled kinds or uncertain writes.",
-    editCase ? "One actual native write, exact direct source linkage and pending native diff. Outside-project access, when selected, automatically resumes that same write into a distinct edit permission. Each stage holds the real reviewer response, proves no mutation, paints a full normal countdown and receives one production once reply. Read-only SQLite proves per-stage accepted reports, qualifying resolutions, categories and both aggregate scopes. Production history opens through painted palette activation. No native edit/patch variant, formatter, descendant-owned queue, notification, multi-client or live-provider judgment acceptance."
+    skillCase ? "One direct native skill request with full scoped registry main instructions, an unchanged selected definition, one production once reply and actual native tool-result loading. Normal countdown or fast preview/remainder is observed, and read-only SQLite verifies the saved skill category, confirmed approval and usage totals. No supporting-file inspection, catalog-mutation guarantee, ambiguous nested call, live-provider judgment or multi-client acceptance."
+      : editCase ? "One actual native write, exact direct source linkage and pending native diff. Outside-project access, when selected, automatically resumes that same write into a distinct edit permission. Each stage holds the real reviewer response, proves no mutation, paints a full normal countdown and receives one production once reply. Read-only SQLite proves per-stage accepted reports, qualifying resolutions, categories and both aggregate scopes. Production history opens through painted palette activation. No native edit/patch variant, formatter, descendant-owned queue, notification, multi-client or live-provider judgment acceptance."
       : routeWait ? "A started normal countdown survives native home, a public plugin dashboard and an unrelated session route, with no writes past its original deadline. Returning to its root resumes once without a new delay. Saved report and aggregates are verified."
       : decisionCase ? "Actual Right/Left native keyboard input selects Always then Once. Automatic approval waits without cancellation while Always is selected, then resumes with the original delay or fast preview semantics. No persistent native grant is submitted; saved automatic report is verified. Rejection editing is separately source-tested, not host-accepted here."
       : dialogCase ? "Stock command.palette.show owns a real native modal. Normal and fast automatic replies proceed underneath it without closing it; final report and usage are verified in SQLite. No other modal-family acceptance."
@@ -837,6 +845,10 @@ try {
   if (editCase) {
     await mkdir(path.dirname(editTarget), { recursive: true })
     await writeFile(editTarget, beforeEdit)
+  }
+  if (skillCase) {
+    await mkdir(path.dirname(skillPath), { recursive: true })
+    await writeFile(skillPath, `---\nname: Reviewer fixture\ndescription: Load the isolated review fixture instructions.\n---\n${skillContent}`)
   }
   const packedOutput = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--offline", "--pack-destination", temp],
     { cwd: root, env: { ...env, npm_config_cache: path.join(temp, "npm-cache"), npm_config_ignore_scripts: "true" }, encoding: "utf8", timeout: 60000 }))
@@ -873,7 +885,15 @@ try {
         assert.equal(body.messages[0].role, "system")
         assert.equal(body.messages[1].role, "user")
         const evidence = JSON.parse(body.messages[1].content)
-        if (editCase) {
+        if (skillCase) {
+          assert.match(body.messages[0].content, /permission\.action="skill"/)
+          assert.equal(evidence.kind, "skill"); assert.equal(evidence.tool, "skill")
+          assert.deepEqual(evidence.operation.input, toolCall.input)
+          assert.deepEqual(evidence.skill, { id: skillID, name: "Reviewer fixture", path: skillPath, content: skillContent })
+          assert.equal(evidence.userPrompt, prompt)
+          assert.deepEqual(evidence.permission.resources, [skillID])
+          assert.equal(evidence.files, undefined, "No supporting-file content inspection")
+        } else if (editCase) {
           const action = editActions[reviewPOSTs - 1]
           assert.match(body.messages[0].content, action === "edit" ? /permission\.action="edit"/ : /external-directory access/)
           assertWriteEvidence(evidence, { action, target: writeTarget, prompt, initial, project })
@@ -912,7 +932,9 @@ try {
         assert.ok(mainCalls.length <= nativeCallCount * 2, "Only genuine prompts and tool-result continuations")
        if (mainCalls.length === 1 || coverCase && mainCalls.length === 3) {
           assert.ok(body.tools.some(tool => tool.function.name === toolCall.name), "Use the actually advertised direct native tool")
-          if (editCase) {
+          if (skillCase) {
+            assert.ok(body.messages.some(message => typeof message.content === "string" && message.content.includes(prompt)))
+          } else if (editCase) {
             const definition = body.tools.find(tool => tool.function.name === "write").function
             assert.equal(definition.parameters.properties.path.type, "string")
             assert.equal(definition.parameters.properties.content.type, "string")
@@ -933,7 +955,10 @@ try {
        assert.equal(toolResults.length, coverCase ? mainCalls.length / 2 : 1)
        const latestResult = toolResults.at(-1)
        assert.equal(latestResult.tool_call_id, toolCall.id)
-        if (editCase) {
+          if (skillCase) {
+            assert.ok(typeof latestResult.content === "string" && latestResult.content.includes(skillContent.trim()),
+              "Actual skill instructions enter the native tool-result continuation")
+         } else if (editCase) {
           assert.equal(reviewPOSTs, requestCount, "Directory approval alone cannot finish native write")
           assert.equal(await executed(), afterEdit, "Actual native result follows the exact applied file contents")
           assert.ok(latestResult.content, "Actual native write response reaches the main model")
@@ -981,7 +1006,7 @@ try {
     execFileSync(process.execPath, ["--check", file], { env, timeout: 10000 })
   const config = { $schema: "https://opencode.ai/config.json", model: "fixture/fixture", update: "disable",
     plugins: [reviewer, observer], permissions: [{ action: "*", resource: "*", effect: "allow" },
-      ...(editCase ? editActions.map(action => ({ action, resource: "*", effect: "ask" })) : [{ action: "shell", resource: "*", effect: "ask" }])],
+      ...(editCase ? editActions.map(action => ({ action, resource: "*", effect: "ask" })) : [{ action: skillCase ? "skill" : "shell", resource: "*", effect: "ask" }])],
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: origin + "/v1", apiKey: "synthetic-only" },
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } }
    // Approval cases explicitly configure mouse capture in the isolated fixture,
@@ -1178,6 +1203,54 @@ try {
      await until("production edit history closes via real Escape", record => record?.mode === "base" && !capture().includes("Analysis history"))
      await publish(path.join(artifacts, "native-write-stages.json"), { toolCall, target: editTarget,
        before: beforeEdit, after: afterEdit, stages: editStages, completed, historyEvidence, facts: finalFacts })
+   } else if (skillCase) {
+     request = await until("native skill permission", record => record?.asked[0])
+     requests.push(request)
+     assert.equal(request.action, "skill"); assert.deepEqual(request.resources, [skillID])
+     assert.equal(request.source.id, toolCall.id)
+     inspection = await command({ type: "inspect", sessionID, requestID: request.id, epoch: handshake.epoch })
+     inspections.push(inspection)
+     assert.deepEqual(inspection.captured.invocation.input, toolCall.input)
+     assert.equal(inspection.captured.invocation.tool, "skill")
+     await until("production skill reviewer POST", () => reviewResponse)
+     const loaded = async () => {
+       const message = await command({ type: "message", sessionID, messageID: request.source.messageID })
+       return message.content.filter(item => item.type === "tool" && item.id === toolCall.id && item.state.status === "completed")
+     }
+     assert.deepEqual(await loaded(), [], "No instruction loading before native approval")
+     await negativeWindow("skill review held without loading or tool execution", [request], [], null, 1, 1500, noSavedBody)
+     if (fast) {
+       allowWrites = true
+       sse(reviewResponse, '{"safe":true,"desc":' + JSON.stringify(skillDescription).slice(0, -1))
+       await until("fast skill approval before terminal report", record => record?.replied.length === 1)
+       assert.equal(reviewCompleted, false)
+       await until("native skill tool continuation", () => calls.filter(call => call.url === "/v1/chat/completions").length === 2)
+       assert.equal((await loaded()).length, 1)
+       await noSavedBody()
+       finishReview()
+     } else {
+       finishReview()
+       await until("normal skill countdown", () => /Allowed in \d+s/.test(capture()))
+       await negativeWindow("validated skill countdown remains pending", [request], [], null, 1, 1500, noSavedBody)
+       assert.deepEqual(await loaded(), [])
+       allowWrites = true
+       await until("normal skill exact once reply", record => record?.replied.length === 1)
+     }
+     await until("native skill completion", () => calls.filter(call => call.url === "/v1/chat/completions").length === 2)
+     const messages = await loaded()
+     assert.equal(messages.length, 1)
+     assert.equal(messages[0].name, "skill"); assert.deepEqual(messages[0].state.input, { id: skillID })
+     assert.ok(JSON.stringify(messages[0].state).includes(skillContent.trim()), "The actual completed native tool retains all main instructions")
+     const completed = await command({ type: "message", sessionID, messageID: request.source.messageID })
+     const native = completed.content.filter(item => item.type === "tool" && item.id === toolCall.id)
+     assert.equal(native.length, 1); assert.equal(native[0].name, "skill"); assert.equal(native[0].state.status, "completed")
+     const stage = { action: "skill", request, description: skillDescription }
+     historyEvidence = await until("saved skill report, category and confirmed automatic totals", async () =>
+       savedStageHistory(await readHistory(), [stage], sessionID), 20000)
+     await until("skill report closes after completion", () => !capture().includes("Permission analysis"))
+     await negativeWindow("resolved skill remains once-only", [], (await observations()).replied, null, 1, 1500,
+       async () => { assert.equal((await loaded()).length, 1) })
+     await publish(path.join(artifacts, "native-skill.json"), { request, inspection, completed, messages, historyEvidence })
    } else {
     request = await until("native shell permission", record => record?.asked[0])
    requests.push(request)
@@ -1754,7 +1827,7 @@ try {
           })
       }
     }
-   if (savedCase && !coverCase && !historyCase && !notificationCase && !editCase) {
+   if (savedCase && !coverCase && !historyCase && !notificationCase && !editCase && !skillCase) {
      historyEvidence = await until("background automatic report and aggregates save normally", savedHistory, 20000)
      await publish(path.join(artifacts, "background-saved-history.json"), historyEvidence)
    }

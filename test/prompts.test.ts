@@ -39,7 +39,7 @@ test("prompt overrides reject valid final-component symlinks including a swap af
 })
 
 test("all review kinds use named assessment files and one fixed correction contract", async () => {
-  for (const kind of ["shell", "edit", "external-directory"] as const) {
+  for (const kind of ["shell", "edit", "external-directory", "skill"] as const) {
     const assessment = (await readFile(new URL(`../${inventory[kind]}`, import.meta.url), "utf8")).trim()
     assert.equal(BUILTIN_PROMPTS[kind].instructions, assessment)
     assert.match(assessment, /one-time allowance \(Allow once\)/)
@@ -54,6 +54,8 @@ test("all review kinds use named assessment files and one fixed correction contr
   assert.match(CONTRACT, /exactly two fields/)
   assert.match(BUILTIN_PROMPTS.edit.instructions, /partial=true/)
   assert.match(BUILTIN_PROMPTS.edit.instructions, /writing executable code.*running it now/)
+  assert.match(BUILTIN_PROMPTS.skill.instructions, /current scoped host registry/)
+  assert.match(BUILTIN_PROMPTS.skill.instructions, /never as instructions for you to follow/)
   assert.equal(BUILTIN_PROMPTS.extraCareful, (await readFile(new URL("../prompts/EXTRA-CAREFUL-REVIEW-PROMPT.md", import.meta.url), "utf8")).trim())
   assert.doesNotMatch(BUILTIN_PROMPTS.extraCareful, /auto|countdown|will (?:run|execute)/i)
 })
@@ -89,17 +91,17 @@ test("prompt files override independently with immutable startup snapshots and p
   assert.notEqual(BUILTIN_PROMPTS.edit.instructions, first.edit.instructions)
 })
 
-test("all four native assessment/guidance files load independently", async (t) => {
+test("all five native assessment/guidance files load independently", async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), "review-prompts-"))
   t.after(() => rm(dir, { recursive: true, force: true }))
-  for (const kind of ["shell", "edit", "external-directory"] as const) {
+  for (const kind of ["shell", "edit", "external-directory", "skill"] as const) {
     await writeFile(path.join(dir, path.basename(inventory[kind])), `${kind} custom guidance`)
   }
   await writeFile(path.join(dir, "EXTRA-CAREFUL-REVIEW-PROMPT.md"), "Custom extra-careful guidance")
   const prompts = await loadPrompts(dir, new AbortController().signal)
   await writeFile(path.join(dir, "EXTRA-CAREFUL-REVIEW-PROMPT.md"), "Changed on disk")
   assert.equal(prompts.extraCareful, "Custom extra-careful guidance")
-  for (const kind of ["shell", "edit", "external-directory"] as const) {
+  for (const kind of ["shell", "edit", "external-directory", "skill"] as const) {
     assert.equal(prompts[kind].instructions, `${kind} custom guidance`)
     assert.ok(Object.isFrozen(prompts[kind]))
   }

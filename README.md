@@ -1,8 +1,8 @@
 # OpenCode Reviewer
 
 Reviews pending permissions in the [OpenCode](https://github.com/anomalyco/opencode) sidebar using a separate LLM. Reviews
-native shell commands, file edits, and external-directory access. Skill, MCP and
-custom-tool requests currently remain manual.
+native shell commands, file edits, skill loading, and external-directory access.
+MCP and custom-tool requests currently remain manual.
 Supports streaming explanations, saved report history and stats, auto-approval, and Linux
 desktop notifications (Gnome) with distinct sounds.
 
@@ -113,7 +113,7 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `stream` | boolean | `false` | Request SSE and show provisional rating/text updates. Normal automatic approval waits for a completed, validated report; fast mode can approve on an early Safe rating. Approval rules are described below. |
 | `reviewBash` | boolean | `true` | Review native `shell` permissions. The option keeps its existing name. |
 | `reviewEdits` | boolean | `true` | Review native `edit`, `write` and `patch` tools, which use the `edit` permission action. |
-| `reviewSkills` | boolean | `true` | Skill-review category switch. Exact mandatory skill instructions are currently unavailable to the V2 collector, so these requests remain manual. |
+| `reviewSkills` | boolean | `true` | Review native skill loading using the exact requested ID and full currently registered main instructions. Assumes the selected definition stays unchanged while permission is pending. Missing or ambiguous instructions remain manual. |
 | `reviewMcp` | boolean | `false` | MCP-review category switch. V2 MCP collection is currently unsupported; enabling this does not supply missing origin/catalog evidence or permit automatic approval. |
 | `reviewCustomTools` | boolean | `false` | Custom-tool review category switch. V2 custom-tool collection is currently unsupported; these requests remain manual. |
 | `reviewExternalDirectories` | boolean | `false` | Review directory access independently of operation-review switches. Directory approval can resume the operation without another prompt. |
@@ -161,10 +161,17 @@ The plugin doesn't enable mouse tracking or reveal a hidden sidebar unless you
 click an approval notification; it checks that the sidebar is absent from the main
 conversation before showing it. Hidden automatic reports are saved normally.
 
-The skill, MCP and custom-tool options are still present, but these reviews aren't
-supported in V2. The reviewer can't get the required skill instructions or verify
-the source and catalog information for MCP and custom tools. Those requests need
-manual approval; they aren't rated Safe.
+Skill reviews use the full main instructions from the server's current registered
+skill definition, not a fresh `SKILL.md` read or an invocation-time snapshot. This
+assumes that the selected definition stays unchanged while its permission is pending.
+The exact skill ID, native call and permission scope must match. Missing, ambiguous
+or oversized main instructions remain manual. Supporting files and scripts are not
+inspected; their omission alone does not prevent review. Allowing a skill loads its
+instructions, not a blanket grant for later tool actions.
+
+MCP and custom-tool reviews remain unsupported in V2 because required origin and
+catalog evidence is unavailable. Their switches do not turn those requests into
+Safe ratings or automatic approvals.
 
 Code Mode and its tool search stay enabled. Native tool calls can be reviewed when
 the reviewer can match them exactly to their permission requests. Nested calls
@@ -230,8 +237,9 @@ controls remain available. Already-approved fast-mode reports finish in the back
 The commands remain available when review configuration or the companion is unavailable;
 they save the preference without starting reviews.
 
-At startup, the reviewer retries timed-out or not-yet-available companion handshakes
-for up to 10 seconds. If it remains unavailable, history and notifications still work;
+At startup, the reviewer waits for the connected server event stream before its first
+companion handshake. Connection waiting and retries for timed-out or not-yet-available
+handshakes share one 10-second budget. If it remains unavailable, history and notifications still work;
 reload the plugin to try again. Invalid handshake data is not retried.
 
 If the server reconnects or the companion is replaced, reviews and auto-approval
@@ -320,7 +328,7 @@ received usage from unsuccessful or interrupted reviews, which do not count as
 completed reviews. Averages include measured reviews only.
 
 Reviews send the pending request, latest user prompt, project context, and relevant
-file snapshots, diffs, or tool arguments to your endpoint before approval. Shell
+file snapshots, diffs, registered skill instructions, or tool arguments to your endpoint before approval. Shell
 file snapshots can follow symlinks outside the project. Missing evidence is noted
 in the report; ratings are advice based on the supplied evidence.
 </details>

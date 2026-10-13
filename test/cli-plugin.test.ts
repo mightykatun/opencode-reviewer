@@ -5,13 +5,16 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { setupCli } from "../src/cli-plugin.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 
+const initialConnectionID = "evt_initial_connection"
+const connectedEvents = { async *subscribe() { yield { type: "server.connected" as const, id: initialConnectionID } } }
+
 test("invalid desktop settings do not disable otherwise valid review configuration", async () => {
   const life = new PluginLifecycle()
   try {
     const context = { app: { version: "unverified" }, options: { baseURL: "http://localhost:40999/v1", model: "reviewer",
       notify: "invalid", stream: true, autoApprove: true }, location: { directory: "/server/project" },
       data: { on: () => () => {} },
-      client: { rpc: () => ({ handshake: async () => { throw Error("Companion unavailable") } }) } } as unknown as Plugin.Context
+      client: { event: connectedEvents, rpc: () => ({ handshake: async () => { throw Error("Companion unavailable") } }) } } as unknown as Plugin.Context
     const state = await setupCli(context, life, { adapterOnly: true })
     assert.equal(state.config?.model, "reviewer")
     assert.equal(state.config?.autoApprove, true)
@@ -27,7 +30,7 @@ test("desktop normalization cannot conceal unknown options or invalid review set
     const life = new PluginLifecycle()
     try {
       const state = await setupCli({ app: { version: "unverified" }, options, location: { directory: "/server/project" }, data: { on: () => () => {} },
-        client: { rpc: () => ({ handshake: async () => { throw Error("Companion unavailable") } }) } } as unknown as Plugin.Context, life, { adapterOnly: true })
+        client: { event: connectedEvents, rpc: () => ({ handshake: async () => { throw Error("Companion unavailable") } }) } } as unknown as Plugin.Context, life, { adapterOnly: true })
       assert.equal(state.config, undefined)
       assert.ok(state.configError)
     } finally { await life.stop() }
@@ -39,7 +42,7 @@ test("CLI setup does not restrict activation to an explicit host-version list", 
     const life = new PluginLifecycle(), location = { directory: "/server/project" }
     let handshakes = 0
     const context = { app: { version }, location, data: { on: () => () => {} }, options: { baseURL: "http://localhost:40999/v1", model: "reviewer", notify: false },
-      client: { rpc: () => ({ handshake: async () => {
+      client: { event: connectedEvents, rpc: () => ({ handshake: async () => {
         handshakes++
         return { protocol: 1, hostVersion: version, epoch: "10000000-1000-4000-8000-100000000000", location,
           project: { id: "project", directory: "/server", canonical: "/server" } }
@@ -59,7 +62,7 @@ test("CLI setup binds the connected companion protocol/scope independently of de
     const life = new PluginLifecycle()
     let handshakes = 0
     const context = { app: { version: clientVersion }, location, data: { on: () => () => {} }, options: { baseURL: "http://localhost:40999/v1", model: "reviewer", notify: false },
-      client: { rpc: () => ({ handshake: async () => {
+      client: { event: connectedEvents, rpc: () => ({ handshake: async () => {
         handshakes++
         return { protocol: 1, hostVersion: serverVersion, epoch: "10000000-1000-4000-8000-100000000000", location,
           project: { id: "project", directory: "/server", canonical: "/server" } }
@@ -75,25 +78,157 @@ test("CLI setup binds the connected companion protocol/scope independently of de
 const startupLocation = { directory: "/server/project", workspaceID: "workspace" }
 const startupHandshake = () => ({ protocol: 1, hostVersion: "development", epoch: "10000000-1000-4000-8000-100000000000",
   location: { ...startupLocation }, project: { id: "project", directory: "/server", canonical: "/server" } })
-function startup(t: TestContext, handshake: (signal: AbortSignal, attempt: number) => Promise<unknown>, options = {}) {
-  let now = 0, connected: (() => void) | undefined, removed = 0
+function startup(t: TestContext, handshake: (signal: AbortSignal, attempt: number) => Promise<unknown>, options = {},
+  event = connectedEvents as { subscribe(options: { signal: AbortSignal }): AsyncIterable<{ type: string; id?: string }> }) {
+  let now = 0, connected: ((event: { id: string }) => void) | undefined, removed = 0
   t.mock.method(performance, "now", () => now)
   t.mock.timers.enable({ apis: ["setTimeout"] })
   const life = new PluginLifecycle(), calls: { location: unknown; signal: AbortSignal }[] = []
   const context = { location: startupLocation, options: { baseURL: "http://localhost:40999/v1", model: "reviewer", notify: true, ...options },
-    data: { on: (type: string, listener: () => void) => {
+    data: { on: (type: string, listener: (event: { id: string }) => void) => {
       assert.equal(type, "server.connected"); assert.equal(connected, undefined); connected = listener
       return () => { removed++; connected = undefined }
-    } }, client: { rpc: () => ({ handshake: (location: unknown, request: { signal: AbortSignal; location: unknown }) => {
+    } }, client: { event, rpc: () => ({ handshake: (location: unknown, request: { signal: AbortSignal; location: unknown }) => {
       assert.deepEqual(request.location, startupLocation); calls.push({ location, signal: request.signal })
       return handshake(request.signal, calls.length)
     } }) } } as unknown as Plugin.Context
   const pending = setupCli(context, life, { adapterOnly: true })
-  return { life, pending, calls, connect: () => connected?.(), removed: () => removed,
+  return { life, pending, calls, connect: (id = "evt_reconnected") => connected?.({ id }), removed: () => removed,
     async advance(ms = 0) { now += ms; t.mock.timers.tick(ms); await settle() } }
 }
 const untilAbort = (signal: AbortSignal) => new Promise<never>((_, reject) => {
   signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+})
+
+test("startup waits for the real initial connection before dispatching its first handshake", async t => {
+  let release!: () => void, closed = false
+  const marker = new Promise<void>(resolve => { release = resolve })
+  const event = { async *subscribe({ signal }: { signal: AbortSignal }) {
+    try {
+      yield { type: "provider.updated" }
+      await Promise.race([marker, untilAbort(signal)])
+      yield { type: "server.connected", id: initialConnectionID }
+    } finally { closed = true }
+  } }
+  const f = startup(t, async () => {
+    assert.equal(closed, true, "Connection subscriber has returned before RPC dispatch")
+    return startupHandshake()
+  }, {}, event)
+  try {
+    await f.advance(); assert.equal(f.calls.length, 0)
+    await f.advance(750); f.connect(initialConnectionID); release(); await f.advance()
+    assert.deepEqual((await f.pending).companion, startupHandshake())
+    assert.equal(f.calls.length, 1)
+    assert.equal(f.calls[0]!.signal.aborted, true, "Settled startup still closes its read signal")
+  } finally { release(); await f.life.stop() }
+})
+
+test("an already-connected client's current marker admits startup without a new connection event", async t => {
+  const f = startup(t, async () => startupHandshake())
+  try {
+    await f.advance()
+    assert.deepEqual((await f.pending).companion, startupHandshake())
+    assert.equal(f.calls.length, 1)
+  } finally { await f.life.stop() }
+})
+
+test("the native bridge's delayed echo of the admitted marker does not abort the initial handshake", async t => {
+  let release!: (value: unknown) => void
+  const held = new Promise(resolve => { release = resolve })
+  const f = startup(t, async () => held)
+  try {
+    await f.advance(); assert.equal(f.calls.length, 1)
+    f.connect(initialConnectionID); await f.advance()
+    assert.equal(f.calls[0]!.signal.aborted, false)
+    release(startupHandshake()); await f.advance()
+    const state = await f.pending
+    assert.deepEqual(state.companion, startupHandshake())
+    assert.equal(state.connectionID, initialConnectionID)
+    assert.equal(f.calls.length, 1)
+  } finally { release(startupHandshake()); await f.life.stop() }
+})
+
+test("a marker superseded by a different native connection before handoff cannot admit the old generation", async t => {
+  let release!: () => void
+  const held = new Promise<void>(resolve => { release = resolve })
+  const event = { async *subscribe() { await held; yield { type: "server.connected", id: initialConnectionID } } }
+  const f = startup(t, async () => startupHandshake(), {}, event)
+  try {
+    await f.advance(); f.connect("evt_new_connection"); release(); await f.advance()
+    assert.equal((await f.pending).companion, undefined)
+    assert.equal(f.calls.length, 0)
+  } finally { release(); await f.life.stop() }
+})
+
+test("waiting for connection consumes the original startup budget rather than resetting it", async t => {
+  let release!: () => void
+  const marker = new Promise<void>(resolve => { release = resolve })
+  const event = { async *subscribe({ signal }: { signal: AbortSignal }) {
+    await Promise.race([marker, untilAbort(signal)])
+    yield { type: "server.connected", id: initialConnectionID }
+  } }
+  const f = startup(t, untilAbort, {}, event)
+  try {
+    await f.advance(); await f.advance(9000)
+    assert.equal(f.calls.length, 0)
+    release(); await f.advance(); assert.equal(f.calls.length, 1)
+    await f.advance(999); assert.equal(f.calls[0]!.signal.aborted, false)
+    await f.advance(1)
+    assert.equal((await f.pending).companion, undefined)
+    assert.equal(f.calls[0]!.signal.aborted, true)
+    assert.equal(f.calls.length, 1)
+  } finally { release(); await f.life.stop() }
+})
+
+test("connection timeout retains subscription cleanup ownership and never dispatches an RPC", async t => {
+  let release!: () => void, closing = false, closed = false
+  const cleanup = new Promise<void>(resolve => { release = resolve })
+  const event = { async *subscribe({ signal }: { signal: AbortSignal }) {
+    try { await untilAbort(signal); yield { type: "server.connected", id: initialConnectionID } }
+    finally { closing = true; await cleanup; closed = true }
+  } }
+  const f = startup(t, async () => startupHandshake(), {}, event)
+  try {
+    await f.advance(); await f.advance(10000)
+    assert.equal((await f.pending).companion, undefined)
+    assert.equal(closing, true); assert.equal(closed, false)
+    assert.equal(f.calls.length, 0)
+    let drained = false
+    const stopping = f.life.stop()
+    const draining = f.life.settled().then(() => { drained = true })
+    await f.advance(); assert.equal(drained, false)
+    release(); await stopping; await draining; assert.equal(closed, true)
+    await f.advance(20000); assert.equal(f.calls.length, 0)
+  } finally { release(); await f.life.stop() }
+})
+
+test("a failed or marker-free event source stays manual without a speculative handshake", async t => {
+  for (const fail of [false, true]) {
+    const event = { async *subscribe() {
+      yield { type: "provider.updated" }
+      if (fail) throw Error("Connection failed")
+    } }
+    const f = startup(t, async () => startupHandshake(), {}, event)
+    try {
+      await f.advance()
+      assert.equal((await f.pending).companion, undefined)
+      assert.equal(f.calls.length, 0)
+    } finally { await f.life.stop(); t.mock.restoreAll(); t.mock.timers.reset() }
+  }
+})
+
+test("unload while waiting for the initial connection aborts and drains the subscriber", async t => {
+  let closed = false
+  const event = { async *subscribe({ signal }: { signal: AbortSignal }) {
+    try { await untilAbort(signal); yield { type: "server.connected", id: initialConnectionID } }
+    finally { closed = true }
+  } }
+  const f = startup(t, async () => startupHandshake(), {}, event)
+  try {
+    const rejected = assert.rejects(f.pending, error => error === f.life.signal.reason)
+    await f.advance(); await f.life.stop(); await rejected
+    assert.equal(closed, true); assert.equal(f.calls.length, 0)
+  } finally { await f.life.stop() }
 })
 
 test("startup retries a settled handshake timeout using the same connected scope and fresh signal", async t => {
@@ -184,7 +319,9 @@ test("startup retries only after a canceled physical read settles and discards i
     assert.equal(f.calls.length, 1)
     release({ ...startupHandshake(), epoch: "20000000-1000-4000-8000-100000000000" })
     await f.advance(); await f.advance(250)
-    assert.deepEqual((await f.pending).companion, startupHandshake()); assert.equal(f.calls.length, 2)
+    const state = await f.pending
+    assert.deepEqual(state.companion, startupHandshake()); assert.equal(f.calls.length, 2)
+    assert.equal(state.connectionID, initialConnectionID)
   } finally { release(startupHandshake()); await f.life.stop() }
 })
 
@@ -197,7 +334,9 @@ test("a startup connection event fences the previous handshake before fresh admi
     assert.equal(f.calls[0]!.signal.aborted, true)
     release({ ...startupHandshake(), epoch: "20000000-1000-4000-8000-100000000000" })
     await f.advance(); await f.advance(250)
-    assert.deepEqual((await f.pending).companion, startupHandshake()); assert.equal(f.calls.length, 2)
+    const state = await f.pending
+    assert.deepEqual(state.companion, startupHandshake()); assert.equal(f.calls.length, 2)
+    assert.equal(state.connectionID, "evt_reconnected")
   } finally { release(startupHandshake()); await f.life.stop() }
 })
 

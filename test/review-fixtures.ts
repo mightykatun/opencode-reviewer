@@ -1,4 +1,4 @@
-import type { HostDirectoryEvidence, HostEditEvidence, HostShellEvidence } from "../src/host-evidence.js"
+import type { HostDirectoryEvidence, HostEditEvidence, HostShellEvidence, HostSkillEvidence } from "../src/host-evidence.js"
 import type { HostInvocationRead } from "../src/host-reader.js"
 import { readHostInvocation, snapshotRequest } from "../src/host-request.js"
 import type { JSONObject } from "../src/host-types.js"
@@ -37,6 +37,13 @@ export function directoryEvidence(overrides: Partial<HostDirectoryEvidence> = {}
   const { command: _, cwd: __, files: ___, execution: ____, ...base } = shellEvidence()
   return { ...base, kind: "external-directory", tool: "read", operation: { input: { path: "/outside" }, inputStatus: "Complete captured invocation arguments" },
     permission: { ...base.permission, action: "external_directory", resources: ["/outside/*"] }, partial: false, ...overrides }
+}
+
+export function skillEvidence(overrides: Partial<HostSkillEvidence> = {}): HostSkillEvidence {
+  const { command: _, cwd: __, files: ___, execution: ____, ...base } = shellEvidence()
+  return { ...base, kind: "skill", tool: "skill", operation: { input: { id: "review" }, inputStatus: "Complete captured native invocation arguments" },
+    permission: { ...base.permission, action: "skill", resources: ["review"] },
+    skill: { id: "review", name: "Review", path: "/fixture/skills/review.md", content: "Summarize the requested changes.\n" }, ...overrides }
 }
 
 /** Native request/invocation for exercising the production operation collector. */

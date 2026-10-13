@@ -383,7 +383,7 @@ test("root intent and factual unavailable immediate delegation survive evidence 
   assert.equal((await ready(value)).userPrompt, null)
 })
 
-test("category switches gate before files and remain independent; unknown source and skills stay unsupported", async () => {
+test("category switches gate before files and remain independent; unknown source and unavailable skill instructions stay manual", async () => {
   const files = io()
   const cases: [HostInvocationRead, Partial<HostEvidenceOptions>][] = [
     [shell("cat source.py"), { reviewBash: false }], [owned(), { reviewEdits: false }],
@@ -394,10 +394,13 @@ test("category switches gate before files and remain independent; unknown source
     assert.equal((await collectHostEvidence(value, { ...options, ...disabled }, signal(), files.access)).status, "disabled")
   }
   for (const [tool, action] of [["custom_shell", "shell"], ["mcp_server_tool", "shell"], ["execute", "shell"],
-    ["bash", "shell"], ["apply_patch", "edit"], ["custom_read", "external_directory"], ["skill", "skill"]]) {
+    ["bash", "shell"], ["apply_patch", "edit"], ["custom_read", "external_directory"]]) {
     const result = await collectHostEvidence(owned(tool, {}, { ...externalRequest, action }), options, signal(), files.access)
     assert.equal(result.status, "unsupported", `${tool}/${action}`)
   }
+  const skill = owned("skill", { id: "opencode" }, { ...externalRequest, action: "skill", resources: ["opencode"] })
+  assert.equal((await collectHostEvidence(skill, options, signal(), files.access)).status, "unsupported",
+    "Missing current registry instructions remain manual")
   assert.deepEqual(files.calls, [])
   const edit = await ready(owned(), { ...options, reviewBash: false, reviewExternalDirectories: false, reviewSkills: false, reviewMcp: false, reviewCustomTools: false }, files.access)
   assert.equal(edit.kind, "edit")

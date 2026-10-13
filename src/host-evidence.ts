@@ -11,6 +11,8 @@ import type { HostConversationContext } from "./host-context.js"
 import type { HostInvocation, HostRequest, JSONObject } from "./host-types.js"
 import { boundedCopy } from "./tool-evidence.js"
 import type { FileEvidence, Limits, PatchOperation } from "./types.js"
+import { readRegisteredSkill, requestedSkill, type RegisteredSkill, type SkillCatalogRead } from "./host-skill.js"
+import { transportOwnership } from "./transport-ownership.js"
 
 export type HostEvidenceOptions = Pick<Config, "reviewBash" | "reviewEdits" | "reviewExternalDirectories"
   | "reviewSkills" | "reviewMcp" | "reviewCustomTools"> & Limits
@@ -62,10 +64,16 @@ export interface HostDirectoryEvidence extends Base {
   operation: Operation
   partial: boolean
 }
+export interface HostSkillEvidence extends Base {
+  kind: "skill"
+  tool: "skill"
+  operation: Operation
+  skill: RegisteredSkill
+}
 /** Evidence retains exact native permission and captured invocation scope. */
-export type HostReviewEvidence = HostShellEvidence | HostEditEvidence | HostDirectoryEvidence
+export type HostReviewEvidence = HostShellEvidence | HostEditEvidence | HostDirectoryEvidence | HostSkillEvidence
 export type HostOperationEvidence = Omit<HostShellEvidence, keyof Conversation>
-  | Omit<HostEditEvidence, keyof Conversation> | Omit<HostDirectoryEvidence, keyof Conversation>
+  | Omit<HostEditEvidence, keyof Conversation> | Omit<HostDirectoryEvidence, keyof Conversation> | Omit<HostSkillEvidence, keyof Conversation>
 export type HostOperationResult = { status: "ready"; evidence: HostOperationEvidence }
   | { status: "disabled" | "unsupported"; reason: string }
 export type HostEvidenceResult = { status: "ready"; evidence: HostReviewEvidence }
@@ -305,10 +313,11 @@ function editChanges(request: HostRequest, proposed: Operation, limits: Limits, 
  * snapshots and FileAccess for that server filesystem, never terminal-local I/O.
  * Native names rely on the accepted installation assumption: no native executor
  * replacement/aliasing or post-capture rewrites. This is not a host provenance
- * guarantee. No catalog, context, RPC, model, or permission-write calls occur here.
+ * guarantee. Only the scoped server supplies a read-only skill catalog callback;
+ * no context, model, catalog mutation or permission-write calls occur here.
  */
 export async function collectHostOperation(owned: OperationRead, options: HostEvidenceOptions,
-  signal: AbortSignal, files: FileAccess): Promise<HostOperationResult> {
+  signal: AbortSignal, files: FileAccess, catalog?: SkillCatalogRead): Promise<HostOperationResult> {
   reviewStage(signal, "Evidence collection")
   assertOperationScope(owned)
   const { snapshot: { request }, invocation } = owned
@@ -317,7 +326,25 @@ export async function collectHostOperation(owned: OperationRead, options: HostEv
   const enabled = kind === "shell" ? options.reviewBash : kind === "edit" ? options.reviewEdits
     : kind === "skill" ? options.reviewSkills : options.reviewExternalDirectories
   if (!enabled) return { status: "disabled", reason: `${kind} review disabled` }
-  if (kind === "skill") return { status: "unsupported", reason: "Exact mandatory main skill instructions unavailable; skill requests remain manual." }
+  if (kind === "skill") {
+    const id = requestedSkill(request, invocation)
+    if (!catalog) return { status: "unsupported", reason: "Registered main skill instructions unavailable; skill request remains manual." }
+    const pending = catalog(signal)
+    const raw = await (transportOwnership(signal)?.track(pending) ?? pending)
+    reviewStage(signal, "Evidence collection")
+    const skill = readRegisteredSkill(raw, invocation.location, id)
+    if (!skill) return { status: "unsupported", reason: "Unique scoped registered main skill instructions unavailable; skill request remains manual." }
+    const { metadata, ...permissionScope } = request
+    const proposed = operation(invocation, signal)
+    // Complete main instructions are mandatory and never truncated or omitted.
+    const mandatory = boundedCopy({ permission: permissionScope, operation: proposed, skill }, options.maxEvidenceBytes)
+    const limitations = ["Main skill instructions come from the current scoped host registry, not an invocation-time snapshot.",
+      "Supporting files and scripts were not inspected. Loading skill instructions does not grant subsequent tool permissions."]
+    const permission = permissionMetadata(mandatory.value.permission, metadata, options.maxEvidenceBytes - mandatory.bytes,
+      16384 - mandatory.values, limitations)
+    return { status: "ready", evidence: { kind, tool: "skill", location: invocation.location, project: invocation.project,
+      permission, operation: mandatory.value.operation, skill: mandatory.value.skill, limitations } }
+  }
 
   const { metadata, ...permissionScope } = request
   const proposed = operation(invocation, signal)
@@ -360,10 +387,10 @@ export async function collectHostOperation(owned: OperationRead, options: HostEv
 
 /** Collector for callers already holding both server and CLI reads. */
 export async function collectHostEvidence(owned: HostInvocationRead, options: HostEvidenceOptions,
-  signal: AbortSignal, files: FileAccess): Promise<HostEvidenceResult> {
+  signal: AbortSignal, files: FileAccess, catalog?: SkillCatalogRead): Promise<HostEvidenceResult> {
   reviewStage(signal, "Evidence collection")
   assertConversationScope(owned)
-  const result = await collectHostOperation(owned, options, signal, files)
+  const result = await collectHostOperation(owned, options, signal, files, catalog)
   return result.status === "ready" ? { status: "ready", evidence: attachHostConversation(owned, result.evidence) } : result
 }
 
@@ -428,10 +455,11 @@ export function readHostOperationEvidence(value: unknown, owned: OperationRead, 
   try {
     assertOperationScope(owned)
     const copy = boundedHostJSON(value, hostOperationJSONBytes), kind = operationKind(owned)
-    if (!kind || kind === "skill" || !(kind === "shell" ? options.reviewBash
-      : kind === "edit" ? options.reviewEdits : options.reviewExternalDirectories)) return
+    if (!kind || !(kind === "shell" ? options.reviewBash
+      : kind === "edit" ? options.reviewEdits : kind === "skill" ? options.reviewSkills : options.reviewExternalDirectories)) return
     const common = ["kind", "tool", "permission", "location", "project", "operation", "limitations"]
-    const fields = kind === "shell" ? ["command", "cwd", "execution", "files"] : kind === "edit" ? ["changes", "partial"] : ["partial"]
+    const fields = kind === "shell" ? ["command", "cwd", "execution", "files"] : kind === "edit" ? ["changes", "partial"]
+      : kind === "skill" ? ["skill"] : ["partial"]
     if (!shape(copy, [...common, ...fields]) || !strings(copy.limitations)
       || !sameHostJSON(copy.location, owned.invocation.location) || !sameHostJSON(copy.project, owned.invocation.project)
       || copy.kind !== kind || copy.tool !== owned.invocation.tool
@@ -443,6 +471,16 @@ export function readHostOperationEvidence(value: unknown, owned: OperationRead, 
       || (Object.hasOwn(copy.permission, "metadata") && !sameHostJSON(metadata, owned.snapshot.request.metadata))) return
     const proposed = operation(owned.invocation, signal)
     if (!sameHostJSON(copy.operation, proposed)) return
+    if (kind === "skill") {
+      const id = requestedSkill(owned.snapshot.request, owned.invocation)
+      if (!shape(copy.skill, ["id", "name", "path", "content"]) || copy.skill.id !== id) return
+      const skill = readRegisteredSkill({ location: copy.location, data: [copy.skill] }, owned.invocation.location, id)
+      if (!skill) return
+      const mandatory = boundedCopy({ permission: permissionScope, operation: proposed, skill }, options.maxEvidenceBytes)
+      if (metadata !== undefined && boundedCopy(metadata, options.maxEvidenceBytes).bytes > options.maxEvidenceBytes - mandatory.bytes) return
+      reviewStage(signal, "Evidence validation")
+      return copy as unknown as HostOperationEvidence
+    }
     const mandatory = boundedCopy({ permission: permissionScope, operation: proposed }, kind === "edit" ? normalizationBytes : options.maxEvidenceBytes)
     if (kind === "edit") {
       // Normalize the independently retained pending preview again, without any
