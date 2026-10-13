@@ -29,7 +29,8 @@ export class HistoryWorker implements HistoryTransport {
     this.worker.on("message", message => {
       if (message.id !== this.pending?.id) return
       const pending = this.pending!; this.pending = undefined
-      if (message.error) pending.reject(message.error === "invalid" ? new HistoryInvalid("Invalid history operation") : new Error("History storage unavailable"))
+      if (message.error) pending.reject(message.error === "invalid" ? new HistoryInvalid("Invalid history operation")
+        : new Error(message.error === "initialization" ? "History initialization unavailable" : "History storage unavailable"))
       else pending.resolve(message.value)
     })
   }
@@ -248,7 +249,9 @@ export class HistoryStore {
         this.writeFailed = true
         // Invalid transactions retain their admitted FIFO. They cannot be skipped without
         // changing replay semantics; reject further admissions and expose the failure.
-        if (error instanceof HistoryInvalid) this.blocked = true
+        // Opening has not attempted an admitted transaction, even if path/schema
+        // validation reports HistoryInvalid through an embedding transport.
+        if (this.opened && error instanceof HistoryInvalid) this.blocked = true
         this.retryAt = this.now() + HISTORY_RETRY_MS; this.notify(this.failures)
       }
       // SQL errors settle normally: readable committed data remains available on the same worker.

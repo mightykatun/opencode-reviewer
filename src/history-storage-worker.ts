@@ -35,7 +35,7 @@ if (parentPort) {
       parentPort!.postMessage({ id: message.id, value })
     } catch (error) {
       // Fixed diagnostics only. Never reflect database contents/report text.
-      parentPort!.postMessage({ id: message.id, error: error instanceof HistoryInvalid ? "invalid" : "storage" })
+      parentPort!.postMessage({ id: message.id, error: message.type === "open" ? "initialization" : error instanceof HistoryInvalid ? "invalid" : "storage" })
     }
   })
 }

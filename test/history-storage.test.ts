@@ -7,7 +7,7 @@ import path from "node:path"
 import { build } from "esbuild"
 import { HistorySQL } from "../src/history-schema.js"
 import type { HistorySelection, HistoryTotals, HistoryResolution } from "../src/history-schema.js"
-import { encodeEvent, entryID, reviewID } from "../src/history-records.js"
+import { encodeEvent, entryID, HistoryInvalid, reviewID } from "../src/history-records.js"
 import type { HistoryEvent, HistoryPayload, HistoryReview } from "../src/history-records.js"
 import { privateDatabase } from "../src/history-storage-worker.js"
 import { HistoryWorker } from "../src/history-store.js"
@@ -259,6 +259,30 @@ test("bounded session maintenance pages stay within invocation scope", t => {
   assert.equal(first.sessions.length, 2); assert.equal(second.sessions.length, 2)
   assert.equal(new Set([...first.sessions, ...second.sessions].map(x => x.session)).size, 4)
   assert.throws(() => f.sql.query({ type: "sessions", scope: context.scope, limit: 101 }))
+})
+
+test("real worker distinguishes private-path initialization failure from invalid admitted transactions", async t => {
+  const directory = mkdtempSync(path.join(tmpdir(), "history-worker-initialization-"))
+  const target = path.join(directory, "target"), alias = path.join(directory, "alias")
+  mkdirSync(target, { mode: 0o700 }); symlinkSync(target, alias)
+  const bundle = await build({ entryPoints: ["src/history-storage-worker.ts"], bundle: true, write: false,
+    platform: "node", format: "cjs", external: ["bun:sqlite", "node:sqlite"] })
+  const worker = new HistoryWorker(bundle.outputFiles[0]!.text)
+  t.after(async () => { await worker.terminate(); rmSync(directory, { recursive: true, force: true }) })
+  await assert.rejects(worker.call({ type: "open", file: path.join(alias, "private/history-v1.sqlite"), adapter: "node" }), error => {
+    assert.ok(error instanceof Error); assert.equal(error instanceof HistoryInvalid, false)
+    assert.equal(error.message, "History initialization unavailable")
+    return true
+  })
+  assert.equal(existsSync(path.join(target, "private")), false)
+  assert.deepEqual(await worker.call({ type: "open", file: path.join(directory, "private/history-v1.sqlite"), adapter: "node" }),
+    { environmentKeys: 0, cleanup: true })
+  await assert.rejects(worker.call({ type: "apply", writer: "writer", sequence: 2, event: encodeEvent(resolve()) }), error => {
+    assert.ok(error instanceof HistoryInvalid); assert.equal(error.message, "Invalid history operation")
+    return true
+  })
+  await worker.call({ type: "apply", writer: "writer", sequence: 1, event: encodeEvent(resolve()) })
+  assert.equal((await worker.call({ type: "query", query: { type: "history", scope: context.scope, root: context.root } })).record.payload.desc, payload.desc)
 })
 
 test("two real worker clients concurrently initialize schema and share committed Node SQLite data", async t => {

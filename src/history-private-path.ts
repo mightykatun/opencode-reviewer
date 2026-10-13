@@ -16,7 +16,7 @@ import { HistoryInvalid } from "./history-records.js"
  * later sidecar opens against a malicious same-UID rename. Rechecking after their
  * constructor would not repair that boundary. Never chmod an existing object.
  */
-export function privateDatabase(file: string): void {
+export function privateDatabase(file: string, create = true): boolean {
   const uid = process.geteuid?.()
   if (process.platform !== "linux" || uid === undefined || !path.isAbsolute(file)
     || path.normalize(file) !== file || path.basename(file) !== "history-v1.sqlite") throw new HistoryInvalid("Invalid history path")
@@ -28,6 +28,9 @@ export function privateDatabase(file: string): void {
     try { stat = lstatSync(current) }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      // Selection probes validate only existing components and never initialize
+      // a database, directory or sidecar in a candidate namespace.
+      if (!create) return false
       // The parent was already proven trusted. Do not recursively follow an
       // unchecked existing prefix. Concurrent creation by another host is fine.
       try { mkdirSync(current, { mode: 0o700 }) }
@@ -38,6 +41,7 @@ export function privateDatabase(file: string): void {
       || ((stat.mode & 0o022) && !(stat.mode & 0o1000))) throw new HistoryInvalid("Untrusted history ancestor")
     if (current === directory && (stat.uid !== uid || (stat.mode & 0o077))) throw new HistoryInvalid("History directory must be private")
   }
+  let exists = false
   for (const suffix of ["", "-wal", "-shm", "-journal"]) {
     const name = file + suffix
     let fd: number
@@ -45,6 +49,7 @@ export function privateDatabase(file: string): void {
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
       if (suffix) continue
+      if (!create) continue
       try { fd = openSync(name, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600) }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
@@ -54,6 +59,8 @@ export function privateDatabase(file: string): void {
     try {
       const stat = fstatSync(fd)
       if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== uid || (stat.mode & 0o077)) throw new HistoryInvalid("History file must be private")
+      if (!suffix) exists = true
     } finally { closeSync(fd) }
   }
+  return exists
 }

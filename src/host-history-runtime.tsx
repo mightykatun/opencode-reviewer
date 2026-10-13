@@ -18,6 +18,7 @@ import { uiText } from "./ui-text.js"
 import { setupHostSidebar } from "./host-sidebar.js"
 import { conversationRoot, RouteSessions } from "./route-approval.js"
 import { sameLocation } from "./companion-protocol.js"
+import { historyStateRoot } from "./local-state.js"
 
 export interface HostHistoryRuntimeOptions {
   rootRoute(): string | undefined
@@ -45,7 +46,7 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
   const current = context.location ?? context.data.location.default()
   const location = { directory: current.directory, ...(current.workspaceID ? { workspaceID: current.workspaceID } : {}) }
   const scope = hostHistoryScope(location.directory)
-  const store = new HistoryStore(pluginState.stateRoot, options.storeOptions)
+  const store = new HistoryStore(historyStateRoot(pluginState.stateRoot), options.storeOptions)
   const generation = new AbortController()
   const [connected, setConnected] = createSignal(true)
   const reads = new Set<Promise<unknown>>()

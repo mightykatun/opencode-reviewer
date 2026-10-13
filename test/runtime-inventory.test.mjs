@@ -85,15 +85,24 @@ test("a multi-scenario fixture can retain its default while explicitly selecting
 
 test("V2 acceptance includes each production review case exactly once and retains explicit synthetic classifications", () => {
   const cases = profilePlan("v2-acceptance")
+  assert.equal(cases.length, 23, "Exact current production/foundation acceptance selection")
   assert.equal(cases.length, new Set(cases.map(value => value.id)).size)
   const reviews = cases.filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs")
-  assert.deepEqual(reviews.map(value => value.scenario).sort(), [...runtimeInventory["smoke-v2-review.mjs"].scenarios].sort())
+  const expectedReviews = ["advisory", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant",
+    "normal-history", "normal-history-default-home", "normal-history-cover", "fast-history-cover", "fast-notifications",
+    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete"].sort()
+  assert.deepEqual(reviews.map(value => value.scenario).sort(), expectedReviews)
+  assert.deepEqual([...runtimeInventory["smoke-v2-review.mjs"].scenarios].sort(), expectedReviews)
   assert.ok(reviews.every(value => value.classification === "production-host"))
   assert.ok(cases.every(value => value.hostVersion === "opencode v2.0.26" && value.hosts <= 2))
   assert.deepEqual(profilePlan("ci").map(value => value.id).sort(), cases.map(value => value.id).sort(),
     "Current CI contains the exact locally verified acceptance selection")
   for (const id of ["smoke-v2-root-presentation/mouse-on", "smoke-v2-root-presentation/mouse-off", "smoke-v2-native-queue/default"])
     assert.equal(cases.find(value => value.id === id)?.classification, "synthetic-host")
+  const defaultHome = cases.find(value => value.id === "smoke-v2-review/normal-history-default-home")
+  assert.equal(defaultHome.classification, "production-host")
+  assert.deepEqual(defaultHome.args, ["normal-history-default-home"])
+  assert.ok(defaultHome.requires.includes("bundle"), "Uses the prior build rather than rebuilding implicitly")
 })
 
 test("fixture verification pins are distinct from plugin activation and require one actual binary for the entire run", () => {

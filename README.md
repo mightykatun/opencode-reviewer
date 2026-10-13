@@ -266,7 +266,13 @@ active countdown; opening history afterward won't restart it. History blocks fas
 approval. Browsing saved reports doesn't itself approve requests or replay notifications.
 
 Reports are saved only after a permission resolution that qualifies for history.
-They can contain private text and are kept in OpenCode's local state directory.
+They can contain private text and are kept under OpenCode's local state base:
+`$XDG_STATE_HOME`, or `~/.local/state` when unset. Safely accessible history stays
+under `opencode/opencode-reviewer/`. If the host directory is unsuitable for private
+storage, the plugin uses its private, plugin-owned sibling
+`opencode-reviewer-state/opencode-reviewer/` without changing host-directory permissions.
+An existing safe sibling database remains in use across restarts. Conversation
+enable/disable settings stay in the original OpenCode state directory.
 The plugin deletes them only when it can verify that a deleted conversation belongs
 to the matching server and scope. If that can't be verified after an offline
 deletion, it keeps the history; a missing list entry or bare 404 isn't enough.

@@ -2,7 +2,7 @@
 // Scenarios: advisory (nonstream), normal (SSE), fast (held SSE preview/remainder),
 // normal-mouse-off, normal-cancel, normal-descendant, fast-descendant,
 // normal-hide, normal-dialog, normal-resize, fast-dialog, normal-hidden-complete,
-// normal-history (actual saved report, browsing and native statistics dialog),
+// normal-history / normal-history-default-home (actual saved report, browsing and native statistics dialog),
 // normal-history-cover / fast-history-cover (two genuine native requests in one root),
 // fast-notifications (injected desktop boundary, retained/live and exact history clicks).
 // Build first. Do not execute a host until the main session grants approval.
@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { createServer } from "node:http"
 import { DatabaseSync } from "node:sqlite"
-import { mkdir, mkdtemp, readFile, lstat, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, lstat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -284,7 +284,8 @@ async function observedReviewerSetup(ctx) {
 
 const { scenario, hostVersions } = runtimeArguments("smoke-v2-review.mjs")
 const streaming = scenario !== "advisory", automatic = scenario !== "advisory", fast = scenario.startsWith("fast")
-const historyCase = scenario === "normal-history"
+const defaultHomeCase = scenario === "normal-history-default-home"
+const historyCase = scenario === "normal-history" || defaultHomeCase
 const coverCase = ["normal-history-cover", "fast-history-cover"].includes(scenario)
 const dialogCase = ["normal-dialog", "fast-dialog"].includes(scenario)
 const visibilityLoss = ["normal-hide", "normal-dialog", "normal-resize"].includes(scenario)
@@ -300,15 +301,37 @@ const artifacts = await mkdtemp(path.join(root, `.runtime/v2-review-${scenario}-
 const temp = await mkdtemp("/tmp/opencode/reviewer-v2-review-")
 const env = smokeEnvironment(temp), runtime = await smokeRuntime(temp)
 // /tmp/opencode and this checkout may be group-writable. SQLite correctly
-// refuses that ancestry, so give only fixture history a private sticky-/tmp child.
-// Do not chmod existing directories or weaken the production cross-UID boundary.
-env.XDG_STATE_HOME = await mkdtemp("/tmp/reviewer-v2-private-state-")
-await mkdir(path.join(env.XDG_STATE_HOME, "opencode"), { mode: 0o700 })
+// refuses that ancestry, so keep fixture history under a private sticky-/tmp child.
+// Only the new default-home fixture's own host directory receives chmod.
+if (defaultHomeCase) {
+  env.HOME = await mkdtemp("/tmp/reviewer-v2-private-home-")
+  delete env.XDG_STATE_HOME
+  const stateBase = path.join(env.HOME, ".local/state")
+  await mkdir(stateBase, { recursive: true, mode: 0o700 })
+  const hostState = path.join(stateBase, "opencode")
+  await mkdir(hostState, { mode: 0o775 })
+  await chmod(hostState, 0o775) // Exact regression mode, independent of caller umask.
+} else {
+  env.XDG_STATE_HOME = await mkdtemp("/tmp/reviewer-v2-private-state-")
+  await mkdir(path.join(env.XDG_STATE_HOME, "opencode"), { mode: 0o700 })
+}
 // Independent transcription of local-state.ts and HistoryStore's on-disk path,
 // using this host's actual isolated environment, never a guessed project path.
-assert.ok(path.isAbsolute(env.XDG_STATE_HOME))
-const stateRoot = path.join(env.XDG_STATE_HOME, "opencode")
-const historyFile = path.join(stateRoot, "opencode-reviewer/history-v1.sqlite")
+const stateBase = defaultHomeCase ? path.join(env.HOME, ".local/state") : env.XDG_STATE_HOME
+assert.ok(path.isAbsolute(stateBase))
+const stateRoot = path.join(stateBase, "opencode")
+const historyFile = path.join(defaultHomeCase ? path.join(stateBase, "opencode-reviewer-state") : stateRoot,
+  "opencode-reviewer/history-v1.sqlite")
+const oldHistoryFile = path.join(stateRoot, "opencode-reviewer/history-v1.sqlite")
+const assertDefaultHomeStorage = async () => {
+  if (!defaultHomeCase) return
+  assert.equal(Object.hasOwn(env, "XDG_STATE_HOME"), false, "Default HOME state resolution has no XDG_STATE_HOME override")
+  const hostState = await lstat(stateRoot)
+  assert.ok(hostState.isDirectory() && !hostState.isSymbolicLink())
+  assert.equal(hostState.mode & 0o7777, 0o775, "Production never changes the existing host directory's permissions")
+  await assert.rejects(lstat(oldHistoryFile), { code: "ENOENT" }, "No database is created below the unsafe host directory")
+}
+await assertDefaultHomeStorage()
 const project = path.join(temp, "project"), initial = path.join(project, "invocation"), inputs = path.join(initial, "inputs")
 const monitorPath = path.join(artifacts, "monitor.json"), controlPath = path.join(artifacts, "control.json")
 const presentationPath = path.join(artifacts, "presentation.json")
@@ -430,6 +453,7 @@ const clickNotification = async id => {
   assert.deepEqual(result, { id, current: true })
 }
 const readHistory = async () => {
+  await assertDefaultHomeStorage()
   const stat = await lstat(historyFile).catch(error => { if (error.code === "ENOENT") return undefined; throw error })
   if (!stat) return undefined
   assert.ok(stat.isFile() && !stat.isSymbolicLink(), "Actual isolated production database")
@@ -883,9 +907,11 @@ try {
   await publish(path.join(artifacts, "setup.json"), { version, scenario, temp, archive, packed, installed,
     moduleURL: pathToFileURL(path.join(installed, "dist/tui.js")).href, config, cli, limits,
     environment: { HOME: env.HOME, XDG_STATE_HOME: env.XDG_STATE_HOME }, stateRoot, historyFile,
+    ...(defaultHomeCase ? { oldHistoryFile, hostStateMode: "0775" } : {}),
     socket: runtime.socket, supervisorPID: runtime.supervisorPID })
   await runtime.start("-d", "-s", "v2-review", "-x", "160", "-y", "40", "-c", initial,
-    "env", "XDG_STATE_HOME=" + env.XDG_STATE_HOME, host, "--standalone", initial)
+    "env", ...(defaultHomeCase ? ["-u", "XDG_STATE_HOME", "HOME=" + env.HOME] : ["XDG_STATE_HOME=" + env.XDG_STATE_HOME]),
+    host, "--standalone", initial)
   const ready = await until("independent monitor", record => record?.ready && record)
   assert.equal(ready.version, version.slice("opencode v".length))
    const status = await until("active production companion", async () => {
@@ -1365,6 +1391,14 @@ try {
    }
    if (historyCase) {
     historyEvidence = await until("actual worker-saved history and aggregate commits", savedHistory, 20000)
+    if (defaultHomeCase) {
+      assert.equal(historyEvidence.file, path.join(env.HOME,
+        ".local/state/opencode-reviewer-state/opencode-reviewer/history-v1.sqlite"), "Actual saved database uses the private plugin-owned sibling")
+      const pluginState = await lstat(path.join(stateBase, "opencode-reviewer-state"))
+      assert.ok(pluginState.isDirectory() && !pluginState.isSymbolicLink())
+      assert.equal(pluginState.mode & 0o777, 0o700, "Fallback namespace is private")
+      await assertDefaultHomeStorage()
+    }
     await publish(path.join(artifacts, "history-saved.json"), historyEvidence)
     const replies = (await observations()).replied
     const stableHistory = async (record, screen) => {
@@ -1519,6 +1553,7 @@ try {
     assert.equal(notificationEvidence.cleaned.events.filter(event => event.event === "close").length, 1)
   }
   await sleep(300)
+  await assertDefaultHomeStorage()
   assert.deepEqual(await readObservation(monitorPath), cleaned, "No observer callback after final close")
   if (notificationCase) assert.deepEqual(await notificationObservations(), notificationEvidence.cleaned, "No backend publication after final close")
   await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, temp, handshake, inspection,

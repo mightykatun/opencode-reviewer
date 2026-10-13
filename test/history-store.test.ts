@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { HistoryStore, HistoryWorker } from "../src/history-store.js"
 import type { HistoryTransport } from "../src/history-store.js"
-import { HISTORY_QUEUE_BYTES, HISTORY_OPERATION_OVERHEAD, encodeEvent } from "../src/history-records.js"
+import { HISTORY_QUEUE_BYTES, HISTORY_OPERATION_OVERHEAD, HistoryInvalid, encodeEvent } from "../src/history-records.js"
 import type { HistoryEvent, HistoryReview } from "../src/history-records.js"
 import { HistorySQL } from "../src/history-schema.js"
 import { HistoryRefresh } from "../src/history-refresh.js"
@@ -94,6 +94,62 @@ test("failed real SQLite writes retry after exactly two seconds while committed 
   lock.exec("ROLLBACK"); time.advance(1); await turn()
   assert.equal(attempts, 2); assert.equal(commits, 1); assert.equal(store.pendingOperations, 0)
   assert.equal(((await store.query({ type: "totals" })) as any).totals.safe, 1)
+})
+
+test("invalid initialization retries after exactly two seconds and retains new admissions in FIFO order", async t => {
+  const time = clock(), applied: Record<string, unknown>[] = []
+  let opens = 0, failures = 0, commits = 0, workers = 0
+  const store = new HistoryStore("/state", { ...time, transport: () => {
+    workers++
+    return { async call(message) {
+      if (message.type === "open" && ++opens === 1) throw new HistoryInvalid("Invalid private path or schema")
+      if (message.type === "apply") applied.push(message)
+      return {}
+    }, async terminate() {} }
+  } })
+  t.after(() => store.dispose(performance.now() - 3500))
+  store.onWriteFailure(() => { failures++ }); store.onCommit(() => { commits++ })
+  assert.equal(store.admit(event), true)
+  await turn()
+  assert.equal(opens, 1); assert.equal(failures, 1); assert.equal(applied.length, 0)
+  const retained = store.retainedBytes
+  assert.equal(store.pendingOperations, 1)
+  assert.equal(store.admit({ ...event, context: { ...context, permission: "later", review: "later" } }), true)
+  await turn()
+  assert.equal(store.pendingOperations, 2); assert.ok(store.retainedBytes > retained)
+  assert.equal(opens, 1)
+  time.advance(1999); await turn()
+  assert.equal(opens, 1); assert.equal(applied.length, 0)
+  time.advance(1); await turn()
+  assert.equal(opens, 2); assert.equal(workers, 1); assert.equal(commits, 2)
+  assert.deepEqual(applied.map(message => message.sequence), [1, 2])
+  assert.equal(new Set(applied.map(message => message.writer)).size, 1)
+  assert.deepEqual(applied.map(message => JSON.parse(message.event as string).context.permission), ["permission", "later"])
+  assert.equal(store.pendingOperations, 0); assert.equal(store.retainedBytes, 0)
+  assert.equal(store.admit(event), true); await turn()
+  assert.deepEqual(applied.map(message => message.sequence), [1, 2, 3])
+})
+
+test("invalid admitted apply permanently retains the FIFO and rejects new admissions", async t => {
+  const time = clock(), applied: number[] = []
+  let failures = 0, commits = 0, opens = 0
+  const store = new HistoryStore("/state", { ...time, transport: () => ({ async call(message) {
+    if (message.type === "open") opens++
+    if (message.type === "apply") { applied.push(message.sequence as number); throw new HistoryInvalid("Invalid transaction") }
+    return {}
+  }, async terminate() {} }) })
+  t.after(() => store.dispose(performance.now() - 3500))
+  store.onWriteFailure(() => { failures++ }); store.onCommit(() => { commits++ })
+  assert.equal(store.admit(event), true); assert.equal(store.admit(event), true)
+  const retained = store.retainedBytes
+  await turn()
+  assert.deepEqual(applied, [1]); assert.equal(failures, 1); assert.equal(commits, 0)
+  assert.equal(store.pendingOperations, 2); assert.equal(store.retainedBytes, retained)
+  assert.equal(store.admit(event), false)
+  time.advance(2000); await turn(); time.advance(20000); await turn()
+  assert.deepEqual(applied, [1]); assert.equal(opens, 1); assert.equal(time.size, 0)
+  assert.equal(store.admit(event), false)
+  assert.equal(store.pendingOperations, 2); assert.equal(store.retainedBytes, retained)
 })
 
 test("uncertain commit acknowledgement replays exactly once, invalid inputs never poison the queue", async () => {
