@@ -1,4 +1,4 @@
-// W4 synthetic delegation probe, stock OpenCode 2.0.26, public APIs only.
+// W4 synthetic delegation probe on stock stable OpenCode V2, public APIs only.
 // Inventory owner registers exactly initial-resume (default) and coalesced, no flags.
 // No native executor wrapping, prompt/metadata rewriting, or permission replies.
 import assert from "node:assert/strict"

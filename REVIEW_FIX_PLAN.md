@@ -45,12 +45,12 @@ inventory bounds and add capacity coverage rather than removing safety limits.
   - [x] Separate wall-clock event timestamps from monotonic retention/backoff.
   - [x] Test same-root unsaved activity, referenced mutations and clock jumps.
   - [x] Verify history/accounting tests and typecheck; commit.
-- [ ] Phase 6: Remove obsolete machinery and refresh tests/docs/dependencies.
-  - [ ] Retire unused diagnostic trace helpers and orphaned fixture measurements after checking all consumers.
-  - [ ] Replace exhaustive metadata-matrix real sleeps with controlled clocks; retain real-timer controls.
-  - [ ] Refresh OpenCode V2 dependencies to newest stable and correct theme attribution.
-  - [ ] Put evidence-disclosure guidance near installation without adding UI notices or policy options.
-  - [ ] Verify affected tests, helper inventory, typecheck and audit; commit.
+- [x] Phase 6: Remove obsolete machinery and refresh tests/docs/dependencies.
+  - [x] Retire unused diagnostic trace helpers and orphaned fixture measurements after checking all consumers.
+  - [x] Replace exhaustive metadata-matrix real sleeps with controlled clocks; retain real-timer controls.
+  - [x] Refresh OpenCode V2 dependencies to newest stable and correct theme attribution.
+  - [x] Put evidence-disclosure guidance near installation without adding UI notices or policy options.
+  - [x] Verify affected tests, helper inventory, typecheck and audit; commit.
 - [ ] Phase 7: Final verification.
   - [ ] Run complete source/helper/typecheck/build checks.
   - [ ] Verify reproducible five-file package and built release smoke checks.
@@ -119,3 +119,17 @@ Record commands, test counts and exact runtime fixture results here after each p
   Typecheck, build and diff check passed. Real TUI `normal-history` passed in
   29,705 ms on OpenCode 2.0.29 (`.runtime/runtime-run-hkl4SX/results.json`).
   Saved rows, totals, format/version and existing resource budgets are unchanged.
+- Phase 6: removed test-only trace and orphaned measurement helpers after checking
+  every consumer. Actual transport diagnostic/privacy/error-isolation checks remain.
+  SSE retry matrices now control production timers and monotonic time together;
+  exact boundary and identical retry-body assertions replace real backoff sleeps.
+  `npx tsx --test --test-concurrency=2 test/diagnostics.test.ts test/reviewer.test.ts test/reviewer-retry-timing.test.ts`: 188 passed in 15.53 seconds
+  (`.runtime/phase6-source-targeted.log`). Typecheck and build passed.
+  `npm run test:helpers`: 139 passed (`.runtime/phase6-helpers.log`);
+  after generalizing the retired test-name assertion, `node --test test/ci-workflow.test.mjs`: 3 passed.
+  Client/plugin/theme resolve to latest stable 2.0.29; theme fingerprints still pass.
+  `npm audit --ignore-scripts --json`: zero vulnerabilities (`.runtime/phase6-audit.json`).
+  npm reports the existing OpenTUI Node-engine warning; its pinned 0.5.17 version
+  matches the Bun host and remains unchanged. No development floor was weakened.
+  README now explains pre-approval disclosure and out-of-project symlink evidence
+  near installation. No UI notice or new policy option was added. Diff check passed.

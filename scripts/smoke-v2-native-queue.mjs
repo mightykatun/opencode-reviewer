@@ -1,4 +1,4 @@
-// Synthetic pinned-host native family queue probe. No reviewer or permission replies.
+// Synthetic stable-V2 native family queue probe. No reviewer or permission replies.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { createServer } from "node:http"

@@ -1,6 +1,6 @@
-// W3 synthetic effective-evidence probe, unmodified OpenCode 2.0.26.
+// W3 synthetic effective-evidence probe on unmodified stable OpenCode V2.
 // Public Effect hooks only; native shell/skill executors are never wrapped.
-// Pinned source: core/src/{tool.ts,shell.ts,skill.ts,permission.ts},
+// Contracts originally inspected at 2.0.26: core/src/{tool.ts,shell.ts,skill.ts,permission.ts},
 // core/src/tool/plugin/{shell.ts,skill.ts}, core/src/session/move.ts,
 // plugin/src/effect/{tool.ts,shell.ts,skill.ts,permission.ts} and client types.
 // Inventory owner registers shell-rewrite (default), skill-reload, moved-location, edit-preview.

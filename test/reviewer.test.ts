@@ -6,7 +6,7 @@ import type { ServerResponse } from "node:http"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { setTimeout as sleep } from "node:timers/promises"
+import { setTimeout as sleep, setImmediate as settle } from "node:timers/promises"
 import { parseConfig } from "../src/config.js"
 import { parseAssessment, review as reviewWithMetadata, withDeadline } from "../src/reviewer.js"
 
@@ -31,6 +31,7 @@ import { lifetimeCost } from "../src/lifetime.js"
 import { DatabaseSync } from "node:sqlite"
 import { HistorySQL, type HistoryTotals } from "../src/history-schema.js"
 import { encodeEvent } from "../src/history-records.js"
+import { reviewerClock } from "./reviewer-clock.js"
 
 const evidence = shellEvidence({
   command: "python fruits.py", cwd: "/external", userPrompt: "Count fruits",
@@ -1088,28 +1089,48 @@ test("rejected SSE metadata retries boundedly; refusals, tool calls and API erro
   ]
   const terminal = new Set(["invalid JSON", "error", "error event", "wrong role", "null role", "legacy call", "tool calls",
     "bad calls", "refusal", "bad refusal", "filter", "tool finish"])
-  for (const [name, text] of cases) await t.test(name, async () => {
+  for (const [name, text] of cases) await t.test(name, async t => {
+    const time = reviewerClock(t), requests: RequestInit[] = []
     const observed: Usage[] = []
-    let calls = 0
+    let calls = 0, retries = 0
     const responses: Response[] = []
-    await assert.rejects(review(evidence, streamConfig(), signal(), { fetcher: async () => {
+    const pending = review(evidence, streamConfig(), signal(), { fetcher: async (_, init) => {
       calls++
+      requests.push(init!)
       const response = streamText(event({ choices: [], usage: { cost: 0.01 } }) + text + done)
       responses.push(response)
       return response
     }, environment: {}, prompts: BUILTIN_PROMPTS,
-      onUsage: (usage) => observed.push(usage) }), (error: unknown) => {
+      onUsage: (usage) => observed.push(usage), onRetry: () => { retries++ } })
+    const rejected = assert.rejects(pending, (error: unknown) => {
       assert.ok(error instanceof Error)
       assert.doesNotMatch(error.message, /PRIVATE|format invalid/)
       return true
     })
+    await settle()
+    if (!terminal.has(name)) for (const [index, duration] of [250, 500].entries()) {
+      assert.equal(time.sleep.mock.callCount(), index + 1)
+      assert.equal(time.sleep.mock.calls[index]!.arguments[0], duration)
+      time.advance(duration - 1)
+      await settle()
+      assert.equal(calls, index + 1, "no POST before the production backoff boundary")
+      assert.equal(retries, index)
+      time.advance(1)
+      await settle()
+      assert.equal(calls, index + 2)
+      assert.equal(retries, index + 1)
+    }
+    await rejected
     assert.equal(calls, terminal.has(name) ? 1 : 3)
+    assert.equal(retries, calls - 1)
+    assert.equal(time.sleep.mock.callCount(), calls - 1)
+    assert.ok(requests.every(request => request.method === "POST" && request.body === requests[0]!.body))
     assert.ok(responses.every(response => !response.body!.locked))
     assert.deepEqual(observed, Array.from({ length: calls }, () => ({ cost: name.startsWith("error") ? 0.02 : 0.01 })))
   })
 })
 
-test("missing completion markers retry while incomplete SSE framing remains terminal", async () => {
+test("missing completion markers retry while incomplete SSE framing remains terminal", async t => {
   const cases = [
     event(chunk('{"safe":true,"desc":"x"}')),
     event(chunk('{"safe":true,"desc":"x"}', "stop")),
@@ -1117,11 +1138,32 @@ test("missing completion markers retry while incomplete SSE framing remains term
     event(chunk('{"safe":true,"desc":"x"}', "stop")) + done + "data: trailing",
     event(chunk("invalid JSON", "stop")),
   ]
-  for (const [index, text] of cases.entries()) {
-    let calls = 0
-    await assert.rejects(review(evidence, streamConfig(), signal(), { fetcher: async () => { calls++; return streamText(text) } }), /ended/)
+  for (const [index, text] of cases.entries()) await t.test(`framing case ${index}`, async t => {
+    const time = reviewerClock(t), requests: RequestInit[] = []
+    let calls = 0, retries = 0
+    const pending = review(evidence, streamConfig(), signal(), { fetcher: async (_, init) => {
+      calls++; requests.push(init!); return streamText(text)
+    }, onRetry: () => { retries++ } })
+    const rejected = assert.rejects(pending, /ended/)
+    await settle()
+    if ([0, 1, 4].includes(index)) for (const [retry, duration] of [250, 500].entries()) {
+      assert.equal(time.sleep.mock.callCount(), retry + 1)
+      assert.equal(time.sleep.mock.calls[retry]!.arguments[0], duration)
+      time.advance(duration - 1)
+      await settle()
+      assert.equal(calls, retry + 1, "incomplete completion markers cannot bypass backoff")
+      assert.equal(retries, retry)
+      time.advance(1)
+      await settle()
+      assert.equal(calls, retry + 2)
+      assert.equal(retries, retry + 1)
+    }
+    await rejected
     assert.equal(calls, [0, 1, 4].includes(index) ? 3 : 1, "unfinished records cannot be treated as completed assessment frames")
-  }
+    assert.equal(retries, calls - 1)
+    assert.equal(time.sleep.mock.callCount(), calls - 1)
+    assert.ok(requests.every(request => request.method === "POST" && request.body === requests[0]!.body))
+  })
 })
 
 test("decoded usage survives later UTF-8, API JSON, assessment-limit and framing-limit failures", async () => {

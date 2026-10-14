@@ -1,27 +1,15 @@
-import { test, type TestContext } from "node:test"
+import { test } from "node:test"
 import assert from "node:assert/strict"
-import timers, { setImmediate as settle } from "node:timers/promises"
+import { setImmediate as settle } from "node:timers/promises"
 import { parseConfig } from "../src/config.js"
 import { review } from "../src/reviewer.js"
 import { withDeadline } from "../src/deadline.js"
 import { shellEvidence } from "./review-fixtures.js"
+import { reviewerClock as clock } from "./reviewer-clock.js"
 
 const evidence = shellEvidence()
 const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", timeoutMs: 5000, formatRetries: 0 })
 const success = () => Response.json({ choices: [{ message: { content: '{"safe":true,"desc":"Recovered."}' } }] })
-
-function clock(t: TestContext) {
-  let now = 0
-  t.mock.method(performance, "now", () => now)
-  t.mock.method(Math, "random", () => 0)
-  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.UTC(2026, 9, 8, 12) })
-  const sleep = t.mock.method(timers, "setTimeout")
-  return {
-    sleep,
-    advance(ms: number) { now += ms; t.mock.timers.tick(ms) },
-    pause(ms: number) { now += ms }, // Spend monotonic budget without delivering timers.
-  }
-}
 
 for (const kind of ["seconds", "date"]) test(`review POST waits for the exact Retry-After ${kind} boundary`, async t => {
   const time = clock(t), requests: RequestInit[] = []
@@ -98,7 +86,7 @@ for (const cooldown of [undefined, "1"]) test(`exhausted parent budget prevents 
   assert.equal(retries, 0)
 })
 
-for (const remaining of [250, 0]) test(`late backoff delivery with ${remaining} ms remaining never dispatches another POST`, async t => {
+for (const remaining of [249, 250, 0]) test(`late backoff delivery with ${remaining} ms remaining never dispatches another POST`, async t => {
   const time = clock(t)
   let calls = 0, retries = 0
   const pending = withDeadline(new AbortController().signal, 1000, bounded => review(evidence, config, bounded, {
@@ -117,6 +105,55 @@ for (const remaining of [250, 0]) test(`late backoff delivery with ${remaining} 
   await settle()
   assert.equal(calls, 1)
   assert.equal(retries, 0)
+})
+
+test("late backoff delivery with 251 ms remaining can dispatch one identical retry POST", async t => {
+  const time = clock(t), requests: RequestInit[] = []
+  let retries = 0
+  const pending = withDeadline(new AbortController().signal, 1000, bounded => review(evidence, config, bounded, {
+    fetcher: async (_url, init) => {
+      requests.push(init!)
+      return requests.length === 1 ? new Response(null, { status: 503 }) : success()
+    },
+    onRetry: () => { retries++ },
+  }))
+  await settle()
+  assert.equal(time.sleep.mock.callCount(), 1)
+  time.pause(499)
+  time.advance(249)
+  await settle()
+  assert.equal(requests.length, 1)
+  assert.equal(retries, 0)
+  time.advance(1)
+  assert.equal((await pending).safe, true)
+  assert.equal(requests.length, 2)
+  assert.equal(retries, 1)
+  assert.ok(requests.every(request => request.method === "POST" && request.body === requests[0]!.body))
+})
+
+test("a stalled response is canceled at the exact 50 ms parent deadline without retry", async t => {
+  const time = clock(t)
+  let calls = 0, retries = 0, canceled = false
+  const response = new Response(new ReadableStream({ cancel() { canceled = true } }))
+  const pending = withDeadline(new AbortController().signal, 50, bounded => review(evidence, config, bounded, {
+    fetcher: async () => { calls++; return response },
+    onRetry: () => { retries++ },
+  }))
+  const rejected = assert.rejects(pending, { name: "DeadlineError", message: "Reviewer response body timed out" })
+  await settle()
+  time.advance(49)
+  await settle()
+  assert.equal(calls, 1)
+  assert.equal(canceled, false)
+  assert.equal(response.body!.locked, true)
+  time.advance(1)
+  await rejected
+  await settle()
+  assert.equal(canceled, true)
+  assert.equal(response.body!.locked, false)
+  assert.equal(calls, 1)
+  assert.equal(retries, 0)
+  assert.equal(time.sleep.mock.callCount(), 0)
 })
 
 test("cancellation during production backoff preserves its reason and prevents another POST", async t => {

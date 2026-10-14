@@ -19,6 +19,13 @@ each request's data and scope rather than allowing only specific host versions.
 
 ## Install and config
 
+Reviews send request data, the latest user prompt, and selected file snapshots,
+diffs, skill instructions or tool arguments to your configured endpoint **before
+permission approval**. Shell snapshots can follow symlinks outside the project;
+denying the command afterward cannot undo that disclosure. Use an endpoint you
+trust, and a local reviewer or a sandbox without accessible secrets when working
+with untrusted repositories.
+
 Add this entry to the global `~/.config/opencode/cli.json`, or
 `$XDG_CONFIG_HOME/opencode/cli.json` when `XDG_CONFIG_HOME` is set.
 There is no project-local CLI configuration. OpenCode loads the

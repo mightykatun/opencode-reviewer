@@ -102,7 +102,7 @@ test("active release validation uses a complete policy checkout without a manual
   const workflow = await read(".github/workflows/release.yml")
   const validate = workflow.split("\n  validate:\n")[1].split("\n  publish:\n")[0]
   assert.match(validate, /node release-policy\/scripts\/test-helpers\.mjs/)
-  assert.doesNotMatch(validate, /node --test test\/smoke-measurements\.test\.mjs/)
+  assert.doesNotMatch(validate, /node --test test\//)
   const policy = validate.split("      - name: Check out active validation policy\n")[1].split("\n      - ")[0]
   assert.match(policy, /ref: \$\{\{ github\.workflow_sha \}\}/)
   assert.match(policy, /path: release-policy/)
