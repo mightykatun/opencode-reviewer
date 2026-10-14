@@ -292,6 +292,14 @@ test("two real worker clients concurrently initialize schema and share committed
     platform: "node", format: "cjs", external: ["bun:sqlite", "node:sqlite"] })
   const workers = [new HistoryWorker(bundle.outputFiles[0]!.text), new HistoryWorker(bundle.outputFiles[0]!.text)]
   t.after(async () => { await Promise.all(workers.map(w => w.terminate())); rmSync(directory, { recursive: true, force: true }) })
+  // Keep only two actual workers, but exercise cold WAL negotiation repeatedly.
+  // A transient setup BUSY must recover inside its original SQLite wait budget.
+  for (let round = 0; round < 50; round++) {
+    const cold = path.join(directory, `cold-${round}`, "history-v1.sqlite")
+    assert.deepEqual(await Promise.all(workers.map(w => w.call({ type: "open", file: cold, adapter: "node" }))),
+      [{ environmentKeys: 0, cleanup: true }, { environmentKeys: 0, cleanup: true }])
+    await Promise.all(workers.map(w => w.call({ type: "close" })))
+  }
   const ready = await Promise.all(workers.map(w => w.call({ type: "open", file, adapter: "node" })))
   assert.deepEqual(ready, [{ environmentKeys: 0, cleanup: true }, { environmentKeys: 0, cleanup: true }])
   await Promise.all(workers.map((w, i) => w.call({ type: "apply", writer: `worker${i}`, sequence: 1, event: encodeEvent({

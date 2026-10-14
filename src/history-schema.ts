@@ -9,6 +9,7 @@ import type { HistoryCleanup } from "./history-privacy.js"
 import { deleteHistory } from "./history-deletion.js"
 import { scrubLegacyFreelist } from "./history-legacy-scrub.js"
 import { historySchema, rebuildLegacyPages } from "./history-legacy-rebuild.js"
+import { initializeHistoryPragmas } from "./history-sqlite-init.js"
 import type { HistoryEvent, HistoryOutcome, HistoryPayload, HistoryQuery, HistoryReview, HistoryScope, HistoryOrder } from "./history-records.js"
 
 type Row = Record<string, any>
@@ -63,7 +64,7 @@ export class HistorySQL {
   private statements = new Map<string, ReturnType<HistoryDatabase["prepare"]>>()
   private browsing = new HistoryBrowsing()
   constructor(readonly db: HistoryDatabase) {
-    db.exec("PRAGMA busy_timeout=250; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=256")
+    initializeHistoryPragmas(db)
     if (db.prepare("PRAGMA secure_delete").get()?.secure_delete !== 1) throw new HistoryInvalid("Secure history deletion unavailable")
     this.transaction(() => {
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()
