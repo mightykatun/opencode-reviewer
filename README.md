@@ -26,14 +26,15 @@ denying the command afterward cannot undo that disclosure. Use an endpoint you
 trust, and a local reviewer or a sandbox without accessible secrets when working
 with untrusted repositories.
 
-Add this entry to the global `~/.config/opencode/cli.json`, or
-`$XDG_CONFIG_HOME/opencode/cli.json` when `XDG_CONFIG_HOME` is set.
-There is no project-local CLI configuration. OpenCode loads the
-[npm package](https://www.npmjs.com/package/opencode-reviewer) from this entry.
+Add this entry to the global `~/.config/opencode/opencode.json`, or
+`$XDG_CONFIG_HOME/opencode/opencode.json` when `XDG_CONFIG_HOME` is set.
+OpenCode loads the [npm package](https://www.npmjs.com/package/opencode-reviewer)
+and its terminal component from this single entry. No reviewer entry is needed
+in `cli.json`.
 
 ```json
 {
-  "$schema": "https://opencode.ai/v2/cli.json",
+  "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
       "package": "opencode-reviewer@latest",
@@ -85,25 +86,14 @@ launching OpenCode. The inline key takes precedence. Omit both for an unauthenti
 endpoint. Remove `instructions` to use the built-in prompts and
 `notificationSoundDirectory` to use the bundled sounds.
 
-You also need to edit `opencode.json`, as the plugin needs to be informed of states
-that are not exposed by TUI APIs:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-reviewer@latest"]
-}
-```
-
 ### Opencode docs
 
-[server config](https://opencode.ai/v2/docs/config),
-[CLI config](https://opencode.ai/v2/docs/cli/config) and
+[OpenCode config](https://opencode.ai/v2/docs/config) and
 [CLI plugins](https://opencode.ai/v2/docs/build/plugins/cli) guides.
 
 ## Options reference
 
-These are options inside the plugin's `options` object in global `cli.json`.
+These are options inside the plugin's `options` object in global `opencode.json`.
 Defaults apply only to omitted options. `null` is invalid. Boolean and integer
 options require JSON booleans and numbers, not quoted strings. Integer ranges are
 inclusive, fractions are invalid, and the maximum safe integer is
