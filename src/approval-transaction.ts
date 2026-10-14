@@ -103,7 +103,7 @@ export class ApprovalTransaction<R extends RequestIdentity> {
             policy.confirmed()
           }
         } finally { bounded.removeEventListener("abort", abortEvent) }
-      })
+      }, "Approval acknowledgement", signal)
     } catch (error) {
       if (!this.terminal()) this.current = this.sent ? "uncertain" : "not-sent"
       throw error

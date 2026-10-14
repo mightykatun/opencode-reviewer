@@ -4,6 +4,21 @@ import { DeadlineError, remainingTime, reviewStage, withDeadline } from "../src/
 
 const signal = () => new AbortController().signal
 
+test("a separate abort owner inherits the original absolute deadline across a handoff pause", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  let now = 0, handing = false, reads = 0, launched = false
+  t.mock.method(performance, "now", () => {
+    if (handing && ++reads === 2) now = 100
+    return now
+  })
+  await assert.rejects(withDeadline(signal(), 20, async source => {
+    handing = true
+    const remaining = remainingTime(source)
+    await assert.rejects(withDeadline(signal(), remaining, async () => { launched = true }, "Acknowledgement", source), DeadlineError)
+  }), DeadlineError)
+  assert.equal(launched, false, "A new abort owner cannot reconstruct a later deadline after a scheduling pause")
+})
+
 test("nested construction inherits the absolute parent end across a clock pause", async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] })
   let constructing = false, reads = 0, now = 0, launched = false

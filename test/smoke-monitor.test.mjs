@@ -11,6 +11,66 @@ const deferred = () => {
   return { promise, resolve }
 }
 
+async function connectionObserver() {
+  const text = await readFile(new URL("../scripts/smoke-v2-lifecycle.mjs", import.meta.url), "utf8")
+  const ast = parseSync(text, { sourceType: "module", babelrc: false, configFile: false })
+  const node = ast.program.body.find(node => node.type === "FunctionDeclaration" && node.id.name === "observeConnectionMarker")
+  assert.ok(node)
+  return new Function("assert", `${text.slice(node.start, node.end)}\nreturn observeConnectionMarker`)(assert)
+}
+
+test("cold startup independently observes the current real public marker without a native echo and owns subscriber return", async () => {
+  const observe = await connectionObserver(), returned = deferred(), closing = deferred(), result = {}, saved = []
+  const events = [{ type: "session.created", id: "unrelated" }, { type: "server.connected", id: "actual-current-marker" }]
+  const abort = new AbortController()
+  const ctx = { client: { event: { subscribe({ signal }) {
+    assert.equal(signal, abort.signal)
+    return { [Symbol.asyncIterator]() { return this }, next: async () => ({ done: false, value: events.shift() }),
+      return() { returned.resolve(); return closing.promise } }
+  } } } }
+  let settled = false
+  const pending = observe(ctx, abort.signal, result, async () => { saved.push(structuredClone(result)) }).then(() => { settled = true })
+  await returned.promise
+  assert.deepEqual(result, { publicConnection: { id: "actual-current-marker" } })
+  assert.deepEqual(saved, [result])
+  assert.equal(settled, false, "The real subscriber cleanup still owns physical settlement")
+  closing.resolve({ done: true })
+  await pending
+  assert.equal(settled, true)
+})
+
+test("cold startup observer abort cannot record a late marker and retains the pending read and return", async () => {
+  const observe = await connectionObserver(), read = deferred(), entered = deferred(), closing = deferred(), returned = deferred()
+  const result = {}, abort = new AbortController()
+  const ctx = { client: { event: { subscribe() {
+    return { [Symbol.asyncIterator]() { return this }, next() { entered.resolve(); return read.promise },
+      return() { returned.resolve(); return closing.promise } }
+  } } } }
+  let settled = false
+  const pending = observe(ctx, abort.signal, result, async () => { assert.fail("No publication after abort") })
+  const rejected = assert.rejects(pending, { name: "AbortError" }).then(() => { settled = true })
+  await entered.promise
+  abort.abort()
+  await Promise.resolve()
+  assert.equal(settled, false)
+  read.resolve({ done: false, value: { type: "server.connected", id: "late-marker" } })
+  await returned.promise
+  assert.deepEqual(result, {})
+  assert.equal(settled, false)
+  closing.resolve({ done: true })
+  await rejected
+  assert.equal(settled, true)
+})
+
+test("cold startup observer rejects an empty marker ID or an ended stream rather than inventing connection proof", async () => {
+  const observe = await connectionObserver()
+  for (const events of [[{ type: "server.connected", id: "" }], []]) {
+    const result = {}, ctx = { client: { event: { async *subscribe() { yield* events } } } }
+    await assert.rejects(observe(ctx, new AbortController().signal, result, async () => { assert.fail("Invalid marker must not be published") }))
+    assert.deepEqual(result, {})
+  }
+})
+
 for (const fixtureName of ["smoke-v2-review.mjs", "smoke-v2-notifications.mjs"]) {
   test(`${fixtureName}: disposal owns a late control read without consuming or dispatching its command`, async () => {
     const text = await readFile(new URL(`../scripts/${fixtureName}`, import.meta.url), "utf8")

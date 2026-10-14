@@ -22,15 +22,18 @@ export function reviewStage(signal: AbortSignal, stage: string) {
   }
 }
 
-/** A nested wait can shorten, but never extend, the enclosing deadline. */
-export async function withDeadline<T>(parent: AbortSignal, ms: number, run: (signal: AbortSignal) => Promise<T>, stage = "Review"): Promise<T> {
+/** A nested wait can shorten, but never extend, the enclosing deadline.
+ * A distinct deadline source carries its absolute end without sharing abort:
+ * native acknowledgement may outlive a resolution abort, never its time budget. */
+export async function withDeadline<T>(parent: AbortSignal, ms: number, run: (signal: AbortSignal) => Promise<T>,
+  stage = "Review", deadlineSource = parent): Promise<T> {
   parent.throwIfAborted()
   const controller = new AbortController()
   const signal = AbortSignal.any([parent, controller.signal])
   const now = performance.now()
   // Inherit the absolute end directly. Reconstructing it from a remaining
   // duration and a later clock reading can extend it across a scheduling pause.
-  const end = Math.min(now + ms, states.get(parent)?.end ?? Infinity)
+  const end = Math.min(now + ms, states.get(parent)?.end ?? Infinity, states.get(deadlineSource)?.end ?? Infinity)
   const duration = Math.max(0, end - now)
   if (duration <= 0) throw new DeadlineError(stage)
   const state = { end, stage }

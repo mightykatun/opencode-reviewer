@@ -105,12 +105,16 @@ test("explicit cancellation is durable across duplicate asks, reconciliation and
   assert.equal(f.view()?.autoApproval?.status, "cancelled"); assert.equal(f.reads.length, 0); assert.equal(f.writes.length, 0)
 })
 test("zero delay verifies structural identity and shares the verification/ACK budget", async t => {
+  let now = 0
+  t.mock.method(performance, "now", () => now)
   const f = fixture(t, { reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, autoApproveDelaySeconds: 0 } })
   const read = deferred<HostRequest[]>(), ack = deferred<OnceSubmission>(); f.state.read = () => read.promise; f.state.write = () => ack.promise
   await f.add(); f.clock.jump(0); await settle(); assert.equal(f.view()?.autoApproval?.status, "checking")
+  now = 1000
   const { metadata, ...rest } = structuredClone(request()); read.resolve([{ metadata, ...rest }]); await settle()
   assert.equal(f.writes.length, 1); assert.equal(f.view()?.autoApproval?.status, "allowing")
-  assert.ok(remainingTime(f.writes[0]!) <= remainingTime(f.reads[0]!) + 1)
+  assert.equal(remainingTime(f.reads[0]!), 4000)
+  assert.equal(remainingTime(f.writes[0]!), 4000, "Acknowledgement retains the exact original absolute deadline")
   ack.resolve({ status: "submitted" }); await settle(); assert.equal(f.controller.views.length, 0)
 })
 test("duplicate clicks racing expiry remain single-flight during checking and actual invocation", async t => {

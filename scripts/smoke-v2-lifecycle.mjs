@@ -105,6 +105,19 @@ async function monitorSetup(ctx) {
 
 // Serialized into a fixture-only embedding wrapper, never into the archive.
 // All production behavior below is imported from the exact installed archive.
+async function observeConnectionMarker(ctx, signal, result, save) {
+  for await (const event of ctx.client.event.subscribe({ signal })) {
+    signal.throwIfAborted()
+    if (event.type !== "server.connected") continue
+    assert.ok(typeof event.id === "string" && event.id.length > 0, "Actual public connection marker ID")
+    result.publicConnection = { id: event.id }
+    await save()
+    return
+  }
+  signal.throwIfAborted()
+  throw Error("Public connection stream ended without a connection marker")
+}
+
 async function observedSetup(ctx) {
   const cli = "ui" in ctx
   const control = await readObservation(fixture.control)
@@ -118,6 +131,15 @@ async function observedSetup(ctx) {
   const connections = cli && phase === "cold-startup" ? ctx.data.on("server.connected", event => {
     (result.connections ??= []).push({ id: event.id, received: performance.now() - started }); void save()
   }) : () => {}
+  // A native echo may already have been delivered before plugin setup. Observe
+  // the real public client's current marker independently, without delaying or
+  // gating production setup or injecting/replaying any host events.
+  const connectionAbort = new AbortController()
+  const connectionRead = cli && phase === "cold-startup"
+    ? observeConnectionMarker(ctx, connectionAbort.signal, result, save).catch(async error => {
+      if (!connectionAbort.signal.aborted) { result.errors.push(String(error)); await save() }
+    }) : Promise.resolve()
+  const stopConnections = async () => { connections(); connectionAbort.abort(); await connectionRead }
   let life, cleanup
   // Override only public context members, retaining real host ownership for
   // slots, listeners, RPC and renderer. Response mutations are explicit controls.
@@ -199,6 +221,7 @@ async function observedSetup(ctx) {
     // Oldest cleanup publishes only after every actual resource was released.
     const pending = []
     lifecycle.addCleanup(async () => {
+      await stopConnections()
       await Promise.all(pending)
       result.cleaned = true; await save(); await publisher.close()
     })
@@ -275,7 +298,7 @@ async function observedSetup(ctx) {
     result.setupReturned = true
     await save()
   } catch (error) {
-    connections()
+    await stopConnections()
     if (life) await life.settled()
     if (phase !== "partial-failure" || !String(error).includes("LIFECYCLE_EXPECTED_PARTIAL_FAILURE")) {
       // Cleanup may already have closed its publisher; report via a separate
@@ -287,7 +310,7 @@ async function observedSetup(ctx) {
     throw error
   }
   return async () => {
-    connections()
+    await stopConnections()
     // Repeat the returned production cleanup to prove its idempotence as well
     // as the host's real disable/reload boundary.
     await Promise.all([cleanup(), cleanup()])
@@ -424,7 +447,8 @@ try {
   const fixture = { project, observations, control: controlPath, monitor: monitorPath, endpoint, hostVersion: version.slice("opencode v".length),
     moduleURL: pathToFileURL(path.join(installed, "dist/tui.js")).href }
   const helpers = await readFile(new URL("./smoke-observations.mjs", import.meta.url), "utf8")
-  const prelude = helpers + '\nimport assert from "node:assert/strict"\nconst fixture = ' + JSON.stringify(fixture) + "\n" + handshakeDefinition.toString() + "\n"
+  const prelude = helpers + '\nimport assert from "node:assert/strict"\nconst fixture = ' + JSON.stringify(fixture) + "\n"
+    + handshakeDefinition.toString() + "\n" + observeConnectionMarker.toString() + "\n"
   const monitor = path.join(temp, "monitor"), wrapper = path.join(temp, "embedding")
   await mkdir(monitor); await mkdir(wrapper)
   await publish(path.join(monitor, "package.json"), { name: "lifecycle-monitor", type: "module", exports: { "./tui": "./tui.mjs" } })
@@ -470,10 +494,15 @@ try {
   if (scenario === "cold-startup") {
     cold = await until("cold production CLI admission", async () => {
       const value = await records("cli", "cold-startup")
-      return value?.setupReturned && value.connections?.length && value
+      assert.deepEqual(value?.errors ?? [], [])
+      return value?.setupReturned && value.publicConnection && value
     })
-    assert.equal(cold.state.connectionID, cold.connections[0].id, "Startup and native bridge admit the same marker")
+    assert.equal(cold.state.connectionID, cold.publicConnection.id, "Startup admits the independently observed actual public marker")
     await window()
+    cold = await records("cli", "cold-startup")
+    assert.deepEqual(cold.errors, [])
+    for (const echo of cold.connections ?? []) assert.equal(echo.id, cold.state.connectionID,
+      "Any native connection echo delivered during setup is the same admitted marker")
     const log = await readFile(path.join(env.XDG_DATA_HOME, "opencode/log/opencode.log"), "utf8")
     assert.equal(log.split("\n").some(line => line.includes("http.url=/api/rpc/opencode-reviewer/handshake")
       && line.includes("http.status=499")), false, "Cold startup must not cancel an early handshake")
@@ -596,7 +625,7 @@ try {
       "Negative model/review POST and permission/execution event windows"],
     limits: ["Lifecycle and recovered production-controller construction only; no permission review, approval, notification or history activity is exercised.",
       "One standalone host and terminal; no shared-service, multi-terminal, disconnect or authoritative deletion proof.",
-      cold ? "Cold CLI uses a read-only embedding observer of the installed archive; native markers and RPC responses are not injected or delayed."
+      cold ? "Cold CLI uses a read-only embedding observer of the installed archive and an independent public connection subscription. A native echo may precede observer registration; any delivered echo is checked against the admitted marker. Markers and RPC responses are not injected or delayed."
         : "Default CLI is loaded through global configuration; its inert setup has no public per-plugin completion observer.",
       "Response mismatch controls alter a real public handshake response in the fixture wrapper, not the server implementation.",
       "Startup recovery injects a first client-side read held until its real production timeout; it does not delay host initialization or exercise an active-runtime reconnect.",

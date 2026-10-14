@@ -5,7 +5,7 @@ import { setImmediate as settle } from "node:timers/promises"
 import { ApprovalTransaction } from "../src/approval-transaction.js"
 import type { ApprovalFact } from "../src/controller.js"
 import type { OnceSubmission } from "../src/host-permissions.js"
-import { withDeadline } from "../src/deadline.js"
+import { remainingTime, withDeadline } from "../src/deadline.js"
 
 const request = Object.freeze({ id: "request", sessionID: "session" })
 const resolved = Object.freeze({ reason: "permission resolved" })
@@ -195,6 +195,36 @@ test("native owner: verification and acknowledgement retain one five-second budg
   f.ack.resolve({ status: "submitted" }); await settle()
   assert.equal(f.facts.filter(fact => fact.type === "confirmed").length, 0)
   assert.deepEqual(f.facts.map(fact => [fact.type, fact.result]), [["dispatched", undefined], ["settled", "uncertain"]])
+})
+
+test("native owner: a pause during acknowledgement handoff cannot extend the original deadline after native resolution", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  let time = 0, handing = false, reads = 0, verification!: AbortSignal
+  t.mock.method(performance, "now", () => {
+    if (handing && ++reads === 2) { time = 1000; t.mock.timers.tick(1000) }
+    return time
+  })
+  const f = fixture()
+  f.preparation.resolve()
+  const work = withDeadline(f.parent.signal, 5000, async signal => {
+    verification = signal
+    handing = true
+    await f.transaction.submit(signal, f.writer, f.policy)
+  })
+  const rejected = assert.rejects(work)
+  await settle()
+  assert.equal(f.calls(), 1)
+  assert.equal(remainingTime(verification), 4000)
+  assert.equal(remainingTime(f.signal()), 4000, "Handoff preserves the deadline, not a sampled duration plus a later clock")
+  f.transaction.resolved(once); f.parent.abort(resolved); await rejected; await settle()
+  assert.equal(f.signal().aborted, false, "Exact native resolution alone still waits for acknowledgement")
+  time = 4999; t.mock.timers.tick(3999); await settle()
+  assert.equal(f.transaction.state, "dispatched")
+  time = 5000; t.mock.timers.tick(1); await settle()
+  assert.equal(f.transaction.state, "uncertain")
+  assert.equal(f.signal().aborted, true)
+  f.ack.resolve({ status: "submitted" }); await settle()
+  assert.equal(f.facts.filter(fact => fact.type === "confirmed").length, 0)
 })
 
 test("native owner: deletion abort after local ACK cannot be confirmed by a later native event", async () => {

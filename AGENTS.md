@@ -97,7 +97,9 @@ not prove actual audio playback, GNOME focus, live-provider judgment or provider
 latency. Behavioral review/notification fixtures activate through public CLI
 configuration after observing an owned prompt-free probe's exact native birth and
 deletion on the connected event stream. They do not prove pre-connection startup;
-the separate lifecycle fixture checks startup. Reconnect still revokes an active
+the separate lifecycle fixture checks startup using an independently observed
+public connection marker. Native echoes may precede observer registration; any
+delivered echo must match that actual admitted marker. Reconnect still revokes an active
 generation, including notification-only fallback. Fixture-owned public memory
 retains actual observations and consumed controls across CLI plugin reloads; it
 cannot supply events or override production behavior.
