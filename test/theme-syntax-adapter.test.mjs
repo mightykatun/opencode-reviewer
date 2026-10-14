@@ -1,6 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { execFileSync } from "node:child_process"
 import path from "node:path"
 import { adaptThemeSyntax, themeSyntaxOnlyPlugin, verifyThemeSyntaxInputs, verifyThemeSyntaxBuild } from "../scripts/theme-syntax-adapter.mjs"
 
@@ -51,11 +52,30 @@ test("the build adapter hashes actual adjacent sources and rejects changed or mi
   await assert.rejects(load({ path: syntax }), /Pinned theme build input changed: index.js/)
   await rm(path.join(directory, "schema.js"))
   await assert.rejects(load({ path: barrel }), /ENOENT/)
-  const upstream = await readFile(new URL("../node_modules/@opencode/theme/dist/tui/syntax.js", import.meta.url), "utf8")
+  const upstream = await readFile(new URL("./syntax.js", import.meta.resolve("@opencode/theme/tui")), "utf8")
   const adapted = adaptThemeSyntax(upstream)
   assert.match(adapted, /^import \{ SyntaxStyle \} from "@opentui\/core";\nexport function generateSyntax\(theme, owner\) \{/)
   assert.match(adapted, /\n    \], owner\);\n\}\nfunction rule\(/)
   assert.throws(() => adaptThemeSyntax(upstream.replace("generateSyntax(theme)", "generateSyntax()")), /Pinned theme syntax source changed/)
+})
+
+test("theme adapter checks resolve installed inputs outside the active policy checkout", async t => {
+  const root = await mkdtemp("/tmp/opencode/reviewer-theme-policy-")
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const policy = path.join(root, "release-policy")
+  const installed = path.join(root, "node_modules/@opencode/theme")
+  await mkdir(path.join(policy, "test"), { recursive: true })
+  await mkdir(path.join(policy, "scripts"))
+  await mkdir(path.join(installed, "dist/tui"), { recursive: true })
+  await copyFile(new URL(import.meta.url), path.join(policy, "test/theme-syntax-adapter.test.mjs"))
+  await copyFile(new URL("../scripts/theme-syntax-adapter.mjs", import.meta.url), path.join(policy, "scripts/theme-syntax-adapter.mjs"))
+  await writeFile(path.join(installed, "package.json"), JSON.stringify(manifest))
+  await writeFile(path.join(installed, "dist/tui/index.js"), "export {}\n")
+  await copyFile(new URL("./syntax.js", import.meta.resolve("@opencode/theme/tui")), path.join(installed, "dist/tui/syntax.js"))
+  execFileSync(process.execPath, ["--test", "--test-name-pattern=^the build adapter hashes actual adjacent sources",
+    "test/theme-syntax-adapter.test.mjs"], {
+    cwd: policy, encoding: "utf8", timeout: 10000, env: { ...process.env, NODE_TEST_CONTEXT: undefined },
+  })
 })
 
 const themePrefix = "node_modules/@opencode/theme/"
