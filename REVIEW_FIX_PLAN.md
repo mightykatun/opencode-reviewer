@@ -9,12 +9,12 @@ inventory bounds and add capacity coverage rather than removing safety limits.
 ## Execution checklist
 
 - [x] 1. Read the complete plan and identify existing completion state.
-- [ ] 2. Read relevant source and tests before each phase's edits.
+- [x] 2. Read relevant source and tests before each phase's edits.
 - [x] 3. Derive the ordered implementation and verification tasks below.
-- [ ] 4. Implement phases sequentially and commit verified phases.
-- [ ] 5. Verify each phase and fix failures before proceeding.
-- [ ] 6. Update this checklist and evidence as work completes.
-- [ ] 7. Resolve mismatches explicitly; escalate only genuinely blocking decisions.
+- [x] 4. Implement phases sequentially and commit verified phases.
+- [x] 5. Verify each phase and fix failures before proceeding.
+- [x] 6. Update this checklist and evidence as work completes.
+- [x] 7. Resolve mismatches explicitly; escalate only genuinely blocking decisions.
 
 ## Implementation
 
@@ -51,11 +51,11 @@ inventory bounds and add capacity coverage rather than removing safety limits.
   - [x] Refresh OpenCode V2 dependencies to newest stable and correct theme attribution.
   - [x] Put evidence-disclosure guidance near installation without adding UI notices or policy options.
   - [x] Verify affected tests, helper inventory, typecheck and audit; commit.
-- [ ] Phase 7: Final verification.
+- [x] Phase 7: Final verification.
   - [x] Run complete source/helper/typecheck/build checks.
   - [x] Verify reproducible five-file package and built release smoke checks.
-  - [ ] Run the complete 38-case `ci` real-TUI profile on latest stable OpenCode V2, serially.
-  - [ ] Record exact results, inspect diff/status and commit final checklist.
+  - [x] Run the complete 38-case `ci` real-TUI profile on latest stable OpenCode V2, serially.
+  - [x] Record exact results, inspect diff/status and commit final checklist.
 
 ## Evidence
 
@@ -168,3 +168,15 @@ Record commands, test counts and exact runtime fixture results here after each p
   forms passed (24,522 ms), serially on OpenCode 2.0.29. Exact commands, actual
   event observations and results paths: `.runtime/final-fast-probe-evidence.log`.
   The interrupted profile's six successful cases remain evidence, not a full pass.
+- Final runtime acceptance: `node scripts/test-runtime.mjs --profile ci` passed all
+  38 cases serially on stock OpenCode 2.0.29 and Node 24.21.0. Total measured case
+  duration: 978,742 ms. `.runtime/runtime-run-6P9GLn/results.json` contains every
+  exact invocation, duration and log; all exit codes are zero, with no timeout or
+  interruption. Independently compared its full ordered case/argument selection
+  against `profilePlan("ci")`, asserting exactly 38 passing cases.
+  Latest complete helper run passed 145 tests. Production source remained unchanged
+  after the 1,404-test full check and 11-test package smoke run. The rebuilt bundle
+  still hashes to `b40043504b6d4f4964dd4a28d7184c50c1dd22b3c74d8d92306f19d98a2fddc8`.
+  Diff/status review found no unrelated or uncommitted implementation changes.
+  Actual desktop/audio, Node 22 and live-provider safety judgment were not exercised;
+  synthetic/runtime fixture acceptance does not establish those outcomes.
