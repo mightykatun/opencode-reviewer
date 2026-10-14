@@ -79,6 +79,20 @@ test("location reconciliation retains root and descendant requests instead of mi
   await assert.rejects(f.transport.listScope(signal()), /location unavailable/)
 })
 
+test("location inventory admits each 9 MiB preview separately but fails closed on their aggregate", async () => {
+  const f = fixture(), requests = [raw("large-one"), raw("large-two", "child")].map(request =>
+    ({ ...request, metadata: { preview: "p".repeat(9 * 1024 * 1024) } }))
+  for (const request of requests) {
+    assert.ok(snapshotRequest(request, scope), "Individual native preview remains supported")
+    f.state.pending.clear(); f.add(request)
+    assert.equal((await f.transport.listScope(signal())).length, 1)
+  }
+  f.state.pending.clear()
+  for (const request of requests) f.add(request)
+  await assert.rejects(f.transport.listScope(signal()), /Pending permissions unavailable/)
+  assert.equal(f.state.calls.length, 0)
+})
+
 test("epoch/location/identity/presentation loss blocks dispatch without gaining a retry tombstone", async () => {
   for (const change of ["epoch", "location", "identity", "eligible"] as const) {
     const f = fixture(), snapshot = snapshotRequest(raw(), scope)!

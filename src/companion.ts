@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
-import { companionProtocol, companionRpc, sameLocation, type CompanionHandshake } from "./companion-protocol.js"
+import { companionBusy, companionProtocol, companionRpc, sameLocation, type CompanionHandshake } from "./companion-protocol.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
 import { InvocationCapture } from "./invocation-capture.js"
 import { readHostInvocation, sameRequest, serverRequestJSON, snapshotRequest } from "./host-request.js"
@@ -11,7 +11,7 @@ import { collectHostOperation } from "./host-evidence.js"
 import { readHostEvidenceOptions } from "./host-evidence-options.js"
 
 type Query = { location: CompanionHandshake["location"]; epoch: string; sessionID: string; requestID: string }
-type Call = { signal: AbortSignal }
+type Call = { signal: AbortSignal; error(type: typeof companionBusy, message: string, data: Record<string, never>): unknown }
 
 export async function setupCompanion(context: Plugin.Context, lifecycle: PluginLifecycle, fileIO?: FileIO): Promise<CompanionHandshake> {
   const location = { directory: context.location.directory,
@@ -33,9 +33,10 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
   lifecycle.addCleanup(() => after.dispose())
   lifecycle.signal.throwIfAborted()
   const read = async (query: Query, call: Call, collection?: { options: unknown; timeoutMs: number }) => {
-    if (lifecycle.signal.aborted || call.signal.aborted || activeReads >= 2) return null
+    if (lifecycle.signal.aborted || call.signal.aborted) return null
     const collectOptions = collection && readHostEvidenceOptions(collection.options)
     if (collection && (!collectOptions || !Number.isFinite(collection.timeoutMs) || collection.timeoutMs <= 0 || collection.timeoutMs > 5000)) return null
+    if (activeReads >= 2) return call.error(companionBusy, "Reviewer companion read capacity occupied", {})
     activeReads++
     const ownership = new TransportOwnership(reads)
     const signal = AbortSignal.any([lifecycle.signal, call.signal])

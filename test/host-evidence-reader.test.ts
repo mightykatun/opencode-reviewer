@@ -273,6 +273,29 @@ test("companion replacement or cancellation after collection prevents final evid
   }
 })
 
+test("evidence contention regenerates its budget and retains invalid-data and companion-epoch checks", async () => {
+  for (const change of ["none", "invalid", "epoch"] as const) {
+    const f = await fixture(), methods = f.raw.rpc(), timeouts: number[] = []
+    try {
+      f.raw.rpc = () => ({ ...methods, evidence: async (...args: Parameters<typeof methods.evidence>) => {
+        timeouts.push(args[0].timeoutMs)
+        if (timeouts.length === 1) throw { type: "capacity_busy", data: {} }
+        const value = await methods.evidence(...args)
+        if (change === "invalid") return { ...value, request: { ...value.request, resources: ["other.txt"] } }
+        if (change === "epoch") f.state.epoch = "20000000-1000-4000-8000-100000000000"
+        return value
+      } })
+      const value = await withDeadline(new AbortController().signal, 1000,
+        signal => readHostEvidence(f.client, f.scope, request, options, signal))
+      assert.equal(value?.result.status, change === "none" ? "ready" : undefined)
+      assert.equal(timeouts.length, 2, "Invalid data and replaced companions are not retried")
+      assert.ok(timeouts[0]! <= 1000 && timeouts[1]! > 0 && timeouts[1]! < timeouts[0]!)
+      assert.deepEqual(f.calls, ["capture", "message", "session", "user", "evidence",
+        ...(change === "invalid" ? [] : ["permission", "handshake"])])
+    } finally { await f.lifecycle.stop() }
+  }
+})
+
 test("cancellation during evidence or final reads retains actual RPC ownership and prevents subsequent reads", async () => {
   for (const stage of ["evidence", "permission", "handshake"] as const) {
     const f = await fixture(), abort = new AbortController(), ownership = new TransportOwnership()

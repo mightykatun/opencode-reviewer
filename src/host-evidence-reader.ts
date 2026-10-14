@@ -5,7 +5,7 @@ import { attachHostConversation, readHostOperationEvidence, type HostEvidenceOpt
 import { hostEvidenceOptions, readHostEvidenceOptions } from "./host-evidence-options.js"
 import { hostJSONBytes, hostOperationJSONBytes, readHostEnvelope, readHostInvocation, sameHostJSON, sameRequest, snapshotRequest } from "./host-request.js"
 import { withDeadline, remainingTime } from "./deadline.js"
-import { transportOwnership } from "./transport-ownership.js"
+import { readCompanion } from "./companion-read.js"
 import type { HostScope, JSONObject } from "./host-types.js"
 
 export interface HostEvidenceRead extends HostInvocationRead { result: HostEvidenceResult }
@@ -24,9 +24,8 @@ export async function readHostEvidence(client: OpenCodeClient, at: HostScope, pe
     const current = await preparePendingInvocation(client, initial, signal)
     if (!current) return
     const { snapshot } = current, { scope, request } = snapshot
-    const owned = <T>(work: Promise<T>) => transportOwnership(signal)?.track(work) ?? work
     const rpcOptions = { location: scope.location, signal }
-    const raw = await owned(client.rpc(companionRpc).evidence({ ...scope,
+    const raw = await readCompanion(signal, () => client.rpc(companionRpc).evidence({ ...scope,
       sessionID: request.sessionID, requestID: request.id, options: collection, timeoutMs: remainingTime(signal) }, rpcOptions))
     signal.throwIfAborted()
     const data = readHostEnvelope(raw, { request: hostJSONBytes, invocation: hostJSONBytes, result: hostOperationJSONBytes })

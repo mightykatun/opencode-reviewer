@@ -3,6 +3,11 @@ import path from "node:path"
 import { evidenceOptionsSchema } from "./host-evidence-options.js"
 
 export const companionProtocol = 1
+export const companionBusy = "capacity_busy"
+const readErrors = {
+  scope: { type: "object", properties: {}, additionalProperties: false },
+  [companionBusy]: { type: "object", properties: {}, additionalProperties: false },
+} as const
 const text = { type: "string", minLength: 1, maxLength: 16384 } as const
 const location = {
   type: "object", properties: { directory: text, workspaceID: text }, required: ["directory"], additionalProperties: false,
@@ -39,7 +44,7 @@ export const companionRpc = Rpc.define({
       output: { anyOf: [{ type: "null" }, { type: "object", properties: {
         request: { type: "object" }, invocation: { type: "object" },
       }, required: ["request", "invocation"], additionalProperties: false }] },
-      errors: { scope: { type: "object", properties: {}, additionalProperties: false } },
+      errors: readErrors,
     },
     evidence: {
       input: { type: "object", properties: { location, epoch: text, sessionID: text, requestID: text,
@@ -48,7 +53,7 @@ export const companionRpc = Rpc.define({
       output: { anyOf: [{ type: "null" }, { type: "object", properties: {
         request: { type: "object" }, invocation: { type: "object" }, result: { type: "object" },
       }, required: ["request", "invocation", "result"], additionalProperties: false }] },
-      errors: { scope: { type: "object", properties: {}, additionalProperties: false } },
+      errors: readErrors,
     },
   },
   events: {},

@@ -74,6 +74,20 @@ test("missing source and changed capture request cannot dispatch message/context
   assert.deepEqual(f.calls, ["capture"])
 })
 
+test("invocation contention retries exact scope/identity but a changed returned request stays unavailable", async () => {
+  const f = fixture(), methods = f.rawClient.rpc()
+  let attempts = 0
+  f.rawClient.rpc = () => ({ ...methods, invocation: async (...args: Parameters<typeof methods.invocation>) => {
+    attempts++
+    if (attempts === 1) throw { type: "capacity_busy", data: {} }
+    f.state.response.request.resources = ["changed while waiting"]
+    return methods.invocation(...args)
+  } })
+  assert.equal(await readPendingInvocation(f.client, scope, request(), new AbortController().signal), undefined)
+  assert.equal(attempts, 2, "Invalid identity is not retried as contention")
+  assert.deepEqual(f.calls, ["capture"])
+})
+
 test("argument rewrites, late permission mutation and companion replacement reject the result", async () => {
   for (const change of ["arguments", "permission", "epoch"] as const) {
     const f = fixture()

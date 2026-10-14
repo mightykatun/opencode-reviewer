@@ -5,6 +5,7 @@ import { bindHostInvocation } from "./host-invocation.js"
 import { loadHostConversationContext, type HostConversationContext } from "./host-context.js"
 import { withDeadline } from "./deadline.js"
 import { transportOwnership } from "./transport-ownership.js"
+import { readCompanion } from "./companion-read.js"
 import type { HostInvocation, HostRequestSnapshot, HostScope } from "./host-types.js"
 
 export interface HostInvocationRead {
@@ -23,7 +24,7 @@ export async function preparePendingInvocation(client: OpenCodeClient, snapshot:
   signal.throwIfAborted()
   const owned = <T>(work: Promise<T>) => transportOwnership(signal)?.track(work) ?? work
   const options = { location: scope.location, signal }
-  const raw = await owned(client.rpc(companionRpc).invocation({ ...scope, sessionID: request.sessionID, requestID: request.id }, options))
+  const raw = await readCompanion(signal, () => client.rpc(companionRpc).invocation({ ...scope, sessionID: request.sessionID, requestID: request.id }, options))
   signal.throwIfAborted()
   const result = readHostEnvelope(raw, { request: hostJSONBytes, invocation: hostJSONBytes })
   if (!result) return

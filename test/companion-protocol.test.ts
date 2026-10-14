@@ -1,7 +1,16 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { readHandshake } from "../src/companion-protocol.js"
+import { companionRpc, readHandshake } from "../src/companion-protocol.js"
 import { localStateRoot } from "../src/local-state.js"
+
+test("read RPC methods declare capacity_busy independently from scope errors and nullable evidence", () => {
+  const schema = { type: "object", properties: {}, additionalProperties: false }
+  assert.deepEqual(companionRpc.methods.invocation.errors.capacity_busy, schema)
+  assert.deepEqual(companionRpc.methods.evidence.errors.capacity_busy, schema)
+  assert.deepEqual(companionRpc.methods.invocation.errors.scope, schema)
+  assert.deepEqual(companionRpc.methods.evidence.errors.scope, schema)
+  assert.deepEqual(Object.keys(companionRpc.methods.handshake.errors), ["scope"])
+})
 
 test("companion handshake rejects another host protocol/location/workspace and retains an owned copy", () => {
   const location = { directory: "/server/project", workspaceID: "workspace-a" }

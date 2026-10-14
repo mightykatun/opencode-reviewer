@@ -23,12 +23,12 @@ inventory bounds and add capacity coverage rather than removing safety limits.
   - [x] Preserve uncertain-write tombstones across disappearance/reappearance.
   - [x] Test uncertain/rejected acknowledgement, confirmation timeout and exact-event contrasts.
   - [x] Verify controller/fast-mode/native transport tests and typecheck; commit.
-- [ ] Phase 2: Recover temporary companion contention.
-  - [ ] Distinguish capacity exhaustion from invalid/missing evidence.
-  - [ ] Bound waiting/recovery within the original deadline and physical ownership.
-  - [ ] Test four-request real-companion fanout, shared contention, cancellation and invalid data.
-  - [ ] Add aggregate permission-inventory capacity regression coverage without raising limits.
-  - [ ] Verify companion/evidence/admission/permission tests and typecheck; commit.
+- [x] Phase 2: Recover temporary companion contention.
+  - [x] Distinguish capacity exhaustion from invalid/missing evidence.
+  - [x] Bound waiting/recovery within the original deadline and physical ownership.
+  - [x] Test four-request real-companion fanout, shared contention, cancellation and invalid data.
+  - [x] Add aggregate permission-inventory capacity regression coverage without raising limits.
+  - [x] Verify companion/evidence/admission/permission tests and typecheck; commit.
 - [ ] Phase 3: Fix fallback connection handling and question deduplication.
   - [ ] Preserve observed startup marker independently of companion success.
   - [ ] Share exact initial-echo versus reconnect fencing across runtime compositions.
@@ -72,3 +72,15 @@ Record commands, test counts and exact runtime fixture results here after each p
   `.runtime/runtime-run-8SDqhL/results.json` records exit 0.
   Fresh advisory reviews after read-only disappearance remain allowed; tombstones
   prevent additional approval preparation/writes, not advisory reporting.
+- Phase 1 core command: `npx tsx --test --test-concurrency=2 test/controller-native-approval.test.ts test/fast-mode.test.ts test/approval-transaction.test.ts test/host-permissions.test.ts`.
+- Phase 2: `capacity_busy` is a declared read-only RPC error. Only that rejection
+  retries, sequentially, at bounded 50 ms boundaries within the original budget.
+  Missing/invalid evidence stays terminal, and both physical server slots remain owned.
+  Focused source selection passed 92 tests after deterministic timing refinements;
+  expanded selection passed 396 tests. Typecheck, build and diff check passed.
+  Commands/results are in `.runtime/phase2-timing-focused-tests.log`,
+  `.runtime/phase2-expanded-tests.log`, `.runtime/phase2-timing-typecheck.log`
+  and `.runtime/phase2-timing-build.log`.
+  Focused command: `npx tsx --test --test-concurrency=2 test/companion*.test.ts test/host-reader.test.ts test/host-evidence-reader.test.ts test/host-evaluate.test.ts test/host-permissions.test.ts test/review-admission.test.ts`.
+  Real TUI `smoke-v2-review.mjs normal-tool` passed on OpenCode 2.0.29 in 15,134 ms;
+  `.runtime/runtime-run-oOju7h/results.json` records exit 0.
