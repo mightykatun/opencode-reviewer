@@ -12,8 +12,7 @@ export interface Config extends Limits, NotificationConfig {
   reviewBash: boolean
   reviewEdits: boolean
   reviewSkills: boolean
-  reviewMcp: boolean
-  reviewCustomTools: boolean
+  reviewTools: boolean
   reviewExternalDirectories: boolean
   autoApprove: boolean
   fastMode: boolean
@@ -25,10 +24,10 @@ export interface Config extends Limits, NotificationConfig {
 }
 
 export type ReviewOptions = Pick<Config, "reviewBash" | "reviewEdits"> & Partial<Pick<Config,
-  "reviewSkills" | "reviewMcp" | "reviewCustomTools" | "reviewExternalDirectories">>
+  "reviewSkills" | "reviewTools" | "reviewExternalDirectories">>
 
 export function parseConfig(options: Record<string, unknown> = {}): Config {
-  const keys = new Set(["baseURL", "model", "apiKey", "apiKeyEnv", "instructions", "stream", "reviewBash", "reviewEdits", "reviewSkills", "reviewMcp", "reviewCustomTools", "reviewExternalDirectories", "autoApprove", "fastMode", "extraCareful", "autoApproveDelaySeconds", "formatRetries", "timeoutMs", "maxOutputTokens", "maxFiles", "maxEvidenceBytes", "notify", "notifySound", "notificationSoundDirectory", "staleReminderSeconds", "notifications"])
+  const keys = new Set(["baseURL", "model", "apiKey", "apiKeyEnv", "instructions", "stream", "reviewBash", "reviewEdits", "reviewSkills", "reviewTools", "reviewExternalDirectories", "autoApprove", "fastMode", "extraCareful", "autoApproveDelaySeconds", "formatRetries", "timeoutMs", "maxOutputTokens", "maxFiles", "maxEvidenceBytes", "notify", "notifySound", "notificationSoundDirectory", "staleReminderSeconds", "notifications"])
   for (const key of Object.keys(options)) if (!keys.has(key)) throw new Error(`Unknown opencode-reviewer setting: ${key}`)
   const text = (name: string, optional = false): string | undefined => {
     const value = options[name]
@@ -69,8 +68,8 @@ export function parseConfig(options: Record<string, unknown> = {}): Config {
     stream: boolean("stream", false),
     reviewBash: boolean("reviewBash"), reviewEdits: boolean("reviewEdits"),
     reviewSkills: boolean("reviewSkills"),
-    reviewMcp: boolean("reviewMcp", false), reviewCustomTools: boolean("reviewCustomTools", false),
-    reviewExternalDirectories: boolean("reviewExternalDirectories", false),
+    reviewTools: boolean("reviewTools"),
+    reviewExternalDirectories: boolean("reviewExternalDirectories"),
     autoApprove: boolean("autoApprove", false),
     fastMode: boolean("fastMode", false),
     extraCareful: boolean("extraCareful"),

@@ -11,7 +11,7 @@ const location = { directory: "/project" }
 const entry = { id: "review", name: "Review", path: "/project/.opencode/skills/review.md", content: "Summarize the requested changes.\n" }
 const catalog = (data: unknown = [entry], scope: unknown = location) => ({ location: scope, data })
 const options: HostEvidenceOptions = { reviewBash: false, reviewEdits: false, reviewExternalDirectories: false,
-  reviewSkills: true, reviewMcp: true, reviewCustomTools: true, maxFiles: 1, maxEvidenceBytes: 131072 }
+  reviewSkills: true, reviewTools: true, maxFiles: 1, maxEvidenceBytes: 131072 }
 function owned() {
   const value = nativeInvocation("skill", { id: entry.id }, undefined, location.directory, [entry.id])
   const snapshot = snapshotRequest({ id: "request", sessionID: value.invocation.sessionID, action: "skill", resources: [entry.id],
@@ -70,7 +70,9 @@ test("disabled skills and non-native origins skip registry reads; missing instru
   const request = snapshotRequest({ id: "request", sessionID: current.invocation.sessionID, action: "skill", resources: [entry.id],
     source: { type: "tool", messageID: current.invocation.assistantID, id: current.invocation.callID } }, current.snapshot.scope)!
   const custom = { ...current, snapshot: request, invocation: { ...current.invocation, tool: "custom_skill" } }
-  assert.equal((await collectHostEvidence(custom, options, signal(), noFiles(), forbidden)).status, "unsupported")
+  const generic = await collectHostEvidence(custom, options, signal(), noFiles(), forbidden)
+  assert.equal(generic.status, "ready")
+  if (generic.status === "ready") assert.equal(generic.evidence.kind, "tool", "Custom skill-like names do not imply native skill origin")
   assert.equal((await collectHostEvidence(current, options, signal(), noFiles())).status, "unsupported")
   assert.equal((await collectHostEvidence(current, options, signal(), noFiles(), async () => catalog([]))).status, "unsupported")
 })

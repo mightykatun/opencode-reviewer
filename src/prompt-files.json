@@ -3,6 +3,7 @@
   "edit": "prompts/EDIT-REVIEW-PROMPT.md",
   "external-directory": "prompts/EXTERNAL-DIRECTORY-REVIEW-PROMPT.md",
   "skill": "prompts/SKILL-REVIEW-PROMPT.md",
+  "tool": "prompts/TOOL-REVIEW-PROMPT.md",
   "extraCareful": "prompts/EXTRA-CAREFUL-REVIEW-PROMPT.md",
   "contract": "contracts/PERMISSION-REVIEW-CONTRACT.md",
   "correction": "contracts/PERMISSION-REVIEW-CORRECTION.md"

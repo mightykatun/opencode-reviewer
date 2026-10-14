@@ -19,7 +19,7 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  36-case production/foundation selection available in manual extended checks,
+  38-case production/foundation selection available in manual extended checks,
   including history, statistics, approval notifications and explicitly classified
   synthetic probes.
   `npm run test:runtime` selects `--profile v2-acceptance`, which currently selects
@@ -79,6 +79,7 @@ All commands below use the installed five-file archive and production runtime.
 | --- | --- |
 | Initial connection / delayed native marker echo | `node scripts/test-runtime.mjs smoke-v2-lifecycle.mjs cold-startup` |
 | Native skill loading / fast skill approval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-skill` / `fast-skill` |
+| Shared registered-tool review / fast approval (local MCP) | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-tool` / `fast-tool` |
 | Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
 | Saved history and statistics | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history` |
 | Default HOME with writable host state | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-default-home` |
@@ -198,7 +199,8 @@ existing user directories.
   commands after evidence capture. This is an installation assumption, not public
   host provenance or an enforceable registry seal. Preserve exact scope, source,
   native-priority, same-conversation eligibility and once-only write checks. Do not
-  extend this assumption to unavailable skill/MCP/custom origin or catalog evidence.
+  extend this native-tool assumption to unavailable skill/MCP/custom origin or
+  catalog evidence; registered tools use the separate accepted assumption below.
 - On 2026-10-14 the user explicitly selected automatic native skill review using
   the current scoped registered main instructions, accepting that the selected
   definition stays unchanged while its permission is pending. This bounded
@@ -207,7 +209,8 @@ existing user directories.
   missing, ambiguous or oversized complete main instructions stay manual. Read the
   registry only through the scoped server companion, never fresh SKILL.md files.
   Supporting files are optional and currently omitted factually. Do not add a
-  speculative revision-guard subsystem or extend this assumption to MCP/custom tools.
+  speculative revision-guard subsystem. MCP/custom tools use their separately
+  accepted registered-definition assumption, not this native skill assumption.
 - The user approved the shared server companion plus global CLI setup, factual
   omission of unavailable optional immediate delegation, and retention of history
   when offline deletion ownership is unproven. Preserve root intent and mandatory
@@ -355,9 +358,15 @@ existing user directories.
   pending-definition stability assumption. The companion reads the current scoped
   registry by exact ID; full main instructions and exact permission scope are
   mandatory. No fresh file reads, registry mutations or catalog revision system.
-  MCP/custom-tool collection remains unsupported and manual regardless of switches.
-  Do not guess MCP identity, import executors, call MCP servers, or fill missing
-  mandatory origin/instructions with optional context.
+  On 2026-10-14 the user accepted shared registered-tool review for MCP/custom
+  calls, assuming current scoped registered definitions remain unchanged while
+  approval is pending and accurately describe behavior. The user subsequently
+  selected category `tool`, prompt `TOOL-REVIEW-PROMPT.md` and `reviewTools`,
+  replacing reviewMcp/reviewCustomTools without aliases. All review categories
+  default enabled. Exact call linkage, scope and arguments remain mandatory;
+  descriptions, schemas and registry availability are optional evidence. Send
+  factual omission reasons to the LLM, which decides Safe/Unsafe. Never infer
+  origin, import/invoke executors or call MCP servers for evidence.
 - Preserve exact mandatory scope/arguments or fail analysis. Omit whole optional
   files/diffs/definitions with factual reasons; do not truncate commands, invent
   missing line counts or synthesize ratings. Partial evidence alone is not an

@@ -143,7 +143,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     onApproval: fact => { records.history.approval(fact); notifications?.approval(fact) },
     candidate: request => !!request.source && ((request.action === "shell" && config.reviewBash)
       || (request.action === "edit" && config.reviewEdits) || (request.action === "external_directory" && config.reviewExternalDirectories)
-      || (request.action === "skill" && config.reviewSkills) || config.reviewMcp || config.reviewCustomTools),
+      || (request.action === "skill" && config.reviewSkills) || config.reviewTools),
     nativeApproval: {
       list: async signal => (await owned(transport.listScope(signal))).map(value => value.request),
       once: (request, signal, dispatch) => {

@@ -12,7 +12,7 @@ import { TransportOwnership, bindTransportOwnership } from "../src/transport-own
 import { withDeadline } from "../src/deadline.js"
 
 const options: HostEvidenceOptions = { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
-  reviewMcp: true, reviewCustomTools: true, reviewSkills: true, maxFiles: 6, maxEvidenceBytes: 131072 }
+  reviewTools: true, reviewSkills: true, maxFiles: 6, maxEvidenceBytes: 131072 }
 const location = { directory: "/server/project" }, project = { id: "project", directory: "/server", canonical: "/server" }
 const source = { type: "tool", messageID: "assistant", id: "call" }
 const request = { id: "request", sessionID: "session", action: "edit", resources: ["target.txt"], source,

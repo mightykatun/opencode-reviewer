@@ -2,7 +2,7 @@
 
 Reviews pending permissions in the [OpenCode](https://github.com/anomalyco/opencode) sidebar using a separate LLM. Reviews
 native shell commands, file edits, skill loading, and external-directory access.
-MCP and custom-tool requests currently remain manual.
+MCP and custom tools share a tool-review category, with registered descriptions and JSON Schemas included when available.
 Supports streaming explanations, saved report history and stats, auto-approval, and Linux
 desktop notifications (Gnome) with distinct sounds.
 
@@ -40,9 +40,8 @@ There is no project-local CLI configuration. OpenCode loads the
         "reviewBash": true,
         "reviewEdits": true,
         "reviewSkills": true,
-        "reviewMcp": false,
-        "reviewCustomTools": false,
-        "reviewExternalDirectories": false,
+        "reviewTools": true,
+        "reviewExternalDirectories": true,
         "autoApprove": false,
         "fastMode": false,
         "extraCareful": true,
@@ -114,9 +113,8 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `reviewBash` | boolean | `true` | Review native `shell` permissions. The option keeps its existing name. |
 | `reviewEdits` | boolean | `true` | Review native `edit`, `write` and `patch` tools, which use the `edit` permission action. |
 | `reviewSkills` | boolean | `true` | Review native skill loading using the exact requested ID and full currently registered main instructions. Assumes the selected definition stays unchanged while permission is pending. Missing or ambiguous instructions remain manual. |
-| `reviewMcp` | boolean | `false` | MCP-review category switch. V2 MCP collection is currently unsupported; enabling this does not supply missing origin/catalog evidence or permit automatic approval. |
-| `reviewCustomTools` | boolean | `false` | Custom-tool review category switch. V2 custom-tool collection is currently unsupported; these requests remain manual. |
-| `reviewExternalDirectories` | boolean | `false` | Review directory access independently of operation-review switches. Directory approval can resume the operation without another prompt. |
+| `reviewTools` | boolean | `true` | Review other tools, including MCP and custom tools, using `TOOL-REVIEW-PROMPT.md`. Exact call linkage, arguments and permission scope are required. Descriptions and JSON Schemas are optional; missing evidence is explained to the LLM, which decides Safe/Unsafe. Safe reviews can use normal or fast automatic approval. |
+| `reviewExternalDirectories` | boolean | `true` | Review directory access independently of operation-review switches. Directory approval can resume the operation without another prompt. |
 | `autoApprove` | boolean | `false` | Allow Safe reviews once automatically. Normally waits for completion, validation and the countdown. Works throughout the current conversation, including subagent browsing and hidden/covered reports. Home, dashboards, unrelated conversations and native permission decision editing wait without cancellation. |
 | `fastMode` | boolean | `false` | Requires `autoApprove: true`. Approve an eligible, front-of-queue request as soon as a Safe rating is parsed, bypassing the countdown. Respects `stream`; with `stream: false`, waits for the complete validated response. Finish the report and save it in the background after approval. |
 | `extraCareful` | boolean | `true` | Include extra-careful guidance when `autoApprove` is enabled. Setting `false` omits that guidance without disabling automatic approval. |
@@ -169,9 +167,20 @@ or oversized main instructions remain manual. Supporting files and scripts are n
 inspected; their omission alone does not prevent review. Allowing a skill loads its
 instructions, not a blanket grant for later tool actions.
 
-MCP and custom-tool reviews remain unsupported in V2 because required origin and
-catalog evidence is unavailable. Their switches do not turn those requests into
-Safe ratings or automatic approvals.
+Tool reviews use the exact effective tool ID, captured arguments and pending
+permission scope. Current server-side registered names, descriptions and input
+JSON Schemas are included when available. Missing, duplicate, oversized,
+unreadable or unsupported definitions are omitted with factual reasons sent to
+the LLM. The LLM decides whether the remaining evidence justifies Safe or Unsafe;
+missing optional evidence does not itself force manual approval.
+
+This assumes any supplied definition stays unchanged while approval is pending
+and accurately describes behavior. The reviewer does not inspect executors or
+remote implementations, infer origin from names, or claim an invocation-time
+definition snapshot. Ambiguous call linkage still remains manual because the
+reviewer cannot identify the operation being approved. Saved reports use the tool
+category. All review categories default to enabled; `autoApprove` still defaults
+to false. `reviewTools` replaces `reviewMcp` and `reviewCustomTools`.
 
 Code Mode and its tool search stay enabled. Native tool calls can be reviewed when
 the reviewer can match them exactly to their permission requests. Nested calls

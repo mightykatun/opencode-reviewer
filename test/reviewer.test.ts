@@ -65,15 +65,14 @@ test("config defaults, URL handling, credentials, and invalid settings", () => {
   assert.equal(cfg.reviewBash, true)
   assert.equal(cfg.reviewEdits, true)
   assert.equal(cfg.reviewSkills, true)
-  assert.equal(cfg.reviewMcp, false)
-  assert.equal(cfg.reviewCustomTools, false)
-  assert.equal(cfg.reviewExternalDirectories, false)
+  assert.equal(cfg.reviewTools, true)
+  assert.equal(cfg.reviewExternalDirectories, true)
   assert.equal(cfg.autoApprove, false)
   assert.equal(cfg.fastMode, false)
   assert.equal(cfg.extraCareful, true)
   assert.equal(cfg.stream, false)
   assert.equal(cfg.autoApproveDelaySeconds, 15)
-  for (const override of [ { baseURL: "file:///tmp" }, { baseURL: "https://secret@example.org" }, { model: "" }, { apiKeyEnv: "bad name" }, { timeoutMs: 0 }, { formatRetries: -1 }, { formatRetries: 1.2 }, { retries: 3 } ]) {
+  for (const override of [ { baseURL: "file:///tmp" }, { baseURL: "https://secret@example.org" }, { model: "" }, { apiKeyEnv: "bad name" }, { timeoutMs: 0 }, { formatRetries: -1 }, { formatRetries: 1.2 }, { retries: 3 }, { reviewMcp: true }, { reviewCustomTools: true } ]) {
     assert.throws(() => parseConfig({ baseURL: "http://localhost/v1", model: "m", ...override }))
   }
 })
@@ -256,8 +255,8 @@ test("review switches are independent strict booleans with enabled defaults", ()
     assert.equal(config.reviewBash, reviewBash)
     assert.equal(config.reviewEdits, reviewEdits)
   }
-  for (const name of ["reviewBash", "reviewEdits", "reviewSkills", "reviewMcp", "reviewCustomTools", "reviewExternalDirectories", "autoApprove", "fastMode", "extraCareful", "stream"] as const) {
-    assert.equal(parseConfig({ ...options, [name]: undefined })[name], name === "reviewBash" || name === "reviewEdits" || name === "reviewSkills" || name === "extraCareful")
+  for (const name of ["reviewBash", "reviewEdits", "reviewSkills", "reviewTools", "reviewExternalDirectories", "autoApprove", "fastMode", "extraCareful", "stream"] as const) {
+    assert.equal(parseConfig({ ...options, [name]: undefined })[name], name.startsWith("review") || name === "extraCareful")
     for (const value of [true, false]) assert.equal(parseConfig({ ...options, [name]: value })[name], value)
     for (const value of [null, 0, 1, "true", "false", {}, []]) {
       assert.throws(() => parseConfig({ ...options, [name]: value }), { message: `${name} must be a boolean` })

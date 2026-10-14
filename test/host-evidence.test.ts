@@ -5,10 +5,93 @@ import type { HostInvocationRead } from "../src/host-reader.js"
 import { readHostInvocation, snapshotRequest } from "../src/host-request.js"
 import { FileAccess, type FileIO } from "../src/file-access.js"
 import { withDeadline } from "../src/deadline.js"
+import { review } from "../src/reviewer.js"
+import { parseConfig } from "../src/config.js"
 
 const options: HostEvidenceOptions = { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
-  reviewSkills: true, reviewMcp: true, reviewCustomTools: true, maxFiles: 6, maxEvidenceBytes: 131072 }
+  reviewSkills: true, reviewTools: true, maxFiles: 6, maxEvidenceBytes: 131072 }
 const signal = () => new AbortController().signal
+
+test("missing tool evidence reaches the LLM, whose Safe or Unsafe decision is preserved", async () => {
+  const call = owned("account_lookup", { account: "public" }, { ...nativeRequest, action: "account_lookup", resources: ["*"] })
+  const files = io()
+  const base = { id: "account_lookup", name: "lookup", description: "x".repeat(140000), input: { type: "object", properties: {} } }
+  for (const tools of [undefined, async () => { throw new Error("private registry error") },
+    async () => ({ location, data: [base] }), async () => ({ location, data: [{ ...base, description: "Public lookup", input: { "~standard": {} } }] })]) {
+    const result = await collectHostEvidence(call, options, signal(), files.access, undefined, tools)
+    assert.equal(result.status, "ready")
+    if (result.status !== "ready") continue
+    assert.ok(result.evidence.limitations.some(note => /unavailable|omitted/.test(note)))
+    assert.ok(readHostOperationEvidence((await collectHostOperation(call, options, signal(), files.access, undefined, tools) as { evidence: unknown }).evidence, call, options, signal()))
+    if (result.evidence.kind !== "tool") assert.fail("Expected tool evidence")
+    if (result.evidence.definition?.description === undefined && result.evidence.definition) {
+      assert.deepEqual(result.evidence.definition.input, base.input, "Oversized descriptions do not suppress usable schemas")
+    }
+    for (const safe of [true, false]) {
+      const response = await review(result.evidence, parseConfig({ baseURL: "http://localhost/v1", model: "reviewer" }), signal(), {
+        fetcher: async (_url, init) => {
+          const body = JSON.parse(String(init?.body))
+          assert.match(body.messages[0].content, /Missing descriptions or schemas do not automatically mean Unsafe/)
+          const evidence = JSON.parse(body.messages[1].content)
+          assert.deepEqual(evidence.operation.input, call.invocation.input)
+          assert.deepEqual(evidence.permission.resources, ["*"])
+          assert.ok(evidence.limitations.some((note: string) => /unavailable|omitted/.test(note)))
+          assert.doesNotMatch(body.messages[1].content, /private registry error/)
+          return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ safe, desc: "Assessment based on available evidence." }) }, finish_reason: "stop" }] }))
+        },
+      })
+      assert.equal(response.safe, safe)
+    }
+  }
+  const parent = new AbortController()
+  await assert.rejects(collectHostOperation(call, options, parent.signal, files.access, undefined, async () => {
+    parent.abort(); throw new Error("not an optional omission")
+  }), { name: "AbortError" })
+  assert.deepEqual(files.calls, [])
+})
+
+test("registered tools retain exact definition, arguments and scope without inspecting executors", async () => {
+  const call = owned("acme_lookup", { account: "public" }, { ...nativeRequest, action: "lookup", resources: ["public"] })
+  const definition = { id: "acme_lookup", name: "lookup", description: "Look up a public account.",
+    input: { type: "object", properties: { account: { type: "string" } }, required: ["account"] } }
+  const entry = { ...definition, get execute() { throw new Error("must never read executor") } }
+  const files = io()
+  const catalog = async () => ({ location, data: [entry] })
+  for (const flags of [{ reviewTools: true }]) {
+    const selected = { ...options, ...flags }
+    const result = await collectHostOperation(call, selected, signal(), files.access, undefined, catalog)
+    assert.equal(result.status, "ready")
+    if (result.status !== "ready") continue
+    assert.equal(result.evidence.kind, "tool")
+    if (result.evidence.kind !== "tool") continue
+    assert.deepEqual(result.evidence.definition, definition)
+    assert.deepEqual(result.evidence.operation.input, call.invocation.input)
+    assert.ok(readHostOperationEvidence(result.evidence, call, selected, signal()))
+    assert.equal(attachHostConversation(call, result.evidence).userPrompt, call.conversation.userPrompt)
+    assert.equal(readHostOperationEvidence({ ...result.evidence, definition: { ...definition, id: "other" } }, call, selected, signal()), undefined)
+    assert.equal(readHostOperationEvidence({ ...result.evidence, operation: { input: {}, inputStatus: "changed" } }, call, selected, signal()), undefined)
+    assert.equal(readHostOperationEvidence(result.evidence, call, { ...selected, maxEvidenceBytes: 10 }, signal()), undefined)
+  }
+  assert.deepEqual(files.calls, [])
+  assert.equal((await collectHostOperation(call, { ...options, reviewTools: false }, signal(), files.access, undefined,
+    async () => { throw new Error("disabled catalog must not be read") })).status, "disabled")
+  for (const data of [[], [entry, entry], [{ ...definition, description: "" }], [{ ...definition, input: { "~standard": {} } }],
+    [{ ...definition, input: { type: "object", unsupported: () => {} } }],
+    [new Proxy(entry, { get() { throw new Error("proxy must not run") } })],
+    [entry, { get id() { throw new Error("getter must not run") } }]]) {
+    const result = await collectHostOperation(call, options, signal(), files.access, undefined, async () => ({ location, data }))
+    assert.equal(result.status, "ready")
+    if (result.status === "ready") {
+      assert.ok(result.evidence.limitations.some(note => /unavailable|omitted/.test(note)))
+      assert.ok(readHostOperationEvidence(result.evidence, call, options, signal()))
+    }
+  }
+  assert.equal((await collectHostOperation(call, options, signal(), files.access, undefined,
+    async () => ({ location: { directory: "/wrong" }, data: [entry] }))).status, "ready")
+  await assert.rejects(collectHostOperation(call, { ...options, maxEvidenceBytes: 10 }, signal(), files.access, undefined, catalog))
+  // Native category switches cannot be bypassed by the generic path.
+  assert.equal((await collectHostOperation(shell("echo safe"), { ...options, reviewBash: false }, signal(), files.access, undefined, catalog)).status, "disabled")
+})
 
 // Offline literals copied from the pinned 2.0.26 observation at
 // .runtime/v2-effective-evidence-edit-preview-HpMili/results.json.
@@ -396,13 +479,17 @@ test("category switches gate before files and remain independent; unknown source
   for (const [tool, action] of [["custom_shell", "shell"], ["mcp_server_tool", "shell"], ["execute", "shell"],
     ["bash", "shell"], ["apply_patch", "edit"], ["custom_read", "external_directory"]]) {
     const result = await collectHostEvidence(owned(tool, {}, { ...externalRequest, action }), options, signal(), files.access)
-    assert.equal(result.status, "unsupported", `${tool}/${action}`)
+    assert.equal(result.status, tool === "execute" ? "unsupported" : "ready", `${tool}/${action}`)
+    if (result.status === "ready") {
+      assert.equal(result.evidence.kind, "tool", "Native-looking actions never imply native tool origin")
+      assert.ok(result.evidence.limitations.includes("Tool definition unavailable: scoped registry reader unavailable."))
+    }
   }
   const skill = owned("skill", { id: "opencode" }, { ...externalRequest, action: "skill", resources: ["opencode"] })
   assert.equal((await collectHostEvidence(skill, options, signal(), files.access)).status, "unsupported",
     "Missing current registry instructions remain manual")
   assert.deepEqual(files.calls, [])
-  const edit = await ready(owned(), { ...options, reviewBash: false, reviewExternalDirectories: false, reviewSkills: false, reviewMcp: false, reviewCustomTools: false }, files.access)
+  const edit = await ready(owned(), { ...options, reviewBash: false, reviewExternalDirectories: false, reviewSkills: false, reviewTools: false }, files.access)
   assert.equal(edit.kind, "edit")
   const directory = await ready(owned("shell", { command: "python3 task.py" }, externalRequest), { ...options, reviewBash: false }, files.access)
   assert.equal(directory.kind, "external-directory")

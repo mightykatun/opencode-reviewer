@@ -58,7 +58,13 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
         signal.throwIfAborted()
         if (session.id !== ids.sessionID || session.location.directory !== location.directory) return null
         const result = collectOptions ? await collectHostOperation({ snapshot, invocation }, collectOptions, signal, files,
-          signal => ownership.track(context.skill.list({ location }, { signal }))) : undefined
+          signal => ownership.track(context.skill.list({ location }, { signal })),
+          async signal => {
+            signal.throwIfAborted()
+            const data = await ownership.track(context.tool.list())
+            signal.throwIfAborted()
+            return { location, data }
+          }) : undefined
         const final = snapshotRequest(serverRequestJSON(await ownership.track(context.permission.get(ids, options))), scope)
         signal.throwIfAborted()
         if (!final || !sameRequest(snapshot, final) || !captures.read(ids.sessionID, source.assistantID, source.id)) return null

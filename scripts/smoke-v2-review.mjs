@@ -9,6 +9,7 @@
 // fast-notifications (injected desktop boundary, retained/live and exact history clicks).
 // normal-edit / normal-directory-edit (one native write; distinct directory/edit stages).
 // normal-skill / fast-skill (registered main instructions and actual native skill loading).
+// normal-tool / fast-tool (real local MCP server, shared registered-tool review).
 // Build first. Do not execute a host until the main session grants approval.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
@@ -47,11 +48,17 @@ function rpcDefinition() {
   }, events: {} }
 }
 
-// Title interception suppresses auxiliary model calls only. Native tools, inputs,
-// context, executors, HTTP requests and permission decisions are never modified.
+// Title interception suppresses auxiliary model calls. Registered-tool cases
+// advertise one genuine MCP tool directly through its public Code Mode option.
+// Executors, descriptions, schemas, inputs and permission decisions are unchanged.
 async function serverSetup(ctx) {
   const registration = await ctx.session.hook("title", event => { event.result = "V2 production review fixture" })
-  return () => registration.dispose()
+  // Advertise this fixture's real MCP tool directly while keeping native Code
+  // Mode installed. Do not replace its executor, description, schema or inputs.
+  const advertised = fixture.registeredTool ? await ctx.tool.transform(editor => {
+    editor.update("fixture_lookup", tool => { tool.options = { ...tool.options, codemode: false } })
+  }) : undefined
+  return async () => { await advertised?.dispose(); await registration.dispose() }
 }
 
 async function monitorSetup(ctx) {
@@ -348,7 +355,8 @@ const visibilityLoss = ["normal-hide", "normal-dialog", "normal-resize"].include
 const hiddenComplete = scenario === "normal-hidden-complete"
 const routeWait = scenario === "normal-route-wait", decisionCase = scenario.endsWith("-decision")
 const editCase = ["normal-edit", "normal-directory-edit"].includes(scenario)
-const skillCase = ["normal-skill", "fast-skill"].includes(scenario)
+const registeredTool = ["normal-tool", "fast-tool"].includes(scenario)
+const skillCase = registeredTool || ["normal-skill", "fast-skill"].includes(scenario)
 const directoryEditCase = scenario === "normal-directory-edit"
 const notificationCase = scenario === "fast-notifications", savedCase = automatic && scenario !== "normal-cancel"
 const requestCount = coverCase || directoryEditCase ? 2 : 1
@@ -407,9 +415,11 @@ const editDescriptions = editActions.map(action => action === "edit"
   ? "V2 native edit report.\n\nThe proposed diff replaces one isolated marker."
   : "V2 directory access report.\n\nAllow access to the isolated outside-project target for the pending write; edit contents are assessed separately.")
 const skillID = "reviewer-fixture", skillPath = path.join(project, ".opencode/skills", skillID + ".md")
-const skillContent = "Summarize the user's requested changes in one short paragraph. Do not run commands or edit files.\n"
-const skillDescription = "V2 native skill report.\n\nThe main instructions request a bounded summary."
-const prompt = skillCase ? `Load the ${skillID} skill once with the native skill tool.`
+const skillContent = registeredTool ? "FIXTURE_PUBLIC_ACCOUNT" : "Summarize the user's requested changes in one short paragraph. Do not run commands or edit files.\n"
+const skillDescription = registeredTool ? "V2 registered tool report.\n\nThe tool returns a fixed public account summary."
+  : "V2 native skill report.\n\nThe main instructions request a bounded summary."
+const prompt = registeredTool ? "Look up the public account once using fixture_lookup."
+  : skillCase ? `Load the ${skillID} skill once with the native skill tool.`
   : editCase ? `Use native write once to replace ${writeTarget} with exactly V2_EDIT_AFTER followed by a newline.`
   : "Run python3 fixture.py once in inputs. It appends the isolated V2_REVIEW_EXECUTED marker and prints it."
 const script = 'from pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write("V2_REVIEW_EXECUTED\\n")\nprint("V2_REVIEW_EXECUTED")\n'
@@ -421,7 +431,8 @@ const keyboardDescription = description + "\n\n" + Array.from({ length: 80 }, (_
 const reportDescription = index => skillCase ? skillDescription : editCase ? editDescriptions[index - 1] : keyboardMouseOffCase && index === 2 ? keyboardDescription : description
 const assessment = { safe: true, desc: editCase ? editDescriptions.at(-1) : description }
 const reviewUsage = { prompt_tokens: 23, completion_tokens: 11, total_tokens: 34 }
-const toolCall = skillCase ? { id: "v2-production-review-skill", name: "skill", input: { id: skillID } }
+const toolCall = registeredTool ? { id: "v2-production-review-registered", name: "fixture_lookup", input: { account: "public" } }
+  : skillCase ? { id: "v2-production-review-skill", name: "skill", input: { id: skillID } }
   : editCase ? { id: "v2-production-review-write", name: "write", input: { path: writeTarget, content: afterEdit } }
   : { id: "v2-production-review-shell", name: "shell", input: { command: "python3 fixture.py", workdir: "inputs" } }
 const publishers = new Map(), calls = [], errors = [], negativeWindows = []
@@ -820,10 +831,11 @@ const releaseNativeCall = () => {
 const limits = [
    "Behavioral review activates through public CLI configuration only after an owned prompt-free session's exact genuine birth and deletion are observed on the native data stream. This is not pre-connection startup acceptance; the separate lifecycle fixture checks startup. No runtime reconnect policy is overridden.",
      "One installed default archive with separate server companion and global CLI configuration. The independent monitor never imports production code or replies to permissions.",
-  `One standalone Linux OpenCode V2 verification host, ${nativeCallCount} direct native ${skillCase ? "skill" : editCase ? "write" : "shell"} call(s), ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal, disconnect or tab-switch acceptance.`,
+   `One standalone Linux OpenCode V2 verification host, ${nativeCallCount} direct ${registeredTool ? "local MCP" : skillCase ? "native skill" : editCase ? "native write" : "native shell"} call(s), ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal, disconnect or tab-switch acceptance.`,
   "Mouse capture is explicitly configured only by the isolated fixture, never forced by production. UI changes use real native commands/navigation, keyboard choices or actual tmux resize; no synthesized paint, modes, hits or geometry. Individual cases do not imply full UI-matrix acceptance.",
   "Descendant cases navigate a real child while a root request is pending; they do not exercise descendant-owned native queue ordering. No disabled kinds or uncertain writes.",
-    skillCase ? "One direct native skill request with full scoped registry main instructions, an unchanged selected definition, one production once reply and actual native tool-result loading. Normal countdown or fast preview/remainder is observed, and read-only SQLite verifies the saved skill category, confirmed approval and usage totals. No supporting-file inspection, catalog-mutation guarantee, ambiguous nested call, live-provider judgment or multi-client acceptance."
+    registeredTool ? "One real local MCP request advertised directly with a public Code Mode option, a scoped registered definition (normal omits the oversized description and reports the reason), one production once reply, actual MCP result continuation, saved tool category and confirmed approval totals. No ambiguous nested call, remote implementation inspection or live-provider acceptance."
+    : skillCase ? "One direct native skill request with full scoped registry main instructions, an unchanged selected definition, one production once reply and actual native tool-result loading. Normal countdown or fast preview/remainder is observed, and read-only SQLite verifies the saved skill category, confirmed approval and usage totals. No supporting-file inspection, catalog-mutation guarantee, ambiguous nested call, live-provider judgment or multi-client acceptance."
       : editCase ? "One actual native write, exact direct source linkage and pending native diff. Outside-project access, when selected, automatically resumes that same write into a distinct edit permission. Each stage holds the real reviewer response, proves no mutation, paints a full normal countdown and receives one production once reply. Read-only SQLite proves per-stage accepted reports, qualifying resolutions, categories and both aggregate scopes. Production history opens through painted palette activation. No native edit/patch variant, formatter, descendant-owned queue, notification, multi-client or live-provider judgment acceptance."
       : routeWait ? "A started normal countdown survives native home, a public plugin dashboard and an unrelated session route, with no writes past its original deadline. Returning to its root resumes once without a new delay. Saved report and aggregates are verified."
       : decisionCase ? "Actual Right/Left native keyboard input selects Always then Once. Automatic approval waits without cancellation while Always is selected, then resumes with the original delay or fast preview semantics. No persistent native grant is submitted; saved automatic report is verified. Rejection editing is separately source-tested, not host-accepted here."
@@ -846,7 +858,7 @@ try {
     await mkdir(path.dirname(editTarget), { recursive: true })
     await writeFile(editTarget, beforeEdit)
   }
-  if (skillCase) {
+  if (skillCase && !registeredTool) {
     await mkdir(path.dirname(skillPath), { recursive: true })
     await writeFile(skillPath, `---\nname: Reviewer fixture\ndescription: Load the isolated review fixture instructions.\n---\n${skillContent}`)
   }
@@ -886,12 +898,21 @@ try {
         assert.equal(body.messages[1].role, "user")
         const evidence = JSON.parse(body.messages[1].content)
         if (skillCase) {
-          assert.match(body.messages[0].content, /permission\.action="skill"/)
-          assert.equal(evidence.kind, "skill"); assert.equal(evidence.tool, "skill")
+          assert.match(body.messages[0].content, registeredTool ? /pending tool operation/ : /permission\.action="skill"/)
+          assert.equal(evidence.kind, registeredTool ? "tool" : "skill"); assert.equal(evidence.tool, toolCall.name)
           assert.deepEqual(evidence.operation.input, toolCall.input)
-          assert.deepEqual(evidence.skill, { id: skillID, name: "Reviewer fixture", path: skillPath, content: skillContent })
+          if (registeredTool) {
+            assert.equal(evidence.definition.id, toolCall.name)
+            assert.equal(evidence.definition.input.properties.account.type, "string")
+            if (fast) assert.match(evidence.definition.description, /fixed public account summary/)
+            else {
+              assert.equal(evidence.definition.description, undefined, "Oversized optional description is omitted whole")
+              assert.ok(evidence.limitations.some(note => /Tool description omitted/.test(note)))
+            }
+            assert.equal(evidence.definition.execute, undefined)
+          } else assert.deepEqual(evidence.skill, { id: skillID, name: "Reviewer fixture", path: skillPath, content: skillContent })
           assert.equal(evidence.userPrompt, prompt)
-          assert.deepEqual(evidence.permission.resources, [skillID])
+          if (!registeredTool) assert.deepEqual(evidence.permission.resources, [skillID])
           assert.equal(evidence.files, undefined, "No supporting-file content inspection")
         } else if (editCase) {
           const action = editActions[reviewPOSTs - 1]
@@ -977,7 +998,7 @@ try {
   })
   await new Promise(resolve => modelServer.listen(0, "127.0.0.1", resolve))
   const origin = `http://127.0.0.1:${modelServer.address().port}`
-  const fixture = { initial, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase }
+  const fixture = { initial, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase, registeredTool }
   const observer = path.join(temp, "observer"), monitor = path.join(temp, "monitor")
   const reviewer = path.join(temp, "reviewer")
   await mkdir(reviewer)
@@ -998,15 +1019,27 @@ try {
   const prelude = helpers + '\nimport assert from "node:assert/strict"\n'
     + 'import {setTimeout as sleep} from "node:timers/promises"\nconst fixture=' + JSON.stringify(fixture) + "\n"
   await publish(path.join(observer, "package.json"), { name: "v2-review-title-observer", type: "module", exports: { ".": "./index.mjs" } })
-  await writeFile(path.join(observer, "index.mjs"), serverSetup + '\nexport default {id:"fixture.review.title",setup:serverSetup}\n')
+  await writeFile(path.join(observer, "index.mjs"), 'const fixture=' + JSON.stringify(fixture) + '\n' + serverSetup + '\nexport default {id:"fixture.review.title",setup:serverSetup}\n')
   await publish(path.join(monitor, "package.json"), { name: "v2-review-independent-monitor", type: "module", exports: { "./tui": "./tui.mjs" } })
   await writeFile(path.join(monitor, "tui.mjs"), prelude + rpcDefinition + "\n" + monitorSetup
     + '\nexport default {id:"fixture.review.monitor",setup:monitorSetup}\n')
   for (const file of [path.join(observer, "index.mjs"), path.join(monitor, "tui.mjs"), path.join(reviewer, "tui.mjs")])
     execFileSync(process.execPath, ["--check", file], { env, timeout: 10000 })
+  const mcpFile = path.join(temp, "registered-tool.mjs")
+  if (registeredTool) await writeFile(mcpFile, `
+import {createInterface} from 'node:readline';
+const tool={name:'lookup',description:${JSON.stringify("Return a fixed public account summary without accessing external services." + (fast ? "" : " Optional catalog description.".repeat(300)))},inputSchema:{type:'object',properties:{account:{type:'string'}},required:['account'],additionalProperties:false}};
+createInterface({input:process.stdin}).on('line',line=>{
+ const q=JSON.parse(line); if(q.id===undefined)return;
+ const result=q.method==='initialize'?{protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1.0'}}
+ :q.method==='tools/list'?{tools:[tool]}:q.method==='tools/call'?{content:[{type:'text',text:'FIXTURE_PUBLIC_ACCOUNT'}]}:{};
+ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result})+'\\n');
+});
+`)
   const config = { $schema: "https://opencode.ai/config.json", model: "fixture/fixture", update: "disable",
+    ...(registeredTool ? { mcp: { servers: { fixture: { type: "local", command: [process.execPath, mcpFile] } } } } : {}),
     plugins: [reviewer, observer], permissions: [{ action: "*", resource: "*", effect: "allow" },
-      ...(editCase ? editActions.map(action => ({ action, resource: "*", effect: "ask" })) : [{ action: skillCase ? "skill" : "shell", resource: "*", effect: "ask" }])],
+      ...(editCase ? editActions.map(action => ({ action, resource: "*", effect: "ask" })) : [{ action: registeredTool ? "fixture_lookup" : skillCase ? "skill" : "shell", resource: "*", effect: "ask" }])],
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: origin + "/v1", apiKey: "synthetic-only" },
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } }
    // Approval cases explicitly configure mouse capture in the isolated fixture,
@@ -1017,7 +1050,8 @@ try {
      ...(automatic ? { mouse: !mouseOff } : {}),
     session: { permissions: "prompt" }, plugins: [{ package: reviewer, options: { baseURL: origin + "/review", model: "v2-production-reviewer",
        stream: streaming, autoApprove: automatic, fastMode: fast, autoApproveDelaySeconds: approvalDelaySeconds,
-       ...(directoryEditCase ? { reviewExternalDirectories: true } : {}),
+        ...(directoryEditCase ? { reviewExternalDirectories: true } : {}),
+        ...(registeredTool ? { reviewTools: true, maxEvidenceBytes: fast ? 131072 : 2048 } : {}),
        timeoutMs: 120000, notify: notificationCase, notifySound: false, staleReminderSeconds: 0,
        ...(notificationCase ? { notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } : {}) } }, monitor] }
   const startupCli = { ...cli, plugins: ["-opencode-reviewer", monitor] }
@@ -1206,12 +1240,13 @@ try {
    } else if (skillCase) {
      request = await until("native skill permission", record => record?.asked[0])
      requests.push(request)
-     assert.equal(request.action, "skill"); assert.deepEqual(request.resources, [skillID])
+      assert.equal(request.action, registeredTool ? "fixture_lookup" : "skill")
+      if (!registeredTool) assert.deepEqual(request.resources, [skillID])
      assert.equal(request.source.id, toolCall.id)
      inspection = await command({ type: "inspect", sessionID, requestID: request.id, epoch: handshake.epoch })
      inspections.push(inspection)
      assert.deepEqual(inspection.captured.invocation.input, toolCall.input)
-     assert.equal(inspection.captured.invocation.tool, "skill")
+      assert.equal(inspection.captured.invocation.tool, toolCall.name)
      await until("production skill reviewer POST", () => reviewResponse)
      const loaded = async () => {
        const message = await command({ type: "message", sessionID, messageID: request.source.messageID })
@@ -1239,12 +1274,12 @@ try {
      await until("native skill completion", () => calls.filter(call => call.url === "/v1/chat/completions").length === 2)
      const messages = await loaded()
      assert.equal(messages.length, 1)
-     assert.equal(messages[0].name, "skill"); assert.deepEqual(messages[0].state.input, { id: skillID })
+      assert.equal(messages[0].name, toolCall.name); assert.deepEqual(messages[0].state.input, toolCall.input)
      assert.ok(JSON.stringify(messages[0].state).includes(skillContent.trim()), "The actual completed native tool retains all main instructions")
      const completed = await command({ type: "message", sessionID, messageID: request.source.messageID })
      const native = completed.content.filter(item => item.type === "tool" && item.id === toolCall.id)
-     assert.equal(native.length, 1); assert.equal(native[0].name, "skill"); assert.equal(native[0].state.status, "completed")
-     const stage = { action: "skill", request, description: skillDescription }
+      assert.equal(native.length, 1); assert.equal(native[0].name, toolCall.name); assert.equal(native[0].state.status, "completed")
+      const stage = { action: registeredTool ? "tool" : "skill", request, description: skillDescription }
      historyEvidence = await until("saved skill report, category and confirmed automatic totals", async () =>
        savedStageHistory(await readHistory(), [stage], sessionID), 20000)
      await until("skill report closes after completion", () => !capture().includes("Permission analysis"))

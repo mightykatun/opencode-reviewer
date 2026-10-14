@@ -38,9 +38,9 @@ function handshakeDefinition() {
     input: { type: "object", properties: { location, epoch: text, sessionID: text, requestID: text,
       options: { type: "object", properties: {
         reviewBash: { type: "boolean" }, reviewEdits: { type: "boolean" }, reviewExternalDirectories: { type: "boolean" },
-        reviewSkills: { type: "boolean" }, reviewMcp: { type: "boolean" }, reviewCustomTools: { type: "boolean" },
+        reviewSkills: { type: "boolean" }, reviewTools: { type: "boolean" },
         maxFiles: { type: "integer", minimum: 1, maximum: 1000 }, maxEvidenceBytes: { type: "integer", minimum: 1, maximum: 16777216 },
-      }, required: ["reviewBash", "reviewEdits", "reviewExternalDirectories", "reviewSkills", "reviewMcp", "reviewCustomTools", "maxFiles", "maxEvidenceBytes"], additionalProperties: false },
+      }, required: ["reviewBash", "reviewEdits", "reviewExternalDirectories", "reviewSkills", "reviewTools", "maxFiles", "maxEvidenceBytes"], additionalProperties: false },
       timeoutMs: { type: "number", exclusiveMinimum: 0, maximum: 5000 } },
       required: ["location", "epoch", "sessionID", "requestID", "options", "timeoutMs"], additionalProperties: false },
     output: { anyOf: [{ type: "null" }, { type: "object", properties: {

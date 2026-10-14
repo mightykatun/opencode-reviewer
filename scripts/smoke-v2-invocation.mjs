@@ -386,7 +386,7 @@ const interrupt = async sessionID => {
 }
 const readActual = (request, scope) => command({ type: "read", sessionID: request.sessionID, requestID: request.id, scope })
 const collection = { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
-  reviewSkills: true, reviewMcp: true, reviewCustomTools: true, maxFiles: 8, maxEvidenceBytes: 65536 }
+  reviewSkills: true, reviewTools: true, maxFiles: 8, maxEvidenceBytes: 65536 }
 const readEvidence = (request, scope, options = collection) => command({ type: "evidence",
   sessionID: request.sessionID, requestID: request.id, scope, options })
 const assertDirect = (row, expected, scope, sessionID, prompt) => {

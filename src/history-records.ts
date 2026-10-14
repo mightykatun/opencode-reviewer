@@ -34,7 +34,7 @@ export const HISTORY_RECORD_BYTES = {
 export class HistoryInvalid extends Error {}
 export interface HistoryScope { scope: string; root: string; session: string }
 export interface HistoryReview extends HistoryScope {
-  permission: string; review: string; category: "bash" | "edit" | "mcp" | "custom" | "external_directory" | "skill"
+  permission: string; review: string; category: "bash" | "edit" | "mcp" | "custom" | "external_directory" | "skill" | "registered-tool" | "tool"
   configuredModel: string; provider: string
 }
 /** A saved entry is keyed by permission, independently of newer reviewer attempts. */
@@ -87,7 +87,7 @@ export function validateScope(c: HistoryScope): void {
 export function validateReview(c: HistoryReview): void {
   object(c, ["scope", "root", "session", "permission", "review", "category", "configuredModel", "provider"])
   validateScope(c); text(c.permission); text(c.review); text(c.configuredModel); text(c.provider)
-  requireValue(["bash", "edit", "mcp", "custom", "external_directory", "skill"].includes(c.category))
+  requireValue(["bash", "edit", "mcp", "custom", "external_directory", "skill", "registered-tool", "tool"].includes(c.category))
   const url = new URL(c.provider)
   requireValue(["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash
     && url.href.replace(/\/+$/, "") === c.provider)
