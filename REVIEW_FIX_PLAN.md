@@ -18,11 +18,11 @@ inventory bounds and add capacity coverage rather than removing safety limits.
 
 ## Implementation
 
-- [ ] Phase 1: Preserve fast approval resolution provenance.
-  - [ ] Distinguish read-only disappearance from exact native resolution in retained controller entries.
-  - [ ] Preserve uncertain-write tombstones across disappearance/reappearance.
-  - [ ] Test uncertain/rejected acknowledgement, confirmation timeout and exact-event contrasts.
-  - [ ] Verify controller/fast-mode/native transport tests and typecheck; commit.
+- [x] Phase 1: Preserve fast approval resolution provenance.
+  - [x] Distinguish read-only disappearance from exact native resolution in retained controller entries.
+  - [x] Preserve uncertain-write tombstones across disappearance/reappearance.
+  - [x] Test uncertain/rejected acknowledgement, confirmation timeout and exact-event contrasts.
+  - [x] Verify controller/fast-mode/native transport tests and typecheck; commit.
 - [ ] Phase 2: Recover temporary companion contention.
   - [ ] Distinguish capacity exhaustion from invalid/missing evidence.
   - [ ] Bound waiting/recovery within the original deadline and physical ownership.
@@ -65,3 +65,10 @@ Record commands, test counts and exact runtime fixture results here after each p
   an Edit tool are unavailable, so this file is the task list and `patch` updates it.
 - Source/test context is read before each phase, including by narrowly scoped
   implementation agents. Phase verification remains serial with two test workers.
+- Phase 1: three new regressions failed before the fix. Core source selection:
+  105 passed; expanded controller/approval/history/notification/statistics selection:
+  276 passed, both with `--test-concurrency=2`. Typecheck, build and diff check passed.
+  Real TUI `smoke-v2-review.mjs fast` passed on OpenCode 2.0.29 in 8,454 ms;
+  `.runtime/runtime-run-8SDqhL/results.json` records exit 0.
+  Fresh advisory reviews after read-only disappearance remain allowed; tombstones
+  prevent additional approval preparation/writes, not advisory reporting.

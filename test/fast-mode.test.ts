@@ -201,6 +201,26 @@ test("fast ACK timeout remains single-shot through late success, resolution and 
   f.rate(); f.ready(true); await settle(); assert.equal(f.writes.length, 1)
   f.resolved(); await settle(); assert.equal(f.facts.filter(fact => fact.type === "confirmed").length, 0); assert.equal(f.saved().total, 0)
 })
+test("disappearance before rejected fast ACK preserves manual reappearance without history or approval notification", async t => {
+  const f = await fixture(t); f.rate(); await settle()
+  const original = f.workers.get("a")!
+  f.list(async () => []); f.controller.reconcile([], f.controller.revision)
+  assert.equal(original.signal.aborted, false)
+  f.writes[0]!.ack.reject(Error("native acknowledgement rejected")); await settle()
+  assert.equal(f.controller.views.length, 0)
+  assert.equal(original.signal.aborted, true)
+  original.finish(); await settle()
+  assert.equal(f.saved().total, 0); assert.equal(f.totals().safe, 0)
+  f.list(async () => [request()]); f.controller.reconcile([request()], f.controller.revision); await settle()
+  f.rate(); f.ready(true); await settle()
+  assert.equal(f.controller.views[0]?.autoApproval?.status, "failed")
+  assert.equal(f.writes.length, 1)
+  f.workers.get("a")!.finish(); await settle()
+  assert.equal(f.saved().total, 0)
+  assert.equal(f.totals().activity.autoApproved, 0)
+  assert.equal(f.facts.filter(fact => fact.type === "confirmed").length, 0)
+  assert.equal(f.banners.some(message => message.kind === "approved"), false)
+})
 test("dispatch observer runs after invocation; navigation and disable cannot cancel the retained confirmed remainder", async t => {
   let f!: Awaited<ReturnType<typeof fixture>>
   f = await fixture(t, {}, { approval: fact => {

@@ -48,6 +48,9 @@ interface Entry<R extends RequestIdentity = HostRequest> {
   approvalPaused?: boolean
   eligibilityPending?: boolean
   fastApproval?: "pending" | "confirmed"
+  /** Retained UI disappearance is not native resolution authority. Exact native
+   * resolution supersedes reconciliation and alone releases manual tombstones. */
+  retainedResolution?: "resolved" | "reconciled"
 }
 
 export interface ApprovalClock {
@@ -513,6 +516,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
             confirming: () => {
               if (entry.fastApproval && this.active(entry)) {
                 entry.fastApproval = "confirmed"
+                entry.retainedResolution = "resolved"
                 entry.view = { ...entry.view, resolved: true, autoApproval: { status: "approved" } }
               }
             },
@@ -557,7 +561,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
       }
       if (entry.fastApproval) {
         entry.fastApproval = undefined
-        if (entry.view.resolved) { this.replied(id); return }
+        if (entry.retainedResolution) { this.replied(id, true, entry.retainedResolution); return }
         entry.view = { ...entry.view, retained: undefined }
       }
       this.manual.set(id, "failed")
@@ -689,6 +693,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     this.entries.get(id)?.cancelTimer?.()
     const entry = this.entries.get(id)
     if (entry?.fastApproval && resolved) {
+      if (entry.retainedResolution !== "resolved") entry.retainedResolution = reason
       entry.view = { ...entry.view, resolved: true }
       this.publish()
       this.finishFast(entry)

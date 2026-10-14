@@ -10,16 +10,16 @@ const request: HostRequest = Object.freeze({ id: "request", sessionID: "root", a
   source: Object.freeze({ assistantID: "assistant", id: "call" }) })
 const safe: ReviewResult = { safe: true, desc: "Reads the current directory." }
 function deferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>(done => { resolve = done })
-  return { promise, resolve }
+  let resolve!: (value: T) => void, reject!: (error: Error) => void
+  const promise = new Promise<T>((done, failed) => { resolve = done; reject = failed })
+  return { promise, resolve, reject }
 }
 async function fixture(fast = false, held: { preparation?: boolean; acknowledgement?: boolean; unavailable?: boolean } = {}) {
   const preparation = deferred<void>(), acknowledgement = deferred<OnceSubmission>(), assessment = deferred<ReviewResult>()
   if (!held.preparation) preparation.resolve()
   if (!held.acknowledgement) acknowledgement.resolve({ status: "submitted" })
   let ready = false, front: string | undefined = request.id
-  let enabled = true, writes = 0, preparations = 0, reviewSignal!: AbortSignal
+  let enabled = true, writes = 0, preparations = 0, reviews = 0, reviewSignal!: AbortSignal
   let insideReply: (() => void) | undefined
   let pending: HostRequest[] = [request]
   const facts: ApprovalFact<HostRequest>[] = [], lifecycle: ReviewLifecycleFact<HostRequest>[] = []
@@ -37,6 +37,7 @@ async function fixture(fast = false, held: { preparation?: boolean; acknowledgem
     },
   }
   const controller = new Controller<HostRequest>(async (_value, signal, identified, progress) => {
+    reviews++
     reviewSignal = signal; identified()
     if (!fast) return safe
     progress({ attempt: 0, phase: "evaluating" })
@@ -56,7 +57,8 @@ async function fixture(fast = false, held: { preparation?: boolean; acknowledgem
       if (sessionID === request.sessionID && requestID === request.id) pending = []
       controller.permissionReplied({ sessionID, requestID, decision })
     },
-    view: () => controller.views[0], writes: () => writes, preparations: () => preparations, signal: () => reviewSignal,
+    view: () => controller.views[0], writes: () => writes, preparations: () => preparations, reviews: () => reviews, signal: () => reviewSignal,
+    snapshot(requests: HostRequest[]) { pending = requests; controller.reconcile(pending, controller.revision) },
     ready(value: boolean) { ready = value; controller.refreshApprovalEligibility() },
     front(value: string | undefined) { front = value },
     disable() { enabled = false; controller.modeChanged("root") },
@@ -275,6 +277,61 @@ test("native dispatch tombstones survive read-only disappearance and reappearanc
   await f.start(); await settle()
   assert.equal(f.writes(), 1)
 })
+
+for (const outcome of ["uncertain acknowledgement", "rejected acknowledgement", "confirmation timeout"] as const) {
+  test(`fast: disappearance before ${outcome} preserves the dispatch tombstone on same-ID reappearance`, async t => {
+    if (outcome === "confirmation timeout") t.mock.timers.enable({ apis: ["setTimeout"] })
+    const f = await fixture(true, { acknowledgement: outcome !== "confirmation timeout" }); t.after(() => f.dispose())
+    await f.start(); await settle()
+    assert.equal(f.writes(), 1)
+    const originalSignal = f.signal()
+    f.snapshot([]); await settle()
+    assert.equal(f.view()?.resolved, true)
+    assert.equal(f.view()?.retained, true)
+    assert.equal(originalSignal.aborted, false)
+    f.controller.asked(request); await settle()
+    assert.equal(f.reviews(), 1, "the retained entry deduplicates same-ID asks while acknowledgement is pending")
+    if (outcome === "uncertain acknowledgement") f.acknowledgement.resolve({ status: "uncertain" })
+    else if (outcome === "rejected acknowledgement") f.acknowledgement.reject(Error("native acknowledgement rejected"))
+    else t.mock.timers.tick(5000)
+    await settle()
+    assert.equal(f.controller.views.length, 0)
+    assert.equal(originalSignal.aborted, true)
+    assert.deepEqual(f.lifecycle.filter(fact => fact.type === "removed").map(fact => fact.reason), ["reconciled"])
+    assert.equal(f.facts.filter(fact => fact.type === "confirmed").length, 0)
+    f.assessment.resolve(safe); await settle()
+    assert.equal(f.lifecycle.filter(fact => fact.type === "accepted").length, 0, "removed retained response cannot accept late text")
+    f.reply("once", "wrong-session")
+    f.snapshot([request]); await settle()
+    assert.equal(f.view()?.autoApproval?.status, "failed")
+    assert.equal(f.reviews(), 2, "fresh advisory review remains allowed after read-only removal")
+    for (let index = 0; index < 3; index++) {
+      f.snapshot([request]); await f.start(); await f.controller.approveNow(request.id, true); await settle()
+    }
+    assert.equal(f.preparations(), 1, "tombstone blocks preparation, not just physical writes")
+    assert.equal(f.writes(), 1)
+    assert.equal(f.reviews(), 2, "fresh duplicate snapshots do not restart advisory review")
+    assert.deepEqual(f.facts.map(fact => [fact.type, fact.result]), [["dispatched", undefined], ["settled", "uncertain"]])
+  })
+}
+
+for (const ordering of ["before", "after"] as const) {
+  test(`fast: exact native resolution ${ordering} disappearance supersedes reconciliation despite uncertain ACK`, async t => {
+    const f = await fixture(true, { acknowledgement: true }); t.after(() => f.dispose())
+    await f.start(); await settle()
+    if (ordering === "before") f.reply()
+    // Explicit read-only removal also proves it cannot downgrade retained native provenance.
+    f.controller.replied(request.id, true, "reconciled")
+    if (ordering === "after") f.reply()
+    f.acknowledgement.resolve({ status: "uncertain" }); await settle()
+    assert.equal(f.controller.views.length, 0)
+    assert.deepEqual(f.lifecycle.filter(fact => fact.type === "removed").map(fact => fact.reason), ["resolved"])
+    assert.equal(f.facts.filter(fact => fact.type === "confirmed").length, 0, "resolution is not local write confirmation")
+    f.assessment.resolve(safe); f.snapshot([request]); await settle()
+    assert.equal(f.writes(), 2, "exact native resolution, unlike disappearance, clears the controller tombstone")
+    assert.equal(f.preparations(), 2)
+  })
+}
 
 test("external once without a local invocation has no automatic attribution", async t => {
   const f = await fixture(); t.after(() => f.dispose())

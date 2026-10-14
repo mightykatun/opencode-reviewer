@@ -7,6 +7,8 @@ import { ApprovalTransaction } from "../src/approval-transaction.js"
 import { withDeadline } from "../src/deadline.js"
 import { setImmediate as tick } from "node:timers/promises"
 import { getEventListeners } from "node:events"
+import { Controller, type ApprovalFact, type ReviewLifecycleFact } from "../src/controller.js"
+import type { HostRequest, HostRequestSnapshot } from "../src/host-types.js"
 
 const location = { directory: "/invocation", workspaceID: "workspace" }, scope = { location, epoch: "10000000-1000-4000-8000-100000000000" }
 const raw = (id = "request", sessionID = "session") => ({ id, sessionID, action: "shell", resources: ["python3 fixture.py"], save: ["python3 *"] })
@@ -296,4 +298,101 @@ test("successful confirmation and unsent preparation release reservation abort l
     assert.equal(f.transport.retainedReservations, 0)
     assert.equal(getEventListeners(abort.signal, "abort").length, 0)
   }
+})
+
+for (const outcome of ["rejected acknowledgement", "acknowledgement timeout", "confirmation timeout"] as const) {
+  test(`controller + native transport: disappearance before ${outcome} cannot reprepare or rewrite a reappearing ID`, async t => {
+    if (outcome !== "rejected acknowledgement") t.mock.timers.enable({ apis: ["setTimeout"] })
+    const f = fixture(), physical = gate(), report = gate(), invoked = gate()
+    f.state.pending.clear()
+    const request = raw(), snapshot = f.add(request), snapshots = new Map<string, HostRequestSnapshot>([[request.id, snapshot]])
+    const safe = { safe: true, desc: "Reads the fixture." }
+    const facts: ApprovalFact<HostRequest>[] = [], lifecycle: ReviewLifecycleFact<HostRequest>[] = []
+    let reviews = 0, preparations = 0
+    if (outcome !== "confirmation timeout") f.state.replyGate = physical.promise
+    f.state.reject = outcome === "rejected acknowledgement"
+    f.state.onReply = invoked.release
+    const controller = new Controller<HostRequest>(async (_request, _signal, identify, progress) => {
+      reviews++; identify()
+      progress({ attempt: 0, phase: "evaluating" }); progress({ attempt: 0, phase: "streaming", preview: safe })
+      await report.promise
+      return safe
+    }, () => {}, { candidate: () => true, nativeFront: () => request.id, approvalReady: () => true,
+      reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, fastMode: true, stream: true },
+      nativeApproval: {
+        list: async signal => (await f.transport.listScope(signal)).map(value => value.request),
+        once: (request, signal, dispatch) => {
+          preparations++
+          return f.transport.once(snapshots.get(request.id)!, signal, dispatch)
+        },
+      }, onApproval: fact => { facts.push(fact) }, onLifecycle: fact => { lifecycle.push(fact) },
+    })
+    t.after(async () => { physical.release(); report.release(); await controller.dispose() })
+    const refresh = async () => {
+      const requests = await f.transport.listScope(signal())
+      snapshots.clear(); for (const snapshot of requests) snapshots.set(snapshot.request.id, snapshot)
+      controller.reconcile(requests.map(value => value.request), controller.revision)
+      await tick()
+    }
+    controller.asked(snapshot.request); await invoked.promise; await tick()
+    assert.equal(f.state.calls.length, 1)
+    assert.equal(f.transport.retainedReservations, 1)
+    f.state.pending.clear(); await refresh()
+    assert.equal(controller.views[0]?.resolved, true)
+    assert.deepEqual(facts.map(fact => fact.type), ["dispatched"])
+    if (outcome === "rejected acknowledgement") physical.release()
+    else t.mock.timers.tick(5000)
+    await tick()
+    assert.equal(controller.views.length, 0)
+    assert.deepEqual(lifecycle.filter(fact => fact.type === "removed").map(fact => fact.reason), ["reconciled"])
+    assert.equal(f.transport.retainedReservations, 1)
+    physical.release(); await tick() // A late physical ACK cannot reclaim uncertainty.
+    f.state.reject = false; f.add(raw()); await refresh()
+    report.release(); await tick()
+    assert.equal(controller.views[0]?.autoApproval?.status, "failed")
+    assert.equal(reviews, 2, "read-only removal permits a fresh advisory review, not another approval")
+    const reads = f.state.reads
+    for (let index = 0; index < 3; index++) {
+      await refresh(); controller.refreshApprovalEligibility(); await controller.approveNow(request.id, true); await tick()
+    }
+    assert.equal(reviews, 2)
+    assert.equal(preparations, 1, "controller tombstone blocks transport entry, before the transport's own reservation check")
+    assert.equal(f.state.reads, reads, "no fresh native preparation reads")
+    assert.equal(f.state.calls.length, 1)
+    assert.deepEqual(facts.map(fact => [fact.type, fact.result]), [["dispatched", undefined], ["settled", "uncertain"]])
+    const event = resolution(request)
+    f.transport.resolved(event); controller.permissionReplied(event)
+    assert.equal(controller.views.length, 0)
+    assert.equal(f.transport.retainedReservations, 1, "exact late events do not release uncertain once transport reservations")
+  })
+}
+
+test("controller + native transport: exact resolution after disappearance confirms and releases only acknowledged approval", async t => {
+  const f = fixture(), report = gate(), invoked = gate(), facts: ApprovalFact<HostRequest>[] = [], lifecycle: ReviewLifecycleFact<HostRequest>[] = []
+  f.state.pending.clear()
+  const request = raw(), snapshot = f.add(request), safe = { safe: true, desc: "Reads the fixture." }
+  f.state.onReply = invoked.release
+  const controller = new Controller<HostRequest>(async (_request, _signal, identify, progress) => {
+    identify(); progress({ attempt: 0, phase: "evaluating" }); progress({ attempt: 0, phase: "streaming", preview: safe })
+    await report.promise; return safe
+  }, () => {}, { candidate: () => true, nativeFront: () => request.id, approvalReady: () => true,
+    reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, fastMode: true, stream: true },
+    nativeApproval: { list: async signal => (await f.transport.listScope(signal)).map(value => value.request),
+      once: (_request, signal, dispatch) => f.transport.once(snapshot, signal, dispatch) },
+    onApproval: fact => { facts.push(fact) }, onLifecycle: fact => { lifecycle.push(fact) },
+  })
+  t.after(async () => { report.release(); await controller.dispose() })
+  controller.asked(snapshot.request); await invoked.promise; await tick()
+  controller.reconcile((await f.transport.listScope(signal())).map(value => value.request), controller.revision)
+  assert.equal(controller.views[0]?.resolved, true)
+  assert.equal(f.transport.retainedReservations, 1)
+  const event = resolution(request)
+  f.transport.resolved(event); controller.permissionReplied(event); await tick()
+  assert.equal(controller.views[0]?.autoApproval?.status, "approved")
+  assert.equal(f.transport.retainedReservations, 0)
+  report.release(); await tick()
+  assert.equal(controller.views.length, 0)
+  assert.deepEqual(facts.map(fact => fact.type), ["dispatched", "confirmed", "settled"])
+  assert.deepEqual(lifecycle.filter(fact => fact.type === "removed").map(fact => fact.reason), ["resolved"])
+  assert.equal(f.state.calls.length, 1)
 })
