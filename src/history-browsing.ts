@@ -1,22 +1,34 @@
 /** Durable mutation generations cover raw SQL on this or another connection.
  * Payload/context text deliberately does not invalidate structural validation:
  * selected context and payload are fetched and validated on every poll.
+ * Review identity changes invalidate the roots of actual history references,
+ * not the review's possibly changed ownership or an unreferenced pending review.
  * Tombstones invalidate visibility immediately. Subsequent physical deletion of
  * already-hidden rows does not repeatedly flush surviving siblings' caches.
  */
 export const browsingSchema = `
 CREATE TABLE IF NOT EXISTS history_generations (id TEXT PRIMARY KEY, generation INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS history_session_visible_order ON history(scope,root,session,completed,tie,id) WHERE outcome IS NOT NULL;
-${["history", "reviews"].flatMap(table => ["INSERT", "UPDATE", "DELETE"].map(operation => {
-  const columns = table === "reviews" && operation === "UPDATE" ? " OF id,entry,root,session" : ""
+CREATE INDEX IF NOT EXISTS history_review ON history(review);
+${["INSERT", "UPDATE", "DELETE"].map(operation => {
   const roots = operation === "INSERT" ? ["new"] : operation === "DELETE" ? ["old"] : ["old", "new"]
-  return `DROP TRIGGER IF EXISTS browse_${table}_${operation};
-    CREATE TRIGGER browse_${table}_${operation} AFTER ${operation}${columns} ON ${table} BEGIN
+  return `DROP TRIGGER IF EXISTS browse_history_${operation};
+    CREATE TRIGGER browse_history_${operation} AFTER ${operation} ON history BEGIN
     ${roots.map(row => `INSERT INTO history_generations SELECT ${row}.root,1
       WHERE NOT EXISTS (SELECT 1 FROM tombstones WHERE id IN (${row}.root,${row}.session))
       ON CONFLICT(id) DO UPDATE SET generation=generation+1;`).join("\n")}
     END;`
-})).join("\n")}
+}).join("\n")}
+${["INSERT", "UPDATE", "DELETE"].map(operation => {
+  const columns = operation === "UPDATE" ? " OF id,entry,root,session" : ""
+  const rows = operation === "INSERT" ? ["new"] : operation === "DELETE" ? ["old"] : ["old", "new"]
+  return `DROP TRIGGER IF EXISTS browse_reviews_${operation};
+    CREATE TRIGGER browse_reviews_${operation} AFTER ${operation}${columns} ON reviews BEGIN
+    ${rows.map(row => `INSERT INTO history_generations SELECT DISTINCT root,1 FROM history WHERE review=${row}.id
+      AND NOT EXISTS (SELECT 1 FROM tombstones WHERE id IN (history.root,history.session))
+      ON CONFLICT(id) DO UPDATE SET generation=generation+1;`).join("\n")}
+    END;`
+}).join("\n")}
 ${["INSERT", "UPDATE", "DELETE"].map(operation => {
   const rows = operation === "INSERT" ? ["new"] : operation === "DELETE" ? ["old"] : ["old", "new"]
   return `DROP TRIGGER IF EXISTS browse_sessions_${operation};

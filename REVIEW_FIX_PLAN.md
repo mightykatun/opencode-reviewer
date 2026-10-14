@@ -40,11 +40,11 @@ inventory bounds and add capacity coverage rather than removing safety limits.
   - [x] Treat an uninitialized history database as pending, not corruption.
   - [x] Test hostile Git environment and absent/uninitialized/initialized/corrupt databases.
   - [x] Verify helper checks; commit.
-- [ ] Phase 5: Fix history cache invalidation and attribution clocks.
-  - [ ] Avoid invalidating browsing for unreferenced unsaved reviews; preserve ownership/corruption invalidation.
-  - [ ] Separate wall-clock event timestamps from monotonic retention/backoff.
-  - [ ] Test same-root unsaved activity, referenced mutations and clock jumps.
-  - [ ] Verify history/accounting tests and typecheck; commit.
+- [x] Phase 5: Fix history cache invalidation and attribution clocks.
+  - [x] Avoid invalidating browsing for unreferenced unsaved reviews; preserve ownership/corruption invalidation.
+  - [x] Separate wall-clock event timestamps from monotonic retention/backoff.
+  - [x] Test same-root unsaved activity, referenced mutations and clock jumps.
+  - [x] Verify history/accounting tests and typecheck; commit.
 - [ ] Phase 6: Remove obsolete machinery and refresh tests/docs/dependencies.
   - [ ] Retire unused diagnostic trace helpers and orphaned fixture measurements after checking all consumers.
   - [ ] Replace exhaustive metadata-matrix real sleeps with controlled clocks; retain real-timer controls.
@@ -108,3 +108,14 @@ Record commands, test counts and exact runtime fixture results here after each p
   `npm run test:helpers`: 147 passed (`.runtime/phase4-helpers.log`); diff check passed.
   Real TUI `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history`
   passed on OpenCode 2.0.29 (`.runtime/runtime-run-bY9EgG/results.json`).
+- Phase 5: indexed review-reference triggers invalidate actual referencing roots,
+  including raw corruption/repair and cross-root identity moves, but not unsaved
+  activity. Measured warm browsing work remains zero scans at 1k/10k/100k entries.
+  Attribution uses monotonic expiry/backoff independently of wall-clock event times,
+  including late events before timer delivery; actual read cleanup remains owned.
+  `npx tsx --test --test-concurrency=2 test/history-browsing.test.ts test/history-coordinator.test.ts test/history-native-types.test.ts`: 42 passed.
+  `npx tsx --test --test-concurrency=2 test/history-*.test.ts test/conversation-statistics.test.ts test/lifetime*.test.ts test/local-state.test.ts test/statistics-controller.test.ts test/fast-mode.test.ts test/host-history-runtime.test.ts test/host-history-view.test.ts`: 287 passed.
+  Logs: `.runtime/phase5/regressions-rerun.log` and `.runtime/phase5/history-source-checks.log`.
+  Typecheck, build and diff check passed. Real TUI `normal-history` passed in
+  29,705 ms on OpenCode 2.0.29 (`.runtime/runtime-run-hkl4SX/results.json`).
+  Saved rows, totals, format/version and existing resource budgets are unchanged.

@@ -24,18 +24,20 @@ const aborted = (sessionID = "child", assistantID = "message") => ({ sessionID, 
 function fixture(t: TestContext) {
   const db = new DatabaseSync(":memory:"), sql = new HistorySQL(db)
   const events: HistoryEvent[] = [], commits = new Set<() => unknown>()
-  let sequence = 0, admit = true, now = 1000
+  let sequence = 0, admit = true, now = 1000, monotonic = 0
   let query: (q: HistoryQuery) => HistoryRead = q => Promise.resolve(sql.query(q))
   const store = { admit(e: HistoryEvent) {
     if (!admit) return false
     const serialized = encodeEvent(e)
     events.push(JSON.parse(serialized)); sql.apply("writer", ++sequence, serialized); return true
   }, query: (q: HistoryQuery) => query(q), onCommit: (fn: () => unknown) => { commits.add(fn); return () => { commits.delete(fn) } } }
-  const make = (ancestry = async () => "root") => new HistoryCoordinator("/host", store, ancestry, () => now)
+  const make = (ancestry = async () => "root") => new HistoryCoordinator("/host", store, ancestry, () => now,
+    undefined, () => monotonic)
   const h = make()
   t.after(() => { h.dispose(); sql.close() })
   return { h, make, events, store, db,
-    query: (fn: typeof query) => { query = fn }, advance: (ms: number) => { now += ms },
+    query: (fn: typeof query) => { query = fn }, advance: (ms: number) => { now += ms; monotonic += ms },
+    jumpWall: (ms: number) => { now += ms }, wall: () => now,
     admission: (value: boolean) => { admit = value }, commit: () => { for (const fn of commits) fn() },
     history: () => sql.query({ type: "history", scope: "/host", root: "root" }) as HistorySelection,
     totals: () => (sql.query({ type: "totals" }) as HistoryTotals).totals }
@@ -193,6 +195,77 @@ test("missing, unavailable, late and wrong-session facts never invent outcomes",
   f.advance(7000); t.mock.timers.tick(7000); await settle()
   f.h.reply({ requestID: request.id, sessionID: "child", reply: "always" })
   assert.equal(f.history().total, 0, "expired candidate is dropped, not queued elsewhere")
+})
+
+for (const jump of [-60000, 60000]) test(`wall-clock jump ${jump} cannot suppress polling or prematurely discard attribution`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const f = fixture(t)
+  f.jumpWall(1000000)
+  let reads = 0
+  f.query(() => { reads++; return Promise.resolve({ uncertain: false, conflict: false, deleted: false }) })
+  f.h.lifecycle(accepted()); f.h.lifecycle(removed()); await settle()
+  assert.equal(reads, 1)
+  f.jumpWall(jump); f.commit(); await settle()
+  assert.equal(reads, 1, "wall-clock advancement cannot trigger an early poll")
+  f.advance(1999); t.mock.timers.tick(1999); await settle()
+  assert.equal(reads, 1)
+  f.advance(1); t.mock.timers.tick(1); f.commit(); await settle()
+  assert.equal(reads, 2, "the two-second monotonic backoff survives rollback and forward jumps")
+  f.advance(4499); t.mock.timers.tick(4499); await settle()
+  f.h.reply({ requestID: request.id, sessionID: request.sessionID, reply: "always" })
+  assert.equal(f.history().record?.outcome, "manual", "the candidate remains attributable through 6,499 elapsed milliseconds")
+  assert.equal(f.events.find(event => event.type === "permissionResolved")?.at, f.wall(), "stored event time follows the wall clock")
+})
+
+for (const jump of [-60000, 60000]) for (const event of ["reply", "confirmation", "shared-read"] as const)
+  test(`${event} at monotonic expiry after wall-clock jump ${jump} omits the body before timer delivery`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] })
+    const f = fixture(t)
+    f.jumpWall(1000000)
+    let resolve!: (value: any) => void
+    if (event === "shared-read") f.query(() => new Promise(yes => { resolve = yes }))
+    f.h.lifecycle(accepted())
+    const fact = { request, automatic: true, approval: "approval", review: "review" }
+    if (event === "confirmation") f.h.approval({ ...fact, type: "dispatched" })
+    f.h.lifecycle(removed()); await settle()
+    f.jumpWall(jump); f.advance(6500) // Deliberately do not deliver the expiry timer.
+    if (event === "reply") f.h.reply({ requestID: request.id, sessionID: request.sessionID, reply: "always" })
+    else if (event === "confirmation") {
+      f.h.approval({ ...fact, type: "confirmed" }); f.h.approval({ ...fact, type: "settled" })
+      assert.equal(f.totals().activity.autoApproved, 1, "received confirmation accounting still persists")
+      assert.equal(f.events.find(value => value.type === "approvalConfirmed")?.at, f.wall())
+    } else { resolve({ outcome: "manual", uncertain: false, conflict: false, deleted: false }); await settle() }
+    assert.equal(f.history().total, 0)
+    assert.equal(f.db.prepare("SELECT count(*) AS n FROM payloads").get()!.n, 0)
+    assert.equal(f.events.filter(value => value.type === "permissionResolved").length, 0)
+    assert.equal(f.totals().safe, 1, "expiry never discards accepted accounting")
+  })
+
+test("the attribution timer expires on monotonic time despite a wall-clock rollback", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const f = fixture(t)
+  f.jumpWall(1000000)
+  f.h.lifecycle(accepted()); f.h.lifecycle(removed()); await settle()
+  f.jumpWall(-60000); f.advance(6500); t.mock.timers.tick(6500); await settle()
+  f.h.reply({ requestID: request.id, sessionID: request.sessionID, reply: "always" })
+  assert.equal(f.history().total, 0)
+})
+
+test("expired attribution retains actual read cleanup ownership through a new candidate and disposal", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const f = fixture(t)
+  let release!: () => void, complete!: (value: any) => void, calls = 0
+  const settled = new Promise<void>(resolve => { release = resolve })
+  f.query(() => { calls++; return Object.assign(new Promise<any>(resolve => { complete = resolve }), { settled }) })
+  f.h.lifecycle(accepted()); f.h.lifecycle(removed())
+  f.advance(6500)
+  complete({ outcome: "manual", uncertain: false, conflict: false, deleted: false }); await settle()
+  const other = { ...request, id: "another" }
+  f.h.lifecycle(accepted(result("another"), other)); f.h.lifecycle(removed(other))
+  f.advance(2000); f.commit(); await settle()
+  assert.equal(calls, 1, "visible expiry does not release the physical read")
+  f.h.dispose(); release(); await settle()
+  assert.equal(calls, 1); assert.equal(f.history().total, 0)
 })
 
 test("removed attribution window is capped at 128 candidates without a resolved-body side queue", t => {

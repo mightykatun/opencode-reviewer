@@ -91,7 +91,8 @@ test("automatic rebuild erases zero-freelist live table AND index freeblocks wit
     assert.equal(contains(file, marker), false)
     // No duplicate, unbounded startup index builds after alternate-name cutover.
     const indexes = db.prepare("SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name='history' AND sql IS NOT NULL").all()
-    assert.equal(indexes.length, 5)
+    assert.equal(indexes.length, 6)
+    assert.ok(indexes.some(index => index.name === "history_rebuilt_history_review"))
     assert.ok(indexes.every(index => index.name.startsWith("history_rebuilt_")))
   } finally { reopened.close() }
   t.diagnostic(JSON.stringify({ zeroFreelist: true, tableFreeblock: true, indexFreeblock: true, slices }))

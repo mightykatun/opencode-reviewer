@@ -24,7 +24,7 @@ const approval = { request, automatic: true, approval: "approval", review: "exec
 
 function fixture(t: TestContext) {
   const db = new DatabaseSync(":memory:"), sql = new HistorySQL(db), events: HistoryEvent[] = []
-  let sequence = 0, now = 1000
+  let sequence = 0, now = 1000, monotonic = 0
   const commits = new Set<() => unknown>()
   const store = { admit(event: HistoryEvent) {
     const encoded = encodeEvent(event)
@@ -32,12 +32,12 @@ function fixture(t: TestContext) {
   }, query: (query: HistoryQuery) => Promise.resolve(sql.query(query)),
   onCommit: (fn: () => unknown) => { commits.add(fn); return () => { commits.delete(fn) } } }
   const h = new HistoryCoordinator<HostRequest>("/native-host", store, async () => "root", () => now,
-    req => req.source?.assistantID)
+    req => req.source?.assistantID, () => monotonic)
   const lifecycle: ReviewLifecycleObserver<HostRequest> = h.lifecycle
   const onApproval: ApprovalObserver<HostRequest> = h.approval
   t.after(() => { h.dispose(); sql.close() })
   return { h, lifecycle, onApproval, events, db,
-    poll: async () => { now += 2000; for (const fn of commits) fn(); await settle() },
+    poll: async () => { now += 2000; monotonic += 2000; for (const fn of commits) fn(); await settle() },
     history: () => sql.query({ type: "history", scope: "/native-host", root: "root" }) as HistorySelection,
     totals: () => (sql.query({ type: "totals" }) as HistoryTotals).totals }
 }

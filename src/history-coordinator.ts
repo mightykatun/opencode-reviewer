@@ -44,7 +44,8 @@ export class HistoryCoordinator<R extends HostRequest = HostRequest> {
   constructor(readonly scope: string, private store: Store,
     private ancestry: AncestryReader,
     private now: () => number = Date.now,
-    assistant: AssistantSource<R> = request => request.source?.assistantID) {
+    assistant: AssistantSource<R> = request => request.source?.assistantID,
+    private monotonicNow: () => number = () => performance.now()) {
     this.assistant = assistant
     this.unsubscribe = store.onCommit(() => this.poll())
   }
@@ -95,6 +96,7 @@ export class HistoryCoordinator<R extends HostRequest = HostRequest> {
     if (fact.type === "removed") this.early.delete(id)
     const c = this.candidates.get(id)
     if (!c || c.context.session !== fact.request.sessionID) return
+    if (this.expired(c)) return
     if (fact.type === "cancelled") { c.cancelled = true; return }
     if (fact.reason === "deleted" || fact.reason === "disposed") { this.candidates.delete(id); return }
     if (c.removed && c.expires !== undefined) return
@@ -104,7 +106,7 @@ export class HistoryCoordinator<R extends HostRequest = HostRequest> {
     if ([...this.candidates.values()].filter(value => value.expires !== undefined).length >= 128) {
       this.candidates.delete(id); return
     }
-    c.expires = this.now() + 6500
+    c.expires = this.monotonicNow() + 6500
     this.schedule()
     void this.poll()
   }
@@ -163,6 +165,7 @@ export class HistoryCoordinator<R extends HostRequest = HostRequest> {
   }
   private finishKnown(c: Candidate): boolean {
     if (!c.removed) return false
+    if (this.expired(c)) return true
     if (c.reply === "reject") return this.finish(c, "rejected")
     if (c.confirmed) return this.finish(c, c.confirmed)
     if (c.reply === "always") return this.finish(c, "manual")
@@ -171,34 +174,42 @@ export class HistoryCoordinator<R extends HostRequest = HostRequest> {
     return false
   }
   private finish(c: Candidate, outcome: HistoryOutcome): true {
+    if (this.expired(c)) return true
     this.admit({ type: "permissionResolved", context: c.context, payload: c.payload, outcome, at: this.now() })
     this.candidates.delete(c.context.permission) // Admission failure cannot create a second outage queue.
     if (this.resolved.size >= 4096) this.resolved.delete(this.resolved.keys().next().value!)
     this.resolved.set(c.context.permission, c.context)
     return true
   }
+  /** Timer delivery is not expiry authority: late events and reads must omit the
+   * body too. Wall-clock event timestamps never change this attribution window. */
+  private expired(c: Candidate): boolean {
+    if (c.expires === undefined || c.expires > this.monotonicNow()) return false
+    if (this.candidates.get(c.context.permission) === c) this.candidates.delete(c.context.permission)
+    return true
+  }
   private schedule() {
     if (this.stopped || this.timer) return
     this.timer = setTimeout(() => {
       this.timer = undefined
-      for (const [id, c] of this.candidates) if (c.expires !== undefined && c.expires <= this.now()) this.candidates.delete(id)
+      for (const c of this.candidates.values()) this.expired(c)
       void this.poll()
       if ([...this.candidates.values()].some(c => c.expires !== undefined)) this.schedule()
     }, 500)
   }
   private nextPoll = 0
   private async poll() {
-    if (this.stopped || this.polling || this.now() < this.nextPoll || ![...this.candidates.values()].some(c => c.expires !== undefined)) return
+    if (this.stopped || this.polling || this.monotonicNow() < this.nextPoll || ![...this.candidates.values()].some(c => c.expires !== undefined)) return
     this.polling = true
-    this.nextPoll = this.now() + 2000
+    this.nextPoll = this.monotonicNow() + 2000
     try {
       for (const c of this.candidates.values()) {
-        if (this.stopped || c.expires === undefined) continue
+        if (this.stopped || c.expires === undefined || this.expired(c)) continue
         const { scope, root, session, permission } = c.context
         const read = this.store.query({ type: "resolution", scope, root, session, permission }, this.abort.signal)
         try {
           const result = await read as HistoryResolution
-          if (this.stopped || this.candidates.get(permission) !== c || c.expires <= this.now()) continue
+          if (this.stopped || this.candidates.get(permission) !== c || this.expired(c)) continue
           if (result.deleted || result.conflict) this.candidates.delete(permission)
           else if (result.outcome) this.finish(c, result.outcome)
           else if (!result.uncertain && !c.dispatched && !c.reply && (c.cancelled || c.interrupted)) this.finish(c, "cancelled")
