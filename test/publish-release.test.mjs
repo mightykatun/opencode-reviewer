@@ -17,7 +17,7 @@ const readClock = () => {
 
 test("new uploads adopt the signed provenance file and release its ownership after npm settles", async () => {
   const calls = []
-  await publishRelease("/tmp/verified.tgz", pkg, bytes, {
+  const result = await publishRelease("/tmp/verified.tgz", pkg, bytes, {
     fetcher: async () => new Response(null, { status: 404 }),
     provenance: async () => { calls.push("sign"); return { file: "/tmp/private signing/release.sigstore", dispose: async () => calls.push("dispose") } },
     run: (command, args) => {
@@ -27,6 +27,7 @@ test("new uploads adopt the signed provenance file and release its ownership aft
       assert.ok(!args.includes("--provenance"))
     },
   })
+  assert.deepEqual(result, { status: "submitted", tag: "latest" })
   assert.deepEqual(calls, ["sign", "upload", "dispose"])
 })
 
@@ -39,10 +40,10 @@ test("missing or failed signing prevents upload and uncertain uploads dispose wi
   }), /signing failed/)
   assert.equal(writes, 0)
   assert.equal(signs, 1)
-  await assert.rejects(publish("/tmp/verified.tgz", pkg, bytes, { ...options,
+  assert.deepEqual(await publish("/tmp/verified.tgz", pkg, bytes, { ...options,
     provenance: async () => { signs++; return { file: "/tmp/signed.sigstore", dispose: async () => { disposed++ } } },
     run: () => { writes++; throw new Error("uncertain upload") },
-  }), /uncertain upload/)
+  }), { status: "uncertain", tag: "latest" })
   assert.equal(signs, 2)
   assert.equal(writes, 1)
   assert.equal(disposed, 1)
@@ -224,7 +225,7 @@ test("noncanonical versions and publication overrides fail before registry reads
 
 test("an uncertain upload is never automatically retried or followed by a dist-tag mutation", async () => {
   let writes = 0
-  await assert.rejects(publishRelease("/tmp/verified.tgz", pkg, bytes, {
+  const result = await publishRelease("/tmp/verified.tgz", pkg, bytes, {
     fetcher: async () => new Response(null, { status: 404 }),
     run: (command, args) => {
       assert.equal(command, "npm")
@@ -233,7 +234,8 @@ test("an uncertain upload is never automatically retried or followed by a dist-t
       writes++
       throw new Error("upload acknowledgement lost")
     },
-  }), /acknowledgement lost/)
+  })
+  assert.deepEqual(result, { status: "uncertain", tag: "latest" })
   assert.equal(writes, 1)
 })
 

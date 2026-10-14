@@ -57,6 +57,45 @@ test("accepted publication waits for metadata, dist-tag and archive without repu
   assert.match(options.messages.at(-1), /Verified.*archive integrity matches/)
 })
 
+test("an npm PUT 503 enters read-only verification and succeeds only when the identical archive appears", async () => {
+  let uploads = 0, polls = 0, disposed = 0
+  const result = await publishRelease("/tmp/verified.tgz", pkg, bytes, {
+    fetcher: async () => new Response(null, { status: 404 }),
+    provenance: async () => ({ file: "/tmp/fixture.sigstore", dispose: async () => { disposed++ } }),
+    run: () => { uploads++; throw Error("503 after committed PUT") },
+  })
+  assert.deepEqual(result, { status: "uncertain", tag: "latest" })
+  assert.equal(disposed, 1)
+  const options = clock()
+  await verifyPublication(pkg, bytes, result.tag, { ...options,
+    fetcher: async (url, init) => {
+      assert.equal(init.method ?? "GET", "GET")
+      if (new URL(url).pathname === versionPath && ++polls < 3) return new Response(null, { status: 404 })
+      return ready(url)
+    },
+  })
+  assert.equal(uploads, 1)
+  assert.equal(polls, 3)
+  assert.equal(options.now(), 20)
+  assert.match(options.messages.at(-1), /Verified.*archive integrity matches/)
+})
+
+for (const outcome of ["absent", "mismatched"]) test(`uncertain upload verification stays failed when the archive is ${outcome}`, async () => {
+  let uploads = 0
+  const result = await publishRelease("/tmp/verified.tgz", pkg, bytes, {
+    fetcher: async () => new Response(null, { status: 404 }),
+    run: () => { uploads++; throw Error("lost acknowledgement") },
+  })
+  const options = clock()
+  await assert.rejects(verifyPublication(pkg, bytes, result.tag, { ...options,
+    fetcher: async url => outcome === "absent" ? new Response(null, { status: 404 })
+      : new URL(url).pathname.endsWith(".tgz") ? new Response(Buffer.alloc(bytes.length)) : ready(url),
+  }), outcome === "absent" ? /publication could not be verified/ : /Downloaded npm archive differs/)
+  assert.equal(uploads, 1)
+  if (outcome === "absent") assert.equal(options.now(), 100)
+  assert.equal(options.messages.some(message => message.startsWith("Verified")), false)
+})
+
 test("default verification survives long npm processing across metadata, channel and archive without another upload", async () => {
   const options = clock(), minute = 60000
   let publishes = 0

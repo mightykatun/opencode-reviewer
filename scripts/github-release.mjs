@@ -4,7 +4,8 @@ import { pathToFileURL } from "node:url"
 import { expectedArtifact, loadReleaseArtifact } from "./release-artifact.mjs"
 import { canAdvanceChannel, isPrerelease, npmReleaseVersion } from "./release-version.mjs"
 
-/** Called after npm archive verification, inside the workflow's package-wide publication lock. */
+/** Attach the CI-verified archive independently of npm's upload/processing outcome,
+ * inside the workflow's package-wide publication lock. */
 export async function githubRelease(tarball, pkg, tag, {
   repository = process.env.GITHUB_REPOSITORY, token = process.env.GH_TOKEN,
   fetcher = fetch, run = execFileSync,

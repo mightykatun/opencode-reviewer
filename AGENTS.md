@@ -481,6 +481,10 @@ existing user directories.
 - npm can accept an upload long before registry availability. Read-only publication
   verification waits up to 60 minutes; keep the publish job's 75-minute timeout
   above that budget. Never bypass archive verification or republish to fix a delay.
+- GitHub release creation attaches the CI-verified archive before npm publication,
+  independently of npm upload/processing outcomes. A failed npm upload is uncertain:
+  verify the exact bytes read-only within the existing budget, never retry the PUT
+  or mutate dist-tags. Unverified npm availability still fails the workflow.
 - Release policy tests are in `npm run test:helpers`. After a build, run
   `node --test test/release-artifact-smoke.test.mjs`; with npm 12.2.0, also run
   `node --test test/npm-cli-smoke.test.mjs`. Neither publishes. Keep workflow actions

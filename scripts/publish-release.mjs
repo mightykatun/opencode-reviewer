@@ -46,8 +46,15 @@ export async function publishRelease(tarball, pkg, bytes, {
   const signed = await provenance()
   try {
     assert.ok(signed?.file && typeof signed.dispose === "function", "Missing signed provenance file")
-    run("npm", ["publish", tarball, "--ignore-scripts", "--access", "public",
-      "--provenance-file", signed.file, "--tag", tag, "--registry", "https://registry.npmjs.org/", "--fetch-retries=0"], { stdio: "inherit" })
+    try {
+      run("npm", ["publish", tarball, "--ignore-scripts", "--access", "public",
+        "--provenance-file", signed.file, "--tag", tag, "--registry", "https://registry.npmjs.org/", "--fetch-retries=0"], { stdio: "inherit" })
+    } catch {
+      // A failed PUT can already be committed. Continue with reads, never a
+      // second upload or a dist-tag write, and require the identical archive.
+      console.warn("npm upload outcome is uncertain; checking registry availability without retrying the upload")
+      return { status: "uncertain", tag }
+    }
   } finally { await signed?.dispose?.() }
   return { status: "submitted", tag }
 }

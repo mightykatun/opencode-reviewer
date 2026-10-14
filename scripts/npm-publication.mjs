@@ -119,5 +119,5 @@ export async function verifyPublication(pkg, bytes, tag, {
     log(`Waiting for npm: ${reason}. Checking again in ${Math.min(intervalMs, remaining) / 1000}s.`)
     await sleep(Math.min(intervalMs, remaining))
   }
-  throw new Error(`npm accepted the upload but publication could not be verified within ${timeoutMs / 1000}s: ${reason}. Check npm before retrying; do not republish or change the version just to bypass processing.`)
+  throw new Error(`npm publication could not be verified within ${timeoutMs / 1000}s: ${reason}. Check npm before retrying; do not republish or change the version just to bypass processing.`)
 }

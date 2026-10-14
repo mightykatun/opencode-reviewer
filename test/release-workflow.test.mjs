@@ -81,8 +81,19 @@ test("artifact transfer binds an immutable ID and manifest expectations to valid
   const commands = [...publish.matchAll(/^        run: (.+)$/gm)].map((match) => match[1]).filter((command) => command !== "|")
   assert.deepEqual(commands, ["npm install --global npm@12.2.0 --ignore-scripts",
     'node release-policy/scripts/release-artifact.mjs verify "$RUNNER_TEMP/release-package"',
-    'node release-policy/scripts/publish-release.mjs "$RUNNER_TEMP/release-package"',
-    'node release-policy/scripts/github-release.mjs "$RUNNER_TEMP/release-package"'])
+    'node release-policy/scripts/github-release.mjs "$RUNNER_TEMP/release-package"',
+    'node release-policy/scripts/publish-release.mjs "$RUNNER_TEMP/release-package"'])
+})
+
+test("GitHub release creation requires verified artifact bytes but cannot be skipped by npm processing failure", () => {
+  const verify = publish.indexOf("name: Verify artifact identity and actual archive contents")
+  const github = publish.indexOf("name: Create GitHub release and attach the verified archive")
+  const npm = publish.indexOf("name: Publish package and verify npm availability")
+  assert.ok(verify >= 0 && github > verify && npm > github)
+  assert.doesNotMatch(step(publish, "Verify artifact identity and actual archive contents"), /continue-on-error:/)
+  assert.doesNotMatch(step(publish, "Create GitHub release and attach the verified archive"), /if:.*always\(|continue-on-error:/)
+  assert.doesNotMatch(step(publish, "Publish package and verify npm availability"), /continue-on-error:/,
+    "Unconfirmed npm publication must still fail the workflow")
 })
 
 test("actual workflow shell commands pass one artifact directory even with spaces", () => {
@@ -179,6 +190,7 @@ test("artifact-only CLIs publish and attach the exact validated bytes without pr
       }
       submitted = true;
       console.log("WRITE " + JSON.stringify({ command, args }));
+      if (command === "npm" && process.env.FIXTURE_UPLOAD_UNCERTAIN === "1") throw new Error("fixture npm PUT returned 503");
     };
     syncBuiltinESMExports();
     globalThis.fetch = async (url, init) => {
@@ -196,10 +208,13 @@ test("artifact-only CLIs publish and attach the exact validated bytes without pr
   `
   const run = (helper, override = {}) => execFileSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(setup)}`,
     path.join(policy, `${helper}.mjs`), artifact], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, ...provenanceEnv(env), RUNNER_TEMP: root, GH_TOKEN: "fixture-token", ...override } })
+    timeout: 10000, env: { ...process.env, ...provenanceEnv(env), RUNNER_TEMP: root, GH_TOKEN: "fixture-token", ...override } })
   const writes = (output) => output.trim().split("\n").filter((line) => line.startsWith("WRITE ")).map((line) => JSON.parse(line.slice(6)))
   assert.deepEqual(writes(run("publish-release")), [{ command: "npm", args: ["publish", tarball, "--ignore-scripts", "--access", "public",
     "--provenance-file", "<signed-file>", "--tag", "archive", "--registry", "https://registry.npmjs.org/", "--fetch-retries=0"] }])
+  const recovered = run("publish-release", { FIXTURE_UPLOAD_UNCERTAIN: "1" })
+  assert.equal(writes(recovered).length, 1, "The actual CLI must verify a committed PUT after 503 without reuploading")
+  assert.match(recovered, /Verified opencode-reviewer@0\.4\.0 on npm; archive integrity matches/)
   assert.deepEqual(writes(run("github-release")), [
     { command: "gh", args: ["release", "upload", "v0.4.0", tarball, "--repo", "mightykatun/opencode-reviewer", "--clobber"] },
     { command: "gh", args: ["release", "edit", "v0.4.0", "--draft=false", "--prerelease=false", "--latest=false", "--repo", "mightykatun/opencode-reviewer"] },

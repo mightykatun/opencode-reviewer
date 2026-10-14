@@ -166,12 +166,13 @@ jobs:
       - name: Verify artifact identity and actual archive contents
         run: node release-policy/scripts/release-artifact.mjs verify "$RUNNER_TEMP/release-package"
 
-      - name: Publish package and verify npm availability
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: node release-policy/scripts/publish-release.mjs "$RUNNER_TEMP/release-package"
-
+      # GitHub attaches the validated bytes even if npm's upload or processing fails.
       - name: Create GitHub release and attach the verified archive
         env:
           GH_TOKEN: ${{ github.token }}
         run: node release-policy/scripts/github-release.mjs "$RUNNER_TEMP/release-package"
+
+      - name: Publish package and verify npm availability
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: node release-policy/scripts/publish-release.mjs "$RUNNER_TEMP/release-package"
