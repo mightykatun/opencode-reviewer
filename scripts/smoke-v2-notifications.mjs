@@ -41,6 +41,9 @@ async function monitorSetup(ctx) {
   record.cleaned = false
   const location = { directory: fixture.project }
   const options = () => ({ location, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15000)]) })
+  // Keep the exact prompt-free native write owned through startup reload. An
+  // aborted HTTP reply cannot safely be replayed after the server committed it.
+  const probeOptions = command => ({ location, signal: AbortSignal.timeout(Math.min(15000, command.timeoutMs ?? 15000)) })
   const save = () => {
     record.route = JSON.parse(JSON.stringify(ctx.ui.router.current()))
     record.mode = ctx.keymap.mode.current()
@@ -72,9 +75,9 @@ async function monitorSetup(ctx) {
         let value
         if (command.type === "connection-probe") {
           value = await ctx.client.session.create({ title: "Notification connection probe", location,
-            model: { providerID: "fixture", id: "fixture" } }, options())
+            model: { providerID: "fixture", id: "fixture" } }, probeOptions(command))
         } else if (command.type === "remove-probe") {
-          await ctx.client.session.remove({ sessionID: command.sessionID }, options())
+          await ctx.client.session.remove({ sessionID: command.sessionID }, probeOptions(command))
         } else if (command.type === "start") {
           value = await ctx.client.session.create({ title: "V2 notification fixture", location,
             model: { providerID: "fixture", id: "fixture" } }, options())
@@ -296,10 +299,10 @@ const until = async (label, predicate, timeout = 60000) => {
   } while (performance.now() < end)
   throw Error(`Timed out waiting for ${scenario}/${label}`)
 }
-const command = async input => {
+const command = async (input, timeout = 60000) => {
   const id = ++sequence
-  await publish(controlPath, { ...input, sequence: id })
-  return (await until("monitor " + input.type, record => record?.replies[id])).value
+  await publish(controlPath, { ...input, sequence: id, timeoutMs: timeout })
+  return (await until("monitor " + input.type, record => record?.replies[id], timeout)).value
 }
 const snapshot = () => command({ type: "snapshot", sessionID })
 const quiet = async (label, count, duration = 1500, check = () => {}) => {
@@ -513,8 +516,8 @@ try {
   assert.equal(ready.version, version.slice("opencode v".length))
   {
     const probe = await connectionProbe({ directory: project, observe: observation,
-      create: () => command({ type: "connection-probe" }),
-      remove: sessionID => command({ type: "remove-probe", sessionID }) })
+      create: ({ timeoutMs }) => command({ type: "connection-probe" }, timeoutMs),
+      remove: (sessionID, { timeoutMs } = {}) => command({ type: "remove-probe", sessionID }, timeoutMs) })
     evidence.push({ connectionProbe: { ...probe, removed: true } })
     await publish(cliPath, cli)
   }

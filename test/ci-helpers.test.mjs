@@ -123,3 +123,25 @@ test("connection barrier never substitutes snapshots, wrong location, missed del
     assert.equal(removes, 1, "Each owned probe is retired exactly once, including failures")
   }
 })
+
+test("connection barrier includes native control calls in its original deadline and keeps late cleanup separate", async () => {
+  let clock = 0
+  const budgets = [], removed = [], directory = "/fixture"
+  const birth = { data: { sessionID: "owned-probe", location: { directory } }, durable: { aggregateID: "owned-probe" } }
+  const value = await connectionProbe({ directory,
+    create: async budget => { budgets.push(budget); clock += 35; return { id: "owned-probe" } },
+    remove: async (id, budget) => { removed.push(id); budgets.push(budget); clock += 25 },
+    observe: async () => ({ connectionBirths: [birth], connectionDeletes: removed.map(sessionID => ({ data: { sessionID } })) }),
+  }, { timeoutMs: 100, now: () => clock, pause: async ms => { clock += ms } })
+  assert.deepEqual(budgets, [{ timeoutMs: 100 }, { timeoutMs: 65 }])
+  assert.equal(value.sessionID, "owned-probe")
+  assert.equal(clock, 60)
+  budgets.length = 0; removed.length = 0; clock = 0
+  await assert.rejects(connectionProbe({ directory,
+    create: async budget => { budgets.push(budget); clock = 100; return { id: "owned-probe" } },
+    remove: async (id, budget) => { removed.push(id); budgets.push(budget) },
+    observe: async () => { assert.fail("No late event admission") },
+  }, { timeoutMs: 100, now: () => clock, pause: async ms => { clock += ms } }), /Timed out/)
+  assert.deepEqual(budgets, [{ timeoutMs: 100 }, undefined], "Late cleanup does not create a new admission window")
+  assert.deepEqual(removed, ["owned-probe"])
+})

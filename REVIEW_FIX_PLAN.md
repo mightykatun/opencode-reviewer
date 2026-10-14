@@ -156,3 +156,15 @@ Record commands, test counts and exact runtime fixture results here after each p
   Lifecycle/default passed in 47,072 ms (`.runtime/runtime-run-vMyCZ8/results.json`);
   cold-startup passed in 48,050 ms (`.runtime/runtime-run-UURzfp/results.json`),
   serially on OpenCode 2.0.29. The complete profile still requires a successful run.
+- Second runtime mismatch resolved: startup reload aborted a consumed prompt-free
+  native create/remove control after the server could commit it, losing its actual
+  reply. Four deterministic monitor regressions failed before the repair. The
+  fixture now drains that dispatched transaction within its existing 15-second
+  RPC cap, preserving the reply without replay; the original 60-second admission
+  deadline covers control waits, and exact native birth/deletion remain mandatory.
+  No production code, palette/cache behavior or timeout cap changed.
+  Targeted helper checks: 20 passed; full helper suite: 145 passed. Build/diff check
+  passed. Fast passed twice (12,134 and 12,295 ms), normal-edit passed (21,241 ms),
+  forms passed (24,522 ms), serially on OpenCode 2.0.29. Exact commands, actual
+  event observations and results paths: `.runtime/final-fast-probe-evidence.log`.
+  The interrupted profile's six successful cases remain evidence, not a full pass.

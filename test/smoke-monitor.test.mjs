@@ -189,6 +189,66 @@ test("notification monitor reload repeats an aborted read without replaying side
   assert.deepEqual(memory.record.replies[1].value, { data: [] })
 })
 
+for (const fixtureName of ["smoke-v2-review.mjs", "smoke-v2-notifications.mjs"]) {
+  for (const type of ["connection-probe", "remove-probe"]) {
+    test(`${fixtureName}: reload drains ${type} and preserves its reply without replaying the native write`, async () => {
+      const text = await readFile(new URL(`../scripts/${fixtureName}`, import.meta.url), "utf8")
+      const ast = parseSync(text, { sourceType: "module", babelrc: false, configFile: false })
+      const monitor = ast.program.body.find(node => node.type === "FunctionDeclaration" && node.id.name === "monitorSetup")
+      let source = text.slice(monitor.start, monitor.end)
+      if (fixtureName === "smoke-v2-review.mjs") {
+        for (const line of ['const { Rpc } = await import("@opencode/plugin/rpc")', 'const { CliRenderEvents } = await import("@opentui/core")'])
+          source = source.replace(line, "")
+      }
+      const entered = deferred(), response = deferred()
+      const budgets = [], timeoutMs = type === "connection-probe" ? 8500 : 60000
+      const signals = { any: AbortSignal.any, timeout(ms) { budgets.push(ms); return AbortSignal.timeout(ms) } }
+      let memory, signal, writes = 0, closed = 0
+      const transaction = (_input, options) => {
+        writes++; signal = options.signal; entered.resolve()
+        return new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+          response.promise.then(resolve)
+        })
+      }
+      const ctx = { app: { version: "fixture" },
+        storage: { memory(_key, { initial }) { memory ??= structuredClone(initial); return [memory, update => update(memory)] } },
+        data: { listen: () => () => {} },
+        ui: { router: { current: () => ({ type: "home" }), register: () => () => {} } },
+        keymap: { mode: { current: () => "base" }, commands: () => [] },
+        renderer: { root: { visible: false }, on() {}, off() {}, useMouse: false, width: 160, height: 40 },
+        client: { rpc: () => ({}), session: { create: transaction, remove: transaction } } }
+      const publisher = () => ({ publish: () => Promise.resolve(), flush: async () => {}, close: async () => { closed++ } })
+      const sleep = (_ms, _value, { signal }) => new Promise((_yes, reject) => {
+        if (signal.aborted) { reject(signal.reason); return }
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+      })
+      const setup = new Function("observationPublisher", "fixture", "readObservation", "sleep", "Rpc", "CliRenderEvents", "rpcDefinition", "AbortSignal",
+        `${source}\nreturn monitorSetup`)(publisher, { project: "/fixture", initial: "/fixture", control: "control", monitor: "monitor" },
+        async () => ({ sequence: 1, type, sessionID: "owned-probe", timeoutMs }), sleep, { define: value => value }, { FRAME: "frame" }, () => ({}), signals)
+      const stopFirst = await setup(ctx)
+      await entered.promise
+      let settled = false
+      const stopping = stopFirst().then(() => { settled = true })
+      await Promise.resolve()
+      assert.equal(signal.aborted, false, "Reload must not discard the reply to an already-dispatched prompt-free write")
+      assert.deepEqual(budgets, [Math.min(15000, timeoutMs)], "Drain never raises the native RPC cap or remaining barrier budget")
+      assert.equal(settled, false, "Disposal owns the exact native transaction through settlement")
+      assert.equal(closed, 0)
+      response.resolve(type === "connection-probe" ? { id: "owned-probe" } : undefined)
+      await stopping
+      const expected = { value: type === "connection-probe" ? { id: "owned-probe" } : null }
+      assert.deepEqual(memory.record.replies[1], expected)
+      assert.deepEqual(memory.record.errors, [])
+      const stopSecond = await setup(ctx)
+      await stopSecond()
+      assert.equal(writes, 1, "The consumed control can never replay after reload")
+      assert.deepEqual(memory.record.replies[1], expected)
+      assert.equal(closed, 2)
+    })
+  }
+}
+
 test("notification fixture acknowledges dispatch before held observation writes, which disposal still owns", async () => {
   const text = await readFile(new URL("../scripts/smoke-v2-notifications.mjs", import.meta.url), "utf8")
   const ast = parseSync(text, { sourceType: "module", babelrc: false, configFile: false })

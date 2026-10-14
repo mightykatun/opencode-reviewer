@@ -7,16 +7,17 @@ export async function connectionProbe({ create, remove, observe, directory }, {
   now = () => performance.now(), pause = setTimeout, timeoutMs = 60000,
 } = {}) {
   const deadline = now() + timeoutMs, attempts = []
+  const remaining = () => ({ timeoutMs: Math.max(0, Math.floor(deadline - now())) })
   let current, removed = false, bornAt
   const start = async () => {
-    const value = await create()
+    const value = await create(remaining())
     assert.ok(typeof value?.id === "string" && value.id.length, "Native probe requires an exact session identity")
     current = value
     removed = false
     bornAt = now()
     attempts.push(current.id)
   }
-  const retire = async () => { removed = true; await remove(current.id) }
+  const retire = async (budget = remaining()) => { removed = true; await remove(current.id, budget ?? undefined) }
   try {
     await start()
     while (now() < deadline) {
@@ -43,6 +44,8 @@ export async function connectionProbe({ create, remove, observe, directory }, {
     }
     throw new Error("Timed out waiting for exact native connection probe birth and deletion before reviewer activation")
   } finally {
-    if (current && !removed) await retire()
+    // Cleanup may outlive admission, but can never extend its 60-second proof
+    // window. It still owns the once-only retirement of the last actual probe.
+    if (current && !removed) await retire(null)
   }
 }

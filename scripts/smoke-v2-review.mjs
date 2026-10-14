@@ -74,10 +74,15 @@ async function monitorSetup(ctx) {
   const unregisterDashboard = ctx.ui.router.register({ name: "fixture.dashboard", render: () => null })
   const location = { directory: fixture.initial }
   const options = () => ({ location, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15000)]) })
+  // Startup reconciliation can reload this monitor after a native probe write
+  // committed but before its reply arrived. Drain that exact prompt-free call
+  // within its existing RPC budget; cleanup owns it and reload never replays it.
+  const probeOptions = command => ({ location, signal: AbortSignal.timeout(Math.min(15000, command.timeoutMs ?? 15000)) })
   const save = () => {
     record.route = JSON.parse(JSON.stringify(ctx.ui.router.current()))
     record.mouse = ctx.renderer.useMouse
     record.mode = ctx.keymap.mode.current()
+    record.controlSequence = memory.sequence
     record.choices = {}
     let budget = 8192
     const choices = node => {
@@ -117,6 +122,7 @@ async function monitorSetup(ctx) {
         const readonly = ["status", "pending", "inspect", "message", "runtime-ready"].includes(command.type)
           || (command.type === "keymap" && !command.dispatch)
         if (!readonly) update(draft => { draft.sequence = sequence })
+        record.control = { sequence, type: command.type, state: "started" }
         let value
         if (command.type === "status") {
           value = { plugins: await ctx.client.plugin.list({ location }, options()) }
@@ -125,9 +131,9 @@ async function monitorSetup(ctx) {
         }
         else if (command.type === "connection-probe") {
           value = await ctx.client.session.create({ title: "Review connection probe", location,
-            model: { providerID: "fixture", id: "fixture" } }, options())
+            model: { providerID: "fixture", id: "fixture" } }, probeOptions(command))
         } else if (command.type === "remove-probe") {
-          await ctx.client.session.remove({ sessionID: command.sessionID }, options())
+          await ctx.client.session.remove({ sessionID: command.sessionID }, probeOptions(command))
         } else if (command.type === "start") {
           value = await ctx.client.session.create({ title: "V2 production review fixture", location,
             model: { providerID: "fixture", id: "fixture" } }, options())
@@ -195,6 +201,7 @@ async function monitorSetup(ctx) {
         else throw Error("Unknown V2 review fixture control: " + command.type)
         record.replies[sequence] = { value: value ?? null }
         update(draft => { draft.sequence = sequence })
+        record.control = { sequence, type: command.type, state: "settled" }
          await save(); await publisher.flush()
        }
        // Observe native keyboard modal transitions as well as server events.
@@ -497,18 +504,18 @@ const observations = async () => {
   return record
 }
 const until = async (label, predicate, timeout = 60000) => {
-  const end = Date.now() + timeout
+  const end = performance.now() + timeout
   do {
     const record = await observations(), value = await predicate(record)
     if (value) return value
     await sleep(60)
-  } while (Date.now() < end)
+  } while (performance.now() < end)
   throw Error(`Timed out waiting for ${scenario}/${label}`)
 }
-const command = async input => {
+const command = async (input, timeout = 60000) => {
   const id = ++sequence
-  await publish(controlPath, { ...input, sequence: id })
-  const reply = await until("monitor " + input.type, record => record?.replies[id])
+  await publish(controlPath, { ...input, sequence: id, timeoutMs: timeout })
+  const reply = await until("monitor " + input.type, record => record?.replies[id], timeout)
   return reply.value
 }
 const negativeWindow = async (label, expectedPending, expectedReplies, expectedExecution, expectedReviewPOSTs,
@@ -1067,8 +1074,8 @@ createInterface({input:process.stdin}).on('line',line=>{
   const ready = await until("independent monitor", record => record?.ready && record)
   assert.equal(ready.version, version.slice("opencode v".length))
   const probe = await connectionProbe({ directory: initial, observe: observations,
-    create: () => command({ type: "connection-probe" }),
-    remove: sessionID => command({ type: "remove-probe", sessionID }) })
+    create: ({ timeoutMs }) => command({ type: "connection-probe" }, timeoutMs),
+    remove: (sessionID, { timeoutMs } = {}) => command({ type: "remove-probe", sessionID }, timeoutMs) })
   await publish(path.join(artifacts, "connection-probe.json"), probe)
   await publish(cliPath, cli)
   await until("actual configured production CLI runtime", async () =>
