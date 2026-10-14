@@ -25,18 +25,35 @@ export function verifyThemeSyntaxInputs(manifest, digests) {
   }
 }
 
+export function adaptThemeSyntax(source) {
+  const signature = "export function generateSyntax(theme) {"
+  const close = "\n    ]);\n}"
+  if (typeof source !== "string" || source.split(signature).length !== 2 || source.split(close).length !== 2) {
+    throw new Error("Pinned theme syntax source changed")
+  }
+  return source
+    .replace(signature, "export function generateSyntax(theme, owner) {")
+    .replace(close, "\n    ], owner);\n}")
+}
+
 export const themeSyntaxOnlyPlugin = {
   name: "theme-syntax-only",
   setup(builder) {
-    builder.onLoad({ filter: /node_modules\/@opencode\/theme\/dist\/tui\/index\.js$/ }, async ({ path: barrel }) => {
-      const directory = path.dirname(barrel)
+    builder.onLoad({ filter: /node_modules\/@opencode\/theme\/dist\/tui\/(?:index|syntax)\.js$/ }, async ({ path: target }) => {
+      const directory = path.dirname(target)
       const manifest = JSON.parse(await readFile(path.join(directory, "../../package.json"), "utf8"))
-      const digests = Object.fromEntries(await Promise.all(Object.keys(fingerprints).map(async file => [
-        file, createHash("sha256").update(await readFile(path.join(directory, file))).digest("hex"),
+      const sources = Object.fromEntries(await Promise.all(Object.keys(fingerprints).map(async file => [
+        file, await readFile(path.join(directory, file), "utf8"),
       ])))
+      const digests = Object.fromEntries(Object.entries(sources).map(([file, source]) => [
+        file, createHash("sha256").update(source).digest("hex"),
+      ]))
       verifyThemeSyntaxInputs(manifest, digests)
+      if (path.basename(target) === "syntax.js") {
+        return { contents: adaptThemeSyntax(sources["syntax.js"]), loader: "js" }
+      }
       // The public barrel eagerly initializes Effect schemas and theme parsers.
-      // Replace only that barrel; bundle upstream syntax.js byte-for-byte as input.
+      // Replace only that barrel; adapt syntax.js to forward the SyntaxStyle owner.
       return { contents: 'export { generateSyntax } from "./syntax.js";', loader: "js" }
     })
   },

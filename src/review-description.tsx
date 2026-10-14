@@ -14,7 +14,8 @@ function latestHighlights(node: Renderable | undefined): Promise<void>[] {
 export function HostReviewDescription(props: { context: Plugin.Context; text: string; streaming: boolean; ref?: (value: MarkdownRenderable) => void }) {
   let description: MarkdownRenderable | undefined
   const style = createMemo<SyntaxStyle>((previous) => {
-    const syntax = generateSyntax(props.context.theme)
+    const syntax = (generateSyntax as (theme: Plugin.Context["theme"], owner?: unknown) => SyntaxStyle)(
+      props.context.theme, (props.context.renderer as { nativeScene?: unknown } | undefined)?.nativeScene)
     if (previous) {
       const pending = latestHighlights(description)
       if (description && !description.isDestroyed) {
