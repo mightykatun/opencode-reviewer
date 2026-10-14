@@ -19,8 +19,9 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  36-case production/foundation selection from PR CI, including history,
-  statistics, approval notifications and explicitly classified synthetic probes.
+  36-case production/foundation selection available in manual extended checks,
+  including history, statistics, approval notifications and explicitly classified
+  synthetic probes.
   `npm run test:runtime` selects `--profile v2-acceptance`, which currently selects
   the same cases. These profiles do not prove real desktop/audio acceptance.
   `npm run test:runtime-permissions` selects `--profile v2-permissions` for V2
@@ -54,10 +55,11 @@
   observation destinations. Use `smoke-ui.mjs` for palette activation: selected
   result rendition must be painted and the caller must supply a postcondition.
   Preserve negative-observation windows that prove no execution or notification.
-- Pure-helper additions must also be present with their transitive inputs in the
-  release workflow's active-policy sparse checkout. Runtime results and exact
-  invocation logs are under `.runtime/runtime-run-*/`; fixture captures stay in
-  their documented `.runtime/` locations. PR CI uploads those synthetic artifacts.
+- Pure-helper additions are covered automatically by the release workflow's full
+  active-policy checkout. Keep privileged publication's policy checkout restricted.
+  Runtime results and exact invocation logs are under `.runtime/runtime-run-*/`;
+  fixture captures stay in their documented `.runtime/` locations. Manual extended
+  checks upload those synthetic artifacts.
 
 - Source tests use two concurrent files. Keep this bound: timing-sensitive shell
   discovery and history-watchdog tests should not compete with dozens of workers.
@@ -435,11 +437,16 @@ existing user directories.
 
 ## Releases
 
-- CI runs on pull requests and `main` pushes. Workflow syntax is checked with a
-  checksum-pinned actionlint binary before the test matrices. The release gate
-  requires successful default-branch push CI for the exact tagged commit; missing,
-  failed or canceled CI cannot authorize publication. Runtime job summaries expose
-  measured case durations without changing fixture budgets or host concurrency.
+- On 2026-10-14 the user replaced the separate branch-CI/release gate with a simple
+  tag-triggered verification/publication workflow, following Speedometer. The
+  read-only validation job runs workflow lint, source/helper tests, reproducible
+  builds and archive checks for the exact tag before publication can run. There
+  is no branch-CI lookup, automatic main/PR workflow or real-TUI release prerequisite.
+  The manual extended workflow retains Node 22/24 and newest-stable-V2 host checks;
+  its failures cannot authorize or veto publication. Node major ranges select
+  maintained patches, and Ubuntu 24.04 avoids surprise runner-image migrations.
+  Runtime job summaries expose measured case durations without changing fixture
+  budgets or host concurrency.
   Run `bash scripts/lint-workflows.sh` after workflow edits. Its sole syntax
   exception is actionlint 1.7.12's missing support for GitHub's `queue: max`, which
   the release-policy helper tests enforce independently.
@@ -468,4 +475,6 @@ existing user directories.
 - Release policy tests are in `npm run test:helpers`. After a build, run
   `node --test test/release-artifact-smoke.test.mjs`; with npm 12.2.0, also run
   `node --test test/npm-cli-smoke.test.mjs`. Neither publishes. Keep workflow actions
-  pinned to verified commit SHAs and the active-policy sparse checkout complete.
+  pinned to verified commit SHAs. Validation uses a complete active-policy checkout
+  so helper additions need no path-list maintenance; publication keeps only its
+  fixed policy helpers.

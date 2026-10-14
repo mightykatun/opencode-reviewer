@@ -41,15 +41,16 @@ test("workflow separates read-only validation from artifact-only privileged publ
   assert.deepEqual(paths, ["/scripts/release-version.mjs", "/scripts/release-artifact.mjs", "/scripts/release-provenance.mjs", "/scripts/publish-release.mjs",
     "/scripts/npm-publication.mjs", "/scripts/github-release.mjs"])
   assert.match(publish, /npm install --global npm@12\.2\.0 --ignore-scripts/)
+  assert.match(publish, /package-manager-cache: false/)
   assert.match(step(publish, "Publish package and verify npm availability"), /NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/)
   assert.match(step(publish, "Create GitHub release and attach the verified archive"), /GH_TOKEN: \$\{\{ github\.token \}\}/)
 })
 
 test("workflow pins every action to the remotely verified release commit", () => {
-  const verified = { checkout: "34e114876b0b11c390a56381ad16ebd13914f8d5", "setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020",
-    "upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02", "download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093" }
+  const verified = { checkout: "3d3c42e5aac5ba805825da76410c181273ba90b1", "setup-node": "949feb2413d6458794dcd2491c4babbbce0c15c1",
+    "upload-artifact": "cf430e030ddbb5b0abf93d22962f4752f3646cd9", "download-artifact": "9000827ccba6bdab643e8b6fd33ac0654aef8333" }
   const actions = [...workflow.matchAll(/uses: actions\/([\w-]+)@(\S+)/g)]
-  assert.equal(actions.length, 10)
+  assert.equal(actions.length, 7)
   for (const [, name, sha] of actions) assert.equal(sha, verified[name])
 })
 

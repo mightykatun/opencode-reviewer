@@ -86,8 +86,8 @@ export const runtimeProfiles = {
   ],
 }
 
-// Acceptance expands current CI with every production review scenario without
-// enrolling unverified additions into CI. Canonical IDs deduplicate exact cases.
+// Acceptance expands the retained ci profile with every production review
+// scenario. Neither profile is an automatic release gate. Canonical IDs deduplicate.
 runtimeProfiles["v2-acceptance"] = [...new Map([
   ...runtimeProfiles.ci,
   ...runtimeInventory["smoke-v2-review.mjs"].scenarios.map(scenario => ["smoke-v2-review.mjs", scenario]),

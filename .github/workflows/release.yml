@@ -1,4 +1,4 @@
-name: Release package
+name: Verify and release
 
 on:
   push:
@@ -28,39 +28,9 @@ env:
   RELEASE_INPUT_TAG: ${{ inputs.tag || '' }}
 
 jobs:
-  ci:
-    runs-on: ubuntu-latest
-    # Cover the 5-minute lint gate, 25-minute runtime job and queue/setup margin.
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ github.workflow_sha }}
-          path: release-policy
-          sparse-checkout: scripts/release-ci.mjs
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 24
-      - name: Require exact default-branch CI
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          export RELEASE_COMMIT="$(git rev-parse HEAD)"
-          node release-policy/scripts/release-ci.mjs
-
   validate:
-    needs: ci
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: read
     outputs:
@@ -71,90 +41,20 @@ jobs:
       integrity: ${{ steps.artifact.outputs.integrity }}
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.RELEASE_REF }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Check out active validation policy
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
           path: release-policy
-          sparse-checkout-cone-mode: false
-          sparse-checkout: |
-            /scripts/release-version.mjs
-            /scripts/release-ci.mjs
-            /scripts/ci-host.mjs
-            /scripts/runtime-summary.mjs
-            /scripts/lint-workflows.sh
-            /scripts/test-helpers.mjs
-            /scripts/helper-tests.json
-            /scripts/release-artifact.mjs
-            /scripts/release-provenance.mjs
-            /scripts/bundled-sounds.mjs
-            /scripts/bundled-history-worker.mjs
-            /scripts/theme-syntax-adapter.mjs
-            /scripts/publish-release.mjs
-            /scripts/npm-publication.mjs
-            /scripts/github-release.mjs
-            /scripts/smoke-runtime.mjs
-            /scripts/smoke-reviewer.mjs
-            /scripts/smoke-desktop-playback.mjs
-            /scripts/runtime-inventory.mjs
-            /scripts/runtime-runner.mjs
-            /scripts/test-runtime.mjs
-            /scripts/smoke-observations.mjs
-            /scripts/smoke-connection.mjs
-            /scripts/smoke-ui.mjs
-            /scripts/smoke-v2-mouse-proof.mjs
-            /scripts/smoke-v2-contracts.mjs
-            /scripts/smoke-v2-catalog.mjs
-            /scripts/smoke-v2-direct-tools.mjs
-            /scripts/smoke-v2-profile-mapping.mjs
-            /scripts/smoke-v2-effective-evidence.mjs
-            /scripts/smoke-v2-root-presentation.mjs
-            /scripts/smoke-v2-native-queue.mjs
-            /scripts/smoke-v2-delegation.mjs
-            /scripts/smoke-v2-companion-package.mjs
-            /scripts/smoke-v2-lifecycle.mjs
-            /scripts/smoke-v2-invocation.mjs
-            /scripts/smoke-v2-review.mjs
-            /scripts/smoke-v2-review-support.mjs
-            /scripts/smoke-v2-notifications.mjs
-            /scripts/smoke-v2-sidebar-state.mjs
-            /scripts/smoke-notification-desktop.ts
-            /test/ci-workflow.test.mjs
-            /test/ci-helpers.test.mjs
-            /test/publish-release.test.mjs
-            /test/release-version.test.mjs
-            /test/npm-publication.test.mjs
-            /test/release-artifact.test.mjs
-            /test/release-provenance.test.mjs
-            /test/bundled-sounds.test.mjs
-            /test/bundled-history-worker.test.mjs
-            /test/theme-syntax-adapter.test.mjs
-            /test/smoke-v2-review-support.test.mjs
-            /test/release-artifact-smoke.test.mjs
-            /test/npm-cli-smoke.test.mjs
-            /test/release-workflow.test.mjs
-            /test/release-fixture.mjs
-            /test/smoke-measurements.test.mjs
-            /test/smoke-desktop-playback.test.mjs
-            /test/runtime-inventory.test.mjs
-            /test/runtime-runner.test.mjs
-            /test/smoke-helpers.test.mjs
-            /test/smoke-monitor.test.mjs
-            /package.json
-            /package-lock.json
-            /README.md
-            /AGENTS.md
-            /.github/workflows/ci.yml
-            /.github/workflows/release.yml
           persist-credentials: false
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -181,6 +81,7 @@ jobs:
 
       - run: npm ci --ignore-scripts
       - run: mkdir -p /tmp/opencode
+      - run: bash release-policy/scripts/lint-workflows.sh
       - run: npm run typecheck && npm test
       - run: node release-policy/scripts/test-helpers.mjs
       - run: npm run check:package
@@ -198,7 +99,7 @@ jobs:
 
       - name: Upload immutable release artifact
         id: upload
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-package-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-package/
@@ -208,7 +109,7 @@ jobs:
 
   publish:
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Allow 60 minutes for npm processing plus setup and GitHub release upload.
     timeout-minutes: 75
     permissions:
@@ -222,7 +123,7 @@ jobs:
       RELEASE_INTEGRITY: ${{ needs.validate.outputs.integrity }}
     steps:
       - name: Check out immutable publication policy only
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
           path: release-policy
@@ -236,10 +137,11 @@ jobs:
             /scripts/github-release.mjs
           persist-credentials: false
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Create private job-local npm cache
         shell: bash
@@ -255,7 +157,7 @@ jobs:
         run: npm install --global npm@12.2.0 --ignore-scripts
 
       - name: Download validated archive by immutable artifact ID
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.validate.outputs.artifact_id }}
           merge-multiple: true

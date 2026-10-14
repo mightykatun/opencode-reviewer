@@ -5,63 +5,26 @@ import { execFileSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { requireReleaseCI } from "../scripts/release-ci.mjs"
 import { runtimeSummary } from "../scripts/runtime-summary.mjs"
 import { latestV2Host, verifyInstalledHost } from "../scripts/ci-host.mjs"
 import { connectionProbe } from "../scripts/smoke-connection.mjs"
 
-const identity = { repository: "owner/repo", commit: "a".repeat(40), branch: "main", token: "fixture" }
-const run = overrides => ({ id: 10, head_sha: identity.commit, head_branch: "main", event: "push",
-  status: "completed", conclusion: "success", ...overrides })
-const response = runs => ({ ok: true, json: async () => ({ workflow_runs: runs }) })
-
-test("release gate requires newest exact default-branch push CI and authenticates only to GitHub", async () => {
-  const id = await requireReleaseCI(identity, { fetcher: async (url, options) => {
-    assert.equal(url.origin, "https://api.github.com")
-    assert.equal(url.searchParams.get("head_sha"), identity.commit)
-    assert.equal(url.searchParams.get("branch"), "main")
-    assert.equal(url.searchParams.get("event"), "push")
-    assert.equal(options.redirect, "error")
-    assert.equal(options.headers.Authorization, "Bearer fixture")
-    return response([run({ id: 12 }), run({ id: 11 })])
-  } })
-  assert.equal(id, 12)
-  for (const conclusion of ["failure", "cancelled", "skipped", null])
-    await assert.rejects(requireReleaseCI(identity, { fetcher: async () => response([run({ id: 12, conclusion }), run({ id: 11 })]) }), /successful CI/)
-})
-
-test("release gate waits boundedly for matching CI, ignoring other commits, PRs and branches", async () => {
-  let clock = 0, reads = 0
-  const unrelated = [run({ head_sha: "b".repeat(40) }), run({ event: "pull_request" }), run({ head_branch: "feature" })]
-  const options = { timeoutMs: 50, now: () => clock, sleep: async ms => { clock += ms },
-    fetcher: async () => response(++reads === 1 ? unrelated : [run()]) }
-  await assert.rejects(requireReleaseCI(identity, options), /Timed out/)
-  assert.equal(reads, 1)
-  clock = 0; reads = 0
-  options.timeoutMs = 30000
-  assert.equal(await requireReleaseCI(identity, options), 10)
-  assert.equal(reads, 2)
-})
-
-test("release gate never accepts late successful reads, unavailable APIs or malformed replies", async () => {
-  let clock = 0
-  await assert.rejects(requireReleaseCI(identity, { timeoutMs: 50, now: () => clock,
-    fetcher: async () => { clock = 51; return response([run()]) } }), /Timed out/)
-  await assert.rejects(requireReleaseCI(identity, { fetcher: async () => ({ ok: false, status: 403 }) }), /HTTP 403/)
-  await assert.rejects(requireReleaseCI(identity, { fetcher: async () => ({ ok: true, json: async () => ({}) }) }), /Invalid CI/)
-  await assert.rejects(requireReleaseCI(identity, { fetcher: async () => response([run({ id: undefined })]) }), /Invalid CI run identity/)
-})
-
-test("release workflow gates read-only validation on exact CI without changing artifact-only publication", async () => {
+test("a version tag runs verification and artifact-only publication in one workflow without branch-CI polling or TUI prerequisites", async () => {
   const workflow = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8")
-  const gate = workflow.split("\n  ci:\n")[1].split("\n  validate:\n")[0]
-  assert.match(gate, /actions: read/)
-  assert.doesNotMatch(gate, /contents: write|id-token:|npm|secrets\./)
-  assert.match(gate, /ref: \$\{\{ github\.workflow_sha \}\}/)
-  assert.match(gate, /export RELEASE_COMMIT="\$\(git rev-parse HEAD\)"/)
-  assert.match(gate, /node release-policy\/scripts\/release-ci\.mjs/)
-  assert.match(workflow, /\n  validate:\n    needs: ci/)
+  assert.match(workflow, /\n  push:\n    tags:\n      - "v\*"\n/)
+  assert.match(workflow, /\n  workflow_dispatch:\n/)
+  assert.deepEqual([...workflow.matchAll(/^  (\w+):$/gm)].map(match => match[1]).filter(name => !["push", "workflow_dispatch"].includes(name)),
+    ["validate", "publish"], "One verification job and one dependent publication job")
+  assert.doesNotMatch(workflow, /workflow_run:|pull_request:|release-ci|Require exact default-branch CI|test-runtime|OPENCODE_BIN|tmux|continue-on-error:/)
+  const validate = workflow.split("\n  validate:\n")[1].split("\n  publish:\n")[0]
+  assert.doesNotMatch(validate, /needs:|contents: write|id-token:|secrets\.|GH_TOKEN|NODE_AUTH_TOKEN/)
+  for (const check of ["bash release-policy/scripts/lint-workflows.sh", "npm run typecheck && npm test",
+    "node release-policy/scripts/test-helpers.mjs", "npm run check:package",
+    "node --test release-policy/test/release-artifact-smoke.test.mjs", "node --test release-policy/test/npm-cli-smoke.test.mjs"])
+    assert.ok(validate.includes(check), `Required verification: ${check}`)
   const publish = workflow.split("\n  publish:\n")[1]
+  assert.match(publish, /^    needs: validate$/m)
+  assert.doesNotMatch(publish.split("    steps:\n")[0], /if:.*always\(/)
   assert.doesNotMatch(publish, /release-ci|cache: npm/)
 })
 

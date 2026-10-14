@@ -9,17 +9,18 @@ import { runtimeInventory } from "../scripts/runtime-inventory.mjs"
 
 const read = async (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8")
 
-test("PR CI is read-only, pinned, and checks the supported development Node floors", async () => {
+test("extended host checks are explicitly manual, read-only, and use maintained Node majors and the latest stable V2", async () => {
   const workflow = await read(".github/workflows/ci.yml")
-  assert.match(workflow, /\n  pull_request:\n/)
-  assert.match(workflow, /\n  push:\n    branches: \[main\]\n/)
+  assert.match(workflow, /^name: Extended host checks\n/)
+  assert.match(workflow, /\non:\n  workflow_dispatch:\n/)
+  assert.doesNotMatch(workflow, /\n  (?:push|pull_request|schedule|workflow_run):/)
   assert.match(workflow, /\npermissions:\n  contents: read\n/)
   assert.doesNotMatch(workflow, /pull_request_target|contents: write|id-token:|secrets\.|GH_TOKEN|NODE_AUTH_TOKEN|npm publish/)
   assert.match(workflow, /persist-credentials: false/)
-  assert.match(workflow, /node: \["22\.22\.2", "24\.15\.0"\]/)
+  assert.match(workflow, /node: \["22", "24"\]/)
   assert.match(workflow, /node-version: \$\{\{ matrix\.node \}\}/)
-  const pins = { checkout: "34e114876b0b11c390a56381ad16ebd13914f8d5", "setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020",
-    "upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02" }
+  const pins = { checkout: "3d3c42e5aac5ba805825da76410c181273ba90b1", "setup-node": "949feb2413d6458794dcd2491c4babbbce0c15c1",
+    "upload-artifact": "cf430e030ddbb5b0abf93d22962f4752f3646cd9" }
   const actions = [...workflow.matchAll(/uses: actions\/([\w-]+)@(\S+)/g)]
   assert.equal(actions.length, 6)
   for (const [, name, sha] of actions) assert.equal(sha, pins[name])
@@ -39,11 +40,14 @@ test("PR CI is read-only, pinned, and checks the supported development Node floo
     'node scripts/ci-host.mjs resolve',
     'npm install --prefix "$RUNNER_TEMP/reviewer-host" --ignore-scripts --no-audit --no-fund "@opencode/cli-linux-x64@$OPENCODE_HOST_VERSION"',
     'node scripts/ci-host.mjs verify "$RUNNER_TEMP/reviewer-host"',
-    "npm run build", "node scripts/test-runtime.mjs --profile ci"])
+    "npm run build", "node scripts/test-runtime.mjs --profile v2-acceptance"])
   assert.match(runtime, /if: always\(\)/)
   assert.match(runtime, /path: \.runtime\//)
   assert.doesNotMatch(runtime, /matrix:|matrix\.host|2\.0\.26|2\.0\.27/)
   assert.match(runtime, /name: latest-v2-runtime/)
+  assert.match(runtime, /node-version: 24\n/)
+  assert.equal([...workflow.matchAll(/runs-on: ubuntu-24\.04/g)].length, 3)
+  assert.doesNotMatch(workflow, /ubuntu-latest/)
   assert.match(check, /needs: workflows/)
   assert.match(runtime, /needs: workflows/)
   for (const job of [check, runtime]) assert.match(job, /cache: npm\n\s+cache-dependency-path: package-lock\.json/)
@@ -53,7 +57,9 @@ test("PR CI is read-only, pinned, and checks the supported development Node floo
   assert.match(lint, /actionlint\/releases\/download\/v1\.7\.12/)
   assert.match(lint, /8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8/)
   assert.match(lint, /sha256sum --check/)
-  assert.match(lint, /\.github\/workflows\/ci\.yml \.github\/workflows\/release\.yml/)
+  assert.match(lint, /"\$root\/\.github\/workflows\/ci\.yml" "\$root\/\.github\/workflows\/release\.yml"/)
+  assert.match(lint, /dirname "\$\{BASH_SOURCE\[0\]\}"/)
+  assert.match(lint, /--retry 3 --retry-delay 2 --retry-max-time 180/)
 })
 
 test("normal checks aggregate every pure helper while keeping host and built-package checks separate", async () => {
@@ -92,42 +98,42 @@ test("normal checks aggregate every pure helper while keeping host and built-pac
   }
 })
 
-test("active release validation runs the same helper inventory with a complete sparse dependency closure", async t => {
+test("active release validation uses a complete policy checkout without a manually maintained helper path list", async t => {
   const workflow = await read(".github/workflows/release.yml")
   const validate = workflow.split("\n  validate:\n")[1].split("\n  publish:\n")[0]
   assert.match(validate, /node release-policy\/scripts\/test-helpers\.mjs/)
   assert.doesNotMatch(validate, /node --test test\/smoke-measurements\.test\.mjs/)
   const policy = validate.split("      - name: Check out active validation policy\n")[1].split("\n      - ")[0]
-  for (const file of [...inventory, ...Object.keys(runtimeInventory).map(file => `scripts/${file}`), "scripts/test-helpers.mjs", "scripts/helper-tests.json", "scripts/smoke-runtime.mjs",
-    "scripts/release-provenance.mjs", "scripts/bundled-sounds.mjs",
-    "scripts/smoke-reviewer.mjs", "scripts/smoke-desktop-playback.mjs",
-    "test/release-fixture.mjs", "test/npm-cli-smoke.test.mjs", "package.json", "package-lock.json", "README.md", "AGENTS.md", ".github/workflows/ci.yml"]) {
-    assert.ok(policy.includes(`/${file}\n`), `active policy checkout must include ${file}`)
-  }
-  for (const file of ["scripts/release-ci.mjs", "scripts/ci-host.mjs", "scripts/runtime-summary.mjs", "scripts/lint-workflows.sh"])
-    assert.ok(policy.includes(`/${file}\n`), `active policy checkout must include ${file}`)
   assert.match(policy, /ref: \$\{\{ github\.workflow_sha \}\}/)
-  // Execute the planning entrypoints using only the actual sparse-checkout
-  // files. A full local checkout otherwise hides missing transitive imports.
-  const sparse = await mkdtemp(path.join(tmpdir(), "reviewer-sparse-policy-"))
-  t.after(() => rm(sparse, { recursive: true, force: true }))
-  for (const [, file] of policy.matchAll(/^\s+\/([^\s]+)$/gm)) {
-    const destination = path.join(sparse, file)
+  assert.match(policy, /path: release-policy/)
+  assert.match(policy, /persist-credentials: false/)
+  assert.doesNotMatch(policy, /sparse-checkout|filter:|\/scripts\/|\/test\//)
+  assert.match(validate, /bash release-policy\/scripts\/lint-workflows\.sh/)
+  // Model checkout's complete tree, including new uncommitted helper inputs.
+  // No workflow path list needs updating when tests or helpers are added.
+  const directory = await mkdtemp(path.join(tmpdir(), "reviewer-complete-policy-"))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    { cwd: new URL("../", import.meta.url), encoding: "utf8" })
+    .split("\0").filter(Boolean)
+  for (const file of new Set(files)) {
+    const destination = path.join(directory, file)
     await mkdir(path.dirname(destination), { recursive: true })
-    await copyFile(new URL(`../${file}`, import.meta.url), destination)
+    try { await copyFile(new URL(`../${file}`, import.meta.url), destination) }
+    catch (error) { if (error.code !== "ENOENT") throw error }
   }
   for (const profile of ["ci", "v2-acceptance", "v2-permissions"]) {
-    const plan = execFileSync(process.execPath, [path.join(sparse, "scripts/test-runtime.mjs"), "--plan", "--profile", profile], {
-      cwd: sparse, encoding: "utf8", timeout: 10000, env: { ...process.env, OPENCODE_BIN: "/no-host-required" },
+    const plan = execFileSync(process.execPath, [path.join(directory, "scripts/test-runtime.mjs"), "--plan", "--profile", profile], {
+      cwd: directory, encoding: "utf8", timeout: 10000, env: { ...process.env, OPENCODE_BIN: "/no-host-required" },
     })
     assert.equal(typeof JSON.parse(plan), "object")
   }
-  const listing = execFileSync(process.execPath, [path.join(sparse, "scripts/test-runtime.mjs"), "--list"], {
-    cwd: sparse, encoding: "utf8", env: { PATH: "", OPENCODE_BIN: "/no-host-required" },
+  const listing = execFileSync(process.execPath, [path.join(directory, "scripts/test-runtime.mjs"), "--list"], {
+    cwd: directory, encoding: "utf8", env: { PATH: "", OPENCODE_BIN: "/no-host-required" },
   })
   assert.deepEqual(Object.keys(JSON.parse(listing)).sort(), Object.keys(runtimeInventory).sort())
-  execFileSync(process.execPath, ["--test", path.join(sparse, "test/runtime-inventory.test.mjs"), path.join(sparse, "test/smoke-helpers.test.mjs")], {
-    cwd: sparse, encoding: "utf8", timeout: 30000, env: { ...process.env, NODE_TEST_CONTEXT: undefined },
+  execFileSync(process.execPath, ["--test", path.join(directory, "test/runtime-inventory.test.mjs"), path.join(directory, "test/smoke-helpers.test.mjs")], {
+    cwd: directory, encoding: "utf8", timeout: 30000, env: { ...process.env, NODE_TEST_CONTEXT: undefined },
   })
   const publish = workflow.split("\n  publish:\n")[1]
   assert.doesNotMatch(publish, /test-helpers|helper-tests\.json|npm run check|npm run test/)

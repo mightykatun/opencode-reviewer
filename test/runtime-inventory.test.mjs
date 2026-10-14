@@ -97,7 +97,7 @@ test("V2 acceptance includes each production review case exactly once and retain
   assert.ok(reviews.every(value => value.classification === "production-host"))
   assert.ok(cases.every(value => value.hostMajor === 2 && value.hosts <= 2))
   assert.deepEqual(profilePlan("ci").map(value => value.id).sort(), cases.map(value => value.id).sort(),
-    "Current CI contains the exact locally verified acceptance selection")
+    "The retained ci profile contains the exact manual acceptance selection")
   assert.ok(cases.some(value => value.id === "smoke-v2-lifecycle/cold-startup"), "CI prevents pre-connection handshake regression")
   for (const id of ["smoke-v2-root-presentation/mouse-on", "smoke-v2-root-presentation/mouse-off", "smoke-v2-native-queue/default"])
     assert.equal(cases.find(value => value.id === id)?.classification, "synthetic-host")

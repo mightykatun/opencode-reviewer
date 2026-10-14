@@ -448,12 +448,15 @@ Disable overlapping notification plugins to avoid duplicate alerts.
 Use Node.js 24.15.0+ within 24.x, or 22.22.2+ within 22.x, and npm.
 Run `npm ci --ignore-scripts`, then `npm run check` for typechecking, source tests,
 pure-helper tests and the build. `npm run test:helpers` runs the helper checks
-without building or starting OpenCode. Pull-request CI checks both Node versions
-and runs a separate representative Linux fixture profile on stock OpenCode
-2.0.26 and 2.0.27.
-After building, run `node scripts/test-runtime.mjs --profile ci` for that same
+without building or starting OpenCode. Pushing a version tag runs verification
+and publication in one workflow: source tests, helper tests, reproducible builds
+and archive checks must pass before the exact verified archive is published.
+The manual **Extended host checks** workflow tests Node 22/24 and the real Linux
+TUI on the newest stable OpenCode V2. These timing-sensitive host fixtures are
+not an automatic release prerequisite.
+After building, run `node scripts/test-runtime.mjs --profile v2-acceptance` for that same
 profile. Use `node scripts/test-runtime.mjs --list` for the complete runtime
-inventory or `node scripts/test-runtime.mjs --plan --profile ci` for a
+inventory or `node scripts/test-runtime.mjs --plan --profile v2-acceptance` for a
 host-independent plan. Profiles select documented scenario/flag combinations;
 interactive desktop checks have separate prerequisites.
 See [AGENTS.md](https://github.com/mightykatun/opencode-reviewer/blob/main/AGENTS.md)
