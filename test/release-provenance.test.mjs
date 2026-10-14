@@ -24,8 +24,8 @@ test("manual provenance binds source bytes and commit independently of policy an
   assert.deepEqual(build.externalParameters, { workflow: { repository: "https://github.com/mightykatun/opencode-reviewer",
     path: ".github/workflows/release.yml", ref: "refs/heads/main" }, inputs: { tag: "v0.4.0" } })
   assert.deepEqual(build.resolvedDependencies, [
-    { name: "release-source", uri: "git+https://github.com/mightykatun/opencode-reviewer@refs/tags/v0.4.0", digest: { gitCommit: "a".repeat(40) } },
     { name: "workflow-policy", uri: "git+https://github.com/mightykatun/opencode-reviewer@refs/heads/main", digest: { gitCommit: "b".repeat(40) } },
+    { name: "release-source", uri: "git+https://github.com/mightykatun/opencode-reviewer@refs/tags/v0.4.0", digest: { gitCommit: "a".repeat(40) } },
   ])
   assert.equal(run.builder.id, `https://github.com/mightykatun/opencode-reviewer/.github/workflows/release.yml@${"b".repeat(40)}`)
   assert.equal(run.metadata.invocationId, "https://github.com/mightykatun/opencode-reviewer/actions/runs/123/attempts/1")

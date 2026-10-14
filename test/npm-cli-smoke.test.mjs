@@ -9,6 +9,7 @@ import { gunzipSync } from "node:zlib"
 import { archiveIntegrity } from "../scripts/npm-publication.mjs"
 import { inspectPackageArchive, packageFiles } from "../scripts/release-artifact.mjs"
 import { npmReleaseVersion } from "../scripts/release-version.mjs"
+import { publishRelease } from "../scripts/publish-release.mjs"
 import { archiveFixture, artifactFixture, fixturePackage, highBitNumericArchiveFixture, provenanceEnv } from "./release-fixture.mjs"
 
 const globalRoot = execFileSync("npm", ["root", "--global"], { encoding: "utf8" }).trim()
@@ -53,6 +54,15 @@ test("actual npm provenance builder and file verifier adopt signed release sourc
     });
     const fakeFetch = async (url, options) => {
       assert.equal(options.method, "PUT"); assert.equal(options.provenanceFile, ${JSON.stringify(path.join(root, "explicit.sigstore"))});
+      // Model npm registry's certificate/source check, which local npm verifies
+      // only cryptographically. Never request real OIDC or a registry write.
+      const bundle = JSON.parse(options.body._attachments["opencode-reviewer-0.4.0.sigstore"].data);
+      const statement = JSON.parse(Buffer.from(bundle.dsseEnvelope.payload, "base64"));
+      const source = statement.predicate.buildDefinition.resolvedDependencies[0];
+      if (source.uri !== "git+https://github.com/mightykatun/opencode-reviewer@refs/heads/main"
+        || source.digest.gitCommit !== "b".repeat(40)) {
+        throw Object.assign(new Error("Invalid GitHub Actions SLSA v1 provenance predicate: SourceRepositoryURI/SourceRepositoryDigest mismatch"), { code: "E422" });
+      }
       uploads.push(options.body); return {};
     };
     fakeFetch.pickRegistry = () => "https://registry.npmjs.org/";
@@ -75,8 +85,13 @@ test("actual npm provenance builder and file verifier adopt signed release sourc
     await generateProvenance([subject], { explicitFixture: true });
     assert.equal(signed[0].predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit, "b".repeat(40), "stock npm uses the trigger commit");
     const bundle = await attestStatement(statement, { npmRoot: root });
-    assert.equal(signed[1].predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit, "a".repeat(40));
-    assert.equal(signed[1].predicate.buildDefinition.resolvedDependencies[1].digest.gitCommit, "b".repeat(40));
+    assert.deepEqual(signed[1].predicate.buildDefinition.resolvedDependencies[0], {
+      name: "workflow-policy", uri: signed[0].predicate.buildDefinition.resolvedDependencies[0].uri,
+      digest: signed[0].predicate.buildDefinition.resolvedDependencies[0].digest,
+    });
+    assert.deepEqual(signed[1].predicate.buildDefinition.resolvedDependencies[1], {
+      name: "release-source", uri: "git+https://github.com/mightykatun/opencode-reviewer@refs/tags/v0.4.0", digest: { gitCommit: "a".repeat(40) },
+    });
     const file = ${JSON.stringify(path.join(root, "explicit.sigstore"))};
     await writeFile(file, JSON.stringify(bundle));
     assert.deepEqual(await verifyProvenance(subject, file), bundle);
@@ -94,6 +109,13 @@ test("actual npm provenance builder and file verifier adopt signed release sourc
     assert.equal(attachments["opencode-reviewer-0.4.0.sigstore"].data, JSON.stringify(bundle));
     assert.ok(Buffer.from(attachments["opencode-reviewer-0.4.0.tgz"].data, "base64").equals(bytes));
     assert.deepEqual(uploads[0]["dist-tags"], { archive: "0.4.0" });
+    const wrongSource = structuredClone(statement);
+    wrongSource.predicate.buildDefinition.resolvedDependencies.reverse();
+    const wrongBundle = structuredClone(bundle);
+    wrongBundle.dsseEnvelope.payload = Buffer.from(JSON.stringify(wrongSource)).toString("base64");
+    await writeFile(file, JSON.stringify(wrongBundle));
+    await assert.rejects(publish(${JSON.stringify(fixturePackage())}, bytes, opts), { code: "E422" });
+    assert.equal(uploads.length, 1, "the original tag-first ordering must be rejected at the modeled registry boundary");
     for (const change of [
       s => { s.subject[0].name = "pkg:npm/wrong@0.4.0"; },
       s => { s.subject[0].digest.sha512 = "0".repeat(128); },
@@ -119,7 +141,7 @@ test("actual npm provenance builder and file verifier adopt signed release sourc
     env: { PATH: process.env.PATH, HOME: root, XDG_DATA_HOME: root, ...provenanceEnv(fixture.env),
       ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.invalid/token", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "offline-fixture" },
   })
-  assert.deepEqual(JSON.parse(output), { signed: 2, verified: 2, uploads: 1 })
+  assert.deepEqual(JSON.parse(output), { signed: 2, verified: 3, uploads: 1 })
 })
 
 test("actual npm CLI forwards --provenance-file through crypto verification before its intercepted PUT", async t => {
@@ -149,6 +171,9 @@ test("actual npm CLI forwards --provenance-file through crypto verification befo
     const fakeFetch = async (url, options) => {
       assert.equal(options.method, "PUT"); assert.equal(verified, true);
       assert.equal(options.provenanceFile, ${JSON.stringify(file)});
+      if (process.env.FIXTURE_PROVENANCE_REJECTION === "1") {
+        throw Object.assign(new Error("422 Unprocessable Entity - PUT https://registry.npmjs.org/opencode-reviewer - Error verifying sigstore provenance bundle: Invalid GitHub Actions SLSA v1 provenance predicate"), { code: "E422" });
+      }
       writeFileSync(${JSON.stringify(capture)}, JSON.stringify(options.body));
       return {};
     };
@@ -163,12 +188,12 @@ test("actual npm CLI forwards --provenance-file through crypto verification befo
     payloadType: "application/vnd.in-toto+json", payload: Buffer.from(JSON.stringify({ subject: [subject] })).toString("base64"),
     signatures: [{ sig: "offline-fixture" }],
   } }
-  const run = () => execFileSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`,
+  const run = (overrides = {}) => execFileSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`,
     path.join(npmRoot, "bin/npm-cli.js"), "publish", tarball, "--ignore-scripts", "--json", "--provenance-file", file,
     "--access", "public", "--tag", "archive", "--registry", "https://registry.npmjs.org/", "--fetch-retries=0"], {
     cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000,
     env: { PATH: process.env.PATH, HOME: root, LANG: "C.UTF-8", NPM_CONFIG_CACHE: path.join(root, "cache"), XDG_DATA_HOME: path.join(root, "xdg"),
-      NPM_CONFIG_USERCONFIG: config, NPM_CONFIG_GLOBALCONFIG: empty, NPM_CONFIG_UPDATE_NOTIFIER: "false" },
+      NPM_CONFIG_USERCONFIG: config, NPM_CONFIG_GLOBALCONFIG: empty, NPM_CONFIG_UPDATE_NOTIFIER: "false", ...overrides },
   })
   await writeFile(file, JSON.stringify(bundle))
   run()
@@ -182,6 +207,16 @@ test("actual npm CLI forwards --provenance-file through crypto verification befo
     assert.throws(run, error => { assert.match(error.stdout + error.stderr, /does not match the package/); return true })
     await assert.rejects(lstat(capture), { code: "ENOENT" })
   }
+  await writeFile(file, JSON.stringify(bundle))
+  let uploads = 0, disposed = 0
+  await assert.rejects(publishRelease(tarball, fixturePackage(), bytes, {
+    fetcher: async () => new Response(null, { status: 404 }),
+    provenance: async () => ({ file, dispose: async () => { disposed++ } }),
+    run: () => { uploads++; return run({ FIXTURE_PROVENANCE_REJECTION: "1" }) },
+  }), /npm rejected the signed provenance \(HTTP 422\)/)
+  assert.equal(uploads, 1, "the actual npm CLI's structured refusal must not be retried")
+  assert.equal(disposed, 1)
+  await assert.rejects(lstat(capture), { code: "ENOENT" })
   assert.ok((await readFile(tarball)).equals(bytes))
 })
 

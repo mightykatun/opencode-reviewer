@@ -53,6 +53,47 @@ test("missing or failed signing prevents upload and uncertain uploads dispose wi
   assert.equal(writes, 1)
 })
 
+test("a completed structured npm provenance rejection fails promptly and releases signing without retrying", async () => {
+  let reads = 0, writes = 0, disposed = 0
+  const options = readClock()
+  await assert.rejects(publishRelease("/tmp/verified.tgz", pkg, bytes, { ...options,
+    fetcher: async () => { reads++; return new Response(null, { status: 404 }) },
+    provenance: async () => ({ file: "/tmp/fixture.sigstore", dispose: async () => { disposed++ } }),
+    run: (command, args, runOptions) => {
+      writes++
+      assert.ok(args.includes("--json"))
+      assert.deepEqual(runOptions.stdio, ["ignore", "pipe", "pipe"])
+      throw Object.assign(new Error("npm exited"), { status: 1, signal: null,
+        stdout: JSON.stringify({ error: { code: "E422", summary: "422 Unprocessable Entity - PUT https://registry.npmjs.org/opencode-reviewer - Error verifying sigstore provenance bundle: Invalid GitHub Actions SLSA v1 provenance predicate" } }) })
+    },
+  }), /npm rejected the signed provenance \(HTTP 422\)/)
+  assert.equal(reads, 2, "no processing polls follow an explicit provenance rejection")
+  assert.equal(writes, 1)
+  assert.equal(disposed, 1)
+  assert.equal(options.now(), 0)
+})
+
+test("unknown or incomplete npm failures never masquerade as a definitive provenance rejection", async () => {
+  const summary = "422 Unprocessable Entity - PUT https://registry.npmjs.org/opencode-reviewer - Error verifying sigstore provenance bundle: rejected"
+  const refusal = { status: 1, signal: null, stdout: JSON.stringify({ error: { code: "E422", summary } }) }
+  for (const change of [
+    { status: null }, { status: 0 }, { signal: "SIGTERM" }, { code: "ETIMEDOUT" }, { code: "ENOBUFS" },
+    { stdout: "truncated JSON" }, { stdout: "E422: provenance rejected" },
+    { stdout: JSON.stringify({ error: { code: "E503", summary } }) },
+    { stdout: JSON.stringify({ error: { code: "E422", summary: "other validation error" } }) },
+    { stdout: JSON.stringify({ error: { code: "E422", summary: summary.replace("registry.npmjs.org", "elsewhere.test") } }) },
+  ]) {
+    let writes = 0, disposed = 0
+    assert.deepEqual(await publishRelease("/tmp/verified.tgz", pkg, bytes, {
+      fetcher: async () => new Response(null, { status: 404 }),
+      provenance: async () => ({ file: "/tmp/fixture.sigstore", dispose: async () => { disposed++ } }),
+      run: () => { writes++; throw Object.assign(new Error("uncertain"), refusal, change) },
+    }), { status: "uncertain", tag: "latest" })
+    assert.equal(writes, 1)
+    assert.equal(disposed, 1)
+  }
+})
+
 test("identical published archives are idempotent and never invoke npm", async () => {
   let writes = 0
   const result = await publishRelease("/tmp/verified.tgz", pkg, bytes, {
@@ -93,7 +134,7 @@ test("new releases publish the existing archive, with semantic channels and prov
       run: (command, args) => {
         calls++
         assert.equal(command, "npm")
-        assert.deepEqual(args, ["publish", "/tmp/verified.tgz", "--ignore-scripts", "--access", "public", "--provenance-file", "/tmp/fixture.sigstore", "--tag", tag, "--registry", "https://registry.npmjs.org/", "--fetch-retries=0"])
+        assert.deepEqual(args, ["publish", "/tmp/verified.tgz", "--ignore-scripts", "--access", "public", "--provenance-file", "/tmp/fixture.sigstore", "--tag", tag, "--registry", "https://registry.npmjs.org/", "--fetch-retries=0", "--json"])
       },
     }), { status: "submitted", tag })
     assert.equal(calls, 1)
@@ -124,7 +165,7 @@ test("new uploads advance only their semantic channel and archive historical ver
     assert.deepEqual(reads, [`/opencode-reviewer/${version}`, "/-/package/opencode-reviewer/dist-tags"])
     assert.deepEqual(result, { status: "submitted", tag })
     assert.deepEqual(writes, [{ command: "npm", args: ["publish", "/tmp/verified.tgz", "--ignore-scripts", "--access", "public",
-      "--provenance-file", "/tmp/fixture.sigstore", "--tag", tag, "--registry", "https://registry.npmjs.org/", "--fetch-retries=0"] }])
+      "--provenance-file", "/tmp/fixture.sigstore", "--tag", tag, "--registry", "https://registry.npmjs.org/", "--fetch-retries=0", "--json"] }])
   }
 })
 

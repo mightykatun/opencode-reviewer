@@ -173,8 +173,8 @@ test("artifact-only CLIs publish and attach the exact validated bytes without pr
       if (command === process.execPath) {
         assert.equal(args.at(-1), "sign");
         const statement = JSON.parse(options.input);
-        assert.equal(statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit, "a".repeat(40));
-        assert.equal(statement.predicate.buildDefinition.resolvedDependencies[1].digest.gitCommit, "b".repeat(40));
+        assert.equal(statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit, "b".repeat(40));
+        assert.equal(statement.predicate.buildDefinition.resolvedDependencies[1].digest.gitCommit, "a".repeat(40));
         return JSON.stringify({ mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
           dsseEnvelope: { payloadType: "application/vnd.in-toto+json", payload: Buffer.from(options.input).toString("base64"), signatures: [{ sig: "offline" }] },
           verificationMaterial: { tlogEntries: [{}] } });
@@ -190,6 +190,10 @@ test("artifact-only CLIs publish and attach the exact validated bytes without pr
       }
       submitted = true;
       console.log("WRITE " + JSON.stringify({ command, args }));
+      if (command === "npm" && process.env.FIXTURE_UPLOAD_REJECTED === "1") {
+        throw Object.assign(new Error("npm rejected provenance"), { status: 1, signal: null,
+          stdout: JSON.stringify({ error: { code: "E422", summary: "422 Unprocessable Entity - PUT https://registry.npmjs.org/opencode-reviewer - Error verifying sigstore provenance bundle: Invalid GitHub Actions SLSA v1 provenance predicate" } }) });
+      }
       if (command === "npm" && process.env.FIXTURE_UPLOAD_UNCERTAIN === "1") throw new Error("fixture npm PUT returned 503");
     };
     syncBuiltinESMExports();
@@ -211,10 +215,18 @@ test("artifact-only CLIs publish and attach the exact validated bytes without pr
     timeout: 10000, env: { ...process.env, ...provenanceEnv(env), RUNNER_TEMP: root, GH_TOKEN: "fixture-token", ...override } })
   const writes = (output) => output.trim().split("\n").filter((line) => line.startsWith("WRITE ")).map((line) => JSON.parse(line.slice(6)))
   assert.deepEqual(writes(run("publish-release")), [{ command: "npm", args: ["publish", tarball, "--ignore-scripts", "--access", "public",
-    "--provenance-file", "<signed-file>", "--tag", "archive", "--registry", "https://registry.npmjs.org/", "--fetch-retries=0"] }])
+    "--provenance-file", "<signed-file>", "--tag", "archive", "--registry", "https://registry.npmjs.org/", "--fetch-retries=0", "--json"] }])
   const recovered = run("publish-release", { FIXTURE_UPLOAD_UNCERTAIN: "1" })
   assert.equal(writes(recovered).length, 1, "The actual CLI must verify a committed PUT after 503 without reuploading")
   assert.match(recovered, /Verified opencode-reviewer@0\.4\.0 on npm; archive integrity matches/)
+  assert.throws(() => run("publish-release", { FIXTURE_UPLOAD_REJECTED: "1" }), error => {
+    assert.match(error.stderr.toString(), /npm rejected the signed provenance \(HTTP 422\)/)
+    assert.doesNotMatch(error.stdout.toString(), /Waiting for npm|Verified opencode-reviewer/)
+    assert.equal(writes(error.stdout.toString()).length, 1)
+    assert.equal(error.stdout.toString().split("READ /opencode-reviewer/0.4.0").length - 1, 1,
+      "only the pre-upload lookup runs, never the hour-long verification loop")
+    return true
+  })
   assert.deepEqual(writes(run("github-release")), [
     { command: "gh", args: ["release", "upload", "v0.4.0", tarball, "--repo", "mightykatun/opencode-reviewer", "--clobber"] },
     { command: "gh", args: ["release", "edit", "v0.4.0", "--draft=false", "--prerelease=false", "--latest=false", "--repo", "mightykatun/opencode-reviewer"] },

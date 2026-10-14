@@ -57,8 +57,10 @@ export function releaseStatement(manifest, bytes, env = process.env) {
           release: { validationAttempt: manifest.runAttempt, signingAttempt: env.GITHUB_RUN_ATTEMPT, signingInvocationId: invocation(env.GITHUB_RUN_ATTEMPT) },
         },
         resolvedDependencies: [
-          { name: "release-source", uri: `git+${repository}@${sourceRef}`, digest: { gitCommit: manifest.commit } },
+          // npm checks the first input against the signing certificate's actual
+          // GitHub source identity. Keep the separately validated tag explicit.
           { name: "workflow-policy", uri: `git+${repository}@${env.GITHUB_REF}`, digest: { gitCommit: manifest.workflowCommit } },
+          { name: "release-source", uri: `git+${repository}@${sourceRef}`, digest: { gitCommit: manifest.commit } },
         ],
       },
       runDetails: { builder: { id: `${repository}/${workflowPath}@${manifest.workflowCommit}` }, metadata: { invocationId: invocation(manifest.runAttempt) } },

@@ -7,6 +7,25 @@ import { publicationTag, validatePublicationPackage } from "./release-version.mj
 import { archiveIntegrity, Pending, registryReader, verifyPublication } from "./npm-publication.mjs"
 import { prepareProvenance, releaseStatement } from "./release-provenance.mjs"
 
+function npmProvenanceRejected(error) {
+  // Only npm's structured, completed HTTP 422 provenance rejection is final.
+  // Signals, unknown errors and lost acknowledgements remain uncertain.
+  if (error?.code !== undefined || !Number.isInteger(error?.status) || error.status <= 0 || error.signal) return false
+  try {
+    const result = JSON.parse(error.stdout?.toString())
+    return result?.error?.code === "E422" && typeof result.error.summary === "string"
+      && /^422 Unprocessable Entity - PUT https:\/\/registry\.npmjs\.org\/opencode-reviewer - Error verifying sigstore provenance bundle:/.test(result.error.summary)
+  } catch { return false }
+}
+
+function npmOutput(stdout, stderr) {
+  for (const [output, stream] of [[stdout, process.stdout], [stderr, process.stderr]]) {
+    if (typeof output !== "string" && !Buffer.isBuffer(output)) continue
+    stream.write(output)
+    if (output.length && !output.toString().endsWith("\n")) stream.write("\n")
+  }
+}
+
 // Publish the same verified bytes attached to GitHub. Existing versions are immutable:
 // reruns (or the authenticated first-publication bootstrap) must match exactly.
 export async function publishRelease(tarball, pkg, bytes, {
@@ -47,9 +66,15 @@ export async function publishRelease(tarball, pkg, bytes, {
   try {
     assert.ok(signed?.file && typeof signed.dispose === "function", "Missing signed provenance file")
     try {
-      run("npm", ["publish", tarball, "--ignore-scripts", "--access", "public",
-        "--provenance-file", signed.file, "--tag", tag, "--registry", "https://registry.npmjs.org/", "--fetch-retries=0"], { stdio: "inherit" })
-    } catch {
+      const output = run("npm", ["publish", tarball, "--ignore-scripts", "--access", "public",
+        "--provenance-file", signed.file, "--tag", tag, "--registry", "https://registry.npmjs.org/", "--fetch-retries=0", "--json"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1024 * 1024 })
+      npmOutput(output)
+    } catch (error) {
+      npmOutput(error?.stdout, error?.stderr)
+      if (npmProvenanceRejected(error)) {
+        throw new Error("npm rejected the signed provenance (HTTP 422). Fix the provenance before rerunning; no upload retry or processing wait was attempted.")
+      }
       // A failed PUT can already be committed. Continue with reads, never a
       // second upload or a dist-tag write, and require the identical archive.
       console.warn("npm upload outcome is uncertain; checking registry availability without retrying the upload")
