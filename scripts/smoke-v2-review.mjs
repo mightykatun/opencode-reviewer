@@ -78,12 +78,14 @@ async function monitorSetup(ctx) {
   // committed but before its reply arrived. Drain that exact prompt-free call
   // within its existing RPC budget; cleanup owns it and reload never replays it.
   const probeOptions = command => ({ location, signal: AbortSignal.timeout(Math.min(15000, command.timeoutMs ?? 15000)) })
-  const save = () => {
+  let statisticsFrames = false
+  const save = (painted = false) => {
     record.route = JSON.parse(JSON.stringify(ctx.ui.router.current()))
     record.mouse = ctx.renderer.useMouse
     record.mode = ctx.keymap.mode.current()
     record.controlSequence = memory.sequence
     record.choices = {}
+    record.statisticsReport = undefined
     let budget = 8192
     const choices = node => {
       if (--budget < 0 || !node.visible || node.isDestroyed) return
@@ -92,6 +94,24 @@ async function monitorSetup(ctx) {
       for (const child of node.getChildren()) choices(child)
     }
     choices(ctx.renderer.root)
+    // Native dialog portals can sit beneath a hidden route branch. Observe the
+    // owned report's own visibility, not the unrelated permission-choice walk.
+    budget = 8192
+    const statistics = node => {
+      if (--budget < 0 || node.isDestroyed) return
+      if (node.id === "reviewer.statistics.report" && node.visible) record.statisticsReport = {
+        num: node.num, x: node.x, y: node.y, width: node.width, height: node.height, text: node.plainText,
+        chunks: node.textNode.toChunks().map(chunk => ({ text: chunk.text,
+          safe: chunk.fg?.equals(ctx.theme.text.feedback.success.base) === true,
+          unsafe: chunk.fg?.equals(ctx.theme.text.feedback.error.base) === true })),
+      }
+      for (const child of node.getChildren()) statistics(child)
+    }
+    if (record.mode === "modal") statistics(ctx.renderer.root)
+    if (painted && statisticsFrames) {
+      if (record.statisticsFrames.length >= 128) throw Error("Statistics transition exceeded bounded FRAME observation capacity")
+      record.statisticsFrames.push({ frame: ctx.renderer.frameId, report: record.statisticsReport ?? null })
+    }
     record.terminal = { width: ctx.renderer.width, height: ctx.renderer.height }
     const sidebar = ctx.keymap.commands().find(item => item.id === "session.sidebar.toggle")
     record.sidebarCommand = sidebar && { id: sidebar.id, title: sidebar.title }
@@ -102,7 +122,7 @@ async function monitorSetup(ctx) {
   const frame = () => {
     record.frame = { id: ctx.renderer.frameId, width: ctx.renderer.width, height: ctx.renderer.height,
       mode: ctx.keymap.mode.current(), route: JSON.parse(JSON.stringify(ctx.ui.router.current())) }
-    void save()
+    void save(true)
   }
   ctx.renderer.on(CliRenderEvents.FRAME, frame)
   const off = ctx.data.listen(({ details }) => {
@@ -134,6 +154,10 @@ async function monitorSetup(ctx) {
             model: { providerID: "fixture", id: "fixture" } }, probeOptions(command))
         } else if (command.type === "remove-probe") {
           await ctx.client.session.remove({ sessionID: command.sessionID }, probeOptions(command))
+        } else if (command.type === "statistics-frames") {
+          statisticsFrames = command.enabled
+          if (statisticsFrames) record.statisticsFrames = []
+          value = record.statisticsFrames
         } else if (command.type === "start") {
           value = await ctx.client.session.create({ title: "V2 production review fixture", location,
             model: { providerID: "fixture", id: "fixture" } }, options())
@@ -1959,12 +1983,20 @@ createInterface({input:process.stdin}).on('line',line=>{
       assert.match(screen, /Safe: 1 \(100\.0%\)/)
       assert.match(screen, /Unsafe: 0 \(0\.0%\)/)
       assert.match(screen, /Auto-approved: 1 \(100\.0%\)/)
+      assert.ok(record.statisticsReport?.chunks.some(chunk => chunk.text === "1 (100.0%)" && chunk.safe), "Safe values use the actual success theme color")
+      assert.ok(record.statisticsReport?.chunks.some(chunk => chunk.text === "0 (0.0%)" && chunk.unsafe), "Unsafe values use the actual error theme color")
       assert.doesNotMatch(screen, /Analysis history|Permission analysis|Loading recorded usage|statistics unavailable/)
       assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 2)
     }
     await until("rendered native lifetime statistics dialog", record => {
       try { statisticsScreen(record, capture()); return true } catch { return false }
-    }, 15000)
+    }, 15000).catch(async error => {
+      const record = await observations()
+      let assertion
+      try { statisticsScreen(record, capture()) } catch (failure) { assertion = String(failure) }
+      await publish(path.join(artifacts, "statistics-failure.json"), { assertion, report: record.statisticsReport })
+      throw error
+    })
     await saveCapture("statistics-lifetime")
     await negativeWindow("native lifetime statistics has no additional work", [], replies, "V2_REVIEW_EXECUTED\n", 1, 1500, statisticsScreen)
     const tabRendition = () => {
@@ -1984,6 +2016,24 @@ createInterface({input:process.stdin}).on('line',line=>{
     const conversationTabs = tabRendition()
     runtime.tmux("send-keys", "-t", "v2-review", "Tab")
     await until("second native Tab restores lifetime scope rendition", () => tabRendition() === lifetimeTabs, 5000)
+    await negativeWindow("lifetime refresh completes before returning to cached conversation", [], replies, "V2_REVIEW_EXECUTED\n", 1, 2500, statisticsScreen)
+    const geometry = { ...((await observations()).statisticsReport) }
+    await command({ type: "statistics-frames", enabled: true })
+    runtime.tmux("send-keys", "-t", "v2-review", "Tab")
+    await until("return to painted conversation without collapsing the statistics dialog", () => tabRendition() === conversationTabs, 5000)
+    await negativeWindow("cached conversation remains painted through scoped refresh", [], replies, "V2_REVIEW_EXECUTED\n", 1, 500, statisticsScreen)
+    const frames = await command({ type: "statistics-frames", enabled: false })
+    assert.ok(frames.length > 0, "The scope transition must paint real native frames")
+    for (const frame of frames) {
+      assert.ok(frame.report, "Statistics report cannot disappear for even one observed frame")
+      assert.match(frame.report.text, /Safe: 1 \(100\.0%\)/)
+      assert.match(frame.report.text, /Unsafe: 0 \(0\.0%\)/)
+      for (const property of ["num", "x", "y", "width", "height"])
+        assert.equal(frame.report[property], geometry[property], `Stable native statistics ${property} through scope changes`)
+    }
+    await publish(path.join(artifacts, "statistics-transition-frames.json"), frames)
+    runtime.tmux("send-keys", "-t", "v2-review", "Tab")
+    await until("lifetime scope restored after frame continuity check", () => tabRendition() === lifetimeTabs, 5000)
     await publish(path.join(artifacts, "statistics-native-tabs.json"), { lifetimeTabs, conversationTabs, restoredTabs: tabRendition() })
     runtime.tmux("send-keys", "-t", "v2-review", "Escape")
     await until("native statistics keyboard close", record => record?.mode === "base" && !capture().includes("Reviewer statistics"))

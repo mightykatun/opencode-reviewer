@@ -1,6 +1,6 @@
 import { createSignal, For, onCleanup } from "solid-js"
 import type { Plugin } from "@opencode/plugin/tui"
-import { lifetimeCost, lifetimeReport } from "./lifetime.js"
+import { empty, lifetimeCost, lifetimeReport, lifetimeReportParts, type LifetimeReportPart } from "./lifetime.js"
 import type { StatisticsController, StatisticsScope, StatisticsState } from "./statistics-controller.js"
 import { uiText } from "./ui-text.js"
 
@@ -12,6 +12,18 @@ export function hostStatisticsMessage(state: StatisticsState): string {
   if (state.ancestry !== "ready" || !state.conversation) return uiText.lifetime.loading
   return lifetimeReport(state.conversation.totals)
 }
+
+export function hostStatisticsParts(state: StatisticsState): LifetimeReportPart[] {
+  if (!state.unavailable) {
+    const totals = state.view === "lifetime" ? state.totals
+      : state.ancestry === "ready" ? state.conversation?.totals : undefined
+    if (totals) return lifetimeReportParts(totals)
+  }
+  return [{ text: hostStatisticsMessage(state) }]
+}
+
+// Loading/error text must not collapse and recenter the native dialog between scopes.
+const reportLines = lifetimeReport(empty()).split("\n").length
 
 export interface HostStatisticsViewProps {
   context: Plugin.Context
@@ -60,7 +72,11 @@ export function HostStatisticsView(props: HostStatisticsViewProps) {
         </box>
       }}</For>
     </box>
-    <text fg={context.theme.text.base}>{hostStatisticsMessage(props.state())}</text>
+    <text id="reviewer.statistics.report" minHeight={reportLines} fg={context.theme.text.base}>
+      <For each={hostStatisticsParts(props.state())}>{part => <span style={{ fg: part.rating === "safe"
+        ? context.theme.text.feedback.success.base : part.rating === "unsafe"
+          ? context.theme.text.feedback.error.base : context.theme.text.base }}>{part.text}</span>}</For>
+    </text>
     <text fg={context.theme.text.muted}>{uiText.lifetime.switchScope}</text>
   </box>
 }

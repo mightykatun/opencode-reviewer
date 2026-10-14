@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import { HostHistoryPresentationProof, setupHostHistoryBrowsing, type HostHistoryProofInput } from "../src/host-history-view.js"
 import type { HostPanelNode } from "../src/host-review-panel.js"
-import { hostStatisticsMessage, setupHostStatistics } from "../src/host-statistics-view.js"
+import { hostStatisticsMessage, hostStatisticsParts, setupHostStatistics } from "../src/host-statistics-view.js"
 import { empty, lifetimeReport } from "../src/lifetime.js"
 import type { StatisticsController, StatisticsState } from "../src/statistics-controller.js"
 import type { Plugin } from "@opencode/plugin/tui"
@@ -276,6 +276,28 @@ test("native statistics keeps loading and unavailable independent from aggregate
   assert.equal(hostStatisticsMessage(state), "Loading recorded usage…", "cached totals do not prove ancestry")
   state.ancestry = "ready"
   assert.equal(hostStatisticsMessage(state), lifetimeReport(state.conversation.totals))
+})
+
+test("statistics styles only Safe/Unsafe values in both scopes without changing report text", () => {
+  const totals = { ...empty(), safe: 3, unsafe: 1, ratingsSince: 1 }
+  const state: StatisticsState = { open: true, view: "lifetime", unavailable: false, ancestry: "ready",
+    totals, conversation: { totals: { ...totals, safe: 1, unsafe: 1 }, partialHistory: false } }
+  for (const [view, safe, unsafe] of [["lifetime", "3 (75.0%)", "1 (25.0%)"], ["conversation", "1 (50.0%)", "1 (50.0%)"]] as const) {
+    state.view = view
+    const parts = hostStatisticsParts(state)
+    assert.equal(parts.map(part => part.text).join(""), hostStatisticsMessage(state))
+    assert.deepEqual(parts.filter(part => part.rating), [{ text: safe, rating: "safe" }, { text: unsafe, rating: "unsafe" }])
+    assert.ok(parts.some(part => !part.rating && part.text.endsWith("Safe: ")))
+    assert.ok(parts.some(part => !part.rating && part.text === "\nUnsafe: "))
+  }
+  state.unavailable = true
+  assert.deepEqual(hostStatisticsParts(state), [{ text: "Conversation statistics unavailable. Recorded totals have not been reset." }])
+  state.unavailable = false; state.ancestry = "loading"
+  assert.deepEqual(hostStatisticsParts(state), [{ text: "Loading recorded usage…" }], "Unknown ancestry cannot render cached values")
+  state.view = "lifetime"; state.totals = empty()
+  assert.deepEqual(hostStatisticsParts(state).filter(part => part.rating), [
+    { text: "0 (n/a)", rating: "safe" }, { text: "0 (n/a)", rating: "unsafe" },
+  ])
 })
 
 test("statistics palette opens the actual selected session and stale dialog closure cannot close a replacement", () => {

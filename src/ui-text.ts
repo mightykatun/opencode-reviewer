@@ -8,6 +8,10 @@ function compactTokens(count: number): string {
   return String(count)
 }
 
+function statisticsRating(count: number, percentage: string | undefined): string {
+  return `${count} (${percentage === undefined ? "n/a" : `${percentage}%`})`
+}
+
 /**
  * User-facing interface copy. Edit the values here, then rebuild and restart
  * OpenCode. Keep keys and formatter parameters intact so callers stay typed.
@@ -95,8 +99,9 @@ export const uiText = {
     dialogTokens: (input: number, output: number, partial: boolean) => `Tokens: ${compactTokens(input)} in ${compactTokens(output)} out${partial ? " (partial coverage)" : ""}`,
     dialogTokensUnavailable: "Tokens: unavailable",
     dialogCost: (amount: string | undefined, partial: boolean) => amount === undefined ? "Cost: unavailable" : `Cost: $${amount}${partial ? " (partial pricing)" : ""}`,
-    dialogSafe: (count: number, percentage: string | undefined) => `Safe: ${count} (${percentage === undefined ? "n/a" : `${percentage}%`})`,
-    dialogUnsafe: (count: number, percentage: string | undefined) => `Unsafe: ${count} (${percentage === undefined ? "n/a" : `${percentage}%`})`,
+    dialogSafeLabel: "Safe: ",
+    dialogUnsafeLabel: "Unsafe: ",
+    dialogRating: statisticsRating,
     dialogAutoApproved: (count: number, percentage: string | undefined) => `Auto-approved: ${count} (${percentage === undefined ? "n/a" : `${percentage}%`})`,
     averageFullReport: (seconds: string | undefined) => `Average time to full report: ${seconds === undefined ? "unavailable" : `${seconds}s`}`,
     averageRating: (seconds: string | undefined) => `Average time to rating: ${seconds === undefined ? "unavailable" : `${seconds}s`}`,

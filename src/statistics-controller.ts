@@ -34,7 +34,10 @@ export class StatisticsController {
     private ancestry: AncestryReader, private publish: (state: StatisticsState) => void,
     private clock: StatisticsClock = systemClock) {
     this.refresh = new HistoryRefresh(store, { type: "totals" }, value => {
-      if (value && "totals" in value) this.update({ totals: value.totals, conversation: value.conversation, unavailable: false })
+      if (value && "totals" in value) this.update({ totals: value.totals,
+        // Lifetime-only reads do not invalidate this dialog's scoped snapshot.
+        // Keep it visible on return while the next conversation read refreshes it.
+        ...(value.conversation !== undefined ? { conversation: value.conversation } : {}), unavailable: false })
       else this.update({ unavailable: true })
     })
   }

@@ -71,6 +71,38 @@ test("Conversation resolves descendant ancestry without mode loading; both views
   assert.equal(f.controller.state.open, false)
 })
 
+test("returning from lifetime retains this conversation's report until its refreshed snapshot settles", async t => {
+  const f = fixture(t)
+  f.finish(0); await settle()
+  f.controller.open("child"); f.controller.select("conversation"); await settle()
+  f.finish(1); await settle(); f.finish(2, 200); await settle()
+  const conversation = f.state().conversation
+  assert.equal(conversation?.totals.input, 200)
+  f.controller.select("lifetime"); f.finish(3, 300); await settle()
+  assert.equal(f.state().totals?.input, 300)
+  assert.equal(f.state().conversation, conversation, "Lifetime-only reads must not clear the loaded conversation")
+  f.controller.select("conversation")
+  assert.equal(f.state().conversation, conversation, "No loading frame while a fresh scoped read is pending")
+  assert.deepEqual(f.queries[4], { type: "totals", conversation: { scope: "/host", root: "root" } })
+  await settle()
+  assert.equal(f.state().conversation, conversation)
+  f.finish(4, 400); await settle()
+  assert.equal(f.state().conversation?.totals.input, 400)
+  f.controller.open("other"); f.controller.select("conversation")
+  assert.equal(f.state().conversation, undefined, "A different dialog/session cannot inherit retained totals")
+})
+
+test("cached conversation totals never conceal a failed scoped refresh", async t => {
+  const f = fixture(t)
+  f.finish(0); await settle()
+  f.controller.open("root"); f.controller.select("conversation"); await settle()
+  f.finish(1); await settle(); f.finish(2, 200); await settle()
+  f.controller.select("lifetime"); f.finish(3, 300); await settle()
+  f.controller.select("conversation")
+  f.calls[4]!.value.reject(Error("storage unavailable")); f.calls[4]!.cleanup.resolve(); await settle()
+  assert.equal(f.state().unavailable, true, "A cached report is not proof that storage is healthy")
+})
+
 test("old aggregate results and old dialog cleanup cannot replace a newly opened root", async t => {
   const f = fixture(t)
   f.finish(0); await settle()

@@ -87,16 +87,26 @@ export function lifetimeCost(totals: LifetimeTotals): string {
   return uiText.lifetime.cost(totals.cost.toFixed(4), totals.priced < totals.requests)
 }
 
-export function lifetimeReport(totals: LifetimeTotals): string {
+export interface LifetimeReportPart { text: string; rating?: "safe" | "unsafe" }
+
+/** Preserve the plain report contract while exposing only rating values for styling. */
+export function lifetimeReportParts(totals: LifetimeTotals): LifetimeReportPart[] {
   const reviews = totals.safe + totals.unsafe, activity = totals.activity
   const percentage = (count: number) => reviews ? (count / reviews * 100).toFixed(1) : undefined
-  return [uiText.lifetime.dialogReviews(reviews), uiText.lifetime.dialogRetries(activity.retries),
+  return [{ text: [uiText.lifetime.dialogReviews(reviews), uiText.lifetime.dialogRetries(activity.retries),
     totals.tokenRequests ? uiText.lifetime.dialogTokens(totals.input, totals.output, totals.tokenRequests < totals.requests) : uiText.lifetime.dialogTokensUnavailable,
     uiText.lifetime.dialogCost(totals.priced ? totals.cost.toFixed(4) : undefined, totals.priced < totals.requests),
-    "", uiText.lifetime.dialogSafe(totals.safe, percentage(totals.safe)),
-    uiText.lifetime.dialogUnsafe(totals.unsafe, percentage(totals.unsafe)),
+    "", uiText.lifetime.dialogSafeLabel].join("\n") },
+    { text: uiText.lifetime.dialogRating(totals.safe, percentage(totals.safe)), rating: "safe" },
+    { text: `\n${uiText.lifetime.dialogUnsafeLabel}` },
+    { text: uiText.lifetime.dialogRating(totals.unsafe, percentage(totals.unsafe)), rating: "unsafe" },
+    { text: ["",
     uiText.lifetime.dialogAutoApproved(activity.autoApproved, percentage(activity.autoApproved)),
     "", uiText.lifetime.averageFullReport(activity.timedReviews ? (activity.meanFullReportMs / 1000).toFixed(2) : undefined),
     uiText.lifetime.averageRating(activity.timedReviews ? (activity.meanRatingMs / 1000).toFixed(2) : undefined),
-  ].join("\n")
+  ].join("\n") }]
+}
+
+export function lifetimeReport(totals: LifetimeTotals): string {
+  return lifetimeReportParts(totals).map(part => part.text).join("")
 }
