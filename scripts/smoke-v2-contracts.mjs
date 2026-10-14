@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
-import { smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { readObservation } from "./smoke-observations.mjs"
 
 const { scenario } = runtimeArguments("smoke-v2-contracts.mjs")
@@ -21,7 +21,7 @@ const project = path.join(temp, "project"), plugin = path.join(temp, "probe")
 await mkdir(project)
 await mkdir(plugin)
 await mkdir(path.join(temp, "config/opencode"), { recursive: true })
-execFileSync("git", ["init", "--quiet", project])
+smokeGitInit(temp, project)
 await writeFile(path.join(project, "fixture.py"), 'from pathlib import Path\nPath("executed").write_text("once")\n')
 const observation = path.join(artifacts, "cli.json"), serverObservation = path.join(artifacts, "server.json")
 const publisherImport = JSON.stringify(new URL("./smoke-observations.mjs", import.meta.url).href)

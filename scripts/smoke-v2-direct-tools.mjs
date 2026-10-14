@@ -10,7 +10,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
-import { smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
 // These functions are serialized into the isolated plugin. Keeping real function
@@ -281,7 +281,7 @@ const artifacts = await mkdtemp(path.join(root, ".runtime/v2-direct-tools-"))
 const temp = await mkdtemp("/tmp/opencode/reviewer-v2-direct-tools-")
 const project = path.join(temp, "project"), external = path.join(temp, "external"), plugin = path.join(temp, "probe")
 await Promise.all([mkdir(project), mkdir(external), mkdir(plugin), mkdir(path.join(temp, "config/opencode"), { recursive: true })])
-execFileSync("git", ["init", "--quiet", project])
+smokeGitInit(temp, project)
 await writeFile(path.join(external, "fixture.py"), 'with open("executed", "a") as output:\n    output.write("once\\n")\nprint("W1 native shell result")\n')
 await writeFile(path.join(project, "w1-discovery.txt"), "W1_NATIVE_DISCOVERY_SENTINEL\n")
 const files = Object.fromEntries(["server", "cli", "server-control", "cli-control"].map(name => [name, path.join(artifacts, `${name}.json`)]))

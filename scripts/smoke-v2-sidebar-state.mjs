@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
-import { smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { readObservation } from "./smoke-observations.mjs"
 
 runtimeArguments("smoke-v2-sidebar-state.mjs")
@@ -27,7 +27,7 @@ for (const variant of ["disk", "env"]) {
   await mkdir(project)
   await mkdir(plugin)
   await mkdir(path.dirname(cliPath), { recursive: true })
-  execFileSync("git", ["init", "--quiet", project])
+  smokeGitInit(temp, project)
   await writeFile(path.join(project, "opencode.json"), JSON.stringify({ update: "disable" }))
   const observation = path.join(destination, "observations.json")
   await writeFile(path.join(plugin, "package.json"), JSON.stringify({ name: "research-v2-sidebar-state", type: "module", exports: { "./tui": "./tui.mjs" } }))

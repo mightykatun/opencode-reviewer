@@ -110,6 +110,18 @@ export function smokeEnvironment(directory, parent = process.env) {
     XDG_DATA_HOME: path.join(directory, "data"), XDG_STATE_HOME: path.join(directory, "state"), XDG_CACHE_HOME: path.join(directory, "cache") }
 }
 
+/** Git setup shares the fixture namespace, never the caller's Git overrides. */
+export function smokeGitInit(directory, project) {
+  if (!path.isAbsolute(directory) || !path.isAbsolute(project)) throw new Error("Fixture Git paths must be absolute")
+  const relative = path.relative(directory, project)
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+    throw new Error("Fixture Git project must be inside its private namespace")
+  execFileSync("git", ["init", "--quiet", project], {
+    env: { ...smokeEnvironment(directory), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TEMPLATE_DIR: "" },
+    timeout: 10000, killSignal: "SIGKILL",
+  })
+}
+
 const tmux = (socket, args) => execFileSync("tmux", ["-S", socket, "-f", "/dev/null", ...args], {
   env: smokeEnvironment(path.dirname(socket)),
   encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL",

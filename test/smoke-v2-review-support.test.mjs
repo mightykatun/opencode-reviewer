@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { createHash } from "node:crypto"
-import { mkdtemp, readFile, rm, symlink } from "node:fs/promises"
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { DatabaseSync } from "node:sqlite"
 import path from "node:path"
 import { readProductionHistory, savedStageHistory, assertWriteEvidence } from "../scripts/smoke-v2-review-support.mjs"
@@ -66,12 +66,18 @@ test("read-only production SQL probes never initialize missing databases or muta
     assert.equal(await readProductionHistory(file), undefined)
     const db = new DatabaseSync(file)
     try {
+      const empty = await readFile(file)
+      assert.equal(await readProductionHistory(file), undefined, "Created file without schema remains pending")
+      assert.deepEqual(await readFile(file), empty)
+      db.exec("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE")
       db.exec(`CREATE TABLE history(id TEXT,review TEXT,completed INTEGER,tie TEXT);
         CREATE TABLE reviews(id TEXT,context TEXT,accepted TEXT,root TEXT,session TEXT);
         CREATE TABLE payloads(id TEXT,body TEXT); CREATE TABLE attempts(id TEXT,review TEXT,dispatched TEXT,finalized TEXT);
         CREATE TABLE approvals(id TEXT); CREATE TABLE meta(id INTEGER,version INTEGER,revision INTEGER,totals TEXT);
         CREATE TABLE conversation_totals(id TEXT,totals TEXT,partial INTEGER);
         INSERT INTO meta VALUES(1,1,7,'{}');`)
+      assert.equal(await readProductionHistory(file), undefined, "Uncommitted schema remains pending")
+      db.exec("COMMIT; PRAGMA wal_checkpoint(TRUNCATE)")
     } finally { db.close() }
     const before = await readFile(file)
     const value = await readProductionHistory(file)
@@ -82,4 +88,19 @@ test("read-only production SQL probes never initialize missing databases or muta
     const alias = path.join(directory, "alias.sqlite"); await symlink(file, alias)
     await assert.rejects(readProductionHistory(alias), /Actual isolated production database/)
   } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test("history polling owns transient initialization locks but rejects partial schema and corrupt bytes", async t => {
+  const directory = await mkdtemp("/tmp/opencode/reviewer-sql-startup-")
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const file = path.join(directory, "history.sqlite"), db = new DatabaseSync(file)
+  try {
+    db.exec("BEGIN EXCLUSIVE; CREATE TABLE unfinished(id INTEGER)")
+    assert.equal(await readProductionHistory(file), undefined, "Exclusive initialization is pending within the existing poll budget")
+    db.exec("COMMIT")
+    await assert.rejects(readProductionHistory(file), /no such table: history/, "Committed partial schema is corruption, not pending")
+  } finally { db.close() }
+  const corrupt = path.join(directory, "corrupt.sqlite")
+  await writeFile(corrupt, "This is not a SQLite database")
+  await assert.rejects(readProductionHistory(corrupt), /not a database/)
 })

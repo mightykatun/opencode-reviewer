@@ -8,7 +8,7 @@ import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { transformAsync } from "@babel/core"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
-import { smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
 const { scenario } = runtimeArguments("smoke-v2-root-presentation.mjs")
@@ -26,7 +26,7 @@ const observation = path.join(artifacts, "observations.json"), controlFile = pat
 const controlsPublisher = observationPublisher(controlFile)
 await mkdir(project)
 await mkdir(pluginDirectory)
-execFileSync("git", ["init", "--quiet", project])
+smokeGitInit(temp, project)
 await writeFile(path.join(project, "fixture.py"), 'from pathlib import Path\nPath("executed").write_text("unexpected approval")\n')
 await writeFile(path.join(pluginDirectory, "package.json"), JSON.stringify({ name: "research-v2-root-presentation", type: "module", exports: { "./tui": "./tui.mjs" } }))
 const report = "# W5 MARKDOWN BODY\n\n**Read only** synthetic report.\n\nCommand: `python3 fixture.py`.\n\nNo approval is dispatched."

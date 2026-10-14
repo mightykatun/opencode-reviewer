@@ -21,7 +21,7 @@ import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { connectionProbe } from "./smoke-connection.mjs"
-import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeEnvironment, smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 import { activatePalette } from "./smoke-ui.mjs"
 import { readProductionHistory, assertWriteInspection, assertWriteEvidence, assertEvidenceRequest,
@@ -852,7 +852,7 @@ try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
   assertV2HostVersion(version)
   await Promise.all([inputs, path.dirname(cliPath)].map(directory => mkdir(directory, { recursive: true })))
-  execFileSync("git", ["init", "--quiet", project], { env, timeout: 10000 })
+  smokeGitInit(temp, project)
   await writeFile(path.join(inputs, "fixture.py"), script)
   if (editCase) {
     await mkdir(path.dirname(editTarget), { recursive: true })

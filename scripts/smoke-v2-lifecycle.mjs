@@ -10,7 +10,7 @@ import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
-import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeEnvironment, smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
 // Independent client contract. The instrumented server compares the actual
@@ -388,7 +388,7 @@ try {
   await mkdir(project)
   await mkdir(observations)
   await mkdir(path.dirname(cliPath), { recursive: true })
-  execFileSync("git", ["init", "--quiet", project], { env, timeout: 10000 })
+  smokeGitInit(temp, project)
   const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"))
   assert.equal(manifest.name, "opencode-reviewer")
   assert.equal(manifest.engines.opencode, ">=2.0.0 <3")

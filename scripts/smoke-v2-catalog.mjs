@@ -7,7 +7,7 @@ import { build } from "esbuild"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
-import { smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { readObservation, publishObservation } from "./smoke-observations.mjs"
 import promptInventory from "../src/prompt-files.json" with { type: "json" }
 
@@ -23,7 +23,7 @@ const project = path.join(temp, "project"), plugin = path.join(temp, "probe")
 await mkdir(project)
 await mkdir(plugin)
 await mkdir(path.join(temp, "config/opencode"), { recursive: true })
-execFileSync("git", ["init", "--quiet", project])
+smokeGitInit(temp, project)
 const control = path.join(artifacts, "control.json")
 const serverObservation = path.join(artifacts, "server.json"), cliObservation = path.join(artifacts, "cli.json")
 const publisherImport = JSON.stringify(new URL("./smoke-observations.mjs", import.meta.url).href)

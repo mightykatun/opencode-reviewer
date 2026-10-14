@@ -35,11 +35,11 @@ inventory bounds and add capacity coverage rather than removing safety limits.
   - [x] Preserve dispatched question initials across queue/health loss.
   - [x] Test composed failed startup, initial/distinct echoes and dispatched/undispatched question recovery.
   - [x] Verify lifecycle/fallback/notification tests and typecheck; commit.
-- [ ] Phase 4: Repair fixture isolation and database-startup polling.
-  - [ ] Isolate every fixture Git initialization and bound its subprocess lifetime.
-  - [ ] Treat an uninitialized history database as pending, not corruption.
-  - [ ] Test hostile Git environment and absent/uninitialized/initialized/corrupt databases.
-  - [ ] Verify helper checks; commit.
+- [x] Phase 4: Repair fixture isolation and database-startup polling.
+  - [x] Isolate every fixture Git initialization and bound its subprocess lifetime.
+  - [x] Treat an uninitialized history database as pending, not corruption.
+  - [x] Test hostile Git environment and absent/uninitialized/initialized/corrupt databases.
+  - [x] Verify helper checks; commit.
 - [ ] Phase 5: Fix history cache invalidation and attribution clocks.
   - [ ] Avoid invalidating browsing for unreferenced unsaved reviews; preserve ownership/corruption invalidation.
   - [ ] Separate wall-clock event timestamps from monotonic retention/backoff.
@@ -99,3 +99,12 @@ Record commands, test counts and exact runtime fixture results here after each p
   Real TUI `smoke-v2-notifications.mjs unavailable-review` passed in 56,949 ms
   (`.runtime/runtime-run-HJjkgs/results.json`); `forms` passed in 24,451 ms
   (`.runtime/runtime-run-dN07EZ/results.json`), serially on OpenCode 2.0.29.
+- Phase 4: all 15 inventoried Git fixtures use one isolated 10-second initialization
+  helper. A real child Node/Git test with hostile Git directory/config/template
+  variables proves the unrelated directory remains untouched. SQL probes return
+  pending for empty/uncommitted schemas and transient SQLite busy locks, but reject
+  committed partial schemas and corrupt bytes without mutating the database.
+  `node --test test/smoke-helpers.test.mjs test/smoke-v2-review-support.test.mjs test/runtime-inventory.test.mjs`: 28 passed.
+  `npm run test:helpers`: 147 passed (`.runtime/phase4-helpers.log`); diff check passed.
+  Real TUI `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history`
+  passed on OpenCode 2.0.29 (`.runtime/runtime-run-bY9EgG/results.json`).

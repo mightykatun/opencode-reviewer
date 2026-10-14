@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
-import { smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
 function cliSetup(ctx) {
@@ -67,7 +67,7 @@ const artifacts = await mkdtemp(path.join(root, ".runtime/v2-native-queue-"))
 const temp = await mkdtemp("/tmp/opencode/reviewer-v2-native-queue-")
 const project = path.join(temp, "project"), plugin = path.join(temp, "plugin")
 await Promise.all([mkdir(project), mkdir(plugin)])
-execFileSync("git", ["init", "--quiet", project])
+smokeGitInit(temp, project)
 await writeFile(path.join(project, "queue.py"), 'from pathlib import Path\nPath("executed").write_text("unexpected")\n')
 const observation = path.join(artifacts, "observations.json"), controlFile = path.join(artifacts, "control.json")
 const controlPublisher = observationPublisher(controlFile)

@@ -11,7 +11,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
-import { smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
 // Serialized real function bodies let node --check cover plugin implementation.
@@ -248,7 +248,7 @@ const editTargets = [path.join(initial, "target.txt"), path.join(temp, "external
 const sentinelDirectories = [inputDirectory, ...finalDirectories, path.join(moved, "inputs")]
 await Promise.all([...sentinelDirectories, path.dirname(skillPath), plugin, path.join(temp, "config/opencode")]
   .map(directory => mkdir(directory, { recursive: true })))
-execFileSync("git", ["init", "--quiet", project])
+smokeGitInit(temp, project)
 for (const directory of sentinelDirectories) await writeFile(path.join(directory, "fixture.py"),
   'with open("executed", "a") as output:\n    output.write("W3 UNEXPECTED EXECUTION\\n")\n')
 await writeFile(skillPath, "W3_DISK_CONTENT_IS_NOT_THE_TRANSFORMED_CATALOG\n")

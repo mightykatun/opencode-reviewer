@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { connectionProbe } from "./smoke-connection.mjs"
-import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeEnvironment, smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
 // Read-only public native cache observations, shared by the two independent
@@ -390,7 +390,7 @@ try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
   assertV2HostVersion(version)
   await mkdir(project); await mkdir(path.dirname(cliPath), { recursive: true })
-  execFileSync("git", ["init", "--quiet", project], { env, timeout: 10000 })
+  smokeGitInit(temp, project)
   await writeFile(path.join(project, "fixture.py"), script)
   if (scenario === "execution") await writeFile(path.join(project, "background.py"), "import time\ntime.sleep(120)\n")
   const output = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--offline", "--pack-destination", temp], {

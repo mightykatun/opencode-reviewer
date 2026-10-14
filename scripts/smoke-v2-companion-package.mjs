@@ -9,7 +9,7 @@ import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
-import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeEnvironment, smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { readObservation } from "./smoke-observations.mjs"
 
 // Serialized into dist/tui.js. All non-Node dependencies are public host APIs.
@@ -244,7 +244,7 @@ try {
   await mkdir(path.join(source, "dist"), { recursive: true })
   await mkdir(install)
   await mkdir(path.dirname(cliPath), { recursive: true })
-  for (const project of locations) { await mkdir(project); execFileSync("git", ["init", "--quiet", project], { env }) }
+  for (const project of locations) { await mkdir(project); smokeGitInit(temp, project) }
   const manifest = { name: packageName, version: "0.0.0-w6", type: "module",
     exports: { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" },
     files: archiveFiles,

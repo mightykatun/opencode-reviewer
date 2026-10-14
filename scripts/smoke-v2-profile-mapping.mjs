@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
-import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeEnvironment, smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
 // Serialized functions keep the generated plugin bodies covered by node --check.
@@ -208,7 +208,7 @@ const version = execFileSync(host, ["--version"], { encoding: "utf8", timeout: 1
 assertV2HostVersion(version)
 const project = path.join(temp, "project"), plugin = path.join(temp, "probe")
 await Promise.all([mkdir(project), mkdir(plugin), mkdir(path.join(temp, "config/opencode"), { recursive: true })])
-execFileSync("git", ["init", "--quiet", project], { env: smokeEnvironment(temp) })
+smokeGitInit(temp, project)
 await writeFile(path.join(project, "w2-native.txt"), "W2_NATIVE_READ_MARKER\n")
 const files = Object.fromEntries(["server", "cli", "server-control", "cli-control"].map(name => [name, path.join(artifacts, `${name}.json`)]))
 const publisherImport = JSON.stringify(new URL("./smoke-observations.mjs", import.meta.url).href)

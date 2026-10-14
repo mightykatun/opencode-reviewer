@@ -10,7 +10,7 @@ import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
-import { smokeEnvironment, smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeEnvironment, smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
 // Independent wire contract, not an alternate implementation of the reader.
@@ -434,7 +434,7 @@ try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
   assertV2HostVersion(version)
   await Promise.all([inputs, external, observationDirectory, path.dirname(cliPath)].map(directory => mkdir(directory, { recursive: true })))
-  execFileSync("git", ["init", "--quiet", project], { env, timeout: 10000 })
+  smokeGitInit(temp, project)
   await writeFile(path.join(inputs, "fixture.py"), 'with open("executed", "a") as output:\n    output.write("PHASE2 UNEXPECTED EXECUTION\\n")\n')
   for (const target of targets) await writeFile(target, "PHASE2_BEFORE\n")
   const packedOutput = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--offline", "--pack-destination", temp],

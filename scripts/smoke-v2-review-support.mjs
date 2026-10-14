@@ -9,9 +9,14 @@ export async function readProductionHistory(file) {
   if (!stat) return undefined
   assert.ok(stat.isFile() && !stat.isSymbolicLink(), "Actual isolated production database")
   // Reopen each poll to observe settled worker commits without checkpointing.
-  const db = new DatabaseSync(file, { readOnly: true })
+  let db
   try {
+    db = new DatabaseSync(file, { readOnly: true })
     db.exec("BEGIN")
+    // File creation precedes the atomic schema commit. Only a genuinely empty
+    // schema is pending; a partial or damaged committed schema must still fail.
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()
+    if (!tables.length) return undefined
     const rows = db.prepare(`SELECT h.*,r.context,r.accepted,p.body FROM history h
       JOIN reviews r ON r.id=h.review JOIN payloads p ON p.id=h.id ORDER BY h.completed,h.tie,h.id`).all()
     const reviews = db.prepare("SELECT id,root,session,context,accepted FROM reviews ORDER BY id").all()
@@ -22,7 +27,12 @@ export async function readProductionHistory(file) {
     const payloadCount = db.prepare("SELECT count(*) AS n FROM payloads").get().n
     db.exec("COMMIT")
     return { file, rows, reviews, attempts, approvals, meta, conversations, payloadCount }
-  } finally { db.close() }
+  } catch (error) {
+    // Initial journal setup may briefly hold an exclusive lock. Let the caller's
+    // existing polling deadline own retries, never hide corruption/SQL errors.
+    if (error.code === "ERR_SQLITE_ERROR" && (error.errcode & 255) === 5) return undefined
+    throw error
+  } finally { db?.close() }
 }
 
 export function assertWriteInspection(inspection, request, call, sessionID, handshake) {

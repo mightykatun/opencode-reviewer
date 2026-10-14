@@ -7,7 +7,7 @@ import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { transformAsync } from "@babel/core"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
-import { smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { readObservation } from "./smoke-observations.mjs"
 
 runtimeArguments("smoke-v2-mouse-proof.mjs")
@@ -22,7 +22,7 @@ const project = path.join(temp, "project"), pluginDirectory = path.join(temp, "p
 await mkdir(project)
 await mkdir(pluginDirectory)
 await writeFile(path.join(pluginDirectory, "package.json"), JSON.stringify({ name: "research-v2-mouse-proof", type: "module", exports: { "./tui": "./tui.mjs" } }))
-execFileSync("git", ["init", "--quiet", project])
+smokeGitInit(temp, project)
 await writeFile(path.join(project, "fixture.py"), 'from pathlib import Path\nPath("executed").write_text("unexpected approval")\n')
 const observation = path.join(artifacts, "observations.json")
 const jsx = `

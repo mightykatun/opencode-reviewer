@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
-import { smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
 // Serialize real function bodies so node --check also checks plugin syntax.
@@ -145,7 +145,7 @@ const artifacts = await mkdtemp(path.join(root, `.runtime/v2-delegation-${scenar
 const temp = await mkdtemp("/tmp/opencode/reviewer-v2-delegation-")
 const project = path.join(temp, "project"), plugin = path.join(temp, "probe")
 await Promise.all([project, plugin, path.join(temp, "config/opencode")].map(directory => mkdir(directory, { recursive: true })))
-execFileSync("git", ["init", "--quiet", project])
+smokeGitInit(temp, project)
 const files = Object.fromEntries(["server", "cli", "control"].map(name => [name, path.join(artifacts, `${name}.json`)]))
 const imports = `import assert from 'node:assert/strict'\nimport {setTimeout as sleep} from 'node:timers/promises'\nimport {observationPublisher,readObservation} from ${JSON.stringify(new URL("./smoke-observations.mjs", import.meta.url).href)}\n`
 await writeFile(path.join(plugin, "package.json"), JSON.stringify({ name: "research-v2-delegation", type: "module",
