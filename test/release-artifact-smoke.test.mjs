@@ -67,7 +67,8 @@ test("terminal payload excludes Effect/theme parsing, preserves public module ma
   const coreBinding = nodes.find(node => node.type === "VariableDeclarator" && node.id.name === syntaxCore[0].object.name)
   assert.equal(coreBinding?.init.callee.name, "require")
   assert.equal(coreBinding.init.arguments[0].value, "@opentui/core")
-  const SyntaxStyle = { fromTheme: rules => rules }
+  let receivedOwner
+  const SyntaxStyle = { fromTheme: (rules, owner) => { receivedOwner = owner; return rules } }
   const upstream = new Function("SyntaxStyle", `${functions(nodesOf(parse(syntax, "module")), syntax)}\nreturn generateSyntax`)(SyntaxStyle)
   const emitted = new Function(syntaxCore[0].object.name, `${functions(nodes, terminal)}\nreturn generateSyntax`)({ SyntaxStyle })
   const tokens = (names, prefix) => Object.fromEntries(names.split(" ").map(name => [name, `${prefix}.${name}`]))
@@ -80,7 +81,10 @@ test("terminal payload excludes Effect/theme parsing, preserves public module ma
     diff: { text: tokens("added removed context", "diff.text"), background: tokens("added removed context", "diff.background") },
   }
   for (const categorical of [[{ 200: "first" }], [{ 200: "first" }, { 200: "second" }]]) {
-    assert.deepEqual(emitted({ ...theme, categorical }), upstream({ ...theme, categorical }))
+    const owner = Symbol("nativeScene")
+    const expected = upstream({ ...theme, categorical })
+    assert.deepEqual(emitted({ ...theme, categorical }, owner), expected)
+    assert.equal(receivedOwner, owner)
   }
 })
 

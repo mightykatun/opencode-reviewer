@@ -43,7 +43,7 @@ export default Plugin.define({ id:'research.v2.root-presentation', setup(ctx) {
   const [rootID, setRootID] = createSignal(), [sidebar, setSidebar] = createSignal()
   const [geometry, setGeometry] = createSignal(undefined, { equals:(a,b) => JSON.stringify(a) === JSON.stringify(b) })
   const style = SyntaxStyle.fromStyles({ default:{fg:'#eeeeee'}, 'markup.heading':{fg:'#70c0ff',bold:true},
-    'markup.strong':{bold:true}, 'markup.raw':{fg:'#80e0a0'}, punctuation:{fg:'#bbbbbb'} })
+    'markup.strong':{bold:true}, 'markup.raw':{fg:'#80e0a0'}, punctuation:{fg:'#bbbbbb'} }, ctx.renderer.nativeScene)
   let panel, heading, markdown, footer, serial = 0, stopped = false, finalizing = false, closing
   const publish = () => publisher.publish(result)
   const options = () => ({ signal:AbortSignal.any([abort.signal, AbortSignal.timeout(15000)]) })

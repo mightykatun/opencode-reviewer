@@ -1,8 +1,8 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { themeSyntaxOnlyPlugin, verifyThemeSyntaxInputs, verifyThemeSyntaxBuild } from "../scripts/theme-syntax-adapter.mjs"
+import { adaptThemeSyntax, themeSyntaxOnlyPlugin, verifyThemeSyntaxInputs, verifyThemeSyntaxBuild } from "../scripts/theme-syntax-adapter.mjs"
 
 const manifest = {
   name: "@opencode/theme", version: "2.0.28",
@@ -42,13 +42,20 @@ test("the build adapter hashes actual adjacent sources and rejects changed or mi
   for (const file of Object.keys(digests)) await writeFile(path.join(directory, file), "unexpected upstream source")
   let filter, load
   themeSyntaxOnlyPlugin.setup({ onLoad(options, callback) { filter = options.filter; load = callback } })
-  const barrel = path.join(directory, "index.js")
+  const barrel = path.join(directory, "index.js"), syntax = path.join(directory, "syntax.js")
   assert.ok(filter.test(barrel))
-  assert.ok(!filter.test(path.join(directory, "syntax.js")))
+  assert.ok(filter.test(syntax))
+  assert.ok(!filter.test(path.join(directory, "schema.js")))
   assert.ok(!filter.test(path.join(root, "src/review-description.tsx")))
   await assert.rejects(load({ path: barrel }), /Pinned theme build input changed: index.js/)
+  await assert.rejects(load({ path: syntax }), /Pinned theme build input changed: index.js/)
   await rm(path.join(directory, "schema.js"))
   await assert.rejects(load({ path: barrel }), /ENOENT/)
+  const upstream = await readFile(new URL("../node_modules/@opencode/theme/dist/tui/syntax.js", import.meta.url), "utf8")
+  const adapted = adaptThemeSyntax(upstream)
+  assert.match(adapted, /^import \{ SyntaxStyle \} from "@opentui\/core";\nexport function generateSyntax\(theme, owner\) \{/)
+  assert.match(adapted, /\n    \], owner\);\n\}\nfunction rule\(/)
+  assert.throws(() => adaptThemeSyntax(upstream.replace("generateSyntax(theme)", "generateSyntax()")), /Pinned theme syntax source changed/)
 })
 
 const themePrefix = "node_modules/@opencode/theme/"

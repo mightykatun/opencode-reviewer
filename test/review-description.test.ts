@@ -29,8 +29,9 @@ function fixture() {
     constructor(readonly highlightingDone: Promise<void>) {}
     getChildren() { return [] }
   }
-  const styles: { theme: unknown; destroys: number; destroy(): void }[] = []
+  const styles: { theme: unknown; owner: unknown; destroys: number; destroy(): void }[] = []
   const operations: string[] = []
+  const nativeScene = Symbol("nativeScene")
   const markdown = {
     isDestroyed: false, content: "", streaming: false, syntaxStyle: undefined as unknown, fg: undefined as unknown,
     conceal: false, tableOptions: undefined as unknown, width: undefined as unknown, flexShrink: undefined as unknown,
@@ -49,8 +50,8 @@ function fixture() {
       effect: solid.createRenderEffect,
     },
     "@opencode/theme/tui": {
-      generateSyntax(theme: unknown) {
-        const style = { theme, destroys: 0, destroy() { this.destroys++; operations.push("destroy-style") } }
+      generateSyntax(theme: unknown, owner: unknown) {
+        const style = { theme, owner, destroys: 0, destroy() { this.destroys++; operations.push("destroy-style") } }
         styles.push(style)
         return style
       },
@@ -70,11 +71,11 @@ function fixture() {
   let dispose!: () => void, referenced: unknown
   solid.createRoot(stop => {
     dispose = stop
-    const result = module.exports.HostReviewDescription({ context: { get theme() { return theme() } },
+    const result = module.exports.HostReviewDescription({ context: { renderer: { nativeScene }, get theme() { return theme() } },
       get text() { return text() }, get streaming() { return streaming() }, ref: (node: unknown) => { referenced = node } })
     assert.equal(result, markdown)
   })
-  return { markdown, styles, operations, referenced, firstTheme, Code, setTheme, setText, setStreaming, dispose }
+  return { markdown, styles, operations, referenced, firstTheme, nativeScene, Code, setTheme, setText, setStreaming, dispose }
 }
 
 test("host Markdown uses semantic theme syntax, sanitizes reactive report text and preserves default rendering", async () => {
@@ -82,6 +83,7 @@ test("host Markdown uses semantic theme syntax, sanitizes reactive report text a
   assert.equal(host.referenced, host.markdown)
   assert.equal(host.styles.length, 1)
   assert.equal(host.styles[0]!.theme, host.firstTheme, "pass the public host theme directly to generateSyntax")
+  assert.equal(host.styles[0]!.owner, host.nativeScene, "pass the renderer nativeScene owner to generateSyntax")
   assert.equal(host.markdown.syntaxStyle, host.styles[0])
   assert.equal(host.markdown.fg, host.firstTheme.text.base)
   assert.equal(host.markdown.content, "Initial")

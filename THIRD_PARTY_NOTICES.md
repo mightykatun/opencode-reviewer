@@ -31,8 +31,10 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 https://github.com/anomalyco/opencode/tree/v2.0.29/packages/theme
 
-The source-fingerprinted theme syntax helper is bundled unchanged in the terminal payload.
-A build-time adapter replaces its public barrel with a syntax-only re-export;
+The source-fingerprinted theme syntax helper is bundled in the terminal payload.
+A build-time adapter replaces its public barrel with a syntax-only re-export and
+adapts `generateSyntax` to forward the renderer owner to `SyntaxStyle.fromTheme`
+for OpenTUI 0.6 compatibility. The upstream syntax rules remain unchanged;
 unused theme parsers, schemas and their Effect dependency are not bundled.
 Solid and OpenTUI remain host-provided external dependencies.
 
