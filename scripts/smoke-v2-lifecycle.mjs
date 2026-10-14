@@ -33,7 +33,8 @@ function handshakeDefinition() {
     output: { anyOf: [{ type: "null" }, { type: "object", properties: {
       request: { type: "object" }, invocation: { type: "object" },
     }, required: ["request", "invocation"], additionalProperties: false }] },
-    errors: { scope: { type: "object", properties: {}, additionalProperties: false } },
+    errors: { scope: { type: "object", properties: {}, additionalProperties: false },
+      capacity_busy: { type: "object", properties: {}, additionalProperties: false } },
   }, evidence: {
     input: { type: "object", properties: { location, epoch: text, sessionID: text, requestID: text,
       options: { type: "object", properties: {
@@ -46,7 +47,8 @@ function handshakeDefinition() {
     output: { anyOf: [{ type: "null" }, { type: "object", properties: {
       request: { type: "object" }, invocation: { type: "object" }, result: { type: "object" },
     }, required: ["request", "invocation", "result"], additionalProperties: false }] },
-    errors: { scope: { type: "object", properties: {}, additionalProperties: false } },
+    errors: { scope: { type: "object", properties: {}, additionalProperties: false },
+      capacity_busy: { type: "object", properties: {}, additionalProperties: false } },
   } }, events: {} }
 }
 
@@ -250,6 +252,7 @@ async function observedSetup(ctx) {
       }
       if (phase.startsWith("response-") || phase === "no-companion") assert.equal(ready.state.companion, undefined)
       else {
+        assert.ok(ready.state.companion, "Expected scoped companion admission for " + phase)
         assert.equal(ready.state.companion.protocol, 1)
         assert.equal(ready.state.companion.hostVersion, fixture.hostVersion)
         assert.equal(ready.state.companion.location.directory, fixture.project)

@@ -19,6 +19,30 @@ async function connectionObserver() {
   return new Function("assert", `${text.slice(node.start, node.end)}\nreturn observeConnectionMarker`)(assert)
 }
 
+test("lifecycle's independent RPC definition matches production read errors without adding handshake errors", async () => {
+  const fixture = await readFile(new URL("../scripts/smoke-v2-lifecycle.mjs", import.meta.url), "utf8")
+  const fixtureAST = parseSync(fixture, { sourceType: "module", babelrc: false, configFile: false })
+  const definition = fixtureAST.program.body.find(node => node.type === "FunctionDeclaration" && node.id.name === "handshakeDefinition")
+  assert.ok(definition)
+  const rpc = new Function(`${fixture.slice(definition.start, definition.end)}\nreturn handshakeDefinition()`)()
+  const source = await readFile(new URL("../src/companion-protocol.ts", import.meta.url), "utf8")
+  const ast = parseSync(source, { sourceType: "module", babelrc: false, configFile: false, parserOpts: { plugins: ["typescript"] } })
+  const declarations = ast.program.body.flatMap(node => {
+    const declaration = node.type === "ExportNamedDeclaration" ? node.declaration : node
+    return declaration?.type === "VariableDeclaration" ? declaration.declarations : []
+  })
+  const busy = declarations.find(node => node.id.name === "companionBusy")?.init
+  const errors = declarations.find(node => node.id.name === "readErrors")?.init
+  assert.equal(busy?.type, "StringLiteral")
+  assert.equal(errors?.type, "TSAsExpression")
+  assert.equal(errors.expression.type, "ObjectExpression")
+  // Evaluate only this fixed literal error schema, never imports or host setup.
+  const expected = new Function("companionBusy", `return (${source.slice(errors.expression.start, errors.expression.end)})`)(busy.value)
+  assert.deepEqual(rpc.methods.invocation.errors, expected)
+  assert.deepEqual(rpc.methods.evidence.errors, expected)
+  assert.deepEqual(rpc.methods.handshake.errors, { scope: expected.scope }, "handshake admission has no capacity retry error")
+})
+
 test("cold startup independently observes the current real public marker without a native echo and owns subscriber return", async () => {
   const observe = await connectionObserver(), returned = deferred(), closing = deferred(), result = {}, saved = []
   const events = [{ type: "session.created", id: "unrelated" }, { type: "server.connected", id: "actual-current-marker" }]

@@ -52,8 +52,8 @@ inventory bounds and add capacity coverage rather than removing safety limits.
   - [x] Put evidence-disclosure guidance near installation without adding UI notices or policy options.
   - [x] Verify affected tests, helper inventory, typecheck and audit; commit.
 - [ ] Phase 7: Final verification.
-  - [ ] Run complete source/helper/typecheck/build checks.
-  - [ ] Verify reproducible five-file package and built release smoke checks.
+  - [x] Run complete source/helper/typecheck/build checks.
+  - [x] Verify reproducible five-file package and built release smoke checks.
   - [ ] Run the complete 38-case `ci` real-TUI profile on latest stable OpenCode V2, serially.
   - [ ] Record exact results, inspect diff/status and commit final checklist.
 
@@ -133,3 +133,26 @@ Record commands, test counts and exact runtime fixture results here after each p
   matches the Bun host and remains unchanged. No development floor was weakened.
   README now explains pre-approval disclosure and out-of-project symlink evidence
   near installation. No UI notice or new policy option was added. Diff check passed.
+- Phase 7 source/package verification: `npm run check` passed 1,404 source tests,
+  139 helper tests, typecheck and build (`.runtime/final-check.log`). Strict unused
+  locals/parameters typecheck passed (`.runtime/final-unused-check.log`).
+  `npm run check:package` verified exactly five files, 1,366,340 unpacked bytes and
+  reproducible SHA-256 `b40043504b6d4f4964dd4a28d7184c50c1dd22b3c74d8d92306f19d98a2fddc8`
+  (`.runtime/final-package.log`).
+  `node --test test/release-artifact-smoke.test.mjs test/npm-cli-smoke.test.mjs`:
+  11 passed, offline signing/publication boundaries only (`.runtime/final-release-smoke.log`).
+  Registry metadata confirms latest stable V2 is 2.0.29. Initial full-runtime run
+  stopped at lifecycle/default because its recovery assertion dereferenced an
+  absent companion (`.runtime/runtime-run-yzNfDO/results.json`). Runtime coverage
+  remains unchecked while the mismatch is diagnosed and corrected.
+- Independent final approval/evidence patch audit found no introduced defect in
+  the inspected changes. Its focused source selection passed 136 tests with two
+  workers (`.runtime/final-admission-audit.log`); this is not real-host acceptance.
+- Runtime mismatch resolved: lifecycle's independent RPC schema lacked Phase 2's
+  declared `capacity_busy` read errors, so its wrapper threw before any handshake.
+  Updated the fixture schema, added an AST-based schema-parity regression, and
+  made expected companion admission explicit. No production checks or budgets changed.
+  `node --test test/smoke-monitor.test.mjs`: 8 passed.
+  Lifecycle/default passed in 47,072 ms (`.runtime/runtime-run-vMyCZ8/results.json`);
+  cold-startup passed in 48,050 ms (`.runtime/runtime-run-UURzfp/results.json`),
+  serially on OpenCode 2.0.29. The complete profile still requires a successful run.
