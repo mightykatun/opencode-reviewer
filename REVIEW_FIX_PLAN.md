@@ -29,12 +29,12 @@ inventory bounds and add capacity coverage rather than removing safety limits.
   - [x] Test four-request real-companion fanout, shared contention, cancellation and invalid data.
   - [x] Add aggregate permission-inventory capacity regression coverage without raising limits.
   - [x] Verify companion/evidence/admission/permission tests and typecheck; commit.
-- [ ] Phase 3: Fix fallback connection handling and question deduplication.
-  - [ ] Preserve observed startup marker independently of companion success.
-  - [ ] Share exact initial-echo versus reconnect fencing across runtime compositions.
-  - [ ] Preserve dispatched question initials across queue/health loss.
-  - [ ] Test composed failed startup, initial/distinct echoes and dispatched/undispatched question recovery.
-  - [ ] Verify lifecycle/fallback/notification tests and typecheck; commit.
+- [x] Phase 3: Fix fallback connection handling and question deduplication.
+  - [x] Preserve observed startup marker independently of companion success.
+  - [x] Share exact initial-echo versus reconnect fencing across runtime compositions.
+  - [x] Preserve dispatched question initials across queue/health loss.
+  - [x] Test composed failed startup, initial/distinct echoes and dispatched/undispatched question recovery.
+  - [x] Verify lifecycle/fallback/notification tests and typecheck; commit.
 - [ ] Phase 4: Repair fixture isolation and database-startup polling.
   - [ ] Isolate every fixture Git initialization and bound its subprocess lifetime.
   - [ ] Treat an uninitialized history database as pending, not corruption.
@@ -54,7 +54,7 @@ inventory bounds and add capacity coverage rather than removing safety limits.
 - [ ] Phase 7: Final verification.
   - [ ] Run complete source/helper/typecheck/build checks.
   - [ ] Verify reproducible five-file package and built release smoke checks.
-  - [ ] Run relevant real-TUI fixtures on latest stable OpenCode V2, serially.
+  - [ ] Run the complete 38-case `ci` real-TUI profile on latest stable OpenCode V2, serially.
   - [ ] Record exact results, inspect diff/status and commit final checklist.
 
 ## Evidence
@@ -73,6 +73,7 @@ Record commands, test counts and exact runtime fixture results here after each p
   Fresh advisory reviews after read-only disappearance remain allowed; tombstones
   prevent additional approval preparation/writes, not advisory reporting.
 - Phase 1 core command: `npx tsx --test --test-concurrency=2 test/controller-native-approval.test.ts test/fast-mode.test.ts test/approval-transaction.test.ts test/host-permissions.test.ts`.
+- Phase 1 expanded command: `npx tsx --test --test-concurrency=2 test/controller-native-approval.test.ts test/fast-mode.test.ts test/approval-transaction.test.ts test/host-permissions.test.ts test/approval.test.ts test/controller.test.ts test/history-controller.test.ts test/controller-background-approval.test.ts test/notification-controller.test.ts test/statistics-controller.test.ts test/streaming-controller.test.ts test/controller-host-types.test.ts`.
 - Phase 2: `capacity_busy` is a declared read-only RPC error. Only that rejection
   retries, sequentially, at bounded 50 ms boundaries within the original budget.
   Missing/invalid evidence stays terminal, and both physical server slots remain owned.
@@ -84,3 +85,17 @@ Record commands, test counts and exact runtime fixture results here after each p
   Focused command: `npx tsx --test --test-concurrency=2 test/companion*.test.ts test/host-reader.test.ts test/host-evidence-reader.test.ts test/host-evaluate.test.ts test/host-permissions.test.ts test/review-admission.test.ts`.
   Real TUI `smoke-v2-review.mjs normal-tool` passed on OpenCode 2.0.29 in 15,134 ms;
   `.runtime/runtime-run-oOju7h/results.json` records exit 0.
+- Phase 2 expanded command: `npx tsx --test --test-concurrency=2 test/companion*.test.ts test/host-reader.test.ts test/host-evidence-reader.test.ts test/host-evaluate.test.ts test/host-permissions.test.ts test/review-admission.test.ts test/deadline.test.ts test/reviewer-ownership.test.ts test/review-context-ownership.test.ts test/file-access.test.ts test/invocation-capture.test.ts test/host-invocation.test.ts test/host-request.test.ts test/host-evidence.test.ts test/controller.test.ts test/controller-host-types.test.ts test/controller-native-approval.test.ts test/controller-background-approval.test.ts test/approval.test.ts test/approval-transaction.test.ts test/fast-mode.test.ts`.
+- Final runtime preflight: `node scripts/test-runtime.mjs --plan --profile ci`
+  selects exactly 38 existing production/foundation cases. This is planning only,
+  not runtime acceptance; the actual profile remains unchecked until executed.
+- Phase 3: shared exact-marker comparisons preserve only verified initial echoes;
+  marker-free/conflicting startup and distinct reconnects remain fenced. Question
+  initials are remembered only after channel dispatch, not queue admission.
+  `npx tsx --test --test-concurrency=2 test/cli-plugin.test.ts test/plugin-lifecycle.test.ts test/host-runtime.test.ts test/host-history-runtime.test.ts test/host-notification-runtime.test.ts test/notification-policy.test.ts test/notification-scheduling.test.ts`: 180 passed.
+  `npm test`: 1,385 passed after rerunning the interrupted first invocation with a
+  sufficient harness budget; `.runtime/phase3-source-tests-rerun.log` records zero
+  failures/cancellations. Typecheck, build and diff check passed.
+  Real TUI `smoke-v2-notifications.mjs unavailable-review` passed in 56,949 ms
+  (`.runtime/runtime-run-HJjkgs/results.json`); `forms` passed in 24,451 ms
+  (`.runtime/runtime-run-dN07EZ/results.json`), serially on OpenCode 2.0.29.

@@ -11,19 +11,23 @@ import { BUILTIN_PROMPTS } from "../src/prompts.js"
 import type { NotificationBackend } from "../src/notification-types.js"
 import { SessionModeStore } from "../src/session-mode.js"
 import path from "node:path"
+import { setupCli, type CliPluginState } from "../src/cli-plugin.js"
+import type { FormInfo } from "@opencode/client"
 
 const location = { directory: "/server/project" }
 const companion = { protocol: 1 as const, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location,
   project: { id: "project", directory: "/server", canonical: "/server" } }
 const pending = (id: string) => ({ id, sessionID: "root", action: "unknown", resources: ["scope"] })
 async function fixture(options: { notify?: boolean; formSync?: () => Promise<void>; sessionSync?: () => Promise<void>;
-  backend?: NotificationBackend; unavailable?: "configuration" | "companion"; connectionID?: string } = {}) {
+  backend?: NotificationBackend; unavailable?: "configuration" | "companion"; connectionID?: string;
+  startupFailure?: "companion" | "configuration" | "unobserved" | "conflicting" } = {}) {
   const life = new PluginLifecycle(), calls: string[] = [], ancestryReads: string[] = []
-  const commands: { id: string; run: () => Promise<void> }[] = []
+  const commands: { id: string; run: () => Promise<void>; enabled?: () => boolean }[] = []
   const renderer = Object.assign(new EventEmitter(), { width: 140, height: 40, requestRender: () => calls.push("render") })
-  let listen!: (event: any) => void
+  const listeners = new Set<(event: any) => void>()
   const state = { requests: [pending("first")], epoch: companion.epoch, list: async () => ({ location, data: state.requests }),
     nativeRequests: undefined as ReturnType<typeof pending>[] | undefined,
+    forms: [] as FormInfo[],
     route: { type: "home" } as { type: "home" } | { type: "session"; sessionID: string } }
   const ctx = {
     location,
@@ -31,11 +35,13 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
       session: { get: async ({ sessionID }: { sessionID: string }) => { ancestryReads.push(sessionID);
         return { id: sessionID, location, ...(sessionID === "child" ? { parentID: "root" } : {}) } } },
       permission: { request: { list: () => state.list() } } },
-    data: { listen: (callback: typeof listen) => { listen = callback; return () => calls.push("off") },
-      session: { get: (id: string) => ({ id, location, ...(id === "child" ? { parentID: "root" } : {}) }), family: () => ["root"],
+    data: { listen: (callback: (event: any) => void) => { listeners.add(callback); return () => { listeners.delete(callback); calls.push("off") } },
+      session: { list: () => [{ id: "root", location }],
+        get: (id: string) => ({ id, location, ...(id === "child" ? { parentID: "root" } : {}) }), family: () => ["root"],
         sync: async (id: string) => { calls.push("session:" + id); await options.sessionSync?.() },
         permission: { invalidate: (id: string) => calls.push("invalidate:" + id), sync: async (id: string) => { calls.push("sync:" + id) },
-           list: () => state.nativeRequests ?? state.requests }, form: { sync: async () => { calls.push("form"); await options.formSync?.() }, list: () => [] } } },
+           list: () => state.nativeRequests ?? state.requests }, form: { sync: async () => { calls.push("form"); await options.formSync?.() },
+             list: (id: string) => id === "root" ? state.forms : [] } } },
     keymap: { mode: { current: () => "base" }, layer: (factory: () => { commands: typeof commands }) => { commands.push(...factory().commands) },
       commands: () => [{ id: "session.sidebar.toggle" }], dispatch: (id: string) => calls.push("dispatch:" + id) },
     renderer,
@@ -44,18 +50,90 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
   } as unknown as Plugin.Context
   // Saved modes need a nonreplaceable namespace, just like the history fixture.
   const root = await mkdtemp("/tmp/reviewer-runtime-source-")
-  const runtime = setupHostRuntime(ctx, { ...(options.unavailable === "configuration" ? { configError: "Invalid configuration" }
+  const dependencies = { notifications: () => options.backend ?? ({ show: async () => undefined, dispose: () => {} }) }
+  let pluginState: CliPluginState = { ...(options.unavailable === "configuration" ? { configError: "Invalid configuration" }
     : { config: parseConfig({ baseURL: "http://localhost:40999", model: "unused", notify: options.notify ?? false }) }),
     ...(options.unavailable === "companion" ? {} : { companion }), connectionID: options.connectionID, stateRoot: root, prompts: BUILTIN_PROMPTS,
-    dependencies: { notifications: () => options.backend ?? ({ show: async () => undefined, dispose: () => {} }) } }, life)!
+    dependencies }
+  if (options.startupFailure) {
+    state.route = { type: "session", sessionID: "root" }
+    const cli = { ...ctx, options: { baseURL: "http://fixture.invalid/v1", model: options.startupFailure === "configuration" ? "" : "unused",
+      notifySound: false, staleReminderSeconds: 0 },
+      client: { ...ctx.client, event: { async *subscribe() {
+        if (options.startupFailure !== "unobserved") yield { type: "server.connected", id: "event-initial" }
+      } }, rpc: () => ({ handshake: async () => { throw Error("Companion unavailable") } }) },
+      data: { ...ctx.data, on: (_type: string, listener: (event: { id: string }) => void) => {
+        if (options.startupFailure === "conflicting") listener({ id: "event-conflict" })
+        return () => {}
+      } },
+    } as unknown as Plugin.Context
+    pluginState = { ...await setupCli(cli, life, { ...dependencies, adapterOnly: true }), stateRoot: root }
+  }
+  const runtime = setupHostRuntime(ctx, pluginState, life)!
   let sequence = 0
-  return { life, runtime, state, calls, ancestryReads, commands, renderer, stateRoot: root, event: (type: string, data: unknown, eventID?: string) => {
+  return { life, runtime, pluginState, state, calls, ancestryReads, commands, renderer, stateRoot: root, event: (type: string, data: unknown, eventID?: string) => {
     sequence++
-    listen({ details: { type, data, location, id: eventID ?? `event-${sequence}`, created: sequence,
+    for (const listen of listeners) listen({ details: { type, data, location, id: eventID ?? `event-${sequence}`, created: sequence,
       durable: { aggregateID: (data as { sessionID?: string }).sessionID, seq: sequence, version: 1 } } })
   } }
 }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+
+for (const failure of ["companion", "configuration", "unobserved", "conflicting"] as const) {
+  test(`failed CLI ${failure} composes history and attention without fallback promotion`, async t => {
+    const banners: string[] = []
+    const f = await fixture({ startupFailure: failure, backend: {
+      async show(message) { banners.push(message.kind); return { close() {} } }, dispose() {},
+    } })
+    t.after(() => f.life.stop())
+    const verified = failure === "companion" || failure === "configuration"
+    assert.equal(f.runtime, undefined, "fallback does not construct a reviewer")
+    assert.equal(f.pluginState.companion, undefined)
+    assert.equal(f.pluginState.connectionID, verified ? "event-initial" : undefined)
+    await tick(); await tick()
+    f.event("server.connected", {}, "event-initial")
+    assert.equal(f.commands.find(command => command.id === "reviewer.history")!.enabled!(), verified)
+    assert.equal(f.commands.find(command => command.id === "reviewer.lifetime")!.enabled!(), verified)
+    f.state.requests = [pending("fresh")]; f.event("permission.asked", pending("fresh"))
+    await tick(); await tick(); await tick()
+    assert.deepEqual(banners, verified ? ["attention"] : [])
+    const store = new SessionModeStore(path.join(f.stateRoot, "session-mode-v2"), JSON.stringify(location))
+    if (verified) {
+      await f.commands.find(command => command.id === "reviewer.disable")!.run()
+      assert.equal(await store.read("root", f.life.signal), false)
+    }
+    f.event("server.connected", {}, "event-distinct")
+    f.event("server.connected", {}, "event-initial")
+    assert.equal(f.commands.find(command => command.id === "reviewer.history")!.enabled!(), false)
+    assert.equal(f.commands.find(command => command.id === "reviewer.lifetime")!.enabled!(), false)
+    if (verified) {
+      await f.commands.find(command => command.id === "reviewer.enable")!.run()
+      assert.equal(await store.read("root", f.life.signal), false, "revoked local controls cannot revive fallback")
+    }
+    f.state.requests = [pending("late")]; f.event("permission.asked", pending("late"))
+    await tick(); await tick()
+    assert.deepEqual(banners, verified ? ["attention"] : [])
+  })
+}
+
+test("full runtime preserves a delivered question initial across unrelated shell health withdrawal", async t => {
+  const banners: string[] = []
+  const f = await fixture({ notify: true, backend: {
+    async show(message) { banners.push(message.title); return { close() {} } }, dispose() {},
+  } })
+  t.after(() => f.life.stop())
+  await tick(); await tick()
+  f.state.requests = []; await f.runtime.refresh.refresh()
+  f.state.route = { type: "session", sessionID: "root" }
+  f.runtime.notifications!.visit("root")
+  const question: FormInfo = { id: "question", sessionID: "root", title: "Question", fields: [{ type: "string", key: "answer" }] }
+  f.state.forms = [question]; f.event("form.created", { form: question })
+  await tick(); await tick(); await tick()
+  assert.deepEqual(banners, ["Agent has a question"])
+  f.event("shell.deleted", { id: "unrelated-shell" })
+  await tick(); await tick(); await tick()
+  assert.deepEqual(banners, ["Agent has a question"])
+})
 
 for (const unavailable of ["configuration", "companion"] as const) {
   test(`local enable/disable commands stay registered without review ${unavailable} and persist the same conversation namespace`, async t => {

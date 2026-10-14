@@ -6,6 +6,8 @@ import { NotificationAudio } from "../src/notification-audio.js"
 import { NotificationProcessPool, type NotificationProcesses, type ProcessResult, type ProcessScheduling } from "../src/notification-process.js"
 import { NotificationQueue } from "../src/notification-queue.js"
 import { fixtureWav } from "./notification-fixtures.js"
+import { NotificationPolicy } from "../src/notification-policy.js"
+import { parseNotificationConfig } from "../src/notification-config.js"
 
 function transport() {
   const calls: { command: string; args: readonly string[]; signal: AbortSignal; finish(): void }[] = []
@@ -50,6 +52,41 @@ test("routine banners leave actionable capacity and queued cancellation never di
   await settle(); assert.equal(f.calls.at(-1)?.args[0], "urgent")
   pool.dispose(); assert.ok(!f.calls.some(c => c.args[0] === "cancelled"))
 })
+
+for (const soundOnly of [false, true]) {
+  test(`question announcement follows physical ${soundOnly ? "audio" : "banner"} process admission, not capacity waiting`, async () => {
+    const f = transport(), pool = new NotificationProcessPool(f.raw)
+    const lane = soundOnly ? "audio" : "banner", capacity = soundOnly ? 2 : 20
+    const signal = new AbortController().signal
+    for (let i = 0; i < capacity; i++) pool.start("fixture", [`held-${i}`], 120000, signal, undefined, { lane, attention: true })
+    await settle(); assert.equal(f.calls.length, capacity)
+    const messages: string[] = []
+    const policy = new NotificationPolicy(parseNotificationConfig({ staleReminderSeconds: 0,
+      notifications: { question: { banner: !soundOnly, sound: soundOnly } } }), false, {
+      async show(message, parent) {
+        const process = pool.start("fixture", [message.title], 120000, parent, undefined, { lane, root: message.sessionID, attention: true })!
+        return { close: () => process.cancel(), closed: process.result.then(() => {}),
+          dispatched: process.started!.then(started => { if (started) messages.push(message.title) }) }
+      }, dispose() { pool.dispose() },
+    })
+    const front = new Map([["root", { kind: "question" as const, id: "q" }]])
+    try {
+      policy.pending(front); policy.question("q", { root: "root", sessionID: "root", title: "Root" }, true)
+      await settle(); assert.equal(f.calls.length, capacity)
+      policy.snapshot([], new Map(), false); await settle()
+      policy.snapshot([], front, true); await settle()
+      f.calls[0]!.finish(); await settle()
+      assert.equal(f.calls.length, capacity + 1)
+      assert.deepEqual(messages, ["Agent has a question"], "capacity-preempted initial must survive")
+      policy.snapshot([], new Map(), false); await settle()
+      policy.snapshot([], front, true); await settle()
+      for (const call of [...f.calls]) call.finish()
+      await settle()
+      assert.equal(f.calls.length, capacity + 1, "an actually admitted initial cannot replay after health loss")
+      assert.deepEqual(messages, ["Agent has a question"])
+    } finally { await policy.dispose() }
+  })
+}
 
 test("bounded priority rotates roots and services a routine item after eight actionable items", () => {
   const queue = new NotificationQueue<{ root: string; attention: boolean; id: string }>(30, 2)

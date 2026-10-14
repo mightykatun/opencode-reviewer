@@ -155,7 +155,9 @@ test("a marker superseded by a different native connection before handoff cannot
   const f = startup(t, async () => startupHandshake(), {}, event)
   try {
     await f.advance(); f.connect("evt_new_connection"); release(); await f.advance()
-    assert.equal((await f.pending).companion, undefined)
+    const state = await f.pending
+    assert.equal(state.companion, undefined)
+    assert.equal(state.connectionID, undefined, "conflicting initial observations cannot exempt either marker")
     assert.equal(f.calls.length, 0)
   } finally { release(); await f.life.stop() }
 })
@@ -174,7 +176,9 @@ test("waiting for connection consumes the original startup budget rather than re
     release(); await f.advance(); assert.equal(f.calls.length, 1)
     await f.advance(999); assert.equal(f.calls[0]!.signal.aborted, false)
     await f.advance(1)
-    assert.equal((await f.pending).companion, undefined)
+    const state = await f.pending
+    assert.equal(state.companion, undefined)
+    assert.equal(state.connectionID, initialConnectionID, "companion timeout cannot discard the verified marker")
     assert.equal(f.calls[0]!.signal.aborted, true)
     assert.equal(f.calls.length, 1)
   } finally { release(); await f.life.stop() }
@@ -190,7 +194,9 @@ test("connection timeout retains subscription cleanup ownership and never dispat
   const f = startup(t, async () => startupHandshake(), {}, event)
   try {
     await f.advance(); await f.advance(10000)
-    assert.equal((await f.pending).companion, undefined)
+    const state = await f.pending
+    assert.equal(state.companion, undefined)
+    assert.equal(state.connectionID, undefined)
     assert.equal(closing, true); assert.equal(closed, false)
     assert.equal(f.calls.length, 0)
     let drained = false
@@ -211,7 +217,9 @@ test("a failed or marker-free event source stays manual without a speculative ha
     const f = startup(t, async () => startupHandshake(), {}, event)
     try {
       await f.advance()
-      assert.equal((await f.pending).companion, undefined)
+      const state = await f.pending
+      assert.equal(state.companion, undefined)
+      assert.equal(state.connectionID, undefined)
       assert.equal(f.calls.length, 0)
     } finally { await f.life.stop(); t.mock.restoreAll(); t.mock.timers.reset() }
   }
@@ -284,6 +292,7 @@ test("unavailable startup has one fixed ten-second budget and no post-fallback r
     for (let elapsed = 250; elapsed <= 10000; elapsed += 250) await f.advance(250)
     const state = await f.pending
     assert.equal(state.companion, undefined)
+    assert.equal(state.connectionID, initialConnectionID)
     assert.ok(state.config); assert.ok(state.notificationConfig)
     assert.ok(f.calls.length > 1 && f.calls.length <= 40)
     const count = f.calls.length
@@ -301,6 +310,7 @@ test("startup never overlaps or accepts a timed-out physical read that ignores c
     await f.advance(); await f.advance(1500); await f.advance(8500)
     const state = await f.pending
     assert.equal(state.companion, undefined); assert.equal(f.calls.length, 1)
+    assert.equal(state.connectionID, initialConnectionID)
     let settled = false, stopped = false
     const stopping = f.life.stop().then(() => { stopped = true })
     const draining = f.life.settled().then(() => { settled = true })
@@ -350,7 +360,12 @@ test("malformed handshakes and scoped or unexpected errors stay terminal", async
   }
   for (const error of [{ type: "scope" }, { type: "rpc.internal" }, Error("unexpected")]) {
     const f = startup(t, async () => { throw error })
-    try { await f.advance(); assert.equal((await f.pending).companion, undefined); assert.equal(f.calls.length, 1) }
+    try {
+      await f.advance()
+      const state = await f.pending
+      assert.equal(state.companion, undefined); assert.equal(state.connectionID, initialConnectionID)
+      assert.equal(f.calls.length, 1)
+    }
     finally { await f.life.stop(); t.mock.restoreAll(); t.mock.timers.reset() }
   }
 })
@@ -371,6 +386,48 @@ test("invalid review configuration does not wait for companion recovery", async 
     await f.advance()
     const state = await f.pending
     assert.equal(state.config, undefined); assert.ok(state.notificationConfig)
+    assert.equal(state.connectionID, initialConnectionID)
     assert.equal(f.calls.length, 1)
+  } finally { await f.life.stop() }
+})
+
+test("verified startup follows a native generation change even when the replacement companion fails", async t => {
+  let reject!: (error: unknown) => void
+  const held = new Promise((_, no) => { reject = no })
+  const f = startup(t, (_signal, attempt) => attempt === 1 ? held : Promise.reject(Error("Unavailable companion")))
+  try {
+    await f.advance(); f.connect("evt_replacement")
+    assert.equal(f.calls[0]!.signal.aborted, true)
+    reject(Error("Old generation")); await f.advance(); await f.advance(250)
+    const state = await f.pending
+    assert.equal(state.companion, undefined)
+    assert.equal(state.connectionID, "evt_replacement")
+    assert.equal(f.calls.length, 2)
+  } finally { reject(Error("Disposed")); await f.life.stop() }
+})
+
+test("native markers alone cannot verify marker-free startup", async t => {
+  let release!: () => void
+  const held = new Promise<void>(yes => { release = yes })
+  const event = { async *subscribe() { await held; yield { type: "provider.updated" } } }
+  const f = startup(t, async () => startupHandshake(), {}, event)
+  try {
+    await f.advance(); f.connect(initialConnectionID); release(); await f.advance()
+    const state = await f.pending
+    assert.equal(state.connectionID, undefined); assert.equal(state.companion, undefined)
+    assert.equal(f.calls.length, 0)
+  } finally { release(); await f.life.stop() }
+})
+
+test("malformed public markers never admit an initial-echo exemption", async t => {
+  const event = { async *subscribe() {
+    for (const id of [undefined, "", "bad\0marker", "x".repeat(1025)]) yield { type: "server.connected", id }
+  } }
+  const f = startup(t, async () => startupHandshake(), {}, event)
+  try {
+    await f.advance()
+    const state = await f.pending
+    assert.equal(state.connectionID, undefined); assert.equal(state.companion, undefined)
+    assert.equal(f.calls.length, 0)
   } finally { await f.life.stop() }
 })

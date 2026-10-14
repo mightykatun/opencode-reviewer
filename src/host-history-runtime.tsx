@@ -19,6 +19,7 @@ import { setupHostSidebar } from "./host-sidebar.js"
 import { conversationRoot, RouteSessions } from "./route-approval.js"
 import { sameLocation } from "./companion-protocol.js"
 import { historyStateRoot } from "./local-state.js"
+import { initialConnectionEcho } from "./connection-marker.js"
 
 export interface HostHistoryRuntimeOptions {
   rootRoute(): string | undefined
@@ -175,6 +176,7 @@ export function setupHostHistoryOnly(ctx: Plugin.Context, state: CliPluginState,
   }))
   life.addCleanup(ctx.data.listen(({ details: event }) => {
     if (event.type === "server.connected") {
+      if (initialConnectionEcho(state.connectionID, event.id)) return
       disconnected = true
       records.revoke()
       return

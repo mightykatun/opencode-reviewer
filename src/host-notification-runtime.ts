@@ -15,6 +15,7 @@ import { conversationRoot } from "./route-approval.js"
 import { TransportOwnership } from "./transport-ownership.js"
 import type { AncestryReader } from "./session-ancestry.js"
 import { notificationWorkEvent } from "./host-background-work.js"
+import { initialConnectionEcho } from "./connection-marker.js"
 
 /** Native cache data supplies notification identity, not review provenance. */
 function request(value: PermissionRequest): HostRequest {
@@ -149,7 +150,7 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   if (life.signal.aborted) { void dispose(); return { notifications, refresh, front, visit, views: () => views, dispose, settled } }
   off = ctx.data.listen(({ details: event }) => {
     if (event.type === "server.connected") {
-      if (state.connectionID !== undefined && event.id === state.connectionID) return
+      if (initialConnectionEcho(state.connectionID, event.id)) return
       void dispose(); return
     }
     if (stopped || signal.aborted) return

@@ -22,8 +22,8 @@ interface Pending {
   message?: NotificationMessage
   blocking?: boolean
   reminder?: () => void
-  /** Initial permission attempts survive queue loss; undispatched work does not. */
-  announced?: Set<"attention" | "unsafe">
+  /** Initial dispatch attempts survive queue loss; undispatched work does not. */
+  announced?: Set<"attention" | "unsafe" | "question">
 }
 
 /** Absence of a countdown is not evidence of manual-only approval. A completed
@@ -202,16 +202,16 @@ export class NotificationPolicy<R extends RequestIdentity = HostRequest> {
     entry.phase = "attention"
     entry.message = this.message(kind, uiText.notifications[kind], entry.target)
     const message = entry.message
-    if (entry.identity.kind === "permission" && kind !== "question" && entry.announced?.has(kind)) {
+    if (entry.announced?.has(kind)) {
       entry.banner = undefined
       // Re-entry is not a new initial alert. Reminders restart from a full
-      // interval, and only while this permission actually owns the queue.
+      // interval, and only while this interaction actually owns the queue.
       this.remind(entry)
       return
     }
     entry.banner = message ? this.dispatch(message, entry.target, () => {
       if (entry.message !== message) return
-      if (entry.identity.kind === "permission" && kind !== "question") (entry.announced ??= new Set()).add(kind)
+      (entry.announced ??= new Set()).add(kind)
       this.remind(entry)
     }) : undefined
   }

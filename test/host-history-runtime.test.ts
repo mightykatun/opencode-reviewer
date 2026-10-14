@@ -14,6 +14,8 @@ import { empty } from "../src/lifetime.js"
 import { entryID, snapshotQuery, type HistoryQuery } from "../src/history-records.js"
 import type { HistorySelection } from "../src/history-schema.js"
 import type { HistoryTransport } from "../src/history-store.js"
+import { setupCli } from "../src/cli-plugin.js"
+import type { CliPluginState } from "../src/cli-plugin.js"
 
 const location = { directory: "/server/project", workspaceID: "workspace" }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
@@ -23,7 +25,7 @@ function deferred<T>() {
   const promise = new Promise<T>(yes => { resolve = yes })
   return { promise, resolve }
 }
-function fixture(unavailable: "configuration" | "companion" = "configuration", observeHistoryInput = false) {
+function contextFixture(unavailable: "configuration" | "companion" = "configuration", observeHistoryInput = false) {
   const life = new PluginLifecycle(), commands: NonNullable<KeymapLayer["commands"]>[number][] = []
   const layers: KeymapLayer[] = []
   const slots: { prepend?: string; append?: string; render: unknown; removed?: boolean }[] = []
@@ -81,12 +83,12 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", o
       project: { id: "project", directory: "/server", canonical: "/server" },
     } }
       : { config: config() }) }
-  const runtime = setupHostHistoryOnly(ctx, state, life, { transport: () => transport })
-  return { life, runtime, commands, layers, slots, renderer, sessions, wire, serverReads, unexpected, server,
+  const compose = (pluginState: CliPluginState) => setupHostHistoryOnly(ctx, pluginState, life, { transport: () => transport })
+  return { life, ctx, state, compose, commands, layers, slots, renderer, sessions, wire, serverReads, unexpected, server,
     mode: (value: string) => { mode = value },
     sample, totals, terminated: () => terminated, listening: () => !!listener,
     route: (value: typeof route) => { route = value },
-    event: (type: string, data: unknown, eventLocation?: typeof location) => listener?.({ details: { type, data,
+    event: (type: string, data: unknown, eventLocation?: typeof location, id?: string) => listener?.({ details: { type, data, id,
       ...(eventLocation ? { location: eventLocation } : {}) } }),
     command: (id: string) => {
       const command = commands.find(value => value.id === id)!
@@ -94,6 +96,46 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", o
       return { ...command, enabled: command.enabled as () => boolean }
     },
   }
+}
+
+function fixture(unavailable: "configuration" | "companion" = "configuration", observeHistoryInput = false) {
+  const f = contextFixture(unavailable, observeHistoryInput)
+  return { ...f, runtime: f.compose(f.state) }
+}
+
+for (const failure of ["companion", "configuration", "unobserved", "conflicting"] as const) {
+  test(`failed CLI ${failure} state composes history with only its verified initial echo exempted`, async t => {
+    const f = contextFixture(); t.after(() => f.life.stop())
+    const cli = { ...f.ctx, options: { baseURL: "http://fixture.invalid/v1", model: failure === "configuration" ? "" : "unused" },
+      client: { ...f.ctx.client, event: { async *subscribe() {
+        if (failure !== "unobserved") yield { type: "server.connected", id: "event-initial" }
+      } }, rpc: () => ({ handshake: async () => { throw Error("Companion unavailable") } }) },
+      data: { ...f.ctx.data, on: (_type: string, listener: (event: { id: string }) => void) => {
+        if (failure === "conflicting") listener({ id: "event-conflict" })
+        return () => {}
+      } },
+    } as unknown as Plugin.Context
+    const state = await setupCli(cli, f.life, { adapterOnly: true })
+    const verified = failure === "companion" || failure === "configuration"
+    assert.equal(state.companion, undefined)
+    assert.equal(state.connectionID, verified ? "event-initial" : undefined)
+    const runtime = f.compose({ ...state, stateRoot: f.state.stateRoot })
+    assert.equal(runtime.active(), true)
+    f.event("server.connected", {}, location, "event-initial")
+    assert.equal(runtime.active(), verified)
+    assert.equal(f.command("reviewer.history").enabled(), verified)
+    assert.equal(f.command("reviewer.lifetime").enabled(), verified)
+    if (verified) {
+      f.command("reviewer.history").run(); await tick(); await tick()
+      assert.deepEqual(runtime.records.state().selection, f.sample)
+    }
+    f.event("server.connected", {}, location, "event-distinct")
+    f.event("server.connected", {}, location, "event-initial")
+    assert.equal(runtime.active(), false, "an old admitted marker cannot revive a revoked fallback")
+    assert.equal(f.command("reviewer.history").enabled(), false)
+    assert.equal(f.command("reviewer.lifetime").enabled(), false)
+    assert.deepEqual(f.unexpected, [], "the cloned startup context cannot invoke the fixture's ordinary RPC")
+  })
 }
 
 test("V2 history uses the existing absolute normalized directory index, independently of ownership", () => {

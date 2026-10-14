@@ -3,7 +3,7 @@ import { test } from "node:test"
 import { setImmediate as tick } from "node:timers/promises"
 import type { FormInfo, OpenCodeEvent, PermissionRequest, SessionInfo, ShellInfo, PersistentPtyInfo } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin/tui"
-import type { CliPluginState } from "../src/cli-plugin.js"
+import { setupCli, type CliPluginState } from "../src/cli-plugin.js"
 import type { setupHostHistory } from "../src/host-history-runtime.js"
 import type { NotificationMessage } from "../src/notification-types.js"
 import type { AncestryReader } from "../src/session-ancestry.js"
@@ -27,7 +27,8 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function fixture(unavailable: "configuration" | "companion" = "configuration", initial: PermissionRequest[] = [], connectionID?: string) {
+function contextFixture(unavailable: "configuration" | "companion" = "configuration", initial: PermissionRequest[] = [],
+  connectionID?: string, notificationOptions: Record<string, unknown> = {}) {
   const life = new PluginLifecycle(), banners: NotificationMessage[] = [], signals: AbortSignal[] = []
   const sessions = new Map<string, Pick<SessionInfo, "id" | "parentID" | "title" | "location">>([
     ["root", { id: "root", title: "Root title", location }],
@@ -78,7 +79,7 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", i
       slot: () => { unexpected.push("slot"); throw Error("Caller owns UI") } },
     keymap: { mode: { current: () => "base" } },
   } as unknown as Plugin.Context
-  const options = { notifySound: false, staleReminderSeconds: 0 }
+  const options = { notifySound: false, staleReminderSeconds: 0, ...notificationOptions }
   const state: CliPluginState = { stateRoot: "/unused", prompts: BUILTIN_PROMPTS, connectionID,
     notificationConfig: parseNotificationConfig(options), dependencies: { notifications: () => ({
       async show(message, signal) { banners.push(message); signals.push(signal); return { close() {} } },
@@ -86,8 +87,12 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", i
     }) }, ...(unavailable === "configuration" ? { configError: "Invalid review configuration" }
       : { config: parseConfig({ baseURL: "http://fixture.invalid/v1", model: "unused", autoApprove: true, ...options }) }) }
   const records = { location, history: { root: (id: string, signal: AbortSignal) => hooks.ancestry(id, signal) } } as unknown as ReturnType<typeof setupHostHistory>
-  const runtime = setupHostNotificationOnly(ctx, state, life, records)!
-  assert.ok(runtime)
+  let runtime: NonNullable<ReturnType<typeof setupHostNotificationOnly>>
+  const compose = (pluginState: CliPluginState) => {
+    runtime = setupHostNotificationOnly(ctx, pluginState, life, records)!
+    assert.ok(runtime)
+    return runtime
+  }
   const emit = <T extends OpenCodeEvent["type"]>(type: T, data: EventOf<T>["data"], scope: typeof location | undefined = location, eventID?: string) => {
     serial++
     listener?.({ details: { type, data, id: eventID ?? `event-${serial}`, created: serial, ...(scope ? { location: scope } : {}),
@@ -103,9 +108,81 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", i
     emit("form.replied", { id: value.id, sessionID: value.sessionID, answer: {} })
   }
   const flush = async () => { await tick(); await runtime.refresh.refresh(); await tick() }
-  return { life, runtime, state, ctx, sessions, permissions, forms, background, banners, signals, syncs, unexpected, hooks,
+  return { life, compose, state, ctx, sessions, permissions, forms, background, banners, signals, syncs, unexpected, hooks,
     emit, ask, reply, formReply, flush, listening: () => !!listener, backendDisposed: () => backendDisposed,
     route: (id: string) => { current = id; runtime.visit(id) } }
+}
+
+function fixture(unavailable: "configuration" | "companion" = "configuration", initial: PermissionRequest[] = [],
+  connectionID?: string, notificationOptions: Record<string, unknown> = {}) {
+  const f = contextFixture(unavailable, initial, connectionID, notificationOptions)
+  return { ...f, runtime: f.compose(f.state) }
+}
+
+for (const failure of ["companion", "configuration", "timeout", "unobserved", "conflicting"] as const) {
+  test(`failed CLI ${failure} state composes attention with only its verified initial echo exempted`, async t => {
+    const f = contextFixture(); t.after(() => f.life.stop())
+    let now = 0, handshakes = 0
+    if (failure === "timeout") {
+      t.mock.method(performance, "now", () => now)
+      t.mock.timers.enable({ apis: ["setTimeout"] })
+    }
+    const cli = { ...f.ctx, options: { baseURL: "http://fixture.invalid/v1", model: failure === "configuration" ? "" : "unused",
+      notifySound: false, staleReminderSeconds: 0 },
+      client: { ...f.ctx.client, event: { async *subscribe() {
+        if (failure !== "unobserved") yield { type: "server.connected", id: "event-initial" }
+      } }, rpc: () => ({ handshake: async (_location: unknown, { signal }: { signal: AbortSignal }) => {
+        handshakes++
+        if (failure === "timeout") await new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+        })
+        throw Error("Companion unavailable")
+      } }) },
+      data: { ...f.ctx.data, on: (_type: string, listener: (event: { id: string }) => void) => {
+        if (failure === "conflicting") listener({ id: "event-conflict" })
+        return () => {}
+      } },
+    } as unknown as Plugin.Context
+    const startup = setupCli(cli, f.life, { ...f.state.dependencies, adapterOnly: true })
+    if (failure === "timeout") { await tick(); now = 10000; t.mock.timers.tick(10000); await tick() }
+    const state = await startup
+    const verified = failure !== "unobserved" && failure !== "conflicting"
+    assert.equal(state.companion, undefined)
+    assert.equal(state.connectionID, verified ? "event-initial" : undefined)
+    const runtime = f.compose(state)
+    await f.flush()
+    f.emit("server.connected", {}, location, "event-initial"); await f.flush()
+    assert.equal(f.listening(), verified)
+    const pending = permission("after-echo")
+    f.permissions.set("root", [pending]); f.ask(pending); await f.flush()
+    assert.equal(f.banners.length, verified ? 1 : 0)
+    const calls = handshakes
+    f.emit("server.connected", {}, location, "event-distinct"); await runtime.dispose()
+    f.emit("server.connected", {}, location, "event-initial"); await f.flush()
+    assert.equal(f.listening(), false); assert.equal(f.backendDisposed(), 1)
+    assert.equal(handshakes, calls, "fallback never promotes or retries startup")
+    assert.deepEqual(f.unexpected, [], "the cloned CLI seam cannot acquire caller-owned UI")
+  })
+}
+
+for (const soundOnly of [false, true]) {
+  test(`delivered ${soundOnly ? "sound-only" : "banner"} question stays silent after unrelated shell activity with reminders disabled`, async t => {
+    const f = fixture("configuration", [], undefined, { notifySound: soundOnly,
+      notifications: { question: { banner: !soundOnly, sound: soundOnly } } })
+    t.after(() => f.life.stop())
+    await f.flush()
+    const question = form("question")
+    f.forms.set("root", [question]); f.emit("form.created", { form: question }); await f.flush()
+    assert.deepEqual(f.banners.map(value => value.title), ["Agent has a question"])
+    assert.deepEqual([f.banners[0]?.banner, f.banners[0]?.sound], [!soundOnly, soundOnly])
+    f.emit("shell.deleted", { id: "unrelated-shell" })
+    assert.equal(f.signals[0]?.aborted, true, "health withdrawal must still cancel the old channel")
+    await f.flush(); await f.flush()
+    assert.equal(f.banners.length, 1, "healthy reconciliation cannot replay a dispatched initial")
+    f.forms.set("root", undefined); await f.flush()
+    f.forms.set("root", [question]); await f.flush()
+    assert.equal(f.banners.length, 1, "failed form observations also preserve the announcement")
+  })
 }
 
 test("notification-only fallback waits for background family work and handles location-scoped shell events", async t => {

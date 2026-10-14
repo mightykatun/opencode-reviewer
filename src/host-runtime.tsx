@@ -26,6 +26,7 @@ import { hostApprovalReady, nativeDecisionPending } from "./host-approval-ready.
 import { setupHostModeCommands } from "./host-mode-commands.js"
 import { SessionAncestry } from "./session-ancestry.js"
 import { TransportOwnership } from "./transport-ownership.js"
+import { initialConnectionEcho } from "./connection-marker.js"
 
 /** One scope-pinned controller. A replaced companion never adopts old evidence. */
 export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle) {
@@ -221,7 +222,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     if (event.type === "server.connected") {
       // Startup has already admitted this exact public marker. The native data
       // bridge can deliver its initial echo after the controller is installed.
-      if (state.connectionID !== undefined && event.id === state.connectionID) return
+      if (initialConnectionEcho(state.connectionID, event.id)) return
       // Native caches can follow a new connection while the captured client still
       // targets its original server. Never combine those generations for a write.
       disconnected = true

@@ -11,23 +11,27 @@ const view = (id = "a", status: View["status"] = "analyzing", safe = true): View
   request: { id, sessionID: "root", action: "shell", resources: ["command"], source: { assistantID: "assistant", id: "call" } },
   status, ...(status === "complete" ? { assessment: { safe, desc: "Fixture" } } : {}),
 })
-function fixture(auto = false, notify = true, sound = true, options: Record<string, unknown> = {}) {
+function fixture(auto = false, notify = true, sound = true, options: Record<string, unknown> = {}, deferDispatch = false) {
   let now = 0
   const timers = new Set<{ at: number; callback: () => void }>()
   const messages: NotificationMessage[] = [], closed: string[] = []
   const dismissals: (() => void)[] = []
+  const dispatches: { signal: AbortSignal; run(): void }[] = []
   const policy = new NotificationPolicy(parseNotificationConfig({ notify, notifySound: sound, ...options }), auto, {
     async show(message, signal) {
       assert.equal(signal.aborted, false)
-      messages.push(message)
+      let finish: (() => void) | undefined
+      const dispatched = deferDispatch ? new Promise<void>(resolve => { finish = resolve }) : undefined
+      if (deferDispatch) dispatches.push({ signal, run() { if (!signal.aborted) messages.push(message); finish!() } })
+      else messages.push(message)
       const closedPromise = new Promise<void>(resolve => { dismissals.push(resolve) })
-      return { close: () => { closed.push(message.title) }, closed: closedPromise }
+      return { close: () => { closed.push(message.title); finish?.() }, closed: closedPromise, dispatched }
     }, dispose() {},
   }, { now: () => now, after(ms, callback) {
     const timer = { at: now + ms, callback }; timers.add(timer)
     return () => { timers.delete(timer) }
   } })
-  return { policy, messages, closed, timers, dismissals, async advance(ms: number) {
+  return { policy, messages, closed, timers, dismissals, dispatches, async advance(ms: number) {
     now += ms
     for (const timer of [...timers]) if (timer.at <= now && timers.delete(timer)) timer.callback()
     await settle()
@@ -63,6 +67,66 @@ test("front questions notify once, baseline and repeated asks stay silent, resol
   assert.equal(f.closed.length, 1)
   f.policy.dispose()
 })
+
+for (const loss of ["queue", "health"] as const) for (const soundOnly of [false, true]) for (const seconds of [0, 1]) {
+  test(`dispatched question survives ${loss} loss, ${soundOnly ? "sound-only" : "banner"}, reminders=${seconds}`, async () => {
+    const f = fixture(false, true, true, { staleReminderSeconds: seconds,
+      notifications: { question: { banner: !soundOnly, sound: soundOnly } } })
+    const front = new Map([["root", { kind: "question" as const, id: "q" }]])
+    f.policy.pending(front); f.policy.question("q", target, true)
+    await settle(); assert.equal(f.messages.length, 1)
+    await f.advance(900)
+    if (loss === "queue") f.policy.pending(new Map([["root", { kind: "permission", id: "cover" }]]))
+    else f.policy.snapshot([], new Map(), false)
+    await f.advance(5000)
+    assert.equal(f.messages.length, 1, "loss cancels the original reminder deadline")
+    f.policy.snapshot([], front, true); await settle()
+    assert.equal(f.messages.length, 1, "a dispatched initial never replays on re-entry")
+    f.policy.question("q", target, true)
+    await f.advance(999); assert.equal(f.messages.length, 1)
+    await f.advance(1)
+    assert.deepEqual(f.messages.map(message => message.title), seconds
+      ? ["Agent has a question", "Agent has a question (Reminder)"] : ["Agent has a question"])
+    for (const message of f.messages) assert.deepEqual([message.banner, message.sound], [!soundOnly, soundOnly])
+    f.policy.resolved("question", "q"); await f.advance(120000)
+    assert.equal(f.messages.length, seconds ? 2 : 1)
+    assert.equal(f.timers.size, 0)
+    await f.policy.dispose()
+  })
+}
+
+for (const soundOnly of [false, true]) {
+  test(`queued and backend-undispatched ${soundOnly ? "sound-only" : "banner"} questions retain the initial before reminders`, async () => {
+    const f = fixture(false, true, true, { staleReminderSeconds: 1,
+      notifications: { question: { banner: !soundOnly, sound: soundOnly } } }, true)
+    const front = new Map([["root", { kind: "question" as const, id: "q" }]])
+    f.policy.pending(front); f.policy.question("q", target, true)
+    // No backend admission yet: cancel the policy-queued initial synchronously.
+    f.policy.snapshot([], new Map(), false)
+    await settle(); assert.equal(f.dispatches.length, 0)
+    f.policy.snapshot([], front, true); await settle()
+    assert.equal(f.dispatches.length, 1)
+    await f.advance(5000); assert.equal(f.messages.length, 0)
+    // Backend admission is not dispatch either. Its cancelled signal must prevent
+    // a late dispatch marker from announcing a later recovered episode.
+    f.policy.pending(new Map([["root", { kind: "permission", id: "cover" }]]))
+    f.dispatches[0]!.run(); await settle()
+    assert.equal(f.dispatches[0]!.signal.aborted, true)
+    f.policy.pending(front); await settle()
+    assert.equal(f.dispatches.length, 2)
+    await f.advance(5000); assert.equal(f.messages.length, 0)
+    f.dispatches[1]!.run(); await settle()
+    assert.deepEqual(f.messages.map(message => message.title), ["Agent has a question"])
+    f.policy.snapshot([], new Map(), false); f.policy.snapshot([], front, true)
+    await f.advance(999); assert.equal(f.dispatches.length, 2)
+    await f.advance(1); assert.equal(f.dispatches.length, 3)
+    f.dispatches[2]!.run(); await settle()
+    assert.deepEqual(f.messages.map(message => message.title), ["Agent has a question", "Agent has a question (Reminder)"])
+    f.policy.resolved("question", "q")
+    for (const dismiss of f.dismissals) dismiss()
+    await f.policy.dispose()
+  })
+}
 
 test("queued completion rechecks activity before backend dispatch and may retry only an undispatched turn", async () => {
   const f = fixture()

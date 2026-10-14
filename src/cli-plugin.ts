@@ -12,6 +12,7 @@ import timers from "node:timers/promises"
 import { loadHostRuntime } from "./host-runtime-loader.js"
 import { parseNotificationConfig, type NotificationConfig } from "./notification-config.js"
 import type { setupHostRuntime } from "./host-runtime.js"
+import { initialConnectionEcho } from "./connection-marker.js"
 
 export interface CliPluginState {
   config?: Config
@@ -58,11 +59,12 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
   lifecycle.addCleanup(() => reads.settled())
   let generation = 0, connection = new AbortController()
   let markerID: string | undefined, nativeID: string | undefined
+  let connectionVerified = false
   let off = context.data.on("server.connected", event => {
     nativeID = event.id
     // Client subscribers and the native data bridge deliver the same initial
     // marker at different times. Its delayed echo is not another connection.
-    if (markerID !== undefined && event.id === markerID) return
+    if (initialConnectionEcho(markerID, event.id)) return
     markerID = event.id
     generation++
     connection.abort()
@@ -87,8 +89,10 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
         return undefined
       })())
       signal.throwIfAborted()
-      if (!connected || (nativeID !== undefined && nativeID !== connected)) return
+      if (!connected || remainingTime(signal) <= 0
+        || (nativeID !== undefined && !initialConnectionEcho(connected, nativeID))) return
       markerID = connected
+      connectionVerified = true
       while (!signal.aborted) {
         const turn = generation, connected = connection.signal
         let pending: Promise<unknown> | undefined
@@ -120,10 +124,15 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
     // before installing the runtime's permanent reconnect revocation.
     if (admission?.generation === generation) {
       state.companion = admission.companion
-      state.connectionID = markerID
     }
   } catch { lifecycle.signal.throwIfAborted() }
-  finally { stop() }
+  finally {
+    // Companion failure does not invalidate an independently observed connection.
+    // Native generation changes update markerID, but cannot verify a missing or
+    // conflicting initial client marker. No late deadline worker can admit one.
+    if (connectionVerified) state.connectionID = markerID
+    stop()
+  }
   if (runtime) {
     lifecycle.signal.throwIfAborted()
     Object.defineProperty(state, "runtime", { value: runtime.setupHostRuntime(context, state, lifecycle) })
