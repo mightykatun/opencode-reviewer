@@ -22,7 +22,8 @@ function fixture(child = false) {
   const invocation = { sessionID, assistantID: "assistant", callID: "call", tool: "read", input: { path: "/outside/file" },
     ...scope, project: startupProject }
   const state = { projectID: "global", canonical: "/project", registry: true, duplicate: false, foreign: false,
-    changed: false, invalid: false, missing: false, permission: raw, epoch: scope.epoch }
+    changed: false, changedCanonical: false, changedCheckout: false, missingCheckout: false, checkout: "/project",
+    invalid: false, missing: false, permission: raw, epoch: scope.epoch }
   const posts: any[] = [], calls: string[] = []
   const files = new FileAccess({ open: async () => { assert.fail("No filesystem evidence needed") },
     realpath: async () => { assert.fail("Do not rediscover or initialize a project") } })
@@ -33,6 +34,8 @@ function fixture(child = false) {
       evidence: async (query: any, options: { signal: AbortSignal }) => {
         const result = await collectHostOperation({ snapshot, invocation }, query.options, options.signal, files)
         if (state.changed) state.projectID = "changed-project"
+        if (state.changedCanonical) state.canonical = "/foreign"
+        if (state.changedCheckout) state.checkout = "/foreign"
         return { request: raw, invocation, result: state.invalid && result.status === "ready"
           ? { ...result, evidence: { ...result.evidence, tool: "other" } } : result }
       },
@@ -42,7 +45,9 @@ function fixture(child = false) {
       const entry = { id: state.projectID, canonical: state.foreign ? "/foreign" : state.canonical }
       return state.registry ? [entry, ...(state.duplicate ? [entry] : [])] : []
     } },
-    worktree: { list: async () => { calls.push("worktree.list"); return [] } },
+    worktree: { list: async () => { calls.push("worktree.list")
+      return state.missingCheckout ? [] : [{ directory: state.foreign ? "/foreign" : state.checkout }]
+    } },
     session: {
       get: async ({ sessionID: id }: { sessionID: string }) => ({ id, projectID: state.projectID, location,
         ...(id === "child" ? { parentID: "root" } : {}) }),
@@ -54,8 +59,8 @@ function fixture(child = false) {
     permission: { get: async () => state.permission, reply: () => assert.fail("No permission writes in evaluator tests") },
   }
   const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", notify: false })
-  const evaluate = (identify = () => {}) => evaluateHostReview(client as unknown as OpenCodeClient, snapshot, config,
-    BUILTIN_PROMPTS, new AbortController().signal, identify, { fetcher: async (_url, init) => {
+  const evaluate = (identify = () => {}, signal = new AbortController().signal) => evaluateHostReview(client as unknown as OpenCodeClient, snapshot, config,
+    BUILTIN_PROMPTS, signal, identify, { fetcher: async (_url, init) => {
       posts.push(JSON.parse(String(init?.body)))
       return Response.json({ choices: [{ message: { content: '{"safe":false,"desc":"Synthetic assessment."}' } }] })
     } })
@@ -78,22 +83,64 @@ for (const child of [false, true]) test(`project reassignment preserves exact ${
   assert.ok(evidence.limitations.some((reason: string) => /registered project/.test(reason)))
 })
 
-for (const failure of ["missing", "duplicate", "foreign", "changed", "invalid"] as const)
+for (const failure of ["missing", "duplicate", "foreign", "changed", "changedCanonical", "changedCheckout", "missingCheckout", "invalid"] as const)
   test(`project repair remains manual for ${failure} metadata/evidence`, async () => {
     const f = fixture()
     f.state.projectID = "git-project"
     if (failure === "missing") f.state.registry = false
     else f.state[failure] = true
     let identified = false
-    await f.evaluate(() => { identified = true }).catch(() => {})
+    const reading = f.evaluate(() => { identified = true })
+    if (["missing", "duplicate", "foreign", "changedCheckout", "missingCheckout"].includes(failure))
+      await assert.rejects(reading, /Registered invocation project metadata unavailable or ambiguous/)
+    else assert.equal(await reading, null)
     assert.equal(identified, false)
     assert.equal(f.posts.length, 0)
+  })
+
+for (const phase of [1, 2]) test(`canceled ${phase === 1 ? "initial" : "final"} registry lookup owns late settlement without a POST`, async () => {
+  const f = fixture(), abort = new AbortController()
+  f.state.projectID = "git-project"
+  let started!: () => void, release!: (value: any) => void, reads = 0
+  const dispatched = new Promise<void>(resolve => { started = resolve })
+  const held = new Promise<any>(resolve => { release = resolve })
+  const original = f.client.project.list
+  f.client.project.list = async () => {
+    if (++reads !== phase) return original()
+    started(); return held
+  }
+  const evaluation = f.evaluate(() => {}, abort.signal)
+  await dispatched
+  abort.abort(Error("Stop registered project lookup"))
+  await assert.rejects(evaluation, /Stop registered project lookup/)
+  let settled = false
+  const draining = evaluation.settled!.then(() => { settled = true })
+  await tick(); assert.equal(settled, false)
+  release([{ id: "git-project", canonical: "/project" }])
+  await draining
+  assert.equal(f.posts.length, 0)
+  assert.equal(reads, phase)
+  assert.equal(f.calls.filter(call => call === "worktree.list").length, phase - 1)
+})
+
+for (const failure of ["permission", "epoch", "source"] as const)
+  test(`project repair does not weaken ${failure} binding`, async () => {
+    const f = fixture()
+    f.state.projectID = "git-project"
+    if (failure === "permission") f.state.permission = { ...f.state.permission, resources: ["/other/*"] }
+    if (failure === "epoch") f.state.epoch = "20000000-1000-4000-8000-100000000000"
+    if (failure === "source") f.client.session.message.get = async () => ({ id: "assistant", type: "assistant", content: [] })
+    let identified = false
+    assert.equal(await f.evaluate(() => { identified = true }), null)
+    assert.equal(identified, false)
+    assert.equal(f.posts.length, 0)
+    if (failure === "source") assert.deepEqual(f.calls, [], "Invalid direct linkage cannot trigger metadata repair")
   })
 
 test("an operational evidence error is visible without review or approval, including after mode retry", async () => {
   const f = fixture()
   f.state.projectID = "git-project"; f.state.registry = false
-  const controller = new Controller((_request, _signal, identify) => f.evaluate(identify), () => {}, {
+  const controller = new Controller((_request, signal, identify) => f.evaluate(identify, signal), () => {}, {
     candidate: () => true, nativeFront: () => "permission", session: id => ({ id }),
     modes: { root: async () => "root", load: async () => {}, enabled: () => true },
   })
@@ -101,6 +148,7 @@ test("an operational evidence error is visible without review or approval, inclu
     controller.asked(f.snapshot.request)
     await tick(); await tick()
     assert.equal(controller.views[0]?.status, "unidentified")
+    assert.match(controller.views[0]!.error!, /Registered invocation project metadata unavailable or ambiguous/)
     assert.equal(visibleReview(controller.views, "root", id => ({ id }), () => "permission")?.request.id, "permission")
     assert.equal(f.posts.length, 0)
     controller.modeChanged("root")

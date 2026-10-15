@@ -1,6 +1,6 @@
 import type { OpenCodeClient } from "@opencode/client"
 import { companionRpc, readHandshake } from "./companion-protocol.js"
-import { hostJSONBytes, readHostEnvelope, readHostInvocation, sameRequest, snapshotRequest } from "./host-request.js"
+import { hostJSONBytes, readHostEnvelope, readHostInvocation, sameHostJSON, sameRequest, snapshotRequest } from "./host-request.js"
 import { bindHostInvocation } from "./host-invocation.js"
 import { loadHostConversationContext, type HostConversationContext } from "./host-context.js"
 import { withDeadline } from "./deadline.js"
@@ -65,6 +65,9 @@ export async function finalizePendingInvocation(client: OpenCodeClient, current:
     signal.throwIfAborted()
     if (session.id !== request.sessionID || session.location.directory !== scope.location.directory
       || session.projectID !== current.registeredProject.id) return
+    const registered = await registeredInvocationProject(client, current.invocation, current.registeredProject.id, signal)
+    signal.throwIfAborted()
+    if (!sameHostJSON(registered, current.registeredProject)) return
   }
   const handshake = readHandshake(await owned(client.rpc(companionRpc).handshake(scope.location, options)), scope.location)
   signal.throwIfAborted()

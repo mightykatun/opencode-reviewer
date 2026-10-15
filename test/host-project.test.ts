@@ -11,7 +11,7 @@ const invocation = { sessionID: "session", assistantID: "assistant", callID: "ca
   project: { id: "global", directory: "/checkout", canonical: "/checkout" }, epoch: "epoch" }
 function fixture() {
   const state = { projects: [{ id: "git", canonical: "/checkout" }] as unknown,
-    worktrees: [] as unknown }
+    worktrees: [{ directory: "/checkout" }] as unknown }
   const calls: string[] = []
   const client = {
     project: { list: async (input: unknown, options: { signal: AbortSignal }) => {
@@ -36,7 +36,7 @@ test("registered attribution uses exact ID and saved checkout inventory, never c
   assert.equal(invocation.project.id, "global", "Historical captured project remains unchanged")
 })
 
-for (const failure of ["missing", "duplicate", "relative", "nul", "normalized", "prefix", "ambiguous", "invalid-checkout", "oversized"] as const)
+for (const failure of ["missing", "duplicate", "relative", "nul", "normalized", "prefix", "ambiguous", "invalid-checkout", "missing-checkout", "canonical-only", "oversized"] as const)
   test(`registered attribution rejects ${failure} metadata`, async () => {
     const f = fixture()
     if (failure === "missing") f.state.projects = []
@@ -44,9 +44,14 @@ for (const failure of ["missing", "duplicate", "relative", "nul", "normalized", 
     if (failure === "relative") f.state.projects = [{ id: "git", canonical: "checkout" }]
     if (failure === "nul") f.state.projects = [{ id: "git", canonical: "/checkout\0" }]
     if (failure === "normalized") f.state.projects = [{ id: "git", canonical: "/checkout/../checkout" }]
-    if (failure === "prefix") f.state.projects = [{ id: "git", canonical: "/check" }]
-    if (failure === "ambiguous") f.state.worktrees = [{ directory: "/checkout/nested" }]
+    if (failure === "prefix") f.state.worktrees = [{ directory: "/check" }]
+    if (failure === "ambiguous") f.state.worktrees = [{ directory: "/checkout" }, { directory: "/checkout/nested" }]
     if (failure === "invalid-checkout") f.state.worktrees = [{ directory: "relative" }]
+    if (failure === "missing-checkout") f.state.worktrees = []
+    if (failure === "canonical-only") {
+      f.state.projects = [{ id: "git", canonical: "/" }]
+      f.state.worktrees = [{ directory: "/different-clone" }]
+    }
     if (failure === "oversized") f.state.projects = Array.from({ length: 16385 }, () => ({ id: "git", canonical: "/checkout" }))
     await assert.rejects(f.read(), /metadata unavailable or ambiguous/)
   })

@@ -31,7 +31,9 @@ export async function registeredInvocationProject(client: OpenCodeClient, invoca
   const entries = boundedHostJSON(await owned(client.worktree.list({ projectID }, { signal })))
   signal.throwIfAborted()
   if (!Array.isArray(entries)) throw unavailable()
-  const directories = new Set([project.canonical])
+  // Canonical is a preferred-checkout label, not membership authority. Only the
+  // project's registered checkout inventory can bind the captured directory.
+  const directories = new Set<string>()
   for (const entry of entries) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry) || !absolute(entry.directory)) throw unavailable()
     directories.add(entry.directory)
