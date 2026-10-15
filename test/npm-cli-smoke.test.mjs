@@ -59,7 +59,10 @@ test("actual npm provenance builder and file verifier adopt signed release sourc
       const bundle = JSON.parse(options.body._attachments["opencode-reviewer-0.4.0.sigstore"].data);
       const statement = JSON.parse(Buffer.from(bundle.dsseEnvelope.payload, "base64"));
       const source = statement.predicate.buildDefinition.resolvedDependencies[0];
-      if (source.uri !== "git+https://github.com/mightykatun/opencode-reviewer@refs/heads/main"
+       if (statement.predicate.runDetails.metadata.invocationId !== "https://github.com/mightykatun/opencode-reviewer/actions/runs/123/attempts/2") {
+         throw Object.assign(new Error("Invalid GitHub Actions SLSA v1 provenance predicate: RunInvocationURI mismatch"), { code: "E422" });
+       }
+       if (source.uri !== "git+https://github.com/mightykatun/opencode-reviewer@refs/heads/main"
         || source.digest.gitCommit !== "b".repeat(40)) {
         throw Object.assign(new Error("Invalid GitHub Actions SLSA v1 provenance predicate: SourceRepositoryURI/SourceRepositoryDigest mismatch"), { code: "E422" });
       }
@@ -115,7 +118,14 @@ test("actual npm provenance builder and file verifier adopt signed release sourc
     wrongBundle.dsseEnvelope.payload = Buffer.from(JSON.stringify(wrongSource)).toString("base64");
     await writeFile(file, JSON.stringify(wrongBundle));
     await assert.rejects(publish(${JSON.stringify(fixturePackage())}, bytes, opts), { code: "E422" });
-    assert.equal(uploads.length, 1, "the original tag-first ordering must be rejected at the modeled registry boundary");
+     assert.equal(uploads.length, 1, "the original tag-first ordering must be rejected at the modeled registry boundary");
+     const wrongAttempt = structuredClone(statement);
+     wrongAttempt.predicate.runDetails.metadata.invocationId = "https://github.com/mightykatun/opencode-reviewer/actions/runs/123/attempts/1";
+     const staleAttemptBundle = structuredClone(bundle);
+     staleAttemptBundle.dsseEnvelope.payload = Buffer.from(JSON.stringify(wrongAttempt)).toString("base64");
+     await writeFile(file, JSON.stringify(staleAttemptBundle));
+     await assert.rejects(publish(${JSON.stringify(fixturePackage())}, bytes, opts), { code: "E422" });
+     assert.equal(uploads.length, 1, "a validation-attempt URI cannot stand in for the signing certificate's attempt");
     for (const change of [
       s => { s.subject[0].name = "pkg:npm/wrong@0.4.0"; },
       s => { s.subject[0].digest.sha512 = "0".repeat(128); },
@@ -141,7 +151,7 @@ test("actual npm provenance builder and file verifier adopt signed release sourc
     env: { PATH: process.env.PATH, HOME: root, XDG_DATA_HOME: root, ...provenanceEnv(fixture.env),
       ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.invalid/token", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "offline-fixture" },
   })
-  assert.deepEqual(JSON.parse(output), { signed: 2, verified: 3, uploads: 1 })
+  assert.deepEqual(JSON.parse(output), { signed: 2, verified: 4, uploads: 1 })
 })
 
 test("actual npm CLI forwards --provenance-file through crypto verification before its intercepted PUT", async t => {

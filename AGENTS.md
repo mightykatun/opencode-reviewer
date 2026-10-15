@@ -489,6 +489,10 @@ existing user directories.
   Explicit provenance binds archive SHA-512 and tag source separately from policy
   commit and validation/signing attempts. Its pinned npm Sigstore toolchain signs
   in a 120-second child, then npm verifies `--provenance-file` before upload.
+  `runDetails.metadata.invocationId` must name the actual signing attempt to match
+  the certificate's RunInvocationURI; retain validation ownership separately.
+  Signing failures expose only fixed stages, allowlisted error codes and HTTP
+  status numbers, never dependency messages, stacks, URLs or OIDC token values.
   npm's certificate checks require the actual workflow-policy source as the first
   resolved dependency; keep the independently validated release tag/commit as the
   separately named release-source input. Test both tag pushes and manual dispatch.

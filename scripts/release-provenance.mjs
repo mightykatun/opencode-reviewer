@@ -12,6 +12,40 @@ const payloadType = "application/vnd.in-toto+json"
 const maxBundleBytes = 1024 * 1024
 const workflowPath = ".github/workflows/release.yml"
 const ordinal = value => assert.match(value ?? "", /^[1-9]\d*$/, "Invalid provenance invocation ordinal")
+const signingCodes = new Set(["IDENTITY_TOKEN_READ_ERROR", "IDENTITY_TOKEN_PARSE_ERROR", "CA_CREATE_SIGNING_CERTIFICATE_ERROR",
+  "TLOG_CREATE_ENTRY_ERROR", "TLOG_FETCH_ENTRY_ERROR", "TSA_CREATE_TIMESTAMP_ERROR", "TUF_INIT_CACHE_ERROR",
+  "TUF_READ_TARGET_ERROR", "TUF_REFRESH_METADATA_ERROR", "TUF_FIND_TARGET_ERROR", "TUF_DOWNLOAD_TARGET_ERROR",
+  "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_SOCKET"])
+const signingStages = new Set(["input", "toolchain", "attestation", "bundle"])
+const own = (value, key) => {
+  try { return value && typeof value === "object" ? Object.getOwnPropertyDescriptor(value, key)?.value : undefined }
+  catch { return undefined }
+}
+
+/** Never return dependency messages, stacks, URLs, token values or arbitrary codes. */
+export function signingDiagnostic(error, stage = "input") {
+  const codes = [], statuses = [], seen = new Set()
+  for (let depth = 0; error && depth < 8 && !seen.has(error); depth++) {
+    seen.add(error)
+    const code = own(error, "code"), status = own(error, "statusCode")
+    if (signingCodes.has(code) && !codes.includes(code)) codes.push(code)
+    if (Number.isInteger(status) && status >= 400 && status <= 599 && !statuses.includes(status)) statuses.push(status)
+    error = own(error, "cause")
+  }
+  return { stage: signingStages.has(stage) ? stage : "input", codes, statuses }
+}
+
+function signingFailure(error) {
+  if (own(error, "code") === "ETIMEDOUT") return "Provenance signing exceeded its 120-second deadline; no upload was attempted"
+  let detail
+  try { detail = JSON.parse(String(own(error, "stderr"))) } catch { /* Never relay raw child output. */ }
+  const stage = own(detail, "stage"), codes = own(detail, "codes"), statuses = own(detail, "statuses")
+  const safe = signingStages.has(stage) && Array.isArray(codes) && codes.length <= 8 && codes.every(code => signingCodes.has(code))
+    && Array.isArray(statuses) && statuses.length <= 8 && statuses.every(code => Number.isInteger(code) && code >= 400 && code <= 599)
+  return safe ? `Provenance signing failed at ${stage} (${[...codes, ...statuses.map(code => `HTTP ${code}`)].join(", ") || "unclassified"}); no upload was attempted`
+    : "Provenance signing failed; no upload was attempted"
+}
 
 /** Build identity belongs to validation; signing can happen in a later publish-only rerun. */
 export function releaseStatement(manifest, bytes, env = process.env) {
@@ -63,7 +97,7 @@ export function releaseStatement(manifest, bytes, env = process.env) {
           { name: "release-source", uri: `git+${repository}@${sourceRef}`, digest: { gitCommit: manifest.commit } },
         ],
       },
-      runDetails: { builder: { id: `${repository}/${workflowPath}@${manifest.workflowCommit}` }, metadata: { invocationId: invocation(manifest.runAttempt) } },
+      runDetails: { builder: { id: `${repository}/${workflowPath}@${manifest.workflowCommit}` }, metadata: { invocationId: invocation(env.GITHUB_RUN_ATTEMPT) } },
     },
   }
 }
@@ -85,16 +119,23 @@ export function validateProvenanceBundle(bundle, statement) {
 
 /** Only the pinned npm toolchain is loaded, never dependencies from the project/archive. */
 export async function attestStatement(statement, { npmRoot } = {}) {
-  npmRoot ??= path.join(execFileSync("npm", ["root", "--global"], { encoding: "utf8", timeout: 10000, maxBuffer: 16384 }).trim(), "npm")
-  assert.ok(path.isAbsolute(npmRoot), "Expected an absolute npm installation")
-  const pkg = JSON.parse(await readFile(path.join(npmRoot, "package.json"), "utf8"))
-  assert.equal(pkg.name, "npm")
-  assert.equal(pkg.version, "12.2.0", "Provenance requires pinned npm 12.2.0")
-  const require = createRequire(path.join(npmRoot, "node_modules/libnpmpublish/lib/provenance.js"))
-  assert.equal(require("sigstore/package.json").version, "5.0.0", "Unexpected pinned npm Sigstore toolchain")
-  const bundle = await require("sigstore").attest(Buffer.from(JSON.stringify(statement)), payloadType,
-    { tlogUpload: true, retry: 0, timeout: 10000 })
-  return validateProvenanceBundle(bundle, statement)
+  let stage = "toolchain"
+  try {
+    npmRoot ??= path.join(execFileSync("npm", ["root", "--global"], { encoding: "utf8", timeout: 10000, maxBuffer: 16384 }).trim(), "npm")
+    assert.ok(path.isAbsolute(npmRoot), "Expected an absolute npm installation")
+    const pkg = JSON.parse(await readFile(path.join(npmRoot, "package.json"), "utf8"))
+    assert.equal(pkg.name, "npm")
+    assert.equal(pkg.version, "12.2.0", "Provenance requires pinned npm 12.2.0")
+    const require = createRequire(path.join(npmRoot, "node_modules/libnpmpublish/lib/provenance.js"))
+    assert.equal(require("sigstore/package.json").version, "5.0.0", "Unexpected pinned npm Sigstore toolchain")
+    stage = "attestation"
+    const bundle = await require("sigstore").attest(Buffer.from(JSON.stringify(statement)), payloadType,
+      { tlogUpload: true, retry: 0, timeout: 10000 })
+    stage = "bundle"
+    return validateProvenanceBundle(bundle, statement)
+  } catch (error) {
+    throw Object.assign(new Error("Provenance signing failed"), { diagnostic: signingDiagnostic(error, stage) })
+  }
 }
 
 /** A killable child bounds OIDC, signing and log I/O together; timeout never causes a retry. */
@@ -110,7 +151,7 @@ export async function prepareProvenance(statement, { env = process.env, run = ex
         input: JSON.stringify(statement), encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], env,
         timeout: 120000, killSignal: "SIGKILL", maxBuffer: maxBundleBytes,
       })
-    } catch { throw new Error("Provenance signing failed or exceeded its 120-second deadline; no upload was attempted") }
+    } catch (error) { throw new Error(signingFailure(error)) }
     assert.ok(Buffer.byteLength(output) <= maxBundleBytes, "Oversized provenance bundle")
     const bundle = validateProvenanceBundle(JSON.parse(output), statement)
     const file = path.join(directory, "release.sigstore")
@@ -131,9 +172,9 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     }
     const bundle = await attestStatement(JSON.parse(Buffer.concat(chunks).toString("utf8")))
     process.stdout.write(JSON.stringify(bundle))
-  } catch {
+  } catch (error) {
     // Signing dependencies may include OIDC tokens in error messages. Do not relay them.
-    process.stderr.write("Provenance signing failed\n")
+    process.stderr.write(JSON.stringify(own(error, "diagnostic") ?? signingDiagnostic(error, "input")) + "\n")
     process.exitCode = 1
   }
 }

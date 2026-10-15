@@ -6,7 +6,7 @@ import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { archiveFixture, artifactFixture, provenanceEnv } from "./release-fixture.mjs"
-import { attestStatement, releaseStatement, prepareProvenance, validateProvenanceBundle } from "../scripts/release-provenance.mjs"
+import { attestStatement, releaseStatement, prepareProvenance, validateProvenanceBundle, signingDiagnostic } from "../scripts/release-provenance.mjs"
 
 const fakeBundle = statement => ({ mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
   dsseEnvelope: { payloadType: "application/vnd.in-toto+json", payload: Buffer.from(JSON.stringify(statement)).toString("base64"),
@@ -28,7 +28,7 @@ test("manual provenance binds source bytes and commit independently of policy an
     { name: "release-source", uri: "git+https://github.com/mightykatun/opencode-reviewer@refs/tags/v0.4.0", digest: { gitCommit: "a".repeat(40) } },
   ])
   assert.equal(run.builder.id, `https://github.com/mightykatun/opencode-reviewer/.github/workflows/release.yml@${"b".repeat(40)}`)
-  assert.equal(run.metadata.invocationId, "https://github.com/mightykatun/opencode-reviewer/actions/runs/123/attempts/1")
+  assert.equal(run.metadata.invocationId, "https://github.com/mightykatun/opencode-reviewer/actions/runs/123/attempts/2")
   assert.deepEqual(build.internalParameters.release, { validationAttempt: "1", signingAttempt: "2",
     signingInvocationId: "https://github.com/mightykatun/opencode-reviewer/actions/runs/123/attempts/2" })
   assert.deepEqual(context, before, "constructing provenance must never rewrite GitHub identity")
@@ -122,7 +122,39 @@ test("unverified npm installations reject before a signing dependency can be loa
   const root = await mkdtemp(path.join(tmpdir(), "wrong-signing-toolchain-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "npm", version: "12.1.0" }))
-  await assert.rejects(attestStatement({}, { npmRoot: root }), /pinned npm 12.2.0/)
+  await assert.rejects(attestStatement({}, { npmRoot: root }), error => error.diagnostic.stage === "toolchain")
+})
+
+test("signing diagnostics expose only fixed stages, allowlisted codes and HTTP status through bounded causes", () => {
+  const secret = "PRIVATE_OIDC_TOKEN https://secret.invalid/?token=secret"
+  const cause = Object.assign(Error(secret), { code: "ETIMEDOUT", statusCode: 503 })
+  const error = Object.assign(Error(secret), { code: "CA_CREATE_SIGNING_CERTIFICATE_ERROR", cause })
+  cause.cause = error
+  assert.deepEqual(signingDiagnostic(error, "attestation"), {
+    stage: "attestation", codes: ["CA_CREATE_SIGNING_CERTIFICATE_ERROR", "ETIMEDOUT"], statuses: [503],
+  })
+  let accessed = false
+  const accessor = Object.defineProperty({}, "code", { get() { accessed = true; return secret } })
+  assert.deepEqual(signingDiagnostic(accessor, secret), { stage: "input", codes: [], statuses: [] })
+  assert.equal(accessed, false)
+  assert.equal(JSON.stringify(signingDiagnostic({ code: secret, message: secret, stack: secret })).includes(secret), false)
+})
+
+test("parent reports safe signing failures but never dependency stderr or arbitrary diagnostic fields", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "signing-diagnostics-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  for (const stderr of [JSON.stringify({ stage: "attestation", codes: ["IDENTITY_TOKEN_READ_ERROR"], statuses: [403] }),
+    "PRIVATE_OIDC_TOKEN", JSON.stringify({ stage: "attestation", codes: ["PRIVATE_OIDC_TOKEN"], statuses: [] })]) {
+    await assert.rejects(prepareProvenance({}, { env: { RUNNER_TEMP: root }, run() {
+      throw Object.assign(Error("PRIVATE_OIDC_TOKEN"), { stderr })
+    } }), error => {
+      assert.doesNotMatch(error.message, /PRIVATE_OIDC_TOKEN/)
+      if (stderr.includes("IDENTITY_TOKEN_READ_ERROR")) assert.match(error.message, /attestation.*IDENTITY_TOKEN_READ_ERROR.*HTTP 403/)
+      else assert.equal(error.message, "Provenance signing failed; no upload was attempted")
+      return true
+    })
+    assert.deepEqual(await readdir(root), [])
+  }
 })
 
 test("the signing process deadline kills an uncooperative child before temporary ownership is released", async t => {
