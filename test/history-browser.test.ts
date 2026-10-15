@@ -30,7 +30,7 @@ function fixture(t: any, ancestry: (id: string, signal: AbortSignal) => Promise<
     maintenance: (value: boolean) => { dirty = value; onMaintenance() } }
 }
 test("history has independent exact copy and extreme footer layouts", () => {
-  assert.deepEqual(uiText.history.outcomes, { auto: "Auto approved", manual: "Manually approved", approved: "Approved", cancelled: "Cancelled", rejected: "Rejected" })
+  assert.deepEqual(uiText.history.outcomes, { auto: "Auto approved", manual: "Manually approved", approved: "Manually approved", cancelled: "Canceled", rejected: "Rejected" })
   assert.equal(uiText.commands.history, "Reviewer: Report history")
   assert.deepEqual([uiText.history.heading, uiText.history.close, uiText.history.older, uiText.history.newer,
     uiText.history.empty, uiText.history.loading, uiText.history.unavailable, uiText.history.unreadable],
@@ -39,7 +39,7 @@ test("history has independent exact copy and extreme footer layouts", () => {
   assert.equal(uiText.history.provider("https://example.com"), "provider: https://example.com")
   assert.equal(uiText.history.index(12, 300), "12/300")
   assert.deepEqual(historyLayout("Manually approved", "1/1"), { label: "Manually approved", rows: 1 })
-  for (const [label, short] of [["Auto approved", "Aut..ved"], ["Manually approved", "Man..ved"], ["Cancelled", "Can..led"], ["Rejected", "Rejected"], ["Approved", "Approved"]]) {
+  for (const [label, short] of [["Auto approved", "Aut..ved"], ["Manually approved", "Man..ved"], ["Canceled", "Canceled"], ["Rejected", "Rejected"], ["Approved", "Approved"]]) {
     assert.deepEqual(historyLayout(label, "123456789/123456789"), { label: short, rows: 1 })
     assert.deepEqual(historyLayout(label, "123456789/1234567890"), { label, rows: 2 })
   }

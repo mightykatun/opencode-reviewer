@@ -62,7 +62,7 @@ export const uiText = {
   },
   history: {
     heading: "Analysis history", close: "Close",
-    outcomes: { auto: "Auto approved", manual: "Manually approved", approved: "Approved", cancelled: "Cancelled", rejected: "Rejected" },
+    outcomes: { auto: "Auto approved", manual: "Manually approved", approved: "Manually approved", cancelled: "Canceled", rejected: "Rejected" },
     older: "<", newer: ">", index: (x: number, y: number) => `${x}/${y}`,
     empty: "No history entries", loading: "Loading history", unavailable: "History could not be read",
     unreadable: "! Unreadable entry", model: (model: string) => `model: ${model}`,
