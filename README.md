@@ -276,7 +276,12 @@ approval in another window.
 Opening report history does not hold normal or fast auto-approval for eligible live
 requests. Browsing saved reports doesn't itself approve requests or replay notifications.
 
-Reports are saved only after a permission resolution that qualifies for history.
+Every completed, validated review is saved when its permission is approved manually,
+approved automatically, or rejected, including Unsafe reviews. Distinct reviews of
+the same permission are retained separately. Pending permissions, cancellation alone,
+partial previews and failed reviews do not save reports. Fast-mode reports that finish
+after approval are saved on completion. An approval whose submitting client cannot
+be identified is labeled **Approved**, without guessing manual or automatic attribution.
 They can contain private text and are kept under OpenCode's local state base:
 `$XDG_STATE_HOME`, or `~/.local/state` when unset. Safely accessible history stays
 under `opencode/opencode-reviewer/`. If the host directory is unsuitable for private

@@ -19,7 +19,6 @@ const result = (review = "review", safe = true): ReviewResult => ({ safe, desc: 
 const accepted = (value = result(), req = request, completedAt = 100): ReviewLifecycleFact => ({ type: "accepted", request: req,
   result: value, root: "root", review: value.metadata!.review, completedAt, timing: { fullReportMs: 10, ratingMs: 5 } })
 const removed = (req = request): ReviewLifecycleFact => ({ type: "removed", request: req, reason: "reconciled" })
-const aborted = (sessionID = "child", assistantID = "message") => ({ sessionID, assistantID })
 
 function fixture(t: TestContext) {
   const db = new DatabaseSync(":memory:"), sql = new HistorySQL(db)
@@ -31,8 +30,7 @@ function fixture(t: TestContext) {
     const serialized = encodeEvent(e)
     events.push(JSON.parse(serialized)); sql.apply("writer", ++sequence, serialized); return true
   }, query: (q: HistoryQuery) => query(q), onCommit: (fn: () => unknown) => { commits.add(fn); return () => { commits.delete(fn) } } }
-  const make = (ancestry = async () => "root") => new HistoryCoordinator("/host", store, ancestry, () => now,
-    undefined, () => monotonic)
+  const make = (ancestry = async () => "root") => new HistoryCoordinator("/host", store, ancestry, () => now, () => monotonic)
   const h = make()
   t.after(() => { h.dispose(); sql.close() })
   return { h, make, events, store, db,
@@ -62,53 +60,89 @@ test("accepted bodies remain memory-only; actual evidence category and invocatio
   assert.equal(await f.h.root("child", new AbortController().signal), "root")
 })
 
-test("newer completed candidate replaces previous report independently of accepted accounting", t => {
+test("all completed reviews of one rejected permission survive independently of accepted accounting", async t => {
   const f = fixture(t)
   f.h.lifecycle(accepted()); f.h.lifecycle(accepted(result("second", false), request, 200))
   f.h.reply({ requestID: request.id, sessionID: "child", reply: "reject" }); f.h.lifecycle(removed())
   assert.equal(f.history().record?.payload.desc, "private report second")
   assert.equal(f.history().record?.outcome, "rejected")
+  assert.equal(f.history().total, 2)
+  const older = await f.store.query({ type: "history", scope: "/host", root: "root", entry: f.history().older })
+  assert.equal((older as HistorySelection).record?.payload.desc, "private report review")
+  assert.equal((f.db.prepare("SELECT count(*) n FROM payloads").get()!).n, 2)
   assert.equal(f.totals().safe, 1); assert.equal(f.totals().unsafe, 1)
 })
 
-for (const reason of ["explicit", "mode"] as const) test(`actual ${reason} cancellation requires removal and admits one report`, async t => {
+for (const automatic of [false, true]) test(`all completed reviews save on confirmed ${automatic ? "automatic" : "manual"} approval`, async t => {
+  const f = fixture(t)
+  f.h.lifecycle(accepted())
+  f.h.lifecycle(accepted(result("second", false), request, 200))
+  const fact = { request, automatic, approval: "write", review: "review" }
+  f.h.approval({ ...fact, type: "dispatched" })
+  f.h.approval({ ...fact, type: "confirmed" })
+  f.h.approval({ ...fact, type: "confirmed" })
+  f.h.lifecycle(removed())
+  assert.equal(f.history().total, 2)
+  assert.equal(f.history().record?.outcome, automatic ? "auto" : "manual")
+  const earlier = await f.store.query({ type: "history", scope: "/host", root: "root", entry: f.history().older }) as HistorySelection
+  assert.equal(earlier.record?.payload.safe, true)
+  assert.equal(earlier.record?.outcome, automatic ? "auto" : "manual")
+  assert.equal(f.events.filter(e => e.type === "permissionResolved").length, 2)
+  assert.equal(f.totals().activity.autoApproved, automatic ? 1 : 0)
+  assert.equal(f.totals().activity.reviews, 2)
+})
+
+test("duplicate completion and native reply observations never duplicate stored reviews or statistics", t => {
+  const f = fixture(t)
+  f.h.lifecycle(accepted()); f.h.lifecycle(accepted())
+  f.h.reply({ requestID: request.id, sessionID: request.sessionID, reply: "once" })
+  f.h.reply({ requestID: request.id, sessionID: request.sessionID, reply: "once" })
+  f.h.lifecycle(accepted())
+  assert.equal(f.history().total, 1)
+  assert.equal(f.totals().activity.reviews, 1)
+  assert.equal(f.totals().safe, 1)
+})
+
+for (const reason of ["explicit", "mode"] as const) test(`${reason} cancellation and removal alone never save a report`, async t => {
   const f = fixture(t)
   f.h.lifecycle(accepted()); f.h.lifecycle({ type: "cancelled", request, reason })
   assert.equal(f.history().total, 0)
   f.h.lifecycle(removed()); f.h.lifecycle(removed())
   await settle()
-  assert.equal(f.history().record?.outcome, "cancelled")
-  assert.equal(f.events.filter(e => e.type === "permissionResolved").length, 1)
+  assert.equal(f.history().total, 0)
+  assert.equal(f.events.filter(e => e.type === "permissionResolved").length, 0)
 })
 
-test("late explicit native approval/rejection supersedes cancellation without resending its report", async t => {
+test("a native decision after cancellation saves its report without guessing contradictory outcomes", async t => {
   const f = fixture(t)
   f.h.lifecycle(accepted()); f.h.lifecycle({ type: "cancelled", request, reason: "explicit" }); f.h.lifecycle(removed())
   await settle()
   f.h.reply({ requestID: request.id, sessionID: "child", reply: "always" })
   assert.equal(f.history().record?.outcome, "manual")
   assert.equal(f.events.filter(e => e.type === "permissionResolved").length, 1)
-  assert.equal(f.events.at(-1)?.type, "permissionOutcome")
+  assert.equal(f.events.at(-1)?.type, "permissionResolved")
   f.h.reply({ requestID: request.id, sessionID: "child", reply: "reject" })
   assert.equal(f.history().total, 0, "contradictory explicit outcomes remain omitted")
 })
 
-test("once with no local dispatch is not proof of native/manual approval or cancellation", async t => {
+test("native once saves a report without guessing manual or automatic attribution", async t => {
   const f = fixture(t)
   f.h.lifecycle(accepted()); f.h.lifecycle({ type: "cancelled", request, reason: "explicit" })
   f.h.reply({ requestID: request.id, sessionID: "child", reply: "once" }); f.h.lifecycle(removed())
   await settle()
-  assert.equal(f.history().total, 0)
-  assert.equal(f.events.filter(e => e.type === "permissionResolved").length, 0)
+  assert.equal(f.history().record?.outcome, "approved")
+  assert.equal(f.events.filter(e => e.type === "permissionResolved").length, 1)
+  assert.equal(f.totals().activity.autoApproved, 0)
 })
 
-for (const automatic of [true, false]) test(`event-before-ack yields ${automatic ? "automatic" : "footer manual"} only on confirmation`, async t => {
+for (const automatic of [true, false]) test(`native approval saves before ack; ${automatic ? "automatic" : "footer manual"} attribution waits for confirmation`, async t => {
   const f = fixture(t)
   f.h.lifecycle(accepted())
   const fact = { request, automatic, approval: "approval", review: "review" }
   f.h.approval({ ...fact, type: "dispatched" })
   f.h.reply({ requestID: request.id, sessionID: "child", reply: "once" }); f.h.lifecycle(removed())
-  await settle(); assert.equal(f.history().total, 0)
+  await settle(); assert.equal(f.history().record?.outcome, "approved")
+  assert.equal(f.totals().activity.autoApproved, 0)
   f.h.approval({ ...fact, type: "confirmed" }); f.h.approval({ ...fact, type: "settled" })
   assert.equal(f.history().record?.outcome, automatic ? "auto" : "manual")
   assert.equal(f.totals().activity.autoApproved, automatic ? 1 : 0)
@@ -119,31 +153,32 @@ test("uncertain dispatched writes suppress both auto-cancel and confirmed stop a
   f.h.lifecycle(accepted())
   const fact = { request, automatic: true, approval: "approval", review: "review" }
   f.h.approval({ ...fact, type: "dispatched" }); f.h.approval({ ...fact, type: "settled", result: "uncertain" })
-  f.h.lifecycle({ type: "cancelled", request, reason: "mode" }); f.h.interrupted(aborted()); f.h.lifecycle(removed())
+  f.h.lifecycle({ type: "cancelled", request, reason: "mode" }); f.h.lifecycle(removed())
   await settle()
   assert.equal(f.history().total, 0); assert.equal(f.totals().activity.autoApproved, 0)
 })
 
-test("not-sent settlement removes uncertainty without fabricating an approval", async t => {
+test("not-sent settlement and cancellation never fabricate permission resolution", async t => {
   const f = fixture(t)
   f.h.lifecycle(accepted())
   const fact = { request, automatic: true, approval: "approval", review: "review" }
   f.h.approval({ ...fact, type: "dispatched" }); f.h.approval({ ...fact, type: "settled", result: "not-sent" })
   f.h.lifecycle({ type: "cancelled", request, reason: "mode" }); f.h.lifecycle(removed())
   await settle()
-  assert.equal(f.history().record?.outcome, "cancelled"); assert.equal(f.totals().activity.autoApproved, 0)
+  assert.equal(f.history().total, 0); assert.equal(f.totals().activity.autoApproved, 0)
 })
 
-for (const after of [true, false]) test(`linked stop ${after ? "after" : "before"} removal qualifies without automation cancellation`, async t => {
+for (const safe of [true, false]) for (const reply of ["once", "always", "reject"] as const)
+test(`${safe ? "Safe" : "Unsafe"} report saves on exact native ${reply}, without relying on removal`, t => {
   const f = fixture(t)
-  f.h.lifecycle(accepted())
-  f.h.interrupted(aborted("root")); f.h.interrupted(aborted("child", "other-message"))
-  if (after) f.h.lifecycle(removed())
+  f.h.lifecycle(accepted(result("review", safe)))
+  f.h.reply({ requestID: request.id, sessionID: "other", reply })
   assert.equal(f.history().total, 0)
-  f.h.interrupted(aborted())
-  if (!after) f.h.lifecycle(removed())
-  await settle()
-  assert.equal(f.history().record?.outcome, "cancelled")
+  f.h.reply({ requestID: request.id, sessionID: request.sessionID, reply })
+  assert.equal(f.history().record?.payload.safe, safe)
+  assert.equal(f.history().record?.outcome, reply === "reject" ? "rejected" : reply === "always" ? "manual" : "approved")
+  f.h.lifecycle(removed())
+  assert.equal(f.events.filter(e => e.type === "permissionResolved").length, 1)
 })
 
 test("two coordinators reconcile delayed remote confirmation with latest Unsafe payload", async t => {
@@ -152,7 +187,8 @@ test("two coordinators reconcile delayed remote confirmation with latest Unsafe 
   const fact = { request, automatic: true, approval: "approval", review: "review" }
   f.h.approval({ ...fact, type: "dispatched" })
   for (const h of [f.h, second]) { h.reply({ requestID: request.id, sessionID: "child", reply: "once" }); h.lifecycle(removed()) }
-  await settle(); assert.equal(f.history().total, 0)
+  await settle(); assert.equal(f.history().total, 2)
+  assert.equal(f.history().record?.outcome, "approved")
   f.h.approval({ ...fact, type: "confirmed" }); f.h.approval({ ...fact, type: "settled" })
   f.advance(2000); f.commit(); await settle()
   assert.equal(f.history().record?.payload.safe, false)

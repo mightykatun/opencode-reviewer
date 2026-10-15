@@ -11,13 +11,13 @@ export function seedLarge(db: DatabaseSync, reviews: number, attempts = 0, histo
   db.prepare("INSERT INTO roots VALUES (?,1)").run(root)
   db.prepare("INSERT INTO sessions VALUES (?,?,?,?)").run(session, c.scope, c.root, c.session)
   const insert = db.prepare("INSERT INTO reviews VALUES (?,?,?,?,?,?)")
-  const insertHistory = db.prepare("INSERT INTO history VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+  const insertHistory = db.prepare("INSERT INTO history VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
   const insertPayload = db.prepare("INSERT INTO payloads VALUES (?,?)")
   for (let n = 0; n < reviews; n++) {
     const context = { ...c, review: `r${n}`, permission: `p${n}` }, id = reviewID(context), entry = entryID(context)
     insert.run(id, entry, root, session, JSON.stringify(context), JSON.stringify({ safe: true, completedAt: n + 1 }))
     if (history) {
-      insertHistory.run(entry, c.scope, root, session, context.permission, n + 1, context.review, id, "manual", "manual", null, n + 1)
+      insertHistory.run(entry, c.scope, root, session, context.permission, n + 1, context.review, id, "manual", "manual", null, n + 1, entry)
       insertPayload.run(entry, JSON.stringify({ safe: true, completedAt: n + 1, desc: `report ${n}` }))
     }
   }

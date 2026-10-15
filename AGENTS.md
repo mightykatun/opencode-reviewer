@@ -19,7 +19,7 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  38-case production/foundation selection available in manual extended checks,
+  41-case production/foundation selection available in manual extended checks,
   including history, statistics, approval notifications and explicitly classified
   synthetic probes.
   `npm run test:runtime` selects `--profile v2-acceptance`, which currently selects
@@ -82,6 +82,7 @@ All commands below use the installed five-file archive and production runtime.
 | Shared registered-tool review / fast approval (local MCP) | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-tool` / `fast-tool` |
 | Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
 | Saved history and statistics | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history` |
+| Unsafe history after native Once / Always / reject | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory-history-once` / `advisory-history-always` / `advisory-history-reject` |
 | Default HOME with writable host state | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-default-home` |
 | Keyboard history with mouse disabled | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-keyboard-mouse-off` |
 | Automatic native write / outside-directory continuation | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-edit` / `normal-directory-edit` |
@@ -389,13 +390,19 @@ existing user directories.
 ## Persistence, accounting and notifications
 
 - `history-coordinator.ts` joins reviewer attempts and controller facts. Unresolved
-  report text stays in memory; only qualifying `permissionResolved` events persist
-  it. Native `once` events lack submitting-client identity: absence of a local write
-  or a keypress does not prove manual approval. Ambiguous attribution omits the body.
+  report text stays in memory. Save every completed validated review tied to a
+  permission when it is approved manually, approved automatically or rejected,
+  including Unsafe reports and distinct re-reviews of the same permission. Native
+  `once` proves approval but lacks submitting-client identity: save as `approved`
+  without guessing manual/automatic attribution, then refine on exact confirmation.
+  Cancellation, interruption and prompt disappearance alone do not save reports.
   Fast approval records identity/confirmation before final assessment; only final
   validated text is saved. Keep retries/deadline unchanged and close the retained
   panel on completion, allowing saves to finish in the background. Failed remainders
   produce no report entry; received usage and confirmed approvals still count.
+  Review-specific history IDs are separate from permission-level approval identities.
+  Preserve legacy entry IDs and totals internally; notification targets select only
+  the exact permission's newest saved review, never the conversation's newest entry.
 - `history-v1.sqlite` uses the embedded worker with Bun SQLite in the host and Node
   SQLite in tests. Lifetime reads use precomputed totals only; leave `usage-v1/`
   through `usage-v4/` untouched. `history-statistics.ts` applies deduplicated deltas

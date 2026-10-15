@@ -37,11 +37,11 @@ export interface HistoryReview extends HistoryScope {
   permission: string; review: string; category: "bash" | "edit" | "mcp" | "custom" | "external_directory" | "skill" | "registered-tool" | "tool"
   configuredModel: string; provider: string
 }
-/** A saved entry is keyed by permission, independently of newer reviewer attempts. */
+/** Notification targets identify a permission; saved reports have distinct review IDs. */
 export type HistoryTarget = Pick<HistoryReview, "session" | "permission">
 export interface HistoryAccepted { safe: boolean; completedAt: number; reportedModel?: string; timing?: ReviewTiming }
 export interface HistoryPayload extends HistoryAccepted { desc: string; usage?: Usage }
-export type HistoryOutcome = "auto" | "manual" | "rejected" | "cancelled"
+export type HistoryOutcome = "auto" | "manual" | "approved" | "rejected" | "cancelled"
 export type HistoryEvent =
   | { type: "attemptDispatched"; context: HistoryReview; at: number; attempt: string; retry: "initial" | "transport" | "format" }
   | { type: "attemptFinalized"; context: HistoryReview; at: number; attempt: string; usage?: Usage; reportedModel?: string }
@@ -50,13 +50,13 @@ export type HistoryEvent =
   | { type: "approvalSettled"; context: HistoryReview; at: number; approval: string; result: "not-sent" | "uncertain" }
   | { type: "approvalConfirmed"; context: HistoryReview; at: number; approval: string; automatic: boolean }
   | { type: "permissionResolved"; context: HistoryReview; at: number; outcome: HistoryOutcome; payload: HistoryPayload }
-  | { type: "permissionOutcome"; context: HistoryReview; at: number; outcome: "manual" | "rejected" }
+  | { type: "permissionOutcome"; context: HistoryReview; at: number; outcome: "approved" | "manual" | "rejected" }
   | { type: "sessionDeleted"; context: HistoryScope; at: number }
 export interface HistoryOrder { completed: number; tie: string; id: string }
 export type HistoryQuery =
   | { type: "totals"; conversation?: { scope: string; root: string } }
   | { type: "conversationTotals"; scope: string; root: string }
-  | { type: "history"; scope: string; root: string; entry?: string; direction?: "older" | "newer"; order?: HistoryOrder }
+  | { type: "history"; scope: string; root: string; entry?: string; permission?: HistoryTarget; direction?: "older" | "newer"; order?: HistoryOrder }
   | { type: "sessions"; scope: string; after?: string; limit?: number }
   | { type: "resolution"; scope: string; root: string; session: string; permission: string }
   | { type: "session"; scope: string; session: string }
@@ -133,8 +133,8 @@ export function validateEvent(e: HistoryEvent): HistoryEvent {
     case "reviewAccepted": accepted(e.accepted); break
     case "approvalDispatched": case "approvalConfirmed": text(e.approval); requireValue(typeof e.automatic === "boolean"); break
     case "approvalSettled": text(e.approval); requireValue(["not-sent", "uncertain"].includes(e.result)); break
-    case "permissionResolved": requireValue(["auto", "manual", "rejected", "cancelled"].includes(e.outcome)); validatePayload(e.payload); break
-    case "permissionOutcome": requireValue(["manual", "rejected"].includes(e.outcome)); break
+    case "permissionResolved": requireValue(["auto", "manual", "approved", "rejected", "cancelled"].includes(e.outcome)); validatePayload(e.payload); break
+    case "permissionOutcome": requireValue(["approved", "manual", "rejected"].includes(e.outcome)); break
   }
   return e
 }
@@ -174,7 +174,11 @@ export function validateQuery(q: HistoryQuery): void {
     if (q.after !== undefined) text(q.after)
     requireValue(q.limit === undefined || (count(q.limit) && q.limit > 0 && q.limit <= 100))
   } else {
-    object(q, ["type", "scope", "root", "entry", "direction", "order"]); text(q.root)
+    object(q, ["type", "scope", "root", "entry", "permission", "direction", "order"]); text(q.root)
+    if (q.permission !== undefined) {
+      object(q.permission, ["session", "permission"]); text(q.permission.session); text(q.permission.permission)
+      requireValue(q.entry === undefined && q.direction === undefined && q.order === undefined)
+    }
     if (q.order !== undefined) {
       object(q.order, ["completed", "tie", "id"]); timestamp(q.order.completed); text(q.order.tie)
       requireValue(q.entry && q.order.id === q.entry && /^[a-f0-9]{64}$/.test(q.order.id))

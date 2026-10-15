@@ -7,8 +7,8 @@ import path from "node:path"
 import { build } from "esbuild"
 import { HistorySQL } from "../src/history-schema.js"
 import type { HistorySelection, HistoryTotals, HistoryResolution } from "../src/history-schema.js"
-import { encodeEvent, entryID, HistoryInvalid, reviewID } from "../src/history-records.js"
-import type { HistoryEvent, HistoryPayload, HistoryReview } from "../src/history-records.js"
+import { encodeEvent, HistoryInvalid, reviewID, rootID, sessionID } from "../src/history-records.js"
+import type { HistoryEvent, HistoryOutcome, HistoryPayload, HistoryReview } from "../src/history-records.js"
 import { privateDatabase } from "../src/history-storage-worker.js"
 import { HistoryWorker } from "../src/history-store.js"
 import { StreamingAssessment } from "../src/streaming-assessment.js"
@@ -17,7 +17,7 @@ import { displayText } from "../src/controller.js"
 const context: HistoryReview = { scope: "/project", root: "root", session: "child", permission: "permission", review: "review",
   category: "bash", configuredModel: "configured", provider: "https://openrouter.ai/api/v1" }
 const payload: HistoryPayload = { safe: true, completedAt: 100, desc: "Resolved private report", reportedModel: "reported", usage: { cost: 0 } }
-const resolve = (c = context, p = payload, outcome: "auto" | "manual" | "cancelled" | "rejected" = "manual"): HistoryEvent =>
+const resolve = (c = context, p = payload, outcome: HistoryOutcome = "manual"): HistoryEvent =>
   ({ type: "permissionResolved", context: c, at: 200, outcome, payload: p })
 
 test("validated report controls survive resolved storage and remain escaped for display", t => {
@@ -36,7 +36,7 @@ test("saved indexed order selects next newer after deletion, then nearest older,
   const f = fixture(t)
   for (let n = 1; n <= 5; n++) f.apply(resolve({ ...context, session: `child-${n}`, permission: `p-${n}`, review: `r-${n}` }, { ...payload, completedAt: n }))
   const query = { type: "history" as const, scope: context.scope, root: context.root }
-  const middle = f.sql.query({ ...query, entry: entryID({ ...context, permission: "p-3" }) }) as HistorySelection
+  const middle = f.sql.query({ ...query, entry: reviewID({ ...context, review: "r-3" }) }) as HistorySelection
   f.apply({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: "child-3" }, at: 300 })
   const newer = f.sql.query({ ...query, entry: middle.entry, order: middle.order }) as HistorySelection
   assert.equal(newer.record?.context.permission, "p-4"); assert.equal(newer.rank, 3); assert.equal(newer.total, 4)
@@ -134,6 +134,10 @@ test("two clients count distinct attempts and accepted reviews; latest Unsafe re
   second.apply("second", 3, encodeEvent(resolve(later, { ...payload, safe: false, completedAt: 150, desc: "New Unsafe" })))
   f.apply(resolve())
   const h = f.history()
+  assert.equal(h.total, 2)
+  const previous = f.sql.query({ type: "history", scope: context.scope, root: context.root, entry: h.older }) as HistorySelection
+  assert.equal(previous.record?.payload.desc, payload.desc)
+  assert.equal(previous.record?.outcome, "auto")
   assert.equal(h.record?.payload.safe, false); assert.equal(h.record?.outcome, "auto")
   assert.equal(h.record?.approvingReview, reviewID(context)); assert.equal(h.record?.context.configuredModel, "configured")
   assert.equal(h.record?.payload.reportedModel, "reported")
@@ -144,18 +148,55 @@ test("two clients count distinct attempts and accepted reviews; latest Unsafe re
   assert.equal(totals.activity.autoApproved, 1)
 })
 
-test("cross-window dispatch observations hide ambiguous native/cancellation outcomes until confirmation", t => {
+test("cross-window dispatch observations never hide proven native approval while attribution is pending", t => {
   const f = fixture(t), second = f.second()
   f.apply(resolve())
   second.apply("second", 1, encodeEvent({ type: "approvalDispatched", context, at: 190, approval: "write", automatic: true }))
-  assert.equal(f.history().total, 0)
+  assert.equal(f.history().record?.outcome, "manual")
   f.apply(resolve(context, payload, "cancelled"))
   second.apply("second", 2, encodeEvent({ type: "approvalSettled", context, at: 201, approval: "write", result: "uncertain" }))
-  assert.equal(f.history().total, 0); assert.equal(f.totals().activity.autoApproved, 0)
+  assert.equal(f.history().record?.outcome, "manual"); assert.equal(f.totals().activity.autoApproved, 0)
   second.apply("second", 3, encodeEvent({ type: "approvalConfirmed", context, at: 202, approval: "write", automatic: true }))
   second.apply("second", 4, encodeEvent({ type: "approvalDispatched", context, at: 190, approval: "write", automatic: true }))
   assert.equal(f.history().record?.outcome, "auto")
   assert.equal(f.totals().activity.autoApproved, 1)
+})
+
+test("native once keeps every review readable through uncertainty and refines attribution without duplicate bodies", t => {
+  const f = fixture(t), later = { ...context, review: "later" }
+  f.apply(resolve(context, payload, "approved"))
+  f.apply(resolve(later, { ...payload, safe: false, completedAt: 150 }, "approved"))
+  f.apply({ type: "approvalDispatched", context, at: 200, approval: "write", automatic: true })
+  f.apply({ type: "approvalSettled", context, at: 201, approval: "write", result: "uncertain" })
+  assert.equal(f.history().total, 2)
+  assert.equal(f.history().record?.outcome, "approved")
+  assert.equal(f.totals().activity.autoApproved, 0)
+  f.apply({ type: "approvalConfirmed", context, at: 202, approval: "write", automatic: true })
+  assert.equal(f.history().record?.outcome, "auto")
+  assert.equal(f.history().total, 2)
+  assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 2)
+  assert.equal(f.totals().activity.autoApproved, 1)
+})
+
+test("permission notification lookup selects that permission's newest review, never an unrelated newer entry", t => {
+  const f = fixture(t), later = { ...context, review: "later" }
+  f.apply(resolve())
+  f.apply(resolve(later, { ...payload, safe: false, completedAt: 150 }))
+  f.apply(resolve({ ...context, permission: "other", review: "other" }, { ...payload, completedAt: 200 }))
+  const query = { type: "history" as const, scope: context.scope, root: context.root,
+    permission: { session: context.session, permission: context.permission } }
+  const selected = f.sql.query(query) as HistorySelection
+  assert.equal(selected.entry, reviewID(later))
+  assert.equal(selected.record?.payload.safe, false)
+  assert.equal(selected.rank, 2)
+  assert.equal(selected.total, 3)
+  const plan = f.db.prepare(`EXPLAIN QUERY PLAN SELECT * FROM history WHERE scope=? AND root=? AND outcome IS NOT NULL
+    AND permission=? AND session=? ORDER BY completed DESC,tie DESC,id DESC LIMIT 1`).all(
+    context.scope, rootID(context), context.permission, sessionID(context))
+  assert.match(JSON.stringify(plan), /SEARCH history USING INDEX history_permission/)
+  assert.doesNotMatch(JSON.stringify(plan), /SCAN history|TEMP B-TREE/)
+  assert.equal((f.sql.query({ ...query, permission: { ...query.permission, session: "other" } }) as HistorySelection).record, undefined)
+  assert.throws(() => f.sql.query({ ...query, entry: selected.entry }))
 })
 
 test("self-contained resolved approval facts survive stale manual/cancelled updates; contradictions stay omitted", t => {
@@ -175,10 +216,10 @@ test("completion ordering, stable ties, neighbors and rank use one snapshot; roo
   f.apply(resolve(middle)); f.apply(resolve()); f.apply(resolve(oldest, { ...payload, completedAt: 50 }))
   f.apply(resolve({ ...context, root: "other", session: "other", permission: "other", review: "other" }))
   const latest = f.history()
-  assert.equal(latest.total, 3); assert.equal(latest.rank, 3); assert.equal(latest.entry, entryID(context))
+  assert.equal(latest.total, 3); assert.equal(latest.rank, 3); assert.equal(latest.entry, reviewID(context))
   const selected = f.sql.query({ type: "history", scope: context.scope, root: context.root, entry: latest.entry, direction: "older" }) as HistorySelection
-  assert.equal(selected.entry, entryID(middle)); assert.equal(selected.rank, 2)
-  assert.equal(selected.newer, entryID(context)); assert.equal(selected.older, entryID(oldest))
+  assert.equal(selected.entry, reviewID(middle)); assert.equal(selected.rank, 2)
+  assert.equal(selected.newer, reviewID(context)); assert.equal(selected.older, reviewID(oldest))
 })
 
 test("payload corruption retains placeholder, repair is revalidated, invalid index fails whole read", t => {

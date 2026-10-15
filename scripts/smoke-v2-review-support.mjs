@@ -130,7 +130,8 @@ export function savedStageHistory(value, expected, sessionID) {
     assert.equal(context.permission, stage.request.id)
     assert.equal(context.category, stage.action, "Directory and edit have separate saved categories")
     assert.equal(context.configuredModel, "v2-production-reviewer")
-    assert.equal(row.id, opaque(scope, stage.request.id))
+    assert.equal(row.id, opaque(scope, context.review))
+    assert.equal(row.entry, opaque(scope, stage.request.id))
     assert.equal(row.root, opaque(scope, sessionID))
     assert.equal(row.session, opaque(scope, sessionID))
     assert.equal(row.outcome, "auto")
@@ -152,7 +153,7 @@ export function savedStageHistory(value, expected, sessionID) {
     const approvals = value.approvals.filter(approval => approval.review === row.review)
     assert.equal(approvals.length, 1)
     if (approvals[0].state !== "confirmed") return undefined
-    assert.equal(approvals[0].entry, row.id)
+    assert.equal(approvals[0].entry, row.entry)
     assert.equal(approvals[0].automatic, 1)
     assert.equal(value.conversations[0].id, row.root)
   }

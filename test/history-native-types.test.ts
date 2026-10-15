@@ -31,8 +31,7 @@ function fixture(t: TestContext) {
     events.push(JSON.parse(encoded)); sql.apply("writer", ++sequence, encoded); return true
   }, query: (query: HistoryQuery) => Promise.resolve(sql.query(query)),
   onCommit: (fn: () => unknown) => { commits.add(fn); return () => { commits.delete(fn) } } }
-  const h = new HistoryCoordinator<HostRequest>("/native-host", store, async () => "root", () => now,
-    req => req.source?.assistantID, () => monotonic)
+  const h = new HistoryCoordinator<HostRequest>("/native-host", store, async () => "root", () => now, () => monotonic)
   const lifecycle: ReviewLifecycleObserver<HostRequest> = h.lifecycle
   const onApproval: ApprovalObserver<HostRequest> = h.approval
   t.after(() => { h.dispose(); sql.close() })
@@ -42,7 +41,7 @@ function fixture(t: TestContext) {
     totals: () => (sql.query({ type: "totals" }) as HistoryTotals).totals }
 }
 
-test("native history records accepted plus once only after the exact local confirmation", async t => {
+test("native history saves on once, but automatic attribution requires exact local confirmation", async t => {
   const f = fixture(t)
   const observation = f.h.observation(request, "edit", config, { review: "execution", root: "root" })
   observation.observe!({ type: "dispatched", review: "execution", attempt: "post", retry: "initial" })
@@ -55,7 +54,7 @@ test("native history records accepted plus once only after the exact local confi
   f.lifecycle(removed()); await settle()
   for (const wrong of [{ request: { ...request, id: "other" } }, { request: { ...request, sessionID: "other" } },
     { review: "other" }, { approval: "other" }]) f.onApproval({ ...approval, ...wrong, type: "confirmed" })
-  assert.equal(f.history().total, 0)
+  assert.equal(f.history().record?.outcome, "approved")
   f.onApproval({ ...approval, type: "confirmed" })
   f.onApproval({ ...approval, type: "settled" })
   assert.equal(f.history().record?.payload.desc, "Final validated native report.")
@@ -69,16 +68,16 @@ test("native history records accepted plus once only after the exact local confi
   assert.equal(Object.hasOwn(request, "tool"), false)
 })
 
-test("ambiguous external native once resolution stores accounting but no report body", async t => {
+test("external native once resolution saves the body without inventing approving-client identity", async t => {
   const f = fixture(t)
   f.lifecycle(accepted())
   f.h.reply({ requestID: request.id, sessionID: request.sessionID, reply: "once" })
   f.lifecycle(removed()); await settle()
-  assert.equal(f.history().total, 0)
+  assert.equal(f.history().record?.outcome, "approved")
   assert.equal(f.totals().safe, 1)
   assert.equal(f.totals().activity.autoApproved, 0)
-  assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 0)
-  assert.ok(f.events.every(event => !JSON.stringify(event).includes("Final validated native report.")))
+  assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 1)
+  assert.equal(f.history().record?.payload.desc, "Final validated native report.")
 })
 
 test("native observation uses supplied validated kind rather than request action guesses", t => {
@@ -134,6 +133,17 @@ test("fast native confirmation before completion saves only the final validated 
   assert.equal(f.totals().activity.autoApproved, 1)
 })
 
+for (const reply of ["once", "always", "reject"] as const) test(`fast review completing after native ${reply} saves only its final report`, t => {
+  const f = fixture(t), fast = { ...config, autoApprove: true, fastMode: true }
+  f.h.observation(request, "edit", fast, { review: "execution", root: "root" })
+  f.h.reply({ requestID: request.id, sessionID: request.sessionID, reply })
+  assert.equal(f.history().total, 0)
+  f.lifecycle(accepted({ ...result(), safe: false }))
+  assert.equal(f.history().record?.payload.safe, false)
+  assert.equal(f.history().record?.outcome, reply === "once" ? "approved" : reply === "always" ? "manual" : "rejected")
+  assert.equal(f.totals().activity.autoApproved, 0)
+})
+
 test("a rejected fast remainder counts received usage and confirmation without storing its preview", async t => {
   const f = fixture(t), fast = { ...config, autoApprove: true, fastMode: true, stream: true }
   const observation = f.h.observation(request, "shell", fast, { review: "execution", root: "root" })
@@ -163,25 +173,19 @@ test("a rejected fast remainder counts received usage and confirmation without s
   assert.ok(f.events.every(event => !JSON.stringify(event).includes("Unfinished preview")))
 })
 
-for (const after of [true, false]) test(`native interruption ${after ? "after" : "before"} removal requires exact session and assistant identity`, async t => {
+for (const reason of ["reconciled", "resolved"] as const) test(`native ${reason} removal without a decision never saves reports`, async t => {
   const f = fixture(t)
   const req = request
   f.lifecycle(accepted(result(), req))
-  f.h.interrupted({ sessionID: "root", assistantID: "assistant" })
-  f.h.interrupted({ sessionID: "child", assistantID: "other-assistant" })
-  if (after) { f.lifecycle(removed(req)); await settle() }
-  assert.equal(f.history().total, 0)
-  f.h.interrupted({ sessionID: "child", assistantID: "assistant" })
-  if (!after) f.lifecycle(removed(req))
+  f.lifecycle({ type: "removed", request: req, reason })
   await f.poll()
-  assert.equal(f.history().record?.outcome, "cancelled")
-  assert.equal(f.events.filter(event => event.type === "permissionResolved").length, 1)
+  assert.equal(f.history().total, 0)
+  assert.equal(f.events.filter(event => event.type === "permissionResolved").length, 0)
 })
 
-test("native requests without an assistant source cannot match an interruption", async t => {
+test("native requests without an assistant source still require an actual permission decision", async t => {
   const f = fixture(t), req = { ...request, source: undefined }
   f.lifecycle(accepted(result(), req))
-  f.h.interrupted({ sessionID: "child", assistantID: "assistant" })
   f.lifecycle(removed(req)); await settle()
   assert.equal(f.history().total, 0)
   assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 0)

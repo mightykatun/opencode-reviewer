@@ -8,7 +8,7 @@ import { build } from "esbuild"
 import { openHistoryDatabase } from "../src/history-storage-worker.js"
 import { HistoryStore, HistoryWorker } from "../src/history-store.js"
 import { HISTORY_SCRUB_BYTES, HISTORY_SCRUB_STEPS } from "../src/history-legacy-scrub.js"
-import { encodeEvent, entryID, reviewID } from "../src/history-records.js"
+import { encodeEvent, reviewID } from "../src/history-records.js"
 import type { HistoryEvent, HistoryReview } from "../src/history-records.js"
 
 const context: HistoryReview = { scope: "/legacy", root: "root", session: "root", permission: "permission", review: "review",
@@ -31,7 +31,7 @@ function liveSeed(t: any, rows = 8) {
       payload: { safe: true, completedAt: 1, desc: i === 4 ? marker.repeat(3) : `live-${i}` } }))
   }
   db.exec("PRAGMA secure_delete=OFF")
-  db.prepare("DELETE FROM history WHERE id=?").run(entryID(contexts[4]!))
+  db.prepare("DELETE FROM history WHERE id=?").run(reviewID(contexts[4]!))
   db.prepare("DELETE FROM reviews WHERE id=?").run(reviewID(contexts[4]!))
   db.exec("UPDATE history_privacy SET legacy=1,generation=generation+1; PRAGMA wal_checkpoint(TRUNCATE)")
   assert.equal(contains(file, marker), true)
@@ -91,7 +91,7 @@ test("automatic rebuild erases zero-freelist live table AND index freeblocks wit
     assert.equal(contains(file, marker), false)
     // No duplicate, unbounded startup index builds after alternate-name cutover.
     const indexes = db.prepare("SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name='history' AND sql IS NOT NULL").all()
-    assert.equal(indexes.length, 6)
+    assert.equal(indexes.length, 7)
     assert.ok(indexes.some(index => index.name === "history_rebuilt_history_review"))
     assert.ok(indexes.every(index => index.name.startsWith("history_rebuilt_")))
   } finally { reopened.close() }
@@ -145,7 +145,7 @@ test("copy mirrors concurrent updates, inserts behind and beyond cursor, cascade
   }
   assert.equal(mutated, true); assert.equal(reopened, true); assert.ok(rollbacks > 5)
   assert.equal(contains(file, marker), false); assert.equal(contains(file, removed), false)
-  assert.equal((client.query({ type: "history", scope: context.scope, root: context.root, entry: entryID(contexts[0]!) }) as any).record.payload.desc, replacement)
+  assert.equal((client.query({ type: "history", scope: context.scope, root: context.root, entry: reviewID(contexts[0]!) }) as any).record.payload.desc, replacement)
   assert.equal(db.prepare("SELECT count(*) n FROM payloads").get().n, 39)
   assert.equal(db.prepare("SELECT count(*) n FROM tombstones").get().n, 1)
   assert.equal(db.prepare("PRAGMA integrity_check").get().integrity_check, "ok")

@@ -272,7 +272,6 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       controller.deleted(event.data.sessionID)
       void refresh.refresh()
     } else if (event.type === "session.step.failed" && event.data.error.type === "aborted") {
-      try { records.history.interrupted({ sessionID: event.data.sessionID, assistantID: event.data.assistantMessageID }) } catch {}
       events++; void refresh.refresh(); void formRefresh?.refresh()
     } else if (notificationWorkEvent(event) || event.type.startsWith("form.")) {
       events++; void refresh.refresh(); void formRefresh?.refresh()

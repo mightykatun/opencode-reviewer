@@ -10,6 +10,7 @@ import { deleteHistory } from "./history-deletion.js"
 import { scrubLegacyFreelist } from "./history-legacy-scrub.js"
 import { historySchema, rebuildLegacyPages } from "./history-legacy-rebuild.js"
 import { initializeHistoryPragmas } from "./history-sqlite-init.js"
+import { migrateHistoryReports } from "./history-report-migration.js"
 import type { HistoryEvent, HistoryOutcome, HistoryPayload, HistoryQuery, HistoryReview, HistoryScope, HistoryOrder } from "./history-records.js"
 
 type Row = Record<string, any>
@@ -53,7 +54,7 @@ CREATE TABLE approvals (id TEXT PRIMARY KEY, entry TEXT NOT NULL, root TEXT NOT 
 CREATE INDEX approvals_entry ON approvals(entry);
 CREATE TABLE history (id TEXT PRIMARY KEY, scope TEXT NOT NULL, root TEXT NOT NULL, session TEXT NOT NULL, permission TEXT NOT NULL,
   completed INTEGER NOT NULL, tie TEXT NOT NULL, review TEXT NOT NULL, outcome TEXT, resolution TEXT NOT NULL, approving TEXT, resolvedAt INTEGER NOT NULL,
-  UNIQUE(scope,permission));
+  entry TEXT NOT NULL, UNIQUE(scope,permission,review));
 CREATE INDEX history_order ON history(scope,root,completed,tie,id);
 CREATE INDEX history_session ON history(session);
 CREATE TABLE payloads (id TEXT PRIMARY KEY REFERENCES history(id) ON DELETE CASCADE, body TEXT NOT NULL);
@@ -66,7 +67,8 @@ export class HistorySQL {
   constructor(readonly db: HistoryDatabase) {
     initializeHistoryPragmas(db)
     if (db.prepare("PRAGMA secure_delete").get()?.secure_delete !== 1) throw new HistoryInvalid("Secure history deletion unavailable")
-    this.transaction(() => {
+    db.exec("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON")
+    try { this.transaction(() => {
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()
       if (!tables.length) {
         db.exec(schema)
@@ -75,6 +77,7 @@ export class HistorySQL {
       const meta = db.prepare(`SELECT version,revision,CASE WHEN length(CAST(totals AS BLOB))<=${bytes.totals} THEN totals END AS totals FROM meta WHERE id=1`).get()
       if (meta?.version !== 1 || !count(meta.revision)) throw new HistoryInvalid("Unsupported history schema")
       this.parseTotals(meta.totals)
+      migrateHistoryReports(db)
       // Additive v1 indexes, serialized with initialization on both adapters.
       // Cascading maintenance must not scan all unrelated sessions/attempts.
       historySchema(db, `CREATE INDEX IF NOT EXISTS sessions_root ON sessions(scope,root);
@@ -87,10 +90,11 @@ export class HistorySQL {
         CREATE INDEX IF NOT EXISTS attempts_review_id ON attempts(review,id);
         CREATE INDEX IF NOT EXISTS approvals_review_id ON approvals(review,id);
         CREATE INDEX IF NOT EXISTS history_visible_order ON history(scope,root,completed,tie,id) WHERE outcome IS NOT NULL;`)
+      historySchema(db, `CREATE INDEX IF NOT EXISTS history_permission ON history(scope,root,session,permission,completed,tie,id) WHERE outcome IS NOT NULL;`)
       db.exec(migrationSchema)
       historySchema(db, browsingSchema)
       privacySchema(db, tables.length > 0)
-    })
+    }) } finally { db.exec("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON") }
   }
   private statement(sql: string) {
     let statement = this.statements.get(sql)
@@ -187,7 +191,7 @@ export class HistorySQL {
         const prior = JSON.parse(existing.context)
         if (Object.keys(context).some(key => prior[key] !== context[key as keyof HistoryReview])) throw new HistoryInvalid("Conflicting review identity")
       }
-      const owner = this.get("SELECT root,session FROM history WHERE id=?", entry)
+      const owner = this.get("SELECT root,session FROM history WHERE scope=? AND permission=? LIMIT 1", c.scope, c.permission)
       if (owner && (owner.root !== root || owner.session !== session)) throw new HistoryInvalid("Conflicting permission ownership")
       const pendingOwner = this.get("SELECT root,session FROM reviews WHERE entry=? LIMIT 1", entry)
       if (pendingOwner && (pendingOwner.root !== root || pendingOwner.session !== session)) throw new HistoryInvalid("Conflicting permission ownership")
@@ -218,39 +222,47 @@ export class HistorySQL {
             id, entry, root, session, review, state, "automatic" in e ? Number(e.automatic) : old?.automatic ?? -1, e.at)
         } else if (old.automatic === -1 && "automatic" in e)
           this.run("UPDATE approvals SET automatic=? WHERE id=?", Number(e.automatic), id)
-        this.outcome(entry); this.revision(root)
+        this.outcome(c.scope, c.permission, entry); this.revision(root)
       }
       if (e.type === "approvalConfirmed") {
         this.contribute(opaque("approvalConfirmed", id), delta, root)
       }
     } else if ((e.type === "permissionResolved" || e.type === "permissionOutcome") && !deleted) {
-      const old = this.get("SELECT * FROM history WHERE id=?", entry)
+      const old = this.get("SELECT * FROM history WHERE scope=? AND permission=? LIMIT 1", c.scope, c.permission)
       if (e.type === "permissionOutcome" && !old) return
-      const replace = e.type === "permissionResolved" && (!old || e.payload.completedAt > old.completed || (e.payload.completedAt === old.completed
-        && Buffer.compare(Buffer.from(context.review), Buffer.from(old.tie)) >= 0))
-      // Outcome and displayed report are independent. A cancellation never downgrades an approval.
+      // A permission has one outcome but retains every distinct completed review.
       const prior = old?.resolution
       const resolution = !prior || prior === "cancelled" ? e.outcome : e.outcome === "cancelled" ? prior
         : prior === "conflict" || ((prior === "rejected") !== (e.outcome === "rejected")) ? "conflict"
-        : prior === "auto" || e.outcome === "auto" ? "auto" : e.outcome
-      if (replace) {
-        this.run(`INSERT INTO history VALUES (?,?,?,?,?,?,?,?,NULL,?,NULL,?) ON CONFLICT(id) DO UPDATE SET
+        : prior === "auto" || e.outcome === "auto" ? "auto"
+        : prior === "manual" || e.outcome === "manual" ? "manual" : e.outcome
+      if (e.type === "permissionResolved") {
+        // Legacy IDs stay stable on replay; new reports use their review identity.
+        const saved = this.get("SELECT id FROM history WHERE scope=? AND permission=? AND review=?", c.scope, c.permission, review)
+        const id = saved?.id ?? review
+        const collision = this.get("SELECT scope,root,session,permission,review FROM history WHERE id=?", id)
+        if (collision && (collision.scope !== c.scope || collision.root !== root || collision.session !== session
+          || collision.permission !== c.permission || collision.review !== review)) throw new HistoryInvalid("Conflicting saved report identity")
+        this.run(`INSERT INTO history VALUES (?,?,?,?,?,?,?,?,NULL,?,NULL,?,?) ON CONFLICT(id) DO UPDATE SET
           completed=excluded.completed,tie=excluded.tie,review=excluded.review,resolution=excluded.resolution,resolvedAt=excluded.resolvedAt`,
-        entry, c.scope, root, session, context.permission, e.payload.completedAt, context.review, review, resolution, e.at)
-        this.run("INSERT INTO payloads VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body", entry, JSON.stringify(e.payload))
-      } else this.run("UPDATE history SET resolution=? WHERE id=?", resolution, entry)
-      this.outcome(entry); this.revision(root)
+        id, c.scope, root, session, context.permission, e.payload.completedAt, context.review, review, resolution, e.at, entry)
+        this.run("INSERT INTO payloads VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body", id, JSON.stringify(e.payload))
+      }
+      this.run("UPDATE history SET resolution=? WHERE scope=? AND permission=?", resolution, c.scope, c.permission)
+      this.outcome(c.scope, c.permission, entry); this.revision(root)
     }
   }
-  private outcome(entry: string) {
-    const row = this.get("SELECT resolution FROM history WHERE id=?", entry)
+  private outcome(scope: string, permission: string, entry: string) {
+    const row = this.get("SELECT resolution FROM history WHERE scope=? AND permission=? LIMIT 1", scope, permission)
     if (!row) return
     const auto = this.get("SELECT review FROM approvals WHERE entry=? AND state='confirmed' AND automatic=1 ORDER BY id LIMIT 1", entry)
     const manual = this.get("SELECT review FROM approvals WHERE entry=? AND state='confirmed' AND automatic=0 ORDER BY id LIMIT 1", entry)
     const uncertain = this.get("SELECT id FROM approvals WHERE entry=? AND state IN ('pending','uncertain') LIMIT 1", entry)
     const outcome = row.resolution === "conflict" || (row.resolution === "rejected" && (auto || manual)) ? null
-      : row.resolution === "rejected" ? "rejected" : auto ? "auto" : manual ? "manual" : uncertain ? null : row.resolution
-    this.run("UPDATE history SET outcome=?,approving=? WHERE id=?", outcome, auto?.review ?? manual?.review ?? null, entry)
+      : row.resolution === "rejected" ? "rejected" : auto ? "auto" : manual ? "manual"
+      : row.resolution === "cancelled" && uncertain ? null : row.resolution
+    const resolution = row.resolution === "approved" ? auto ? "auto" : manual ? "manual" : row.resolution : row.resolution
+    this.run("UPDATE history SET outcome=?,approving=?,resolution=? WHERE scope=? AND permission=?", outcome, auto?.review ?? manual?.review ?? null, resolution, scope, permission)
   }
   query(q: HistoryQuery): HistoryResult {
     for (;;) {
@@ -315,15 +327,15 @@ export class HistorySQL {
         const invalidReview = this.get("SELECT 1 AS invalid FROM reviews WHERE entry=? AND (root!=? OR session!=?) LIMIT 1", entry, root, session)
         const history = this.get(`SELECT CASE WHEN length(root)=64 THEN root END AS root,
           CASE WHEN length(session)=64 THEN session END AS session,
-          CASE WHEN length(CAST(resolution AS BLOB))<=16 THEN resolution END AS resolution FROM history WHERE id=?`, entry)
+          CASE WHEN length(CAST(resolution AS BLOB))<=16 THEN resolution END AS resolution FROM history WHERE scope=? AND permission=? LIMIT 1`, q.scope, q.permission)
         if (invalid || invalidReview || (history && (history.root !== root || history.session !== session
-          || !["auto", "manual", "rejected", "cancelled", "conflict"].includes(history.resolution)))) throw new HistoryInvalid("Invalid resolution ownership")
+          || !["auto", "manual", "approved", "rejected", "cancelled", "conflict"].includes(history.resolution)))) throw new HistoryInvalid("Invalid resolution ownership")
         const auto = !!this.get("SELECT id FROM approvals WHERE entry=? AND state='confirmed' AND automatic=1 LIMIT 1", entry)
         const manual = !!this.get("SELECT id FROM approvals WHERE entry=? AND state='confirmed' AND automatic=0 LIMIT 1", entry)
         const uncertain = !!this.get("SELECT id FROM approvals WHERE entry=? AND state IN ('pending','uncertain') LIMIT 1", entry)
         const conflict = history?.resolution === "conflict" || (history?.resolution === "rejected" && (auto || manual))
         const outcome = deleted || conflict ? undefined : auto ? "auto" : manual ? "manual"
-          : history?.resolution === "rejected" ? "rejected" : history?.resolution === "manual" && !uncertain ? "manual" : undefined
+          : ["auto", "manual", "approved", "rejected"].includes(history?.resolution) ? history!.resolution : undefined
         return { outcome, uncertain, conflict, deleted }
       }
       const root = rootID(q), revision = this.get("SELECT revision FROM roots WHERE id=?", root)?.revision ?? 0
@@ -336,15 +348,15 @@ export class HistorySQL {
       if (!index) {
         // Validate once per structural generation, never caching selected text.
         const invalid = this.get(`SELECT id FROM history WHERE scope=? AND root=? AND ${visible} AND
-          (typeof(completed)!='integer' OR completed<0 OR completed>8640000000000000 OR length(id)!=64 OR length(session)!=64
+          (typeof(completed)!='integer' OR completed<0 OR completed>8640000000000000 OR length(id)!=64 OR length(session)!=64 OR length(entry)!=64
           OR length(review)!=64 OR typeof(permission)!='text' OR length(CAST(permission AS BLOB))>${HISTORY_TEXT_BYTES}
           OR typeof(tie)!='text' OR length(tie)=0 OR length(CAST(tie AS BLOB))>${HISTORY_TEXT_BYTES}
           OR length(CAST(resolution AS BLOB))>16 OR length(approving)>64
-          OR outcome NOT IN ('auto','manual','rejected','cancelled')) LIMIT 1`, q.scope, root)
+          OR outcome NOT IN ('auto','manual','approved','rejected','cancelled')) LIMIT 1`, q.scope, root)
         const invalidOwner = this.get(`SELECT h.id FROM history h LEFT JOIN reviews r ON r.id=h.review
           LEFT JOIN sessions s ON s.id=h.session WHERE h.scope=? AND h.root=?
           AND NOT EXISTS (SELECT 1 FROM tombstones WHERE id=h.session) AND
-          (r.id IS NULL OR r.entry!=h.id OR r.root!=h.root OR r.session!=h.session OR s.id IS NULL OR s.scope!=h.scope OR s.root!=?) LIMIT 1`, q.scope, root, q.root)
+          (r.id IS NULL OR r.entry!=h.entry OR r.root!=h.root OR r.session!=h.session OR s.id IS NULL OR s.scope!=h.scope OR s.root!=?) LIMIT 1`, q.scope, root, q.root)
         if (invalid || invalidOwner) throw new HistoryInvalid("Invalid history index")
         const total = this.get(`SELECT count(*) AS n FROM history WHERE ${base}`, q.scope, root)!.n
         if (!count(total)) throw new HistoryInvalid("History count overflow")
@@ -366,7 +378,9 @@ export class HistorySQL {
         q.scope, root, ...(row ? [row.completed, row.tie, row.id] : []), q.scope, q.root)
       }
       let selected: Row | undefined
-      if (q.entry) selected = byID(q.entry)
+      if (q.permission) selected = this.get(`SELECT * FROM history WHERE ${base} AND permission=? AND session=?
+        ORDER BY completed DESC,tie DESC,id DESC LIMIT 1`, q.scope, root, q.permission.permission, sessionID({ ...q, session: q.permission.session }))
+      else if (q.entry) selected = byID(q.entry)
       else if (index.latest !== undefined) selected = byID(index.latest)
       else { selected = seek(); index.latest = selected?.id ?? null }
       const adjacent = (row: Row, newer: boolean) => {
@@ -380,7 +394,7 @@ export class HistorySQL {
       if (!selected && q.order) selected = adjacent(q.order, true) ?? adjacent(q.order, false)
       if (!selected) return { revision, total, rank: 0 }
       const s = selected
-      if (s.id !== opaque(q.scope, s.permission) || s.review !== opaque(q.scope, s.tie)) throw new HistoryInvalid("Invalid history ownership")
+      if ((s.id !== opaque(q.scope, s.permission) && s.id !== s.review) || s.review !== opaque(q.scope, s.tie)) throw new HistoryInvalid("Invalid history ownership")
       const rank = index.ranks.get(s.id) ?? this.get(`SELECT count(*) AS n FROM history WHERE ${base} AND (completed,tie,id)<=(?,?,?)`, q.scope, root, s.completed, s.tie, s.id)!.n
       if (!count(rank) || rank < 1 || rank > total) throw new HistoryInvalid("Invalid history rank")
       this.browsing.rank(index, s.id, rank)
@@ -388,7 +402,9 @@ export class HistorySQL {
       const contextRow = this.get(`SELECT CASE WHEN length(CAST(context AS BLOB))<=${bytes.context} THEN context END AS context FROM reviews WHERE id=? AND root=? AND session=?`, s.review, root, s.session)
       if (typeof contextRow?.context !== "string") throw new HistoryInvalid("Invalid history ownership")
       const context: HistoryReview = JSON.parse(contextRow.context); validateReview(context)
-      if (rootID(context) !== root || sessionID(context) !== s.session || entryID(context) !== s.id || reviewID(context) !== s.review) throw new HistoryInvalid("Invalid history ownership")
+      if (rootID(context) !== root || sessionID(context) !== s.session || context.permission !== s.permission
+        || entryID(context) !== s.entry || (entryID(context) !== s.id && reviewID(context) !== s.id)
+        || reviewID(context) !== s.review) throw new HistoryInvalid("Invalid history ownership")
       result.session = context.session
       try {
         const body = this.get(`SELECT CASE WHEN length(CAST(body AS BLOB))<=${bytes.payload} THEN body END AS body FROM payloads WHERE id=?`, s.id)?.body

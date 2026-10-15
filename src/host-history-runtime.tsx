@@ -69,7 +69,7 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
     if (read.settled) owned(read.settled)
     return read
   }
-  const history = new HistoryCoordinator<HostRequest>(scope, store, root, Date.now, request => request.source?.assistantID)
+  const history = new HistoryCoordinator<HostRequest>(scope, store, root)
   const [state, setState] = createSignal<HistoryViewState>({ open: false, status: "loading", reset: 0 })
   const browser = new HistoryController(scope, store, (id, signal) => history.root(id, signal), setState)
   // Opt-in fixture observation of the actual mounted view's input ownership.

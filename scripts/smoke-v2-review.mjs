@@ -1,5 +1,6 @@
 // Installed five-file production archive: actual controller, UI and reviewer.
-// Scenarios: advisory (nonstream), normal (SSE), fast (held SSE preview/remainder),
+// Scenarios: advisory (nonstream), advisory-history-once/always/reject (Unsafe native decisions),
+// normal (SSE), fast (held SSE preview/remainder),
 // normal-mouse-off, normal-cancel, normal-descendant, fast-descendant,
 // normal-hide, normal-dialog, normal-resize, fast-dialog, normal-hidden-complete,
 // normal-route-wait, normal-decision, fast-decision,
@@ -85,12 +86,14 @@ async function monitorSetup(ctx) {
     record.mode = ctx.keymap.mode.current()
     record.controlSequence = memory.sequence
     record.choices = {}
+    record.rejectEditing = false
     record.statisticsReport = undefined
     let budget = 8192
     const choices = node => {
       if (--budget < 0 || !node.visible || node.isDestroyed) return
       if (typeof node.id === "string" && node.id.startsWith("session.permission.action."))
         record.choices[node.id.slice("session.permission.action.".length)] = node.backgroundColor?.equals(ctx.theme.background.action.primary.focused)
+      if (node.id === "session.permission.reject") record.rejectEditing = true
       for (const child of node.getChildren()) choices(child)
     }
     choices(ctx.renderer.root)
@@ -376,7 +379,8 @@ async function observedReviewerSetup(ctx) {
 }
 
 const { scenario } = runtimeArguments("smoke-v2-review.mjs")
-const streaming = scenario !== "advisory", automatic = scenario !== "advisory", fast = scenario.startsWith("fast")
+const manualHistoryCase = scenario.startsWith("advisory-history-"), manualReply = manualHistoryCase ? scenario.split("-").at(-1) : undefined
+const streaming = !scenario.startsWith("advisory"), automatic = streaming, fast = scenario.startsWith("fast")
 const defaultHomeCase = scenario === "normal-history-default-home"
 const historyCase = scenario === "normal-history" || defaultHomeCase
 const keyboardMouseOffCase = scenario === "normal-history-keyboard-mouse-off"
@@ -460,7 +464,7 @@ const description = "V2 local marker report.\n\nThe script writes one isolated m
 const keyboardDescription = description + "\n\n" + Array.from({ length: 80 }, (_, index) =>
   `Keyboard scroll line ${String(index + 1).padStart(2, "0")}: one isolated marker.`).join("\n\n")
 const reportDescription = index => skillCase ? skillDescription : editCase ? editDescriptions[index - 1] : keyboardMouseOffCase && index === 2 ? keyboardDescription : description
-const assessment = { safe: true, desc: editCase ? editDescriptions.at(-1) : description }
+const assessment = { safe: !manualHistoryCase, desc: editCase ? editDescriptions.at(-1) : description }
 const reviewUsage = { prompt_tokens: 23, completion_tokens: 11, total_tokens: 34 }
 const toolCall = registeredTool ? { id: "v2-production-review-registered", name: "fixture_lookup", input: { account: "public" } }
   : skillCase ? { id: "v2-production-review-skill", name: "skill", input: { id: skillID } }
@@ -468,7 +472,7 @@ const toolCall = registeredTool ? { id: "v2-production-review-registered", name:
   : { id: "v2-production-review-shell", name: "shell", input: { command: "python3 fixture.py", workdir: "inputs" } }
 const publishers = new Map(), calls = [], errors = [], negativeWindows = []
 let version, modelServer, mainResponse, reviewResponse, sessionID, childSession, request, inspection, handshake, sequence = 0
-let reviewPOSTs = 0, reviewCompleted = false, allowWrites = false
+let reviewPOSTs = 0, reviewCompleted = false, allowWrites = false, manualDecision = false
 let allowedReplies = 1, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, notificationSequence = 0
 const requests = [], inspections = [], reviewerTransactions = []
 const editStages = []
@@ -494,9 +498,9 @@ const observations = async () => {
   if (record) {
     assert.deepEqual(record.errors, [])
       assert.ok(record.asked.length <= requestCount, "Only expected native operation permissions")
-     assert.ok(record.replied.length <= (allowWrites ? allowedReplies : 0), "Only the production automatic path may reply once per eligible request")
-    for (const reply of record.replied) {
-      assert.equal(reply.reply, "once")
+      assert.ok(record.replied.length <= (allowWrites || manualDecision ? allowedReplies : 0), "Only the admitted automatic path or explicit native keyboard decision may resolve a request")
+     for (const reply of record.replied) {
+       assert.equal(reply.reply, manualHistoryCase ? manualReply : "once")
       assert.equal(reply.sessionID, sessionID)
        assert.ok(record.asked.some(asked => asked.id === reply.requestID), "Reply belongs to an actual observed native request")
         if (!coverCase && !directoryEditCase) assert.equal(reply.requestID, request.id)
@@ -606,7 +610,8 @@ const savedHistory = async () => {
   assert.equal(context.session, sessionID)
   assert.equal(context.permission, request.id)
   assert.equal(context.configuredModel, "v2-production-reviewer")
-  assert.equal(row.id, opaque(context.scope, request.id))
+   assert.equal(row.id, opaque(context.scope, context.review))
+   assert.equal(row.entry, opaque(context.scope, request.id))
   assert.equal(row.root, opaque(context.scope, sessionID))
   assert.equal(row.session, opaque(context.scope, sessionID))
   assert.equal(row.review, value.reviews[0].id)
@@ -621,7 +626,7 @@ const savedHistory = async () => {
   assert.equal(JSON.parse(value.attempts[0].dispatched).retry, "initial")
   assert.deepEqual(JSON.parse(value.attempts[0].finalized).usage, payload.usage)
   assert.equal(value.approvals[0].review, row.review)
-  assert.equal(value.approvals[0].entry, row.id)
+   assert.equal(value.approvals[0].entry, row.entry)
   assert.equal(value.approvals[0].automatic, 1)
   assert.equal(value.conversations[0].id, row.root)
   assert.equal(value.conversations[0].partial, 0)
@@ -705,7 +710,8 @@ const savedPair = async () => {
     assert.equal(context.session, sessionID)
     assert.equal(context.scope, coverEvidence.first.context.scope)
     assert.equal(context.configuredModel, "v2-production-reviewer")
-    assert.equal(row.id, opaque(context.scope, expected.id))
+     assert.equal(row.id, opaque(context.scope, context.review))
+     assert.equal(row.entry, opaque(context.scope, expected.id))
     assert.equal(row.root, opaque(context.scope, sessionID))
     assert.equal(row.session, opaque(context.scope, sessionID))
     assert.equal(row.outcome, "auto")
@@ -726,7 +732,7 @@ const savedPair = async () => {
     assert.deepEqual(JSON.parse(attempts[0].finalized).usage, payload.usage)
     const approvals = value.approvals.filter(approval => approval.review === row.review)
     assert.equal(approvals.length, 1)
-    assert.equal(approvals[0].entry, row.id)
+     assert.equal(approvals[0].entry, row.entry)
     assert.equal(approvals[0].automatic, 1)
     assert.equal(approvals[0].state, "confirmed")
     assert.equal(value.conversations[0].id, row.root)
@@ -841,7 +847,8 @@ const finishReview = () => {
     reviewResponse.end("data: [DONE]\n\n")
   } else {
     reviewResponse.writeHead(200, { "Content-Type": "application/json" })
-    reviewResponse.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify(assessment) }, finish_reason: "stop" }] }))
+    reviewResponse.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify(assessment) }, finish_reason: "stop" }],
+      ...(manualHistoryCase ? { usage: reviewUsage } : {}) }))
   }
   reviewCompleted = true
   reviewerTransactions.at(-1).completed = true
@@ -877,7 +884,8 @@ const limits = [
       : coverCase ? "Two real root-owned native shell permissions, two real reviewer POSTs and worker-saved validated automatic entries. Public production history stays selected on the first entry while normal or fast automatic approval proceeds. No descendant-owned queue, offline deletion, statistics dialog, notification or multi-client acceptance."
      : historyCase ? "History/statistics acceptance is one actual automatic saved entry and its real read-only SQLite aggregates, public command browsing and native dialog. Child history invocation is disabled; root return explicitly reopens the same saved entry. No approval while browsing history, offline deletion, multiple entries or multi-client acceptance."
     : notificationCase ? "Production host with an injected desktop boundary only: one actual fast native approval, retained SSE response, approved banner and lease-based simulated clicks, including revealing a deliberately hidden native sidebar for the retained report. No real GNOME activation, desktop processes, audio, live-provider latency, advisory/unsafe attention, reminders or multi-request queue acceptance. Exact-key history selection is observed without a competing newer entry; multi-entry not-latest behavior is not accepted by this single-entry fixture."
-      : "No production history browsing, statistics UI or notification acceptance in this scenario. Advisory native interruption is not treated as exact manual attribution.",
+       : manualHistoryCase ? "One final Unsafe advisory report and one genuine keyboard native Once/Always/reject decision. Read-only SQLite and production history prove the report saves on resolution, with no guessed manual attribution for Once and no automatic-approval contribution. No real provider judgment, multiple reviews per permission or multi-client acceptance."
+       : "No production history browsing, statistics UI or notification acceptance in this scenario. Advisory native interruption alone does not save a report.",
 ]
 try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
@@ -1210,7 +1218,7 @@ createInterface({input:process.stdin}).on('line',line=>{
        const resolutions = facts.events.filter(event => event.type === "permissionResolved" && event.accepted
          && event.context.permission === request.id)
        assert.equal(resolutions.length, 1, "Exactly one qualifying production resolution saves this stage")
-       assert.equal(resolutions[0].outcome, "auto")
+        assert.ok(["approved", "auto"].includes(resolutions[0].outcome), "The native once saves independently of acknowledgement ordering")
        assert.equal(resolutions[0].context.category, action)
        stage.savedEntry = saved.rows.find(row => JSON.parse(row.context).permission === request.id).id
        stage.savedRow = saved.rows.find(row => row.id === stage.savedEntry)
@@ -1480,13 +1488,33 @@ createInterface({input:process.stdin}).on('line',line=>{
         hiddenDescendant(await observations(), capture())
         await navigate(sessionID)
       } else {
-    await until("rendered validated Safe report", () => {
-      const screen = capture()
-      return screen.includes("Permission analysis") && screen.includes("✓ Safe") && screen.includes("V2 local marker report.")
+     await until("rendered validated final report", () => {
+       const screen = capture()
+       return screen.includes("Permission analysis") && screen.includes(manualHistoryCase ? "Unsafe" : "✓ Safe") && screen.includes("V2 local marker report.")
         && screen.includes("The script writes one isolated marker.")
     })
     await saveCapture("safe-report")
-    if (scenario === "advisory") {
+     if (manualHistoryCase) {
+       await negativeWindow("completed Unsafe advisory remains pending and unsaved", [request], [], null, 1, 1500, noSavedBody)
+       assert.doesNotMatch(capture(), /Allowed in/)
+       if (manualReply !== "once") {
+         runtime.tmux("send-keys", "-t", "v2-review", "Right")
+         await until("native Always selection", record => record?.choices.always === true)
+       }
+       if (manualReply === "reject") {
+         runtime.tmux("send-keys", "-t", "v2-review", "Right")
+         await until("native reject selection", record => record?.choices.reject === true)
+       }
+       allowWrites = manualReply !== "reject"
+       manualDecision = true
+       runtime.tmux("send-keys", "-t", "v2-review", "Enter")
+       const decision = await until("native decision or rejection editor", record => (record?.replied.length === 1 || record?.rejectEditing) && record)
+       if (!decision.replied.length) runtime.tmux("send-keys", "-t", "v2-review", "Enter")
+       await until("genuine native permission reply", record => record?.replied.length === 1)
+       assert.equal((await observations()).replied[0].reply, manualReply)
+       if (allowWrites) await until("manually approved native marker execution", async () => await executed() === markerLine)
+       else assert.equal(await executed(), null)
+     } else if (scenario === "advisory") {
       await negativeWindow("completed advisory report remains pending", [request], [], null, 1, 1500, noSavedBody)
       assert.doesNotMatch(capture(), /Allowed in/)
       await command({ type: "interrupt", sessionID })
@@ -2069,27 +2097,56 @@ createInterface({input:process.stdin}).on('line',line=>{
       })
     notificationEvidence.afterSavedClick = await notificationObservations()
   }
-  if (scenario === "advisory") {
+   if (manualHistoryCase) {
+     historyEvidence = await until("Unsafe report saved by actual native decision", async () => {
+       const value = await readHistory()
+       return value?.rows.length === 1 && value.reviews[0]?.accepted && value.attempts[0]?.finalized && value
+     }, 15000)
+     const row = historyEvidence.rows[0], context = JSON.parse(row.context), body = JSON.parse(row.body)
+     const outcome = manualReply === "once" ? "approved" : manualReply === "always" ? "manual" : "rejected"
+     assert.equal(historyEvidence.payloadCount, 1)
+     assert.equal(historyEvidence.approvals.length, 0, "Native user decisions never invent a reviewer approval write")
+     assert.equal(context.permission, request.id)
+     assert.equal(context.session, sessionID)
+     assert.equal(context.root, sessionID)
+     assert.equal(body.safe, false)
+     assert.equal(body.desc, description)
+     assert.equal(row.outcome, outcome)
+     for (const total of [JSON.parse(historyEvidence.meta.totals), ...historyEvidence.conversations.map(item => JSON.parse(item.totals))]) {
+       assert.equal(total.safe, 0); assert.equal(total.unsafe, 1)
+       assert.equal(total.activity.reviews, 1); assert.equal(total.activity.autoApproved, 0)
+       assert.equal(total.input, 23); assert.equal(total.output, 11)
+     }
+     const opened = await command({ type: "keymap", id: "reviewer.history", dispatch: true })
+     assert.equal(opened.registered, true); assert.equal(opened.enabled, true)
+     const label = manualReply === "once" ? "Approved" : manualReply === "always" ? "Manually approved" : "Rejected"
+     const historical = (record, screen) => {
+       assert.equal(record.mode, "base")
+       assert.match(screen, /Analysis history/); assert.match(screen, /Unsafe/)
+       assert.ok(screen.includes(description.split("\n")[0])); assert.ok(screen.includes(label))
+       assert.doesNotMatch(screen, /Permission analysis|Allowed in/)
+     }
+     await until("rendered saved Unsafe history", record => { try { historical(record, capture()); return true } catch { return false } })
+     await saveCapture("unsafe-native-decision-history")
+     await negativeWindow("saved Unsafe browsing cannot repeat the native decision or execution", [], (await observations()).replied,
+       allowWrites ? markerLine : null, 1, 1500, historical)
+     await publish(path.join(artifacts, "unsafe-native-decision-history.json"), historyEvidence)
+   } else if (scenario === "advisory") {
     const interrupted = (await observations()).interrupted
     assert.equal(interrupted.length, 1)
     assert.equal(interrupted[0].sessionID, sessionID)
     assert.equal(interrupted[0].assistantMessageID, request.source.messageID,
       "Native interruption supplies exact ownership, not inferred manual approval")
-    const saved = await until("exact linked advisory interruption saves only a cancelled report", async () => {
-      const value = await readHistory()
-      return value?.rows.length === 1 && value
-    }, 15000)
-    assert.equal(saved.payloadCount, 1)
-    assert.equal(saved.approvals.length, 0, "Interruption is not approval")
-    const row = saved.rows[0], context = JSON.parse(row.context), body = JSON.parse(row.body)
-    assert.equal(context.root, sessionID)
-    assert.equal(context.session, sessionID)
-    assert.equal(context.permission, request.id)
-    assert.equal(row.outcome, "cancelled")
-    assert.equal(body.desc, description)
-    assert.equal(body.safe, true)
-    assert.equal(JSON.parse(saved.meta.totals).activity.autoApproved, 0)
-    await publish(path.join(artifacts, "advisory-cancelled-history.json"), saved)
+     const saved = await until("advisory accepted accounting survives interruption", async () => {
+       const value = await readHistory()
+       return value?.reviews[0]?.accepted && value
+     }, 15000)
+     assert.equal(saved.payloadCount, 0)
+     assert.equal(saved.rows.length, 0)
+     assert.equal(saved.approvals.length, 0, "Interruption is not approval")
+     assert.equal(JSON.parse(saved.meta.totals).activity.autoApproved, 0)
+     await negativeWindow("interruption alone never saves a completed report after reconciliation", [], [], null, 1, 7000, noSavedBody)
+     await publish(path.join(artifacts, "advisory-unsaved-history.json"), saved)
   }
    }
   assert.equal(reviewCompleted, true)
@@ -2097,7 +2154,7 @@ createInterface({input:process.stdin}).on('line',line=>{
    assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, allowWrites ? nativeCallCount * 2 : 1)
   const final = await observations()
    assert.equal(final.asked.length, requestCount)
-   assert.equal(final.replied.length, allowWrites ? requestCount : 0)
+    assert.equal(final.replied.length, allowWrites || manualHistoryCase ? requestCount : 0)
   assert.deepEqual(final.route, { type: "session", sessionID: fast && descendant ? childSession.id : sessionID })
   if (automatic) assert.equal(final.mouse, !mouseOff && !keyboardMouseOffCase)
   if (negative) assert.equal(await executed(), null)

@@ -10,10 +10,10 @@ const opaque = (...parts) => createHash("sha256").update(JSON.stringify(parts)).
 function records(count) {
   const expected = Array.from({ length: count }, (_, index) => ({ action: count === 2 && index === 0 ? "external_directory" : "edit",
     request: { id: `permission-${index}` }, description: `report-${index}` }))
-  const rows = expected.map((stage, index) => ({ id: opaque("scope", stage.request.id), review: `review-${index}`,
-    root: opaque("scope", "root"), session: opaque("scope", "root"), outcome: "auto", resolution: "auto", approving: `review-${index}`,
+  const rows = expected.map((stage, index) => ({ id: opaque("scope", `review-${index}`), entry: opaque("scope", stage.request.id), review: opaque("scope", `review-${index}`),
+    root: opaque("scope", "root"), session: opaque("scope", "root"), outcome: "auto", resolution: "auto", approving: opaque("scope", `review-${index}`),
     context: JSON.stringify({ scope: "scope", root: "root", session: "root", permission: stage.request.id,
-      category: stage.action, configuredModel: "v2-production-reviewer" }), accepted: '{"safe":true}',
+      review: `review-${index}`, category: stage.action, configuredModel: "v2-production-reviewer" }), accepted: '{"safe":true}',
     body: JSON.stringify({ safe: true, desc: stage.description, usage: { input: 23, output: 11 } }) }))
   const totals = { requests: count, tokenRequests: count, input: 23 * count, output: 11 * count, safe: count, unsafe: 0,
     priced: 0, cost: 0, activity: { reviews: count, autoApproved: count, usageRequests: count, retries: 0, timedReviews: count } }
@@ -21,7 +21,7 @@ function records(count) {
     conversations: [{ id: opaque("scope", "root"), totals: JSON.stringify(totals), partial: 0 }],
     reviews: rows.map(row => ({ id: row.review, root: row.root, session: row.session, context: row.context, accepted: row.accepted })),
     attempts: rows.map(row => ({ review: row.review, dispatched: '{"retry":"initial"}', finalized: '{"usage":{"input":23,"output":11}}' })),
-    approvals: rows.map(row => ({ review: row.review, state: "confirmed", entry: row.id, automatic: 1 })) } }
+    approvals: rows.map(row => ({ review: row.review, state: "confirmed", entry: row.entry, automatic: 1 })) } }
 }
 
 test("native-stage history assertions reject wrong usage, attribution and categories instead of trusting stored totals", () => {
@@ -33,6 +33,7 @@ test("native-stage history assertions reject wrong usage, attribution and catego
       copy => { copy.rows[0].outcome = "manual" },
       copy => { const context = JSON.parse(copy.rows[0].context); context.category = "bash"; copy.rows[0].context = JSON.stringify(context) },
       copy => { copy.approvals[0].automatic = 0 },
+      copy => { copy.approvals[0].entry = copy.rows[0].id },
       copy => { copy.payloadCount++ },
       copy => { copy.attempts.push(copy.attempts[0]) },
     ]) {

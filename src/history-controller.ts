@@ -1,7 +1,7 @@
 import { HistoryRefresh } from "./history-refresh.js"
 import type { HistoryStore } from "./history-store.js"
 import type { HistorySelection } from "./history-schema.js"
-import { opaque, type HistoryQuery, type HistoryTarget } from "./history-records.js"
+import type { HistoryQuery, HistoryTarget } from "./history-records.js"
 import type { AncestryRead, AncestryReader } from "./session-ancestry.js"
 
 export interface HistoryViewState {
@@ -21,7 +21,7 @@ export class HistoryController {
   private stopped = false
   private lookup = false
   private lookupAgain = false
-  private target?: HistoryTarget & { entry: string; until: number; ready: () => void }
+  private target?: HistoryTarget & { until: number; ready: () => void }
   private targetTimeout?: ReturnType<typeof setTimeout>
   private deletedEntries = new Set<string>()
   private unsubscribeMaintenance?: () => void
@@ -38,7 +38,7 @@ export class HistoryController {
   isCurrent(session: string) { return !this.stopped && this.state.open && this.session === session }
   open(session: string) { this.start(session) }
   openPermission(session: string, target: HistoryTarget, ready: () => void) {
-    this.start(session, { ...target, entry: opaque(this.scope, target.permission), until: performance.now() + 5000, ready })
+    this.start(session, { ...target, until: performance.now() + 5000, ready })
   }
   cancelPendingPermission() { if (this.target) this.close() }
   private start(session: string, target?: HistoryController["target"]) {
@@ -74,7 +74,7 @@ export class HistoryController {
         if (target) {
           if (performance.now() >= target.until) { this.close(); return }
           const context = result.record?.context
-          if (result.entry !== target.entry || !context || context.scope !== this.scope || context.root !== root
+          if (!result.entry || !context || context.scope !== this.scope || context.root !== root
             || context.session !== target.session || context.permission !== target.permission) return
           clearTimeout(this.targetTimeout); this.target = undefined
         }
@@ -107,7 +107,9 @@ export class HistoryController {
   }
   private query(): HistoryQuery {
     const selected = this.state.selection
-    return { type: "history", scope: this.scope, root: this.root!, entry: this.target?.entry ?? selected?.entry, order: selected?.order }
+    return { type: "history", scope: this.scope, root: this.root!, ...(this.target
+      ? { permission: { session: this.target.session, permission: this.target.permission } }
+      : { entry: selected?.entry, order: selected?.order }) }
   }
   navigate(direction: "older" | "newer") {
     if (!this.state.open || this.state.status !== "ready" || !this.state.selection?.[direction]) return

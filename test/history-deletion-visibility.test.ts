@@ -48,12 +48,12 @@ function fixture(t: any, size: number) {
   db.exec("BEGIN IMMEDIATE")
   const session = db.prepare("INSERT OR IGNORE INTO sessions VALUES (?,?,?,?)")
   const review = db.prepare("INSERT INTO reviews VALUES (?,?,?,?,?,NULL)")
-  const history = db.prepare("INSERT INTO history VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+  const history = db.prepare("INSERT INTO history VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
   const payload = db.prepare("INSERT INTO payloads VALUES (?,?)")
   const add = (c: HistoryReview, completed: number, desc: string) => {
     session.run(sessionID(c), c.scope, c.root, c.session)
     review.run(reviewID(c), entryID(c), rootID(c), sessionID(c), JSON.stringify(c))
-    history.run(entryID(c), c.scope, rootID(c), sessionID(c), c.permission, completed, c.review, reviewID(c), "manual", "manual", null, completed)
+    history.run(entryID(c), c.scope, rootID(c), sessionID(c), c.permission, completed, c.review, reviewID(c), "manual", "manual", null, completed, entryID(c))
     payload.run(entryID(c), JSON.stringify({ safe: true, completedAt: completed, desc }))
   }
   for (let n = 0; n < size; n++) add({ ...context, permission: `child-p${n}`, review: `child-r${n}` }, n + 100, marker)

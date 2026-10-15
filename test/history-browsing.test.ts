@@ -189,7 +189,7 @@ test("referenced review identities invalidate actual history roots through raw c
       try {
         connection.prepare("UPDATE sessions SET root=? WHERE id=?").run(root, sessionID(owner))
         connection.prepare("UPDATE reviews SET root=?,context=? WHERE id=?").run(rootID({ scope: c.scope, root }), JSON.stringify({ ...owner, root }), id)
-        connection.prepare("UPDATE history SET root=? WHERE id=?").run(rootID({ scope: c.scope, root }), entryID(owner))
+        connection.prepare("UPDATE history SET root=? WHERE id=?").run(rootID({ scope: c.scope, root }), reviewID(owner))
         connection.exec("COMMIT")
       } catch (error) { connection.exec("ROLLBACK"); throw error }
     }
@@ -198,7 +198,7 @@ test("referenced review identities invalidate actual history roots through raw c
     assert.ok(generation(owner.root) > before[0]!); assert.ok(generation(target.root) > before[1]!)
     assert.equal((sql.query(query) as HistorySelection).total, 1)
     assert.equal((sql.query(targetQuery) as HistorySelection).total, 3)
-    assert.equal((sql.query({ ...targetQuery, entry: entryID(owner) }) as HistorySelection).record?.context.root, target.root)
+    assert.equal((sql.query({ ...targetQuery, entry: reviewID(owner) }) as HistorySelection).record?.context.root, target.root)
     move(owner.root)
     assert.deepEqual(sql.query(query), original); assert.deepEqual(sql.query(targetQuery), originalTarget)
   }
