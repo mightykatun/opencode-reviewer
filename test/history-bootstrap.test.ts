@@ -52,6 +52,31 @@ test("durable bounded per-review cursor serializes two writers, rollback, replay
   t.diagnostic(`26000 retained rows: ${slices} transactions, maximum ${maximum} steps`)
 })
 
+test("bootstrap prepares each fixed statement once per bounded transaction, not once per retained row", t => {
+  const db = new DatabaseSync(":memory:")
+  let prepares = 0
+  const sql = new HistorySQL({ exec: statement => db.exec(statement), prepare: statement => {
+    prepares++; return db.prepare(statement)
+  }, close: () => db.close() })
+  t.after(() => sql.close())
+  seedLarge(db, 200, 40)
+  const root = rootID(c)
+  let slices = 0
+  for (;;) {
+    prepares = 0
+    const result = sql.bootstrap(root)
+    assert.ok(prepares <= 9, `fixed SQL preparation must not scale with rows: ${prepares}`)
+    assert.ok(result.steps <= HISTORY_BOOTSTRAP_STEPS)
+    slices++
+    if (result.done) break
+  }
+  assert.ok(slices > 4, "the fixed row budget still requires separate committed slices")
+  const totals = sql.query({ type: "conversationTotals", scope: c.scope, root: c.root }) as HistoryConversationTotals
+  assert.equal(totals.totals.safe, 200)
+  assert.equal(totals.totals.input, 40)
+  assert.equal(totals.totals.activity.retries, 40)
+})
+
 test("80k legacy reviews progress under the actual watchdog after interrupted slow source worker, then FIFO deletion and unrelated root commit", { timeout: 120000 }, async t => {
   const directory = mkdtempSync(path.join(tmpdir(), "history-slow-bootstrap-")), file = path.join(directory, "opencode-reviewer/history-v1.sqlite")
   privateDatabase(file)

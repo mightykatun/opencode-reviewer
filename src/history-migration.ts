@@ -16,8 +16,17 @@ export const migrationSchema = `CREATE TABLE IF NOT EXISTS conversation_bootstra
  */
 export function bootstrap(db: HistoryDatabase, root: string): { done: boolean; steps: number } {
   if (!/^[a-f0-9]{64}$/.test(root)) throw new HistoryInvalid("Invalid bootstrap root")
-  const get = (sql: string, ...args: any[]) => db.prepare(sql).get(...args)
-  const run = (sql: string, ...args: any[]) => db.prepare(sql).run(...args)
+  // Reuse only this slice's fixed SQL. Preparing on every retained row adds
+  // avoidable CPU work; keeping the cache transaction-local also avoids retaining
+  // statements across concurrent legacy table rebuilds or worker replacement.
+  const statements = new Map<string, ReturnType<HistoryDatabase["prepare"]>>()
+  const statement = (sql: string) => {
+    let result = statements.get(sql)
+    if (!result) { result = db.prepare(sql); statements.set(sql, result) }
+    return result
+  }
+  const get = (sql: string, ...args: any[]) => statement(sql).get(...args)
+  const run = (sql: string, ...args: any[]) => statement(sql).run(...args)
   if (get("SELECT id FROM conversation_totals WHERE id=?", root)) return { done: true, steps: 0 }
   const saved = get(`SELECT review,phase,after,partial,CASE WHEN length(CAST(totals AS BLOB))<=${bytes.totals} THEN totals END AS totals
     FROM conversation_bootstrap WHERE id=?`, root)
