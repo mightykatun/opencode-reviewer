@@ -19,7 +19,7 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  41-case production/foundation selection available in manual extended checks,
+  43-case production/foundation selection available in manual extended checks,
   including history, statistics, approval notifications and explicitly classified
   synthetic probes.
   `npm run test:runtime` selects `--profile v2-acceptance`, which currently selects
@@ -95,6 +95,7 @@ All commands below use the installed five-file archive and production runtime.
 | Mouse-disabled approval / explicit Cancel | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-mouse-off` / `normal-cancel` |
 | Home/dashboard/unrelated route waiting | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-route-wait` |
 | Native decision waiting without cancellation | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-decision` / `fast-decision` |
+| Live Git-project identity migration / visible evidence failures | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-project-transition` / `advisory-evidence-timeout` |
 
 Notification fixtures isolate process I/O and inject the desktop backend. They do
 not prove actual audio playback, GNOME focus, live-provider judgment or provider
@@ -236,8 +237,9 @@ existing user directories.
   attribution separate from the immutable invocation; never discover a tool-target
   location or change its source, arguments, workspace, epoch or captured directory.
   Missing/ambiguous/foreign inventory stays manual, and finalization rechecks the
-  exact session project after collection. Thrown evidence failures remain visible
-  as Analysis unavailable without model calls or permission writes.
+  exact session project and registered attribution after collection. Canonical
+  metadata alone never establishes registered checkout membership. Thrown evidence
+  failures remain visible as Analysis unavailable without model calls or replies.
 - `controller.ts` owns V2 request lifecycle, evaluation, cancellation and approval;
   `session-ancestry.ts` owns bounded metadata traversal and actual read settlement;
   review and history share a scope-pinned instance without sharing saved-mode admission.

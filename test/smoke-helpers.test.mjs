@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process"
 import { setImmediate as turn } from "node:timers/promises"
 import { observationPublisher, readObservation } from "../scripts/smoke-observations.mjs"
 import { selectedPaletteResult, activatePalette } from "../scripts/smoke-ui.mjs"
-import { smokeGitInit } from "../scripts/smoke-runtime.mjs"
+import { smokeGitInit, smokeGit } from "../scripts/smoke-runtime.mjs"
 import { runtimeInventory } from "../scripts/runtime-inventory.mjs"
 
 async function fixture(t) {
@@ -41,7 +41,42 @@ test("fixture Git initialization ignores hostile directory, config and template 
 
 test("fixture Git setup rejects targets outside its namespace before dispatch", () => {
   for (const [home, project] of [["relative", "/outside"], ["/private", "relative"], ["/private", "/outside"], ["/private", "/private"]])
-    assert.throws(() => smokeGitInit(home, project), /Fixture Git/)
+    for (const run of [() => smokeGitInit(home, project), () => smokeGit(home, project, ["rev-parse", "HEAD"])])
+      assert.throws(run, /Fixture Git/)
+})
+
+test("fixture Git commits and metadata ignore hostile inherited repository and configuration overrides", async t => {
+  const directory = await mkdtemp("/tmp/opencode/reviewer-git-commands-")
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const home = path.join(directory, "private home"), project = path.join(home, "project"), outside = path.join(directory, "unrelated-git")
+  await Promise.all([mkdir(project, { recursive: true }), mkdir(outside)])
+  await writeFile(path.join(outside, "sentinel"), "unrelated state")
+  await writeFile(path.join(project, "fixture.txt"), "fixture only\n")
+  const global = path.join(directory, "global-config")
+  await writeFile(global, "[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = /missing-fixture-gpg\n")
+  const result = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", `
+    import { smokeGitInit, smokeGit } from ${JSON.stringify(new URL("../scripts/smoke-runtime.mjs", import.meta.url).href)};
+    const home = ${JSON.stringify(home)}, project = ${JSON.stringify(project)};
+    smokeGitInit(home, project);
+    const git = args => smokeGit(home, project, args).trim();
+    git(["add", "--", "fixture.txt"]);
+    git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Fixture"]);
+    console.log(JSON.stringify({ head: git(["rev-parse", "HEAD"]), roots: git(["rev-list", "--max-parents=0", "HEAD"]),
+      files: git(["ls-tree", "--name-only", "HEAD"]), top: git(["rev-parse", "--show-toplevel"]) }));
+  `], { env: { ...process.env, GIT_DIR: outside, GIT_WORK_TREE: outside, GIT_COMMON_DIR: outside,
+    GIT_CONFIG_GLOBAL: global, GIT_CONFIG_SYSTEM: global, GIT_TEMPLATE_DIR: outside,
+    GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "commit.gpgSign", GIT_CONFIG_VALUE_0: "true" }, encoding: "utf8", timeout: 20000 }))
+  assert.match(result.head, /^[a-f0-9]{40,64}$/)
+  assert.equal(result.roots, result.head)
+  assert.equal(result.files, "fixture.txt")
+  assert.equal(result.top, project)
+  assert.deepEqual(await readdir(outside), ["sentinel"])
+  assert.equal(await readFile(path.join(outside, "sentinel"), "utf8"), "unrelated state")
+})
+
+test("fixture Git command arguments are bounded before process dispatch", () => {
+  for (const args of [undefined, [], "status", [null], ["bad\0argument"], ["x".repeat(16385)], Array(129).fill("status")])
+    assert.throws(() => smokeGit("/private", "/private/project", args), /Fixture Git arguments/)
 })
 
 test("every inventoried Git fixture uses the bounded isolated initialization helper", async () => {

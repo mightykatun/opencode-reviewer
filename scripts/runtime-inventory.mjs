@@ -17,8 +17,8 @@ export const runtimeInventory = {
   "smoke-v2-companion-package.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux", "npm-pack", "tar", "source"] }),
   "smoke-v2-lifecycle.mjs": host(["default", "cold-startup"], [], { requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-invocation.mjs": host(["default", "review"], [], { requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
-  "smoke-v2-review.mjs": host(["advisory", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant", "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
-    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool"], [], { requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
+  "smoke-v2-review.mjs": host(["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant", "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
+    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-project-transition"], [], { requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
   "smoke-v2-notifications.mjs": host(["manual-handoff", "forms", "execution", "unavailable-review"], [], {
     requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"], timeoutMs: 360000 }),
   "smoke-v2-sidebar-state.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux"] }),
@@ -69,10 +69,12 @@ export const runtimeProfiles = {
     ["smoke-v2-invocation.mjs"],
     ["smoke-v2-invocation.mjs", "review"],
     ["smoke-v2-review.mjs", "advisory"],
+    ["smoke-v2-review.mjs", "advisory-evidence-timeout"],
     ...["advisory-history-once", "advisory-history-always", "advisory-history-reject"].map(scenario => ["smoke-v2-review.mjs", scenario]),
     ["smoke-v2-review.mjs", "normal"],
     ["smoke-v2-review.mjs", "fast"],
     ["smoke-v2-review.mjs", "normal-descendant"],
+    ["smoke-v2-review.mjs", "normal-project-transition"],
     ["smoke-v2-root-presentation.mjs", "mouse-on"],
     ["smoke-v2-root-presentation.mjs", "mouse-off"],
     ["smoke-v2-native-queue.mjs"],
@@ -84,6 +86,7 @@ export const runtimeProfiles = {
   "v2-permissions": [
     ["smoke-v2-invocation.mjs"], ["smoke-v2-invocation.mjs", "review"],
     ["smoke-v2-review.mjs", "normal-edit"], ["smoke-v2-review.mjs", "normal-directory-edit"],
+    ["smoke-v2-review.mjs", "normal-project-transition"],
   ],
 }
 

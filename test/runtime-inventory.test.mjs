@@ -86,12 +86,12 @@ test("cold startup has an explicit production-host invocation with the normal li
 
 test("V2 acceptance includes each production review case exactly once and retains explicit synthetic classifications", () => {
   const cases = profilePlan("v2-acceptance")
-  assert.equal(cases.length, 41, "Exact current production/foundation acceptance selection")
+  assert.equal(cases.length, 43, "Previous 41 cases plus the four-request project transition and visible pre-model evidence timeout")
   assert.equal(cases.length, new Set(cases.map(value => value.id)).size)
   const reviews = cases.filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs")
-  const expectedReviews = ["advisory", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant",
+  const expectedReviews = ["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant",
     "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
-    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool"].sort()
+    "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-project-transition"].sort()
   assert.deepEqual(reviews.map(value => value.scenario).sort(), expectedReviews)
   assert.deepEqual([...runtimeInventory["smoke-v2-review.mjs"].scenarios].sort(), expectedReviews)
   assert.ok(reviews.every(value => value.classification === "production-host"))
@@ -137,7 +137,7 @@ test("listing and all profile planning work with no host, fixture directory, or 
   assert.ok(ci.some(item => item.id === "smoke-v2-invocation/review"))
 })
 
-test("only V2 host fixtures and profiles remain; permissions selects invocation and native edit stages", () => {
+test("only V2 host fixtures and profiles remain; permissions selects invocation, native edit and project migration", () => {
   assert.deepEqual(Object.keys(runtimeProfiles).sort(), ["ci", "v2-acceptance", "v2-permissions"])
   for (const name of ["ci-v1", "f34", "w6-affected", "w6-extended"]) assert.throws(() => profilePlan(name), /Unknown runtime profile/)
   for (const name of ["smoke.mjs", "smoke-permissions.mjs", "audit-usage-history.mjs"]) assert.throws(() => runtimePlan(name), /Unknown runnable fixture/)
@@ -146,5 +146,26 @@ test("only V2 host fixtures and profiles remain; permissions selects invocation 
     assert.equal(entry.hostMajor, 2)
   }
   assert.deepEqual(profilePlan("v2-permissions").map(item => item.id), ["smoke-v2-invocation/default", "smoke-v2-invocation/review",
-    "smoke-v2-review/normal-edit", "smoke-v2-review/normal-directory-edit"])
+    "smoke-v2-review/normal-edit", "smoke-v2-review/normal-directory-edit", "smoke-v2-review/normal-project-transition"])
+})
+
+test("project transition is one exact installed production invocation in each relevant profile without larger budgets", () => {
+  const selected = runtimePlan("smoke-v2-review.mjs", ["normal-project-transition"])
+  assert.equal(selected.classification, "production-host")
+  assert.deepEqual(selected.args, ["normal-project-transition"])
+  assert.equal(selected.hosts, 1)
+  assert.equal(selected.timeoutMs, runtimePlan("smoke-v2-review.mjs", ["normal"]).timeoutMs)
+  for (const prerequisite of ["git", "bundle", "node-sqlite"]) assert.ok(selected.requires.includes(prerequisite))
+  for (const profile of ["ci", "v2-acceptance", "v2-permissions"])
+    assert.equal(profilePlan(profile).filter(item => item.id === selected.id).length, 1, profile)
+})
+
+test("visible evidence timeout has one exact production invocation without synthetic flags or a larger host budget", () => {
+  const selected = runtimePlan("smoke-v2-review.mjs", ["advisory-evidence-timeout"])
+  assert.equal(selected.classification, "production-host")
+  assert.deepEqual(selected.args, ["advisory-evidence-timeout"])
+  assert.equal(selected.timeoutMs, runtimePlan("smoke-v2-review.mjs", ["advisory"]).timeoutMs)
+  assert.ok(selected.requires.includes("bundle"))
+  for (const profile of ["ci", "v2-acceptance"])
+    assert.equal(profilePlan(profile).filter(item => item.id === selected.id).length, 1, profile)
 })

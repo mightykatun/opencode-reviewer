@@ -11,16 +11,31 @@ export function smokeEnvironment(directory, parent = process.env) {
     XDG_DATA_HOME: path.join(directory, "data"), XDG_STATE_HOME: path.join(directory, "state"), XDG_CACHE_HOME: path.join(directory, "cache") }
 }
 
-/** Git setup shares the fixture namespace, never the caller's Git overrides. */
-export function smokeGitInit(directory, project) {
+function fixtureGitEnvironment(directory, project) {
   if (!path.isAbsolute(directory) || !path.isAbsolute(project)) throw new Error("Fixture Git paths must be absolute")
   const relative = path.relative(directory, project)
   if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
     throw new Error("Fixture Git project must be inside its private namespace")
+  return { ...smokeEnvironment(directory), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TEMPLATE_DIR: "",
+    GIT_CEILING_DIRECTORIES: directory }
+}
+
+/** Git setup shares the fixture namespace, never the caller's Git overrides. */
+export function smokeGitInit(directory, project) {
   execFileSync("git", ["init", "--quiet", project], {
-    env: { ...smokeEnvironment(directory), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TEMPLATE_DIR: "" },
+    env: fixtureGitEnvironment(directory, project),
     timeout: 10000, killSignal: "SIGKILL",
   })
+}
+
+/** Bounded fixture-owned commits and metadata reads, with no inherited Git configuration. */
+export function smokeGit(directory, project, args) {
+  const env = fixtureGitEnvironment(directory, project)
+  if (!Array.isArray(args) || !args.length || args.length > 128
+    || args.some(arg => typeof arg !== "string" || arg.includes("\0") || arg.length > 16384))
+    throw new Error("Fixture Git arguments must be a bounded string array")
+  return execFileSync("git", args, { cwd: project, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    timeout: 10000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 })
 }
 
 const tmux = (socket, args) => execFileSync("tmux", ["-S", socket, "-f", "/dev/null", ...args], {

@@ -1,5 +1,6 @@
 // Installed five-file production archive: actual controller, UI and reviewer.
 // Scenarios: advisory (nonstream), advisory-history-once/always/reject (Unsafe native decisions),
+// advisory-evidence-timeout (actual pre-model deadline failure remains visible and manual),
 // normal (SSE), fast (held SSE preview/remainder),
 // normal-mouse-off, normal-cancel, normal-descendant, fast-descendant,
 // normal-hide, normal-dialog, normal-resize, fast-dialog, normal-hidden-complete,
@@ -11,6 +12,7 @@
 // normal-edit / normal-directory-edit (one native write; distinct directory/edit stages).
 // normal-skill / fast-skill (registered main instructions and actual native skill loading).
 // normal-tool / fast-tool (real local MCP server, shared registered-tool review).
+// normal-project-transition (nongit to committed Git identity with the original companion still loaded).
 // Build first. Do not execute a host until the main session grants approval.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
@@ -22,7 +24,7 @@ import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { connectionProbe } from "./smoke-connection.mjs"
-import { smokeEnvironment, smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
+import { smokeEnvironment, smokeGitInit, smokeGit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 import { activatePalette } from "./smoke-ui.mjs"
 import { readProductionHistory, assertWriteInspection, assertWriteEvidence, assertEvidenceRequest,
@@ -142,7 +144,7 @@ async function monitorSetup(ctx) {
       abort.signal.throwIfAborted()
       if (command && command.sequence > memory.sequence) {
         const sequence = command.sequence
-        const readonly = ["status", "pending", "inspect", "message", "runtime-ready"].includes(command.type)
+         const readonly = ["status", "pending", "inspect", "message", "runtime-ready", "project-metadata"].includes(command.type)
           || (command.type === "keymap" && !command.dispatch)
         if (!readonly) update(draft => { draft.sequence = sequence })
         record.control = { sequence, type: command.type, state: "started" }
@@ -152,7 +154,18 @@ async function monitorSetup(ctx) {
           try { value.handshake = await rpc.handshake(location, options()) }
           catch (error) { value.failure = JSON.parse(JSON.stringify(error)) }
         }
-        else if (command.type === "connection-probe") {
+         else if (command.type === "project-metadata") {
+           assert.equal(fixture.projectTransition, true)
+           // Resolving a distinct, genuine location discovers the new repository
+           // without reloading the original location or its companion. Native
+           // worktree resolution owns any session project adoption.
+           const discovered = await ctx.client.location.get({ location: { directory: fixture.project } }, options())
+           const session = await ctx.client.session.get({ sessionID: command.sessionID }, options())
+           const projects = await ctx.client.project.list({}, options())
+           const worktrees = await ctx.client.worktree.list({ projectID: session.projectID }, options())
+           value = { discovered, session, projects, worktrees, handshake: await rpc.handshake(location, options()) }
+         }
+         else if (command.type === "connection-probe") {
           value = await ctx.client.session.create({ title: "Review connection probe", location,
             model: { providerID: "fixture", id: "fixture" } }, probeOptions(command))
         } else if (command.type === "remove-probe") {
@@ -206,8 +219,9 @@ async function monitorSetup(ctx) {
          else if (command.type === "keymap") {
             // Native IDs checked against stock 2.0.26's session-frame.tsx,
             // config/keybind.ts and command-palette.tsx, plus the V2 keybind docs.
-            assert.ok(["reviewer.history", "reviewer.lifetime", "session.sidebar.toggle", "command.palette.show"].includes(command.id),
-              "Only public production browsing or native presentation commands")
+            assert.ok(["reviewer.history", "reviewer.lifetime", "session.sidebar.toggle", "command.palette.show",
+              ...(fixture.projectTransition ? ["reviewer.disable", "reviewer.enable"] : [])].includes(command.id),
+              "Only public production browsing, fixture-scoped mode or native presentation commands")
            const registered = ctx.keymap.commands().find(item => item.id === command.id)
            const enabled = !!registered && (typeof registered.enabled === "function" ? registered.enabled() : registered.enabled !== false)
             value = { id: command.id, title: registered?.title, registered: !!registered, enabled, mode: ctx.keymap.mode.current() }
@@ -394,7 +408,10 @@ const registeredTool = ["normal-tool", "fast-tool"].includes(scenario)
 const skillCase = registeredTool || ["normal-skill", "fast-skill"].includes(scenario)
 const directoryEditCase = scenario === "normal-directory-edit"
 const notificationCase = scenario === "fast-notifications", savedCase = automatic && scenario !== "normal-cancel"
-const requestCount = coverCase || directoryEditCase ? 2 : 1
+const projectTransition = scenario === "normal-project-transition"
+const evidenceTimeout = scenario === "advisory-evidence-timeout"
+const requestCount = projectTransition ? 4 : coverCase || directoryEditCase ? 2 : 1
+const expectedReviewPOSTs = evidenceTimeout ? 0 : requestCount
 const nativeCallCount = editCase ? 1 : requestCount
 const negative = scenario === "normal-cancel"
 const descendant = scenario.endsWith("-descendant")
@@ -474,6 +491,7 @@ const publishers = new Map(), calls = [], errors = [], negativeWindows = []
 let version, modelServer, mainResponse, reviewResponse, sessionID, childSession, request, inspection, handshake, sequence = 0
 let reviewPOSTs = 0, reviewCompleted = false, allowWrites = false, manualDecision = false
 let allowedReplies = 1, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, notificationSequence = 0
+let projectTransitionEvidence, currentProject
 const requests = [], inspections = [], reviewerTransactions = []
 const editStages = []
 const markerLine = "V2_REVIEW_EXECUTED\n"
@@ -494,16 +512,17 @@ const executed = () => readFile(editCase ? editTarget : path.join(inputs, "execu
 const observations = async () => {
   const record = await readObservation(monitorPath, { optional: true })
   assert.deepEqual(errors, [])
-   assert.ok(reviewPOSTs <= requestCount, "One production reviewer POST per native request, no correction or transport retry")
+   assert.ok(reviewPOSTs <= expectedReviewPOSTs, "Only expected production reviewer POSTs, no correction or transport retry")
   if (record) {
     assert.deepEqual(record.errors, [])
       assert.ok(record.asked.length <= requestCount, "Only expected native operation permissions")
       assert.ok(record.replied.length <= (allowWrites || manualDecision ? allowedReplies : 0), "Only the admitted automatic path or explicit native keyboard decision may resolve a request")
      for (const reply of record.replied) {
        assert.equal(reply.reply, manualHistoryCase ? manualReply : "once")
-      assert.equal(reply.sessionID, sessionID)
+       assert.equal(reply.sessionID, record.asked.find(asked => asked.id === reply.requestID)?.sessionID)
+       if (!projectTransition) assert.equal(reply.sessionID, sessionID)
        assert.ok(record.asked.some(asked => asked.id === reply.requestID), "Reply belongs to an actual observed native request")
-        if (!coverCase && !directoryEditCase) assert.equal(reply.requestID, request.id)
+         if (!coverCase && !directoryEditCase && !projectTransition) assert.equal(reply.requestID, request.id)
         assert.equal(record.replied.filter(item => item.requestID === reply.requestID).length, 1, "Exact once-only native reply per permission")
     }
   }
@@ -547,11 +566,11 @@ const command = async (input, timeout = 60000) => {
   return reply.value
 }
 const negativeWindow = async (label, expectedPending, expectedReplies, expectedExecution, expectedReviewPOSTs,
-  durationMs = 1500, check = () => {}) => {
+  durationMs = 1500, check = () => {}, pendingSessionID = sessionID) => {
   const start = performance.now(), end = start + durationMs
   let samples = 0
   do {
-    const pending = await command({ type: "pending", sessionID })
+    const pending = await command({ type: "pending", sessionID: pendingSessionID })
     assert.deepEqual(pending, expectedPending, "Complete raw native pending data remains unchanged")
     const record = await observations()
     assert.deepEqual(record.replied, expectedReplies, "No new permission write in negative window")
@@ -871,11 +890,14 @@ const limits = [
      "One installed default archive with separate server companion and global CLI configuration. The independent monitor never imports production code or replies to permissions.",
    `One standalone Linux OpenCode V2 verification host, ${nativeCallCount} direct ${registeredTool ? "local MCP" : skillCase ? "native skill" : editCase ? "native write" : "native shell"} call(s), ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal, disconnect or tab-switch acceptance.`,
   "Mouse capture is explicitly configured only by the isolated fixture, never forced by production. UI changes use real native commands/navigation, keyboard choices or actual tmux resize; no synthesized paint, modes, hits or geometry. Individual cases do not imply full UI-matrix acceptance.",
-  "Descendant cases navigate a real child while a root request is pending; they do not exercise descendant-owned native queue ordering. No disabled kinds or uncertain writes.",
-    registeredTool ? "One real local MCP request advertised directly with a public Code Mode option, a scoped registered definition (normal omits the oversized description and reports the reason), one production once reply, actual MCP result continuation, saved tool category and confirmed approval totals. No ambiguous nested call, remote implementation inspection or live-provider acceptance."
+  projectTransition ? "The transition includes a real descendant-owned shell request in the root native queue. A distinct public location read discovers the committed repository and lets native worktree resolution adopt existing sessions; the original companion must retain its exact handshake and epoch. No fabricated events, location reload, database edits, remote changes or uncertain writes. Markerless startup IDs are observed, not assumed to be global on every V2 release."
+    : "Descendant cases navigate a real child while a root request is pending; they do not exercise descendant-owned native queue ordering. No disabled kinds or uncertain writes.",
+     evidenceTimeout ? "A genuine native shell permission with a one-millisecond production evidence deadline. Actual terminal captures must show Analysis unavailable and timed out while the native request stays pending, with no reviewer POST, reply, execution or saved report. No injected transport errors, protocol changes, missing-linkage substitution or model latency acceptance."
+     : registeredTool ? "One real local MCP request advertised directly with a public Code Mode option, a scoped registered definition (normal omits the oversized description and reports the reason), one production once reply, actual MCP result continuation, saved tool category and confirmed approval totals. No ambiguous nested call, remote implementation inspection or live-provider acceptance."
     : skillCase ? "One direct native skill request with full scoped registry main instructions, an unchanged selected definition, one production once reply and actual native tool-result loading. Normal countdown or fast preview/remainder is observed, and read-only SQLite verifies the saved skill category, confirmed approval and usage totals. No supporting-file inspection, catalog-mutation guarantee, ambiguous nested call, live-provider judgment or multi-client acceptance."
       : editCase ? "One actual native write, exact direct source linkage and pending native diff. Outside-project access, when selected, automatically resumes that same write into a distinct edit permission. Each stage holds the real reviewer response, proves no mutation, paints a full normal countdown and receives one production once reply. Read-only SQLite proves per-stage accepted reports, qualifying resolutions, categories and both aggregate scopes. Production history opens through painted palette activation. No native edit/patch variant, formatter, descendant-owned queue, notification, multi-client or live-provider judgment acceptance."
-      : routeWait ? "A started normal countdown survives native home, a public plugin dashboard and an unrelated session route, with no writes past its original deadline. Returning to its root resumes once without a new delay. Saved report and aggregates are verified."
+       : projectTransition ? "Four genuine native shell permissions: nongit root, migrated root, migrated descendant and root after local disable/re-enable. Each review uses captured source linkage and the current registered project metadata. Held reviewer responses and disabled-state observation windows prove no execution; exact native once replies, completed tool results and worker-saved reports prove continuation. No claim that filesystem Git changes alone trigger immediate host discovery."
+       : routeWait ? "A started normal countdown survives native home, a public plugin dashboard and an unrelated session route, with no writes past its original deadline. Returning to its root resumes once without a new delay. Saved report and aggregates are verified."
       : decisionCase ? "Actual Right/Left native keyboard input selects Always then Once. Automatic approval waits without cancellation while Always is selected, then resumes with the original delay or fast preview semantics. No persistent native grant is submitted; saved automatic report is verified. Rejection editing is separately source-tested, not host-accepted here."
       : dialogCase ? "Stock command.palette.show owns a real native modal. Normal and fast automatic replies proceed underneath it without closing it; final report and usage are verified in SQLite. No other modal-family acceptance."
       : visibilityLoss ? "One actual normal countdown continues through native sidebar hide or a real 160x8 tmux window. A single native once reply and saved report occur without restoring presentation first. No other geometry-family acceptance."
@@ -891,7 +913,9 @@ try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
   assertV2HostVersion(version)
   await Promise.all([inputs, path.dirname(cliPath)].map(directory => mkdir(directory, { recursive: true })))
-  smokeGitInit(temp, project)
+   if (!projectTransition) smokeGitInit(temp, project)
+   else assert.throws(() => smokeGit(temp, initial, ["rev-parse", "--show-toplevel"]),
+     "Transition starts outside every Git repository")
   await writeFile(path.join(inputs, "fixture.py"), script)
   if (editCase) {
     await mkdir(path.dirname(editTarget), { recursive: true })
@@ -927,9 +951,9 @@ try {
       for await (const chunk of req) { text += chunk; assert.ok(text.length < 8 * 1024 * 1024) }
       const body = JSON.parse(text)
       calls.push({ url: req.url, body })
-      if (req.url === "/review/chat/completions") {
-        reviewPOSTs++
-         assert.ok(reviewPOSTs <= requestCount)
+       if (req.url === "/review/chat/completions") {
+         reviewPOSTs++
+          assert.ok(reviewPOSTs <= expectedReviewPOSTs, "Evidence timeout must fail before any reviewer model POST")
         assert.equal(body.model, "v2-production-reviewer")
         assert.equal(body.stream, streaming)
         assert.equal(body.messages.length, 2)
@@ -971,7 +995,9 @@ try {
           assert.equal(evidence.cwd, inputs)
           assert.deepEqual(evidence.execution, { tool: "shell", requestedWorkdir: "inputs", canonicalCwd: inputs,
             cwdSource: "tool.workdir relative to invocation.location.directory" })
-          assert.equal(evidence.project.directory, project)
+           if (projectTransition) assert.deepEqual(evidence.project, currentProject,
+             "Reviewer POST uses the exact currently registered project, not the startup invocation project")
+           else assert.equal(evidence.project.directory, project)
           assert.equal(evidence.permission.action, "shell")
           assert.deepEqual(evidence.permission.resources, [toolCall.input.command])
           assert.equal(evidence.permission.type, undefined, "No fabricated native permission type")
@@ -990,7 +1016,7 @@ try {
       assert.ok(body.tools?.some(tool => tool.function.name === "execute"), "Native Code Mode search/execution remains installed")
       const mainCalls = calls.filter(call => call.url === req.url)
         assert.ok(mainCalls.length <= nativeCallCount * 2, "Only genuine prompts and tool-result continuations")
-       if (mainCalls.length === 1 || coverCase && mainCalls.length === 3) {
+        if (mainCalls.length === 1 || coverCase && mainCalls.length === 3 || projectTransition && mainCalls.length % 2 === 1) {
           assert.ok(body.tools.some(tool => tool.function.name === toolCall.name), "Use the actually advertised direct native tool")
           if (skillCase) {
             assert.ok(body.messages.some(message => typeof message.content === "string" && message.content.includes(prompt)))
@@ -1001,7 +1027,7 @@ try {
             assert.ok(definition.parameters.required.includes("path"))
             assert.ok(definition.parameters.required.includes("content"))
           }
-         if (mainCalls.length === 3) {
+          if (coverCase && mainCalls.length === 3) {
            const oldResults = body.messages.filter(message => message.role === "tool")
            assert.equal(oldResults.length, 1)
            assert.equal(oldResults[0].tool_call_id, toolCall.id)
@@ -1012,7 +1038,8 @@ try {
       }
       assert.ok(allowWrites, "Advisory must not resume native execution")
       const toolResults = body.messages.filter(message => message.role === "tool")
-       assert.equal(toolResults.length, coverCase ? mainCalls.length / 2 : 1)
+        assert.equal(toolResults.length, projectTransition
+          ? requests.filter(item => item.sessionID === request.sessionID).length : coverCase ? mainCalls.length / 2 : 1)
        const latestResult = toolResults.at(-1)
        assert.equal(latestResult.tool_call_id, toolCall.id)
           if (skillCase) {
@@ -1037,7 +1064,7 @@ try {
   })
   await new Promise(resolve => modelServer.listen(0, "127.0.0.1", resolve))
   const origin = `http://127.0.0.1:${modelServer.address().port}`
-  const fixture = { initial, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase, registeredTool }
+   const fixture = { initial, project, projectTransition, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase, registeredTool }
   const observer = path.join(temp, "observer"), monitor = path.join(temp, "monitor")
   const reviewer = path.join(temp, "reviewer")
   await mkdir(reviewer)
@@ -1091,7 +1118,7 @@ createInterface({input:process.stdin}).on('line',line=>{
        stream: streaming, autoApprove: automatic, fastMode: fast, autoApproveDelaySeconds: approvalDelaySeconds,
         ...(directoryEditCase ? { reviewExternalDirectories: true } : {}),
         ...(registeredTool ? { reviewTools: true, maxEvidenceBytes: fast ? 131072 : 2048 } : {}),
-       timeoutMs: 120000, notify: notificationCase, notifySound: false, staleReminderSeconds: 0,
+       timeoutMs: evidenceTimeout ? 1 : 120000, notify: notificationCase, notifySound: false, staleReminderSeconds: 0,
        ...(notificationCase ? { notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } : {}) } }, monitor] }
   const startupCli = { ...cli, plugins: ["-opencode-reviewer", monitor] }
   await publish(path.join(project, "opencode.json"), config); await publish(cliPath, startupCli)
@@ -1123,7 +1150,8 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.equal(handshake.protocol, 1)
   assert.equal(handshake.hostVersion, version.slice("opencode v".length))
   assert.deepEqual(handshake.location, { directory: initial })
-  assert.equal(handshake.project.directory, project)
+   assert.equal(handshake.project.directory, projectTransition ? initial : project)
+   currentProject = handshake.project
   assert.match(handshake.epoch, /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i)
   const session = await command({ type: "start", text: prompt })
   sessionID = session.id
@@ -1348,9 +1376,27 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.equal(nativeTool[0].state.status, "running")
   assert.deepEqual(nativeTool[0].state.input, toolCall.input)
   assert.deepEqual(inspection.captured.request, request)
-  assert.deepEqual(inspection.captured.invocation, { sessionID, assistantID: request.source.messageID, callID: toolCall.id,
-    tool: "shell", input: toolCall.input, location: handshake.location, project: handshake.project, epoch: handshake.epoch })
-  await until("production reviewer POST", () => reviewResponse)
+   assert.deepEqual(inspection.captured.invocation, { sessionID, assistantID: request.source.messageID, callID: toolCall.id,
+     tool: "shell", input: toolCall.input, location: handshake.location, project: handshake.project, epoch: handshake.epoch })
+   if (evidenceTimeout) {
+     const unavailable = (record, screen) => {
+       assert.deepEqual(record.route, { type: "session", sessionID })
+       assert.match(screen, /Analysis unavailable/)
+       assert.match(screen, /timed out/)
+       assert.doesNotMatch(screen, /Allowed in|Auto approved/)
+       assert.equal(reviewResponse, undefined)
+       assert.equal(reviewCompleted, false)
+       assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 1)
+     }
+     await until("actual terminal renders the pre-model evidence timeout", record => {
+       try { unavailable(record, capture()); return true } catch { return false }
+     })
+     await saveCapture("evidence-timeout-visible-manual")
+     await negativeWindow("visible evidence timeout stays pending and manual without a reviewer POST", [request], [], null, 0, 1500,
+       async (record, screen) => { unavailable(record, screen); await noSavedBody() })
+     assert.deepEqual(await command({ type: "pending", sessionID }), [request], "Leave the actual native permission pending for manual handling")
+   } else {
+   await until("production reviewer POST", () => reviewResponse)
   const payload = JSON.parse(calls.find(call => call.url === "/review/chat/completions").body.messages[1].content)
   const { metadataStatus, source, ...permission } = payload.permission
   assert.ok(metadataStatus)
@@ -1641,6 +1687,131 @@ createInterface({input:process.stdin}).on('line',line=>{
     await until("production report cleared after completion", () => !capture().includes("Permission analysis"))
     await negativeWindow("resolved automatic request stays once-only", [], (await observations()).replied, "V2_REVIEW_EXECUTED\n", 1)
   }
+   if (projectTransition) {
+     const baseline = await until("nongit review saved before Git initialization", savedHistory, 20000)
+     projectTransitionEvidence = { startup: handshake, baseline, stages: [] }
+     // Only fixture-owned Git files change. Never reload the original location:
+     // its server companion must continue capturing the startup project identity.
+     smokeGitInit(temp, project)
+     const git = args => smokeGit(temp, project, args).trim()
+     git(["add", "--", "invocation/inputs/fixture.py"])
+     git(["-c", "user.name=Reviewer Fixture", "-c", "user.email=reviewer@example.invalid", "-c", "core.hooksPath=/dev/null",
+       "commit", "--quiet", "--no-gpg-sign", "-m", "Initial fixture commit"])
+     const commit = git(["rev-parse", "HEAD"])
+     assert.deepEqual(git(["rev-list", "--max-parents=0", "HEAD"]).split("\n"), [commit])
+     assert.notEqual(commit, handshake.project.id)
+     const metadata = await until("native session adoption of the committed Git project", async () => {
+       const value = await command({ type: "project-metadata", sessionID })
+       assert.deepEqual(value.handshake, handshake, "Original companion remains loaded with its startup project and exact epoch")
+       return value.session.projectID === commit && value
+     })
+     assert.deepEqual(metadata.discovered, { directory: project, project: { id: commit, directory: project, canonical: project } })
+     const registered = metadata.projects.filter(item => item.id === commit)
+     assert.equal(registered.length, 1, "Exact migrated ID exists in the connected client's registered project list")
+     assert.equal(registered[0].canonical, project)
+     assert.equal(registered[0].vcs, "git")
+     assert.ok(metadata.worktrees.some(item => item.directory === project), "Registered worktree contains the unchanged invocation location")
+     assert.equal(metadata.session.location.directory, initial)
+     currentProject = { id: registered[0].id, directory: project, canonical: registered[0].canonical }
+     projectTransitionEvidence.migration = { commit, metadata, currentProject }
+     await publish(path.join(artifacts, "project-transition.json"), projectTransitionEvidence)
+     childSession = await command({ type: "child", sessionID })
+     assert.equal(childSession.parentID, sessionID)
+     assert.equal(childSession.projectID, commit)
+     assert.equal(childSession.location.directory, initial)
+     for (const [offset, owner] of [sessionID, childSession.id, sessionID].entries()) {
+       const count = offset + 2, previousReplies = (await observations()).replied
+       if (offset === 2) {
+         const disabled = await command({ type: "keymap", id: "reviewer.disable", dispatch: true })
+         assert.equal(disabled.enabled, true)
+         await until("native confirmation of saved conversation disable", () => capture().includes("Reviewer disabled for this conversation."))
+       }
+       mainResponse = undefined; reviewResponse = undefined; reviewCompleted = false
+       await command({ type: "prompt", sessionID: owner, text: prompt })
+       await until("next real model request after project adoption", () => mainResponse
+         && calls.filter(call => call.url === "/v1/chat/completions").length === count * 2 - 1)
+       releaseNativeCall()
+       request = await until("next genuine migrated permission", record => record?.asked[count - 1])
+       requests.push(request)
+       assert.equal(request.sessionID, owner)
+       assert.equal(request.action, "shell")
+       assert.deepEqual(request.resources, [toolCall.input.command])
+       assert.equal(request.source.type, "tool")
+       assert.equal(request.source.id, toolCall.id)
+       assert.equal(new Set(requests.map(item => item.id)).size, count)
+       inspection = await command({ type: "inspect", sessionID: owner, requestID: request.id, epoch: handshake.epoch })
+       inspections.push(inspection)
+       assert.deepEqual(inspection.request, request)
+       assert.equal(inspection.session.projectID, commit, "Concrete mismatch with the still-loaded companion's startup project")
+       assert.equal(inspection.session.location.directory, initial)
+       assert.equal(inspection.session.parentID, owner === sessionID ? undefined : sessionID)
+       assert.equal(inspection.native.root, sessionID)
+       assert.ok(inspection.native.family.includes(owner))
+       assert.deepEqual(inspection.captured.request, request)
+       assert.deepEqual(inspection.captured.invocation, { sessionID: owner, assistantID: request.source.messageID, callID: toolCall.id,
+         tool: "shell", input: toolCall.input, location: handshake.location, project: handshake.project, epoch: handshake.epoch })
+       const running = inspection.message.content.filter(item => item.type === "tool" && item.id === toolCall.id)
+       assert.equal(running.length, 1)
+       assert.equal(running[0].state.status, "running")
+       assert.deepEqual(running[0].state.input, toolCall.input)
+       if (offset === 2) {
+         await negativeWindow("disabled migrated conversation holds its real pending request without review", [request], previousReplies,
+           markerLine.repeat(count - 1), count - 1, 1500, () => {}, owner)
+         const enabled = await command({ type: "keymap", id: "reviewer.enable", dispatch: true })
+         assert.equal(enabled.enabled, true)
+       }
+       await until("production reviewer POST despite the actual startup/session project mismatch", () => reviewPOSTs === count && reviewResponse)
+       const evidence = JSON.parse(calls.filter(call => call.url === "/review/chat/completions")[count - 1].body.messages[1].content)
+       assert.deepEqual(evidence.project, currentProject)
+       assert.equal(evidence.conversation.current.id, owner)
+       assert.equal(evidence.conversation.current.projectID, commit)
+       assert.equal(evidence.conversation.root.id, sessionID)
+       assert.equal(evidence.conversation.root.projectID, commit)
+       assert.equal(evidence.permission.sessionID, owner)
+       assert.equal(evidence.permission.id, request.id)
+       assert.equal(evidence.permission.source.assistantID, request.source.messageID)
+       assert.equal(evidence.permission.source.id, toolCall.id)
+       assert.ok(evidence.limitations.some(note => /project/i.test(note)), "Project reconciliation is disclosed factually")
+       await negativeWindow("migrated review remains held with no approval or execution", [request], previousReplies,
+         markerLine.repeat(count - 1), count, 1500, () => {}, owner)
+       finishReview()
+       allowedReplies = count
+       await until("exact migrated production once reply and execution", async record => record?.replied.length === count
+         && await executed() === markerLine.repeat(count))
+       await until("actual migrated native tool-result continuation", () => calls.filter(call => call.url === "/v1/chat/completions").length === count * 2)
+       const completed = await command({ type: "message", sessionID: owner, messageID: request.source.messageID })
+       const result = completed.content.filter(item => item.type === "tool" && item.id === toolCall.id)
+       assert.equal(result.length, 1)
+       assert.equal(result[0].state.status, "completed")
+       assert.match(JSON.stringify(result[0].state), /V2_REVIEW_EXECUTED/)
+       historyEvidence = await until("all migrated reports saved with confirmed approvals", async () => {
+         const value = await readHistory()
+         if (value?.rows.length !== count || value.approvals.filter(item => item.state === "confirmed").length !== count
+           || value.reviews.filter(item => item.accepted).length !== count || value.attempts.filter(item => item.finalized).length !== count) return false
+         assert.equal(value.payloadCount, count)
+         for (const pending of requests) {
+           const rows = value.rows.filter(row => JSON.parse(row.context).permission === pending.id)
+           assert.equal(rows.length, 1)
+           const context = JSON.parse(rows[0].context)
+           assert.equal(context.session, pending.sessionID)
+           assert.equal(context.root, sessionID)
+           assert.equal(rows[0].outcome, "auto")
+           assert.equal(JSON.parse(rows[0].body).desc, description)
+         }
+         const totals = [JSON.parse(value.meta.totals), ...value.conversations.map(item => JSON.parse(item.totals))]
+         if (totals.some(total => total.activity.reviews !== count || total.activity.autoApproved !== count)) return false
+         return value
+       }, 20000)
+       const status = await command({ type: "status" })
+       assert.deepEqual(status.handshake, handshake, "Disable/re-enable and descendant work never replace the companion")
+       assert.equal(status.plugins.data.find(item => item.id === "opencode-reviewer")?.state.status, "active")
+       projectTransitionEvidence.stages.push({ owner, request, inspection, evidence, completed, handshake: status.handshake })
+       await publish(path.join(artifacts, "project-transition.json"), projectTransitionEvidence)
+     }
+     assert.deepEqual((await observations()).replied.map(item => item.requestID), requests.map(item => item.id))
+     await negativeWindow("migrated root and descendant remain once-only after re-enable", [], (await observations()).replied,
+       markerLine.repeat(requestCount), requestCount)
+   }
    if (coverCase) {
      historyEvidence = await until("first actual saved automatic report and aggregates", savedHistory, 20000)
      coverEvidence = { first: historyEvidence, phases: [] }
@@ -1944,7 +2115,7 @@ createInterface({input:process.stdin}).on('line',line=>{
           })
       }
     }
-   if (savedCase && !coverCase && !historyCase && !notificationCase && !editCase && !skillCase) {
+   if (savedCase && !coverCase && !historyCase && !notificationCase && !editCase && !skillCase && !projectTransition) {
      historyEvidence = await until("background automatic report and aggregates save normally", savedHistory, 20000)
      await publish(path.join(artifacts, "background-saved-history.json"), historyEvidence)
    }
@@ -2146,11 +2317,12 @@ createInterface({input:process.stdin}).on('line',line=>{
      assert.equal(saved.approvals.length, 0, "Interruption is not approval")
      assert.equal(JSON.parse(saved.meta.totals).activity.autoApproved, 0)
      await negativeWindow("interruption alone never saves a completed report after reconciliation", [], [], null, 1, 7000, noSavedBody)
-     await publish(path.join(artifacts, "advisory-unsaved-history.json"), saved)
-  }
+      await publish(path.join(artifacts, "advisory-unsaved-history.json"), saved)
    }
-  assert.equal(reviewCompleted, true)
-   assert.equal(reviewPOSTs, requestCount)
+   }
+    }
+  assert.equal(reviewCompleted, !evidenceTimeout)
+   assert.equal(reviewPOSTs, expectedReviewPOSTs)
    assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, allowWrites ? nativeCallCount * 2 : 1)
   const final = await observations()
    assert.equal(final.asked.length, requestCount)
@@ -2177,14 +2349,14 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.deepEqual(await readObservation(monitorPath), cleaned, "No observer callback after final close")
   if (notificationCase) assert.deepEqual(await notificationObservations(), notificationEvidence.cleaned, "No backend publication after final close")
   await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, temp, handshake, inspection,
-        assessment, reviewCompleted, reviewPOSTs, calls, requests, inspections, childSession, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence,
+         assessment, reviewCompleted, reviewPOSTs, calls, requests, inspections, childSession, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, projectTransitionEvidence,
         ...(editCase ? { editStages, editTarget, beforeEdit, afterEdit } : {}), negativeWindows, observations: cleaned, execution: await executed(), limits })
   console.log(`PASS V2 installed production review ${scenario}: ${artifacts}`)
   console.log(`Isolated files: ${temp}`)
 } catch (error) {
   await saveCapture("failed").catch(() => {})
   await publish(path.join(artifacts, "failure.json"), { version, scenario, temp, error: String(error), stack: error.stack,
-       errors, handshake, inspection, request, requests, inspections, coverEvidence, presentationEvidence, calls, reviewPOSTs, reviewCompleted, negativeWindows, limits,
+        errors, handshake, inspection, request, requests, inspections, coverEvidence, presentationEvidence, projectTransitionEvidence, calls, reviewPOSTs, reviewCompleted, negativeWindows, limits,
     ...(editCase ? { editStages, editTarget, beforeEdit, afterEdit } : {}),
     notifications: notificationCase ? await readObservation(notificationPath, { optional: true }).catch(() => null) : undefined,
     observations: await readObservation(monitorPath, { optional: true }).catch(() => null) })
