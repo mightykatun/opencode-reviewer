@@ -216,6 +216,7 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
   const visible = () => rootRoute() && props.sidebarOwner()?.sessionID === props.rootSession() && !!props.sidebarGeometry()
   const rating = () => view().assessment?.safe ?? (view().status === "analyzing" ? view().progress?.preview?.safe : undefined)
   const report = () => view().assessment?.desc ?? (view().status === "analyzing" ? view().progress?.preview?.desc : undefined) ?? ""
+  const unavailable = () => view().status === "unavailable" || view().status === "unidentified"
   if (props.historyProbe) {
     const proof = new HostPanelPresentationProof()
     let paintedAssessment: View<HostRequest>["assessment"], readyAssessment: View<HostRequest>["assessment"]
@@ -287,14 +288,14 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
       <Show when={view().status === "analyzing" && rating() === undefined}>
         <HostReviewLoading context={context} retrying={view().progress?.phase === "retrying"} animations={props.animations} />
       </Show>
-      <Show when={view().status === "unavailable"}><text fg={context.theme.text.feedback.warning.base}><b>{uiText.review.unavailable}</b></text></Show>
+      <Show when={unavailable()}><text fg={context.theme.text.feedback.warning.base}><b>{uiText.review.unavailable}</b></text></Show>
     </box>
     <scrollbox ref={(value: ScrollBoxRenderable) => { scroll = value }} marginTop={1} flexGrow={1} minHeight={0}
       contentOptions={{ minHeight: 0 }} scrollbarOptions={{ trackOptions: {
         backgroundColor: context.theme.background.raised.base, foregroundColor: context.theme.scrollbar.base,
       } }}>
       <HostReviewDescription context={context} text={report()} streaming={view().status === "analyzing"} ref={value => { description = value }} />
-      <Show when={view().status === "unavailable"}><text fg={context.theme.text.base} width="100%" flexShrink={0}>
+      <Show when={unavailable()}><text fg={context.theme.text.base} width="100%" flexShrink={0}>
         {displayText(view().error ?? uiText.review.failed)}
       </text></Show>
       <Show when={view().assessment?.usage}>{usage => <>

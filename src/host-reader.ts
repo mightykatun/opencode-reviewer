@@ -7,11 +7,14 @@ import { withDeadline } from "./deadline.js"
 import { transportOwnership } from "./transport-ownership.js"
 import { readCompanion } from "./companion-read.js"
 import type { HostInvocation, HostRequestSnapshot, HostScope } from "./host-types.js"
+import { registeredInvocationProject } from "./host-project.js"
 
 export interface HostInvocationRead {
   snapshot: HostRequestSnapshot
   invocation: HostInvocation
   conversation: HostConversationContext
+  /** Current registered attribution, never a replacement captured identity. */
+  registeredProject?: HostInvocation["project"]
 }
 
 /** Bind the captured invocation to a durable direct call before any server
@@ -39,7 +42,10 @@ export async function preparePendingInvocation(client: OpenCodeClient, snapshot:
   if (!invocation) return
   const conversation = await loadHostConversationContext({ sessionID: request.sessionID, location: scope.location }, client, signal)
   signal.throwIfAborted()
-  return { snapshot, invocation, conversation }
+  const registeredProject = conversation.current.projectID === invocation.project.id ? undefined
+    : await registeredInvocationProject(client, invocation, conversation.current.projectID, signal)
+  signal.throwIfAborted()
+  return { snapshot, invocation, conversation, ...(registeredProject ? { registeredProject } : {}) }
 }
 
 /** Recheck native identity and the connected companion epoch once all reads and
@@ -54,6 +60,12 @@ export async function finalizePendingInvocation(client: OpenCodeClient, current:
   const final = snapshotRequest(await owned(client.permission.get({ sessionID: request.sessionID, requestID: request.id }, options)), scope)
   signal.throwIfAborted()
   if (!final || !sameRequest(snapshot, final)) return
+  if (current.registeredProject) {
+    const session = await owned(client.session.get({ sessionID: request.sessionID }, options))
+    signal.throwIfAborted()
+    if (session.id !== request.sessionID || session.location.directory !== scope.location.directory
+      || session.projectID !== current.registeredProject.id) return
+  }
   const handshake = readHandshake(await owned(client.rpc(companionRpc).handshake(scope.location, options)), scope.location)
   signal.throwIfAborted()
   if (handshake?.epoch !== scope.epoch) return

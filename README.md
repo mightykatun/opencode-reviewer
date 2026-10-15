@@ -140,6 +140,9 @@ The sidebar shows Safe, Unsafe, or Analysis unavailable. Explanations support
 Markdown and scrolling. If the sidebar is hidden, use OpenCode's Show sidebar
 command.
 
+Evidence lookup failures show Analysis unavailable and leave the native permission
+manual; they do not silently hide the error or start an approval.
+
 The reviewer panel appears only in the main conversation. Opening any subagent,
 including a nested one, hides the panel but does not stop normal or fast auto-approval
 within that conversation. A Safe report need not be displayed before approval.

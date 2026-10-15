@@ -103,7 +103,7 @@ function assertConversationScope(owned: HostInvocationRead): void {
   assertOperationScope(owned)
   const { conversation, invocation } = owned
   if (conversation.current.id !== invocation.sessionID || conversation.current.location.directory !== invocation.location.directory
-    || conversation.current.projectID !== invocation.project.id) throw new Error("Evidence conversation scope mismatch")
+    || conversation.current.projectID !== (owned.registeredProject ?? invocation.project).id) throw new Error("Evidence conversation scope mismatch")
 }
 
 function operationKind({ snapshot: { request }, invocation }: OperationRead) {
@@ -140,8 +140,11 @@ export function attachHostConversation(owned: HostInvocationRead, evidence: Host
   assertConversationScope(owned)
   if (!matchingOperationScope(owned, evidence)) throw new Error("Evidence operation or conversation scope mismatch")
   const { userPrompt, delegation, limitations, ...conversation } = owned.conversation
-  return { ...evidence, conversation, userPrompt, ...(delegation ? { delegation } : {}),
-    limitations: [...limitations, ...evidence.limitations, ...(!userPrompt ? ["User prompt unavailable."] : [])] }
+  return { ...evidence, ...(owned.registeredProject ? { project: owned.registeredProject } : {}),
+    conversation, userPrompt, ...(delegation ? { delegation } : {}),
+    limitations: [...limitations, ...evidence.limitations,
+      ...(owned.registeredProject ? ["Project metadata comes from the connected server's current registered project and checkout inventory; captured invocation identity and location are unchanged."] : []),
+      ...(!userPrompt ? ["User prompt unavailable."] : [])] }
 }
 
 function requiredText(input: JSONObject, key: string): string {

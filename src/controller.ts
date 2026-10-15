@@ -815,7 +815,7 @@ export function visibleReview<R extends RequestIdentity = HostRequest>(
     try { id = priority(sessionID, pending.map(view => view.request)) } catch { return }
     const retained = views.find(view => view.retained && conversationRoot(view.request.sessionID, getSession) === sessionID)
     const first = pending.find(view => view.request.id === id)
-    return retained ?? (first && first.status !== "unrelated" && first.status !== "identifying" && first.status !== "unidentified" && first.status !== "suspended" ? first : undefined)
+    return retained ?? (first && first.status !== "unrelated" && first.status !== "identifying" && first.status !== "suspended" ? first : undefined)
   }
 }
 

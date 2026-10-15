@@ -230,6 +230,14 @@ existing user directories.
   identity/companion epoch once after validation; standalone invocation reads also
   finalize. Strict host JSON copying shares bounded traversal with collector copies
   while retaining its descriptor/proxy policy and independent RPC component caps.
+  A session can acquire a Git project ID while the companion's captured setup
+  project stays `global`. `host-project.ts` resolves mismatched attribution using
+  only the connected server's registered project/checkout inventory. Keep that
+  attribution separate from the immutable invocation; never discover a tool-target
+  location or change its source, arguments, workspace, epoch or captured directory.
+  Missing/ambiguous/foreign inventory stays manual, and finalization rechecks the
+  exact session project after collection. Thrown evidence failures remain visible
+  as Analysis unavailable without model calls or permission writes.
 - `controller.ts` owns V2 request lifecycle, evaluation, cancellation and approval;
   `session-ancestry.ts` owns bounded metadata traversal and actual read settlement;
   review and history share a scope-pinned instance without sharing saved-mode admission.

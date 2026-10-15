@@ -125,7 +125,7 @@ test("deletion aborts all matching permissions without disturbing independent ro
   await settle(); assert.deepEqual(controller.views.map(v => v.request.id), ["survivor"])
 })
 
-for (const identified of [false, true]) test(`${identified ? "identified" : "unidentified"} failures block later display without fabricating a rating`, async t => {
+for (const identified of [false, true]) test(`${identified ? "identified" : "unidentified"} failures display their own error without fabricating a rating or showing a later request`, async t => {
   let identify!: () => void
   const controller = new Controller(async (req, _signal, callback) => {
     if (req.id === "first") { identify = callback; if (identified) callback(); throw Error("Unavailable") }
@@ -135,7 +135,7 @@ for (const identified of [false, true]) test(`${identified ? "identified" : "uni
   assert.equal(controller.views[0]?.status, identified ? "unavailable" : "unidentified")
   assert.equal(controller.views[0]?.assessment, undefined)
   const before = controller.views[0]; identify(); assert.equal(controller.views[0], before)
-  assert.equal(visibleReview(controller.views, "root", session, options.nativeFront)?.request.id, identified ? "first" : undefined)
+  assert.equal(visibleReview(controller.views, "root", session, options.nativeFront)?.request.id, "first")
   controller.replied("first"); assert.equal(visibleReview(controller.views, "root", session, options.nativeFront)?.request.id, "later")
 })
 
