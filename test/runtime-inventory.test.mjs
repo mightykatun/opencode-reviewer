@@ -21,6 +21,9 @@ export async function checkDiscovery(files, read) {
     assert.equal(new Set(entry.scenarios).size, entry.scenarios.length)
     assert.ok(entry.requires.length)
     assert.ok(entry.hosts <= 2)
+    for (const [scenario, hosts] of Object.entries(entry.scenarioHosts ?? {})) {
+      assert.ok(entry.scenarios.includes(scenario)); assert.ok(hosts >= 1 && hosts <= 2)
+    }
   }
 }
 
@@ -84,14 +87,19 @@ test("cold startup has an explicit production-host invocation with the normal li
   assert.ok(cold.requires.includes("bundle"))
 })
 
+test("actual network recovery reserves two supervised hosts without increasing other review host counts", () => {
+  assert.equal(runtimePlan("smoke-v2-review.mjs", ["normal-reconnect"]).hosts, 2)
+  assert.equal(runtimePlan("smoke-v2-review.mjs", ["normal"]).hosts, 1)
+})
+
 test("V2 acceptance includes each production review case exactly once and retains explicit synthetic classifications", () => {
   const cases = profilePlan("v2-acceptance")
-  assert.equal(cases.length, 45, "Includes long Code Mode session recovery and oversized source excerpts")
+  assert.equal(cases.length, 46, "Includes actual network disconnect recovery")
   assert.equal(cases.length, new Set(cases.map(value => value.id)).size)
   const reviews = cases.filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs")
   const expectedReviews = ["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant",
     "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
-     "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-project-transition", "normal-long-session", "normal-large-source"].sort()
+     "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-project-transition", "normal-long-session", "normal-large-source", "normal-reconnect"].sort()
   assert.deepEqual(reviews.map(value => value.scenario).sort(), expectedReviews)
   assert.deepEqual([...runtimeInventory["smoke-v2-review.mjs"].scenarios].sort(), expectedReviews)
   assert.ok(reviews.every(value => value.classification === "production-host"))

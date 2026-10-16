@@ -2,7 +2,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { CliRenderEvents } from "@opentui/core"
 import { createEffect, createMemo, createSignal, Show, untrack } from "solid-js"
 import path from "node:path"
-import { Controller, visibleReview, type View } from "./controller.js"
+import { Controller, visibleReview, type ControllerCheckpoint, type View } from "./controller.js"
 import { hostPermissionTransport } from "./host-permissions.js"
 import { hostQueueFront, hostQueueSnapshot, type HostQueueReader } from "./host-queue.js"
 import { refreshNativeFamily } from "./host-native-observations.js"
@@ -27,9 +27,40 @@ import { setupHostModeCommands } from "./host-mode-commands.js"
 import { SessionAncestry } from "./session-ancestry.js"
 import { TransportOwnership } from "./transport-ownership.js"
 import { initialConnectionEcho } from "./connection-marker.js"
+import { setupCliReconnect } from "./cli-reconnect.js"
+
+/** Own setup commands in a native component, where Keymap.Provider is available.
+ * A detached Solid root has no native providers; plugin-setup ownership alone
+ * would instead retain every old generation's commands until plugin reload. */
+export function setupHostRecovery(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle) {
+  const checkpoints = new Map<string, ControllerCheckpoint<HostRequest>>()
+  const checkpointKey = (location: { directory: string; workspaceID?: string }) =>
+    JSON.stringify([location.directory, location.workspaceID ?? null])
+  return setupCliReconnect(ctx, state, life, (context, next, child) => {
+    const layers: Parameters<Plugin.Context["keymap"]["layer"]>[0][] = []
+    let collecting = true
+    const keymap = new Proxy(context.keymap, { get: (target, key) => key === "layer"
+      ? (factory: (typeof layers)[number]) => { if (collecting) layers.push(factory); else target.layer(factory) }
+      : Reflect.get(target, key) })
+    const scoped = new Proxy(context, { get: (target, key) => key === "keymap" ? keymap : Reflect.get(target, key) })
+    const location = context.location ?? context.data.location.default()
+    const runtime = setupHostRuntime(scoped, next, child, checkpoints.get(checkpointKey(location)), true)
+    collecting = false
+    // This contributes no UI surface. Component disposal removes the layers,
+    // while the existing live/history app slot remains the only reviewer panel.
+    child.addCleanup(context.ui.slot({ append: "app", render: function registerCommands() {
+      for (const factory of layers) context.keymap.layer(factory)
+      return null
+    } }))
+    return runtime
+  }, runtime => {
+    if (runtime) checkpoints.set(checkpointKey(runtime.scope.location), runtime.controller.checkpoint())
+  })
+}
 
 /** One scope-pinned controller. A replaced companion never adopts old evidence. */
-export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle) {
+export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle,
+  checkpoint?: ControllerCheckpoint<HostRequest>, supervised = false) {
   const config = state.config, companion = state.companion
   if (!config || !companion) {
     const standalone = setupHostHistoryOnly(ctx, state, life)
@@ -136,7 +167,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       { onProgress, observation, pricing, onDiagnostics: state.dependencies.observer,
         observeEvidence: evidence => observation ? records.history.observation(request, evidence.kind, config, observation) : undefined })
   }, values => { setViews(values); notifications?.snapshot(controller.pendingViews) }, {
-    reviewOptions: config, modes, session: id => routes.get(id),
+    reviewOptions: config, modes, session: id => routes.get(id), checkpoint,
     approvalReady: (request, root) => hostApprovalReady(request, root, ctx.ui.router.current(), id => routes.get(id),
       () => nativeDecisionPending(ctx.renderer.root, ctx.theme.background.action.primary.focused)),
     nativeFront: root => front(root),
@@ -223,6 +254,10 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       // Startup has already admitted this exact public marker. The native data
       // bridge can deliver its initial echo after the controller is installed.
       if (initialConnectionEcho(state.connectionID, event.id)) return
+      // The supervisor checkpoints and aborts synchronously on this same event.
+      // Do not dispose entries first if the host calls general listeners before
+      // typed listeners. The composition itself is still never revived.
+      if (supervised) return
       // Native caches can follow a new connection while the captured client still
       // targets its original server. Never combine those generations for a write.
       disconnected = true

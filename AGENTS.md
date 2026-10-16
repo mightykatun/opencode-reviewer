@@ -19,7 +19,7 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  45-case production/foundation selection available in manual extended checks,
+  46-case production/foundation selection available in manual extended checks,
   including history, statistics, approval notifications and explicitly classified
   synthetic probes.
   `npm run test:runtime` selects `--profile v2-acceptance`, which currently selects
@@ -80,6 +80,7 @@ All commands below use the installed five-file archive and production runtime.
 | Area | Command |
 | --- | --- |
 | Initial connection / delayed native marker echo | `node scripts/test-runtime.mjs smoke-v2-lifecycle.mjs cold-startup` |
+| Real network disconnect / fresh live-review admission | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-reconnect` |
 | Native skill loading / fast skill approval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-skill` / `fast-skill` |
 | Shared registered-tool review / fast approval (local MCP) | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-tool` / `fast-tool` |
 | Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
@@ -259,8 +260,13 @@ existing user directories.
   acknowledgement and matching native resolution are distinct facts. Confirmation
   requires both the native acknowledgement and exact scoped resolution, not a keypress,
   vanished prompt or successful submission alone. Uncertain writes stay manual and
-  are never retried. Reconnect closes the old controller;
-  restart/reload is required rather than mixing old clients with new caches.
+  are never retried. Reconnect closes the old controller. On 2026-10-16 the user
+  requested automatic recovery after network disconnects: admit a fresh composition
+  only when the public client and native connection markers agree and a fresh scoped
+  handshake finishes. Drain the old composition first; never mix clients, caches,
+  evidence or approval leases. Carry only manual tombstones and identity-bound
+  monotonic countdown deadlines, not assessments. Own the live subscriber through
+  failure, resubscription and cleanup. Invalid handshakes stay manual.
 - CLI startup consumes the public client's current `server.connected` marker before
   dispatching the first companion RPC, including when setup begins after connection.
   Ignore the native data bridge's delayed echo only for that exact public event ID;
@@ -270,7 +276,8 @@ existing user directories.
   within one 10-second budget: 1.5-second
   attempts, 250 ms backoff, timeout/`rpc.unavailable` only. Own physical settlement
   before retry; fence pre-admission connection changes. Invalid replies stay manual.
-  Choose runtime/fallback once, never promote fallback or revive an active generation.
+  Choose runtime/fallback once per connection; never promote fallback on a duplicate
+  marker or revive an old generation. Fresh reconnection admission may replace either.
 - `host-history-runtime.tsx` owns the indexed worker, history, totals and shutdown.
   History/statistics also initialize when review configuration or the companion is
   unavailable. The absolute V2 namespace is an index, not deletion authority.

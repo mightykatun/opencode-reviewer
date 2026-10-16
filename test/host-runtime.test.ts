@@ -4,7 +4,8 @@ import { mkdtemp } from "node:fs/promises"
 import { EventEmitter } from "node:events"
 import { CliRenderEvents } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
-import { setupHostRuntime } from "../src/host-runtime.js"
+import { setupHostRuntime, setupHostRecovery } from "../src/host-runtime.js"
+import { createRoot, getOwner, onCleanup } from "solid-js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import { parseConfig } from "../src/config.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
@@ -20,32 +21,66 @@ const companion = { protocol: 1 as const, hostVersion: "2.0.26", epoch: "1000000
 const pending = (id: string) => ({ id, sessionID: "root", action: "unknown", resources: ["scope"] })
 async function fixture(options: { notify?: boolean; formSync?: () => Promise<void>; sessionSync?: () => Promise<void>;
   backend?: NotificationBackend; unavailable?: "configuration" | "companion"; connectionID?: string;
-  startupFailure?: "companion" | "configuration" | "unobserved" | "conflicting" } = {}) {
+  startupFailure?: "companion" | "configuration" | "unobserved" | "conflicting"; recovery?: boolean;
+  location?: { directory: string; workspaceID?: string }; reverseEvents?: boolean } = {}) {
+  const location: { directory: string; workspaceID?: string } = options.location ?? companion.location
+  const scopedCompanion = { ...companion, location: { directory: location.directory,
+    ...(location.workspaceID ? { workspaceID: location.workspaceID } : {}) } }
   const life = new PluginLifecycle(), calls: string[] = [], ancestryReads: string[] = []
   const commands: { id: string; run: () => Promise<void>; enabled?: () => boolean }[] = []
   const renderer = Object.assign(new EventEmitter(), { width: 140, height: 40, requestRender: () => calls.push("render") })
   const listeners = new Set<(event: any) => void>()
+  const slots = new Set<unknown>(), markers: string[] = []
+  let markerAvailable = () => {}
   const state = { requests: [pending("first")], epoch: companion.epoch, list: async () => ({ location, data: state.requests }),
     nativeRequests: undefined as ReturnType<typeof pending>[] | undefined,
     forms: [] as FormInfo[],
     route: { type: "home" } as { type: "home" } | { type: "session"; sessionID: string } }
   const ctx = {
     location,
-    client: { rpc: () => ({ handshake: async () => ({ ...companion, epoch: state.epoch }) }),
+    client: { event: { async *subscribe({ signal }: { signal: AbortSignal }) {
+      yield { type: "server.connected", id: "event-initial" }
+      while (!signal.aborted) {
+        if (!markers.length) {
+          const aborted = () => markerAvailable()
+          try { await new Promise<void>(resolve => { markerAvailable = resolve; signal.addEventListener("abort", aborted, { once: true }) }) }
+          finally { signal.removeEventListener("abort", aborted) }
+        }
+        signal.throwIfAborted()
+        const id = markers.shift()
+        if (id) yield { type: "server.connected", id }
+      }
+    } }, rpc: () => ({ handshake: async () => ({ ...scopedCompanion, epoch: state.epoch }) }),
       session: { get: async ({ sessionID }: { sessionID: string }) => { ancestryReads.push(sessionID);
         return { id: sessionID, location, ...(sessionID === "child" ? { parentID: "root" } : {}) } } },
       permission: { request: { list: () => state.list() } } },
     data: { listen: (callback: (event: any) => void) => { listeners.add(callback); return () => { listeners.delete(callback); calls.push("off") } },
+      on: (type: string, callback: (event: any) => void) => {
+        const listen = ({ details }: { details: { type: string } }) => { if (details.type === type) callback(details) }
+        listeners.add(listen); return () => { listeners.delete(listen) }
+      },
       session: { list: () => [{ id: "root", location }],
         get: (id: string) => ({ id, location, ...(id === "child" ? { parentID: "root" } : {}) }), family: () => ["root"],
         sync: async (id: string) => { calls.push("session:" + id); await options.sessionSync?.() },
         permission: { invalidate: (id: string) => calls.push("invalidate:" + id), sync: async (id: string) => { calls.push("sync:" + id) },
            list: () => state.nativeRequests ?? state.requests }, form: { sync: async () => { calls.push("form"); await options.formSync?.() },
              list: (id: string) => id === "root" ? state.forms : [] } } },
-    keymap: { mode: { current: () => "base" }, layer: (factory: () => { commands: typeof commands }) => { commands.push(...factory().commands) },
+    keymap: { mode: { current: () => "base" }, layer: (factory: () => { commands: typeof commands }) => {
+      const owned = factory().commands
+      commands.push(...owned)
+      if (getOwner()) onCleanup(() => { for (const command of owned) commands.splice(commands.indexOf(command), 1) })
+    },
       commands: () => [{ id: "session.sidebar.toggle" }], dispatch: (id: string) => calls.push("dispatch:" + id) },
     renderer,
-    ui: { slot: () => () => {}, router: { current: () => state.route,
+    ui: { slot: (value: { render: () => unknown }) => {
+      slots.add(value)
+      // Exercise only the null command-owner component, not source-test JSX or
+      // simulated terminal presentation. Real panel mounting stays host-tested.
+      let dispose = () => {}
+      if (options.recovery && value.render.name === "registerCommands")
+        createRoot(stop => { dispose = stop; assert.equal(value.render(), null) })
+      return () => { dispose(); slots.delete(value) }
+    }, router: { current: () => state.route,
       navigate: (route: typeof state.route) => { state.route = route } }, toast: { show: () => {} } },
   } as unknown as Plugin.Context
   // Saved modes need a nonreplaceable namespace, just like the history fixture.
@@ -53,7 +88,7 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
   const dependencies = { notifications: () => options.backend ?? ({ show: async () => undefined, dispose: () => {} }) }
   let pluginState: CliPluginState = { ...(options.unavailable === "configuration" ? { configError: "Invalid configuration" }
     : { config: parseConfig({ baseURL: "http://localhost:40999", model: "unused", notify: options.notify ?? false }) }),
-    ...(options.unavailable === "companion" ? {} : { companion }), connectionID: options.connectionID, stateRoot: root, prompts: BUILTIN_PROMPTS,
+    ...(options.unavailable === "companion" ? {} : { companion: scopedCompanion }), connectionID: options.connectionID ?? (options.recovery ? "event-initial" : undefined), stateRoot: root, prompts: BUILTIN_PROMPTS,
     dependencies }
   if (options.startupFailure) {
     state.route = { type: "session", sessionID: "root" }
@@ -69,15 +104,69 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
     } as unknown as Plugin.Context
     pluginState = { ...await setupCli(cli, life, { ...dependencies, adapterOnly: true }), stateRoot: root }
   }
-  const runtime = setupHostRuntime(ctx, pluginState, life)!
+  const recovery = options.recovery ? setupHostRecovery(ctx, pluginState, life) : undefined
+  const runtime = recovery ? recovery.current()! : setupHostRuntime(ctx, pluginState, life)!
   let sequence = 0
-  return { life, runtime, pluginState, state, calls, ancestryReads, commands, renderer, stateRoot: root, event: (type: string, data: unknown, eventID?: string) => {
+  return { life, runtime, recovery, slots, listeners, pluginState, state, calls, ancestryReads, commands, renderer, stateRoot: root,
+    clientMarker: (id: string) => { markers.push(id); markerAvailable() }, event: (type: string, data: unknown, eventID?: string) => {
     sequence++
-    for (const listen of listeners) listen({ details: { type, data, location, id: eventID ?? `event-${sequence}`, created: sequence,
+    for (const listen of options.reverseEvents ? [...listeners].reverse() : listeners) listen({ details: { type, data, location, id: eventID ?? `event-${sequence}`, created: sequence,
       durable: { aggregateID: (data as { sessionID?: string }).sessionID, seq: sequence, version: 1 } } })
   } }
 }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+
+test("fresh production generations recover pending queues without accumulating commands, slots, frames or listeners", async t => {
+  const f = await fixture({ recovery: true }); t.after(() => f.life.stop())
+  await tick(); await tick()
+  const initialCommands = f.commands.map(command => command.id).sort()
+  assert.equal(new Set(initialCommands).size, initialCommands.length)
+  const slots = f.slots.size, listeners = f.listeners.size, frames = f.renderer.listenerCount(CliRenderEvents.FRAME)
+  let previous = f.runtime
+  for (let index = 0; index < 3; index++) {
+    f.state.requests = [pending("fresh-" + index)]
+    f.event("server.connected", {}, "event-next-" + index)
+    assert.equal(f.recovery!.current(), undefined, "Native reconnect fences the old runtime synchronously")
+    // Deliver the independent client observation through its subscriber.
+    f.clientMarker("event-next-" + index)
+    let next
+    for (let turn = 0; turn < 50; turn++) {
+      await tick()
+      next = f.recovery!.current()
+      if (next?.controller.pendingViews[0]?.request.id === "fresh-" + index) break
+    }
+    assert.ok(next); assert.notEqual(next.controller, previous.controller)
+    assert.equal(next.controller.pendingViews[0]?.request.id, "fresh-" + index)
+    assert.deepEqual(previous.controller.views, [])
+    assert.deepEqual(f.commands.map(command => command.id).sort(), initialCommands)
+    assert.equal(f.slots.size, slots); assert.equal(f.listeners.size, listeners)
+    assert.equal(f.renderer.listenerCount(CliRenderEvents.FRAME), frames)
+    previous = next
+  }
+  await f.life.stop(); await f.life.settled()
+  assert.equal(f.commands.length, 0); assert.equal(f.slots.size, 0); assert.equal(f.listeners.size, 0)
+  assert.equal(f.renderer.listenerCount(CliRenderEvents.FRAME), 0)
+})
+
+test("reconnect continuity is location-value based and checkpointing precedes disposal regardless of listener order", async t => {
+  const f = await fixture({ recovery: true, reverseEvents: true, location: { workspaceID: "workspace", directory: location.directory } })
+  t.after(() => f.life.stop())
+  await tick(); await tick()
+  let checkpoints = 0
+  f.runtime.controller.checkpoint = () => {
+    assert.equal(f.runtime.controller.views[0]?.request.id, "first", "The old listener must not dispose entries before checkpointing")
+    checkpoints++
+    return { manual: new Map([["first", "cancelled"]]), pending: new Map() }
+  }
+  f.event("server.connected", {}, "event-next"); f.clientMarker("event-next")
+  let next
+  for (let turn = 0; turn < 50; turn++) {
+    await tick(); next = f.recovery!.current()
+    if (next?.controller.views.length) break
+  }
+  assert.equal(checkpoints, 1)
+  assert.equal(next?.controller.views[0]?.autoApproval?.status, "cancelled", "Location property order cannot erase a cancellation")
+})
 
 for (const failure of ["companion", "configuration", "unobserved", "conflicting"] as const) {
   test(`failed CLI ${failure} composes history and attention without fallback promotion`, async t => {

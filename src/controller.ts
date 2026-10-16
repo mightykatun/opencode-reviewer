@@ -82,7 +82,15 @@ export type ReviewLifecycleObserver<R extends RequestIdentity = HostRequest> = (
 
 export type NativeFront<R extends RequestIdentity = HostRequest> = (root: string, pending: readonly R[]) => string | undefined
 
+/** Local continuity only. No assessments, evidence, native caches or write leases
+ * cross a connection boundary. Request identity is checked again on admission. */
+export interface ControllerCheckpoint<R extends RequestIdentity> {
+  manual: ReadonlyMap<string, "cancelled" | "failed">
+  pending: ReadonlyMap<string, { request: R; deadline?: number }>
+}
+
 export interface ControllerOptions<R extends RequestIdentity = HostRequest> {
+  checkpoint?: ControllerCheckpoint<R>
   reviewOptions?: Options
   nativeApproval?: NativeApproval<R>
   clock?: ApprovalClock
@@ -128,9 +136,12 @@ export class Controller<R extends RequestIdentity = HostRequest> {
   private approvalObserver?: ApprovalObserver<R>
   private ratingObserver?: ControllerOptions<R>["onRating"]
   private lifecycleObserver?: ReviewLifecycleObserver<R>
+  private previous: Map<string, { request: R; deadline?: number }>
   constructor(private evaluate: Evaluate<R>, private changed: (views: View<R>[]) => void,
     { reviewOptions = { reviewBash: true, reviewEdits: true }, nativeApproval, clock: time = clock, modes,
-      onApproval, onRating, onLifecycle, session, candidate = () => false, nativeFront, approvalReady }: ControllerOptions<R> = {}) {
+      onApproval, onRating, onLifecycle, session, candidate = () => false, nativeFront, approvalReady, checkpoint }: ControllerOptions<R> = {}) {
+    this.manual = new Map(checkpoint?.manual)
+    this.previous = new Map(checkpoint?.pending)
     this.options = reviewOptions
     this.nativeApproval = nativeApproval
     this.time = time
@@ -149,6 +160,12 @@ export class Controller<R extends RequestIdentity = HostRequest> {
   get reconciling() { return this.reconciliation > 0 }
   get views() { return [...this.entries.values()].map((entry) => entry.view) }
   get pendingViews() { return this.views.filter(view => !view.resolved) }
+  checkpoint(): ControllerCheckpoint<R> {
+    const pending = new Map(this.previous)
+    for (const [id, entry] of this.entries)
+      pending.set(id, { request: structuredClone(entry.view.request), deadline: entry.deadline })
+    return { manual: new Map(this.manual), pending }
+  }
   retained(root: string, target: HistoryTarget) {
     const entry = this.entries.get(target.permission)
     return entry?.fastApproval === "confirmed" && entry.view.status === "analyzing"
@@ -607,11 +624,14 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     if (this.stopped || this.entries.has(request.id)) return
     this.version++
     const enabled = this.candidate(request, this.options)
+    const previous = this.previous.get(request.id)
+    if (previous && !isDeepStrictEqual(previous.request, request)) this.manual.set(request.id, "failed")
     const entry: Entry<R> = {
       abort: new AbortController(),
       review: randomUUID(),
       attempt: -1, progressGeneration: 0,
       gateRevision: this.version,
+      ...(previous && isDeepStrictEqual(previous.request, request) ? { deadline: previous.deadline } : {}),
       view: {
         request,
         status: enabled ? "identifying" : "unrelated",
@@ -702,7 +722,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     if (entry) this.lifecycleFact({ type: "removed", request: entry.view.request, reason: resolved ? reason : "deleted" })
     if (entry) this.clearProgress(entry)
     this.entries.get(id)?.abort.abort(resolved ? permissionResolved : undefined)
-    if (!resolved || reason !== "reconciled") this.manual.delete(id)
+    if (!resolved || reason !== "reconciled") { this.manual.delete(id); this.previous.delete(id) }
     if (this.entries.delete(id)) this.publish()
   }
 

@@ -52,7 +52,7 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
   const current = context.location ?? context.data.location.default()
   const location = { directory: current.directory, ...(current.workspaceID ? { workspaceID: current.workspaceID } : {}) }
   // Load before admission so no asynchronous import separates the scoped
-  // handshake from installing the runtime's permanent reconnect revocation.
+  // handshake from installing the runtime's connection fence and recovery owner.
   const runtime = dependencies.adapterOnly ? undefined : await loadHostRuntime()
   lifecycle.signal.throwIfAborted()
   const reads = new TransportOwnership()
@@ -121,7 +121,7 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
       }
     }, "Companion startup")
     // Deadline callbacks produce data only. Fence the final promise handoff
-    // before installing the runtime's permanent reconnect revocation.
+    // before installing the runtime's connection fence and recovery owner.
     if (admission?.generation === generation) {
       state.companion = admission.companion
     }
@@ -135,7 +135,8 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
   }
   if (runtime) {
     lifecycle.signal.throwIfAborted()
-    Object.defineProperty(state, "runtime", { value: runtime.setupHostRuntime(context, state, lifecycle) })
+    const recovery = runtime.setupHostRecovery(context, state, lifecycle)
+    Object.defineProperty(state, "runtime", { get: recovery.current })
   }
   return state
 }

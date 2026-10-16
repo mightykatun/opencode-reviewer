@@ -1,11 +1,11 @@
 import { createRequire, isBuiltin } from "node:module"
-import type { setupHostRuntime } from "./host-runtime.js"
+import type { setupHostRuntime, setupHostRecovery } from "./host-runtime.js"
 
 declare const __HOST_RUNTIME__: string
 declare const __REVIEW_SOUNDS__: unknown
 declare const __HISTORY_WORKER__: string
 
-type HostRuntime = { setupHostRuntime: typeof setupHostRuntime }
+type HostRuntime = { setupHostRuntime: typeof setupHostRuntime; setupHostRecovery: typeof setupHostRecovery }
 let runtime: Promise<HostRuntime> | undefined
 
 /** Only the CLI resolves terminal modules, through the host's public imports.
@@ -31,7 +31,8 @@ export function loadHostRuntime(): Promise<HostRuntime> {
     // public imports above are resolved by the host, not string data in our CJS.
     const source = Buffer.from(__HOST_RUNTIME__, "base64").toString("utf8")
     new Function("require", "module", "exports", "__REVIEWER_BUNDLED_SOUNDS__", "__REVIEWER_HISTORY_WORKER__", source)(require, module, module.exports, __REVIEW_SOUNDS__, __HISTORY_WORKER__)
-    if (typeof module.exports.setupHostRuntime !== "function") throw new Error("Host runtime setup unavailable")
+    if (typeof module.exports.setupHostRuntime !== "function" || typeof module.exports.setupHostRecovery !== "function")
+      throw new Error("Host runtime setup unavailable")
     return module.exports
   })()
 }

@@ -18,7 +18,7 @@ export const runtimeInventory = {
   "smoke-v2-lifecycle.mjs": host(["default", "cold-startup"], [], { requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-invocation.mjs": host(["default", "review"], [], { requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-review.mjs": host(["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant", "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
-     "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-project-transition", "normal-long-session", "normal-large-source"], [], { requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
+     "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-project-transition", "normal-long-session", "normal-large-source", "normal-reconnect"], [], { scenarioHosts: { "normal-reconnect": 2 }, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
   "smoke-v2-notifications.mjs": host(["manual-handoff", "forms", "execution", "unavailable-review"], [], {
     requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"], timeoutMs: 360000 }),
   "smoke-v2-sidebar-state.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux"] }),
@@ -42,7 +42,7 @@ export function runtimePlan(entrypoint, args = []) {
   return { id: [entrypoint.replace(/\.(mjs|ts)$/, ""), scenario, ...[...flags].sort()].join("/"), entrypoint: `scripts/${entrypoint}`,
     args: [...(scenario === "default" ? [] : [scenario]), ...[...flags].sort().map(f => `--${f}`)], scenario,
     flags: [...flags].sort(), classification: entry.classification, requires: entry.requires, hostMajor: entry.hostMajor,
-    hosts: entry.hosts, timeoutMs: entry.timeoutMs }
+    hosts: entry.scenarioHosts?.[scenario] ?? entry.hosts, timeoutMs: entry.timeoutMs }
 }
 
 /** Direct fixture execution shares validation; no host, files, or imports with side effects. */
@@ -77,6 +77,7 @@ export const runtimeProfiles = {
      ["smoke-v2-review.mjs", "normal-project-transition"],
      ["smoke-v2-review.mjs", "normal-long-session"],
      ["smoke-v2-review.mjs", "normal-large-source"],
+     ["smoke-v2-review.mjs", "normal-reconnect"],
     ["smoke-v2-root-presentation.mjs", "mouse-on"],
     ["smoke-v2-root-presentation.mjs", "mouse-off"],
     ["smoke-v2-native-queue.mjs"],

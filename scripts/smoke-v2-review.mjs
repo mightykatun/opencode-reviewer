@@ -15,11 +15,12 @@
 // normal-project-transition (nongit to committed Git identity with the original companion still loaded).
 // normal-long-session (512 completed native Code Mode calls before direct review).
 // normal-large-source (oversized source excerpts through the installed companion and judge).
+// normal-reconnect (real loopback socket loss, same TUI and fresh production generation).
 // Build first. Do not execute a host until the main session grants approval.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { createServer } from "node:http"
+import { createServer, request as httpRequest } from "node:http"
 import { chmod, mkdir, mkdtemp, readFile, lstat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
@@ -155,6 +156,7 @@ async function monitorSetup(ctx) {
   }
   ctx.renderer.on(CliRenderEvents.FRAME, frame)
   const off = ctx.data.listen(({ details }) => {
+    if (details.type === "server.connected") (record.connections ??= []).push({ id: details.id })
     if (details.type === "session.created") record.connectionBirths.push(JSON.parse(JSON.stringify(details)))
     if (details.type === "session.deleted") record.connectionDeletes.push(JSON.parse(JSON.stringify(details)))
     if (details.type === "permission.asked") record.asked.push(details.data)
@@ -286,10 +288,15 @@ async function observedReviewerSetup(ctx) {
   const panels = observationPublisher(reviewerPaths.presentation)
   const storage = observationPublisher(reviewerPaths.storage)
   const facts = { events: [], failures: 0 }
+  if (reviewerPaths.reconnect) {
+    const [memory, update] = ctx.storage.memory("reconnect-setups", { initial: { count: 0 } })
+    facts.setups = memory.count + 1
+    update(draft => { draft.count++ })
+  }
   const notifications = reviewerPaths.notifications ? observationPublisher(reviewerPaths.notifications) : undefined
   const abort = new AbortController(), handles = new Map()
   const attention = { events: [], errors: [], replies: {}, owned: 0, disposed: false, cleaned: false, historyCalls: [] }
-  let injectionClick, records, notificationSequence = 0
+  let injectionClick, records, readyState, lastRuntime, generation = 0, notificationSequence = 0
   const saveNotifications = () => {
     if (records) {
       const state = records.state()
@@ -299,6 +306,11 @@ async function observedReviewerSetup(ctx) {
     return notifications?.publish(attention)
   }
   const saveStorage = () => {
+    if (reviewerPaths.reconnect && readyState) {
+      const runtime = readyState.runtime
+      if (runtime && runtime !== lastRuntime) { generation++; lastRuntime = runtime }
+      facts.connection = { id: readyState.connectionID, active: !!runtime?.controller, generation }
+    }
     if (reviewerPaths.historyInput && records) {
       const state = records.state()
       facts.history = { open: state.open, status: state.status, entry: state.selection?.entry,
@@ -349,6 +361,7 @@ async function observedReviewerSetup(ctx) {
   } : undefined
   const cleanup = await production.withHistoryObservations(value => panels.publish(value), undefined, backend, ready => {
     if (ready.role !== "cli") return
+    readyState = ready.state
     const runtime = ready.state.runtime?.records
     if (!runtime) return
     records = runtime
@@ -379,7 +392,7 @@ async function observedReviewerSetup(ctx) {
   }).setup(ctx)
   // Independent monitor has no production imports. Clicks arrive only through
   // this separate explicit driver control, never from observation or approval.
-   const loop = notifications || reviewerPaths.historyInput ? (async () => {
+   const loop = notifications || reviewerPaths.historyInput || reviewerPaths.reconnect ? (async () => {
     while (!abort.signal.aborted) {
        const command = notifications ? await readObservation(reviewerPaths.notificationControl, { optional: true }) : undefined
       if (command && command.sequence > notificationSequence) {
@@ -395,7 +408,7 @@ async function observedReviewerSetup(ctx) {
         attention.replies[notificationSequence] = { id: command.id, current }
       }
        if (notifications) { await saveNotifications(); await notifications.flush() }
-       if (reviewerPaths.historyInput) { await saveStorage(); await storage.flush() }
+       if (reviewerPaths.historyInput || reviewerPaths.reconnect) { await saveStorage(); await storage.flush() }
       await sleep(40, undefined, { signal: abort.signal })
     }
   })().catch(error => {
@@ -435,6 +448,7 @@ const notificationCase = scenario === "fast-notifications", savedCase = automati
 const projectTransition = scenario === "normal-project-transition"
 const evidenceTimeout = scenario === "advisory-evidence-timeout"
 const longSession = scenario === "normal-long-session", largeSource = scenario === "normal-large-source"
+const reconnectCase = scenario === "normal-reconnect"
 const warmupBatches = 16, warmupBatchSize = 32, warmupCalls = []
 const requestCount = projectTransition ? 4 : coverCase || directoryEditCase ? 2 : 1
 const expectedReviewPOSTs = evidenceTimeout ? 0 : requestCount
@@ -516,6 +530,8 @@ const toolCall = registeredTool ? { id: "v2-production-review-registered", name:
   : { id: "v2-production-review-shell", name: "shell", input: { command: "python3 fixture.py", workdir: "inputs" } }
 const publishers = new Map(), calls = [], errors = [], negativeWindows = []
 let version, modelServer, mainResponse, reviewResponse, sessionID, childSession, request, inspection, handshake, sequence = 0
+let networkProxy, networkBlocked = false, networkEvidence
+const proxySockets = new Set(), proxyRequests = []
 let reviewPOSTs = 0, reviewCompleted = false, allowWrites = false, manualDecision = false
 let allowedReplies = 1, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, notificationSequence = 0
 let projectTransitionEvidence, currentProject
@@ -915,11 +931,12 @@ const releaseNativeCall = () => {
 const limits = [
    "Behavioral review activates through public CLI configuration only after an owned prompt-free session's exact genuine birth and deletion are observed on the native data stream. This is not pre-connection startup acceptance; the separate lifecycle fixture checks startup. No runtime reconnect policy is overridden.",
      "One installed default archive with separate server companion and global CLI configuration. The independent monitor never imports production code or replies to permissions.",
-   `One standalone Linux OpenCode V2 verification host, ${nativeCallCount} direct ${registeredTool ? "local MCP" : skillCase ? "native skill" : editCase ? "native write" : "native shell"} call(s), ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal, disconnect or tab-switch acceptance.`,
+   `One ${reconnectCase ? "loopback server plus network-proxied TUI" : "standalone"} Linux OpenCode V2 verification host, ${nativeCallCount} direct ${registeredTool ? "local MCP" : skillCase ? "native skill" : editCase ? "native write" : "native shell"} call(s), ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal${reconnectCase ? "" : ", disconnect"} or tab-switch acceptance.`,
   "Mouse capture is explicitly configured only by the isolated fixture, never forced by production. UI changes use real native commands/navigation, keyboard choices or actual tmux resize; no synthesized paint, modes, hits or geometry. Individual cases do not imply full UI-matrix acceptance.",
   projectTransition ? "The transition includes a real descendant-owned shell request in the root native queue. A distinct public location read discovers the committed repository and lets native worktree resolution adopt existing sessions; the original companion must retain its exact handshake and epoch. No fabricated events, location reload, database edits, remote changes or uncertain writes. Markerless startup IDs are observed, not assumed to be global on every V2 release."
     : "Descendant cases navigate a real child while a root request is pending; they do not exercise descendant-owned native queue ordering. No disabled kinds or uncertain writes.",
-     evidenceTimeout ? "A genuine native shell permission with a one-millisecond production evidence deadline. Actual terminal captures must show Analysis unavailable and timed out while the native request stays pending, with no reviewer POST, reply, execution or saved report. No injected transport errors, protocol changes, missing-linkage substitution or model latency acceptance."
+      reconnectCase ? "Actual TCP socket destruction and a 1.5-second network outage while the session's first model response is held, before its native tool call. Independent native connection markers and the production embedding accessor prove the old runtime is absent during loss and a fresh runtime is admitted without plugin reload. One subsequent real review, native once reply, tool execution and saved report prove live review resumes. Pending countdown, uncertain-write and cancellation continuity are source-tested, not host-accepted by this case."
+      : evidenceTimeout ? "A genuine native shell permission with a one-millisecond production evidence deadline. Actual terminal captures must show Analysis unavailable and timed out while the native request stays pending, with no reviewer POST, reply, execution or saved report. No injected transport errors, protocol changes, missing-linkage substitution or model latency acceptance."
      : registeredTool ? "One real local MCP request advertised directly with a public Code Mode option, a scoped registered definition (normal omits the oversized description and reports the reason), one production once reply, actual MCP result continuation, saved tool category and confirmed approval totals. No ambiguous nested call, remote implementation inspection or live-provider acceptance."
     : skillCase ? "One direct native skill request with full scoped registry main instructions, an unchanged selected definition, one production once reply and actual native tool-result loading. Normal countdown or fast preview/remainder is observed, and read-only SQLite verifies the saved skill category, confirmed approval and usage totals. No supporting-file inspection, catalog-mutation guarantee, ambiguous nested call, live-provider judgment or multi-client acceptance."
       : editCase ? "One actual native write, exact direct source linkage and pending native diff. Outside-project access, when selected, automatically resumes that same write into a distinct edit permission. Each stage holds the real reviewer response, proves no mutation, paints a full normal countdown and receives one production once reply. Read-only SQLite proves per-stage accepted reports, qualifying resolutions, categories and both aggregate scopes. Production history opens through painted palette activation. No native edit/patch variant, formatter, descendant-owned queue, notification, multi-client or live-provider judgment acceptance."
@@ -1137,7 +1154,7 @@ try {
     + `\nimport * as production from ${JSON.stringify(pathToFileURL(path.join(installed, "dist/tui.js")).href)}\n`
      + `\nconst reviewerPaths=${JSON.stringify({ presentation: presentationPath, storage: path.join(artifacts, "storage-observations.json"),
          ...(notificationCase ? { notifications: notificationPath, notificationControl: notificationControlPath } : {}), historyInput: coverCase,
-          keyboardMouseOff: keyboardMouseOffCase, editCase })}\n`
+           keyboardMouseOff: keyboardMouseOffCase, editCase, reconnect: reconnectCase })}\n`
      + observedReviewerSetup + '\nexport default {id:"opencode-reviewer",setup:observedReviewerSetup}\n'
     : archived))
   await Promise.all([observer, monitor].map(directory => mkdir(directory)))
@@ -1189,9 +1206,43 @@ createInterface({input:process.stdin}).on('line',line=>{
     environment: { HOME: env.HOME, XDG_STATE_HOME: env.XDG_STATE_HOME }, stateRoot, historyFile,
     ...(defaultHomeCase ? { oldHistoryFile, hostStateMode: "0775" } : {}),
     socket: runtime.socket, supervisorPID: runtime.supervisorPID })
+  let serverArguments = ["--standalone"]
+  if (reconnectCase) {
+    const reserve = createServer()
+    await new Promise(resolve => reserve.listen(0, "127.0.0.1", resolve))
+    const port = reserve.address().port
+    await new Promise(resolve => reserve.close(resolve))
+    await runtime.start("-d", "-s", "v2-review-server", "-c", initial, "env", "XDG_STATE_HOME=" + env.XDG_STATE_HOME,
+      host, "serve", "--service", "--hostname", "127.0.0.1", "--port", String(port))
+    const target = `http://127.0.0.1:${port}`
+    const { Service } = await import("@opencode/client/service")
+    const endpoint = await until("isolated loopback service registration", async () => {
+      try { return await Service.discover({ file: path.join(env.XDG_STATE_HOME, "opencode/service.json") }) } catch { return false }
+    })
+    assert.equal(endpoint.url, target)
+    // Only this fixture-owned loopback proxy authenticates to its private server.
+    // Never publish its ephemeral service credentials in captures or artifacts.
+    const authentication = Service.headers(endpoint)
+    networkProxy = createServer((req, res) => {
+      if (networkBlocked) { req.socket.destroy(); return }
+      const observed = { path: req.url, method: req.method }
+      proxyRequests.push(observed)
+      const upstream = httpRequest(new URL(req.url, target), { method: req.method, headers: { ...req.headers, ...authentication } }, response => {
+        observed.type = response.headers["content-type"]
+        res.writeHead(response.statusCode, response.headers); res.flushHeaders(); response.pipe(res)
+        response.on("error", () => res.destroy())
+      })
+      upstream.on("error", () => res.destroy())
+      res.on("close", () => upstream.destroy())
+      req.pipe(upstream)
+    })
+    networkProxy.on("connection", socket => { proxySockets.add(socket); socket.on("close", () => proxySockets.delete(socket)) })
+    await new Promise(resolve => networkProxy.listen(0, "127.0.0.1", resolve))
+    serverArguments = ["--server", `http://127.0.0.1:${networkProxy.address().port}`]
+  }
   await runtime.start("-d", "-s", "v2-review", "-x", "160", "-y", "40", "-c", initial,
     "env", ...(defaultHomeCase ? ["-u", "XDG_STATE_HOME", "HOME=" + env.HOME] : ["XDG_STATE_HOME=" + env.XDG_STATE_HOME]),
-    host, "--standalone", initial)
+    host, ...serverArguments, initial)
   const ready = await until("independent monitor", record => record?.ready && record)
   assert.equal(ready.version, version.slice("opencode v".length))
   const probe = await connectionProbe({ directory: initial, observe: observations,
@@ -1218,6 +1269,37 @@ createInterface({input:process.stdin}).on('line',line=>{
   const session = await command({ type: "start", text: prompt })
   sessionID = session.id
   await until("controlled initial native model request", () => mainResponse)
+  if (reconnectCase) {
+    const before = await until("initial production connection observation", async () => {
+      const value = await readObservation(path.join(artifacts, "storage-observations.json"))
+      return value.connection?.active && value.connection.id && value
+    })
+    assert.ok(proxyRequests.some(item => /event-stream/.test(item.type)), "Cut an actual live HTTP event stream")
+    networkBlocked = true
+    for (const socket of proxySockets) socket.destroy()
+    await until("production reviewer revoked during actual network outage", async () => {
+      const value = await readObservation(path.join(artifacts, "storage-observations.json"))
+      return value.connection?.active === false
+    }, 10000)
+    const start = performance.now()
+    do {
+      const record = await observations()
+      assert.deepEqual(record.replied, []); assert.equal(await executed(), null); assert.equal(reviewPOSTs, 0)
+      await sleep(75)
+    } while (performance.now() - start < 1500)
+    networkBlocked = false
+    const after = await until("fresh production reviewer admitted after actual socket reconnection", async record => {
+      const value = await readObservation(path.join(artifacts, "storage-observations.json"))
+      return value.connection?.active && value.connection.id !== before.connection.id
+        && record.connections?.some(item => item.id === value.connection.id) && value
+    })
+    assert.equal(after.setups, before.setups, "Network recovery must not depend on plugin reload")
+    assert.equal(after.connection.generation, before.connection.generation + 1)
+    assert.deepEqual((await command({ type: "status" })).handshake, handshake, "The same companion survives the outage")
+    assert.equal((await command({ type: "pending", sessionID })).length, 0)
+    networkEvidence = { before, after, outageMs: performance.now() - start, requests: proxyRequests }
+    await publish(path.join(artifacts, "network-reconnect.json"), networkEvidence)
+  }
    if (longSession) {
      const completed = mainResponse.body.messages.filter(message => message.role === "tool" && message.tool_call_id.startsWith("warmup-"))
      assert.equal(warmupCalls.length, warmupBatches)
@@ -2427,7 +2509,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.deepEqual(await readObservation(monitorPath), cleaned, "No observer callback after final close")
   if (notificationCase) assert.deepEqual(await notificationObservations(), notificationEvidence.cleaned, "No backend publication after final close")
   await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, temp, handshake, inspection,
-          assessment, reviewCompleted, reviewPOSTs, calls, warmupBatches: warmupCalls.length, requests, inspections, childSession, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, projectTransitionEvidence,
+          assessment, reviewCompleted, reviewPOSTs, calls, warmupBatches: warmupCalls.length, requests, inspections, childSession, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, projectTransitionEvidence, networkEvidence,
         ...(editCase ? { editStages, editTarget, beforeEdit, afterEdit } : {}), negativeWindows, observations: cleaned, execution: await executed(), limits })
   console.log(`PASS V2 installed production review ${scenario}: ${artifacts}`)
   console.log(`Isolated files: ${temp}`)
@@ -2442,6 +2524,7 @@ createInterface({input:process.stdin}).on('line',line=>{
 } finally {
   try { await runtime.dispose() }
   finally {
+    if (networkProxy) { for (const socket of proxySockets) socket.destroy(); await new Promise(resolve => networkProxy.close(resolve)) }
     if (modelServer) { modelServer.closeAllConnections(); await new Promise(resolve => modelServer.close(resolve)) }
     await Promise.all([...publishers.values()].map(publisher => publisher.close()))
   }

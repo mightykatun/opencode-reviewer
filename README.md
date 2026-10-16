@@ -251,9 +251,11 @@ companion handshake. Connection waiting and retries for timed-out or not-yet-ava
 handshakes share one 10-second budget. If it remains unavailable, history and notifications still work;
 reload the plugin to try again. Invalid handshake data is not retried.
 
-If the server reconnects or the companion is replaced, reviews and auto-approval
-stop. Reload the plugin or restart OpenCode to resume. This keeps cached permissions
-from the old connection separate from the new one.
+After a network disconnect, live review resumes automatically when the client and
+native event stream reconnect and a fresh companion handshake succeeds. Pending
+requests are read again without reusing old evidence. Canceled or uncertain approvals
+stay manual, and started countdowns keep their original deadline. A companion replaced
+without a connection change still requires a plugin reload.
 
 ### Report history
 
