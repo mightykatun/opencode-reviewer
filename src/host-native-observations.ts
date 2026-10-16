@@ -89,3 +89,50 @@ export async function refreshNativeFamily(seeds: Iterable<string>, reader: Nativ
   }
   return [...members]
 }
+
+/** Settled failures belong to their own conversation, not every pending request
+ * at this location. Each successful group still passes the complete strict family
+ * refresh above. Abort/deadline failures always escape; physical reads stay owned. */
+export async function refreshNativeFamilies(seeds: Iterable<string>, reader: NativeFamilyReader,
+  signal: AbortSignal, refresh: (id: string) => Promise<void>): Promise<ReadonlySet<string>> {
+  const unique = new Set<string>(), groups = new Map<string, Set<string>>()
+  for (const id of seeds) {
+    if (typeof id !== "string" || !id) throw Error("Native seeds unavailable")
+    unique.add(id)
+    if (unique.size > nativeObservationLimit) throw Error("Native seeds unavailable")
+  }
+  for (const id of unique) {
+    signal.throwIfAborted()
+    try {
+      const read = reader.resolveRoot(id, signal)
+      const root = await reader.owned((async () => {
+        try { return await read } finally { await read.settled?.catch(() => {}) }
+      })())
+      signal.throwIfAborted()
+      if (typeof root !== "string" || !root) continue
+      const group = groups.get(root) ?? new Set<string>()
+      group.add(id); groups.set(root, group)
+    } catch { signal.throwIfAborted() }
+  }
+  const healthy = new Set<string>(), observed = new Set<string>()
+  for (const [root, group] of groups) {
+    signal.throwIfAborted()
+    try {
+      const members = await refreshNativeFamily(group, reader, signal)
+      if (members.some(id => conversationRoot(id, value => reader.session(value)) !== root))
+        throw Error("Native family scope changed")
+      for (const id of members) {
+        observed.add(id)
+        if (observed.size > nativeObservationLimit) throw Error("Native family limit reached")
+        signal.throwIfAborted()
+        await reader.owned(refresh(id))
+      }
+      signal.throwIfAborted()
+      healthy.add(root)
+    } catch {
+      signal.throwIfAborted()
+      if (observed.size > nativeObservationLimit) throw Error("Native family limit reached")
+    }
+  }
+  return healthy
+}

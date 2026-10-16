@@ -23,8 +23,9 @@ interface Pending {
   blocking?: boolean
   reminder?: () => void
   /** Initial dispatch attempts survive queue loss; undispatched work does not. */
-  announced?: Set<"attention" | "unsafe" | "question">
+  announced?: Set<NotificationAnnouncement>
 }
+export type NotificationAnnouncement = "attention" | "unsafe" | "question"
 
 /** Absence of a countdown is not evidence of manual-only approval. A completed
  * Safe request can still be waiting for its native queue position or conversation. */
@@ -65,17 +66,20 @@ export class NotificationPolicy<R extends RequestIdentity = HostRequest> {
     this.seen.add(key)
     return true
   }
-  permission(request: R, target: Target, fresh: boolean) {
+  announced(kind: "permission" | "question", id: string): readonly NotificationAnnouncement[] {
+    return [...((kind === "permission" ? this.permissions : this.questions).get(id)?.announced ?? [])]
+  }
+  permission(request: R, target: Target, fresh: boolean, announced: readonly NotificationAnnouncement[] = []) {
     if (this.stopped || !this.config.notify || !this.remember(`permission:${request.id}`) || !fresh) return
     if (this.permissions.size >= 1024) return
-    const entry: Pending = { identity: { kind: "permission", id: request.id }, target, phase: "waiting" }
+    const entry: Pending = { identity: { kind: "permission", id: request.id }, target, phase: "waiting", announced: new Set(announced) }
     this.permissions.set(request.id, entry)
     this.select(entry)
   }
-  question(id: string, target: Target, fresh: boolean) {
+  question(id: string, target: Target, fresh: boolean, announced: readonly NotificationAnnouncement[] = []) {
     if (this.stopped || !this.config.notify || !this.remember(`question:${id}`) || !fresh) return
     if (this.questions.size >= 1024) return
-    const entry: Pending = { identity: { kind: "question", id }, target, phase: "waiting" }
+    const entry: Pending = { identity: { kind: "question", id }, target, phase: "waiting", announced: new Set(announced) }
     this.questions.set(id, entry)
     this.select(entry)
   }

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { setImmediate as settle } from "node:timers/promises"
-import { refreshNativeFamily, type NativeFamilyReader } from "../src/host-native-observations.js"
+import { refreshNativeFamily, refreshNativeFamilies, type NativeFamilyReader } from "../src/host-native-observations.js"
 import { TransportOwnership } from "../src/transport-ownership.js"
+import { nativeObservationLimit } from "../src/host-queue.js"
 import type { SessionLocation } from "../src/route-approval.js"
 
 function fixture() {
@@ -28,6 +29,51 @@ test("family refresh synchronizes root before family and every member before dee
   const f = fixture()
   assert.deepEqual(await f.refresh(), ["root", "deep", "child"])
   assert.deepEqual(f.calls, ["root:deep", "sync:root", "sync:deep", "family:root", "sync:child"])
+})
+
+test("independent family failures isolate health but never skip an unreadable member inside a healthy root", async () => {
+  for (const failure of ["root-read", "member-sync", "queue-sync"] as const) {
+    const f = fixture(), resolve = f.reader.resolveRoot, sync = f.reader.sync, refreshed: string[] = []
+    f.reader.resolveRoot = (id, signal) => failure === "root-read" && id === "deep"
+      ? Promise.reject(Error("Unreadable ancestry")) : resolve(id, signal)
+    f.reader.sync = async id => { if (failure === "member-sync" && id === "child") throw Error("Unreadable child"); await sync(id) }
+    const roots = await refreshNativeFamilies(["deep", "other"], f.reader, f.abort.signal, async id => {
+      refreshed.push(id)
+      if (failure === "queue-sync" && id === "child") throw Error("Unreadable native queue")
+    })
+    assert.deepEqual([...roots], ["other"], failure)
+    assert.ok(refreshed.includes("other"), "The independent root gets its own complete refresh")
+    assert.equal(roots.has("root"), false, "Failure of any member excludes that whole conversation")
+    await f.owner.settled()
+  }
+})
+
+test("isolated refresh still propagates parent abort before touching another family", async () => {
+  const f = fixture()
+  await assert.rejects(refreshNativeFamilies(["deep", "other"], f.reader, f.abort.signal, async () => {
+    f.abort.abort(Error("Stop native reads"))
+  }), /Stop native reads/)
+  assert.equal(f.calls.includes("sync:other"), false)
+  await f.owner.settled()
+})
+
+test("family grouping cannot label a different freshly resolved conversation healthy", async () => {
+  const f = fixture()
+  let reads = 0
+  f.reader.resolveRoot = async () => ++reads === 1 ? "other" : "root"
+  const refreshed: string[] = []
+  const roots = await refreshNativeFamilies(["deep"], f.reader, f.abort.signal, async id => { refreshed.push(id) })
+  assert.equal(roots.size, 0)
+  assert.deepEqual(refreshed, [])
+})
+
+test("isolated refresh bounds seed enumeration before starting any ancestry or cache reads", async () => {
+  const f = fixture()
+  let yielded = 0
+  function* seeds() { while (true) yield "seed-" + ++yielded }
+  await assert.rejects(refreshNativeFamilies(seeds(), f.reader, f.abort.signal, async () => {}), /Native seeds unavailable/)
+  assert.equal(yielded, nativeObservationLimit + 1)
+  assert.deepEqual(f.calls, [])
 })
 
 test("family refresh deduplicates roots and members without sorting public family order", async () => {

@@ -9,7 +9,7 @@ import type { View } from "../src/controller.js"
 import type { AncestryReader } from "../src/session-ancestry.js"
 import type { HistoryTarget } from "../src/history-records.js"
 import type { NotificationBackend, NotificationClick, NotificationMessage } from "../src/notification-types.js"
-import { HostNotifications, setupHostNotifications } from "../src/host-notifications.js"
+import { HostNotifications, setupHostNotifications, type HostNotificationCheckpoint } from "../src/host-notifications.js"
 import { hostQueueSnapshot, type HostQueueSnapshot } from "../src/host-queue.js"
 import { parseConfig } from "../src/config.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
@@ -83,6 +83,8 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
   }
   const host = new HostNotifications(context, state, { resolveRoot, nativeQueue, signal: abort.signal, clock,
     openHistory: (sessionID, target) => { opened.push({ sessionID, target }) } })
+  const resume = (checkpoint: HostNotificationCheckpoint, current = context) => new HostNotifications(current, state,
+    { resolveRoot, nativeQueue, signal: abort.signal, clock, checkpoint })
   function emit<T extends OpenCodeEvent["type"]>(type: T, data: EventOf<T>["data"], seq = ++serial, eventID = `event-${serial}`) {
     const sessionID = (data as { sessionID?: string }).sessionID
     const event = { type, id: eventID, created: serial, data, location: { directory: "/project" },
@@ -107,7 +109,7 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
     await settle()
   }
   return { host, state, context, abort, banners, signals, sessions, permissions, forms, active, shells, terminals, work, opened, navigated, timers,
-    emit, ask, reply, formBirth, formReply, advance, clicked: () => clicked,
+    emit, ask, reply, formBirth, formReply, advance, resume, clicked: () => clicked,
     mode: (value: string) => { mode = value }, route: (value: string) => { current = value; host.routeChanged() },
     family: (ids: string[]) => { family = ids }, native: (value?: string) => { override = true; nativeOverride = value },
     nativeQueue: (read: (root: string) => HostQueueSnapshot) => { observedQueue = read } }
@@ -173,6 +175,73 @@ test("V2 event births, not startup/retained snapshots, authorize root-family att
   f.host.snapshot([{ request: other, status: "unavailable" }], true)
   await settle(); assert.equal(f.banners.length, 1, "visiting later cannot replay old births")
   await f.host.dispose()
+})
+
+test("inactive conversation visits cannot exhaust notification tracking, while a live interaction remains pinned", async () => {
+  const f = fixture()
+  try {
+    f.host.visit("root")
+    const first = request("still-pending")
+    f.permissions.set("root", [first]); f.ask(first)
+    f.host.snapshot([{ request: first, status: "unavailable" }], true)
+    await settle(); assert.equal(f.banners.length, 1)
+    for (let index = 0; index < 300; index++) {
+      const id = "visited-" + index
+      f.sessions.set(id, { id, title: "Visited" })
+      f.host.visit(id)
+    }
+    const latest = request("newest", "visited-299")
+    f.permissions.set(latest.sessionID, [latest]); f.ask(latest)
+    f.host.snapshot([{ request: first, status: "unavailable" }, { request: latest, status: "unavailable" }], true)
+    await settle()
+    assert.deepEqual(f.banners.map(value => value.sessionID), ["root", "visited-299"])
+    assert.equal(f.signals[0]!.aborted, false, "Inactive eviction must not withdraw the still-pending interaction")
+    f.host.visit("visited-0")
+    const old = request("before-revisit", "visited-0")
+    f.permissions.set(old.sessionID, [old]); f.host.snapshot([{ request: old, status: "unavailable" }], true)
+    await settle(); assert.equal(f.banners.length, 2, "Revisiting cannot invent an event birth from a baseline snapshot")
+  } finally { await f.host.dispose() }
+})
+
+test("proven question continuity resumes reminders only after fresh family health, never from constructor or stale snapshots", async () => {
+  const f = fixture({ staleReminderSeconds: 1 }); f.host.visit("root")
+  const question = form("pending")
+  f.forms.set("root", [question]); f.formBirth(question); f.host.snapshot([], true)
+  await settle(); assert.equal(f.banners.length, 1)
+  const checkpoint = f.host.checkpoint()
+  await f.host.dispose()
+  const resumed = f.resume(checkpoint)
+  try {
+    resumed.snapshot([], false); await f.advance(2000)
+    assert.equal(f.banners.length, 1)
+    resumed.snapshot([], true); await settle()
+    assert.equal(f.banners.length, 1, "No replayed initial after recovery")
+    await f.advance(999); assert.equal(f.banners.length, 1)
+    await f.advance(1); assert.equal(f.banners.length, 2)
+    f.forms.set("root", []); resumed.snapshot([], true)
+    await f.advance(2000); assert.equal(f.banners.length, 2, "A missed form resolution is reconciled silently")
+  } finally { await resumed.dispose() }
+})
+
+test("notification continuity cannot cross a replaced public client or location, and cannot mutate its saved facts", async () => {
+  for (const boundary of ["client", "directory", "workspace"] as const) {
+    const f = fixture({ staleReminderSeconds: 1 }); f.host.visit("root")
+    const pending = request("pending")
+    f.permissions.set("root", [pending]); f.ask(pending); f.host.snapshot([{ request: pending, status: "unavailable" }], true)
+    await settle()
+    const checkpoint = f.host.checkpoint(), saved = checkpoint.permissions.get(pending.id)
+    await f.host.dispose()
+    const context = { ...f.context, ...(boundary === "client" ? { client: { ...f.context.client } }
+      : { location: boundary === "directory" ? { directory: "/other" } : { directory: "/project", workspaceID: "other" } }) }
+    const resumed = f.resume(checkpoint, context)
+    try {
+      resumed.visit("root"); resumed.snapshot([{ request: pending, status: "unavailable" }], true)
+      await f.advance(2000)
+      assert.equal(f.banners.length, 1, boundary)
+      assert.deepEqual(checkpoint.permissions.get(pending.id), saved)
+      assert.equal(checkpoint.permissions.get(pending.id)?.target, undefined)
+    } finally { await resumed.dispose() }
+  }
 })
 
 test("permissions precede the public root-first family form queue, independent of event order", async () => {

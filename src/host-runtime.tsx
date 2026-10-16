@@ -5,7 +5,7 @@ import path from "node:path"
 import { Controller, visibleReview, type ControllerCheckpoint, type View } from "./controller.js"
 import { hostPermissionTransport } from "./host-permissions.js"
 import { hostQueueFront, hostQueueSnapshot, type HostQueueReader } from "./host-queue.js"
-import { refreshNativeFamily } from "./host-native-observations.js"
+import { refreshNativeFamilies } from "./host-native-observations.js"
 import { evaluateHostReview } from "./host-evaluate.js"
 import { PendingRefresh } from "./pending-refresh.js"
 import { SessionModes, SessionModeStore } from "./session-mode.js"
@@ -17,7 +17,7 @@ import type { PluginLifecycle } from "./plugin-lifecycle.js"
 import { sameLocation } from "./companion-protocol.js"
 import { HostReviewPanel } from "./host-review-panel.js"
 import { setupHostHistory, setupHostHistoryOnly } from "./host-history-runtime.js"
-import { setupHostNotifications } from "./host-notifications.js"
+import { setupHostNotifications, type HostNotificationCheckpoint, type HostNotifications } from "./host-notifications.js"
 import { notificationWorkEvent } from "./host-background-work.js"
 import { setupHostSidebar } from "./host-sidebar.js"
 import { hostPricingLookup } from "./host-pricing.js"
@@ -35,6 +35,7 @@ import { setupCliReconnect } from "./cli-reconnect.js"
  * would instead retain every old generation's commands until plugin reload. */
 export function setupHostRecovery(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle) {
   const checkpoints = new Map<string, ControllerCheckpoint<HostPendingRequest>>()
+  let notificationCheckpoint: HostNotificationCheckpoint | undefined, notifications: HostNotifications | undefined
   const checkpointKey = (location: { directory: string; workspaceID?: string }) =>
     JSON.stringify([location.directory, location.workspaceID ?? null])
   return setupCliReconnect(ctx, state, life, (context, next, child) => {
@@ -45,7 +46,9 @@ export function setupHostRecovery(ctx: Plugin.Context, state: CliPluginState, li
       : Reflect.get(target, key) })
     const scoped = new Proxy(context, { get: (target, key) => key === "keymap" ? keymap : Reflect.get(target, key) })
     const location = context.location ?? context.data.location.default()
-    const runtime = setupHostRuntime(scoped, next, child, checkpoints.get(checkpointKey(location)), true)
+    const continuity: { previous?: HostNotificationCheckpoint; current?: HostNotifications } = { previous: notificationCheckpoint }
+    const runtime = setupHostRuntime(scoped, next, child, checkpoints.get(checkpointKey(location)), true, continuity)
+    notifications = continuity.current
     collecting = false
     // This contributes no UI surface. Component disposal removes the layers,
     // while the existing live/history app slot remains the only reviewer panel.
@@ -55,17 +58,21 @@ export function setupHostRecovery(ctx: Plugin.Context, state: CliPluginState, li
     } }))
     return runtime
   }, runtime => {
+    try { notificationCheckpoint = notifications?.checkpoint() }
+    catch { notificationCheckpoint = undefined }
     if (runtime) checkpoints.set(checkpointKey(runtime.scope.location), runtime.controller.checkpoint())
   })
 }
 
 /** One scope-pinned controller. A replaced companion never adopts old evidence. */
 export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle,
-  checkpoint?: ControllerCheckpoint<HostPendingRequest>, supervised = false) {
+  checkpoint?: ControllerCheckpoint<HostPendingRequest>, supervised = false,
+  continuity?: { previous?: HostNotificationCheckpoint; current?: HostNotifications }) {
   const config = state.config, companion = state.companion
   if (!config || !companion) {
     const standalone = setupHostHistoryOnly(ctx, state, life)
-    const attention = setupHostNotificationOnly(ctx, state, life, standalone.records)
+    const attention = setupHostNotificationOnly(ctx, state, life, standalone.records, continuity?.previous, supervised)
+    if (continuity) continuity.current = attention?.notifications
     // Conversation preferences are local controls, not companion admission.
     // Keep their native commands available without constructing or reviving a
     // reviewer. History's scoped metadata reader owns ancestry settlement.
@@ -107,6 +114,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     // caches. Mandatory operation data comes from the scoped server snapshot.
     permissions: id => ctx.data.session.permission.list(id),
   }
+  let permissionRoots: ReadonlySet<string> = new Set(), formRoots: ReadonlySet<string> = new Set()
   const front = (root: string) => hostQueueFront(root, queueReader)?.id
   const rootRoute = () => {
     const route = ctx.ui.router.current()
@@ -118,7 +126,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   const records = setupHostHistory(ctx, state, life, { rootRoute, sidebarOwner: sidebar, sidebarGeometry: geometry, ancestry })
   let cancelReveal = () => {}
   life.addCleanup(() => cancelReveal())
-  const notifications = setupHostNotifications(ctx, state, { signal: life.signal,
+  const notifications = setupHostNotifications(ctx, state, { signal: life.signal, checkpoint: continuity?.previous,
     resolveRoot: (id, signal) => records.history.root(id, signal), nativeQueue: root => hostQueueSnapshot(root, queueReader),
     openHistory: (root, target, lease) => {
       cancelReveal()
@@ -160,6 +168,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       })
     },
   })
+  if (continuity) continuity.current = notifications
   const controller = new Controller<HostPendingRequest>((request, signal, identified, onProgress, observation) => {
     const snapshot = snapshots.get(request.id)
     if (!snapshot) return Promise.reject(new Error(uiText.review.evidenceUnavailable))
@@ -172,7 +181,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   }, values => { setViews(values); notifications?.snapshot(controller.pendingViews) }, {
     reviewOptions: config, modes, session: id => routes.get(id), checkpoint,
     unavailable: request => "unavailable" in request ? uiText.review.evidenceUnavailable : undefined,
-    approvalReady: (request, root) => hostApprovalReady(request, root, ctx.ui.router.current(), id => routes.get(id),
+    approvalReady: (request, root) => !!root && permissionRoots.has(root) && hostApprovalReady(request, root, ctx.ui.router.current(), id => routes.get(id),
       () => nativeDecisionPending(ctx.renderer.root, ctx.theme.background.action.primary.focused)),
     nativeFront: root => front(root),
     onLifecycle: records.history.lifecycle,
@@ -188,41 +197,36 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       },
     },
   })
-  let events = 0
+  let events = 0, permissionEvents = 0
   let disconnected = false
   const revision = () => controller.revision + events
-  let permissionHealthy = false, formHealthy = false
-  const notificationSessions = new Set<string>()
+  const permissionRevision = () => controller.revision + permissionEvents
   const familyReader = {
     resolveRoot: (id: string, signal: AbortSignal) => records.history.root(id, signal),
     session: (id: string) => routes.get(id),
     family: (root: string) => ctx.data.session.family(root),
     sync: (id: string) => ctx.data.session.sync(id), owned,
   }
-  const notificationSnapshot = () => notifications?.snapshot(controller.pendingViews, permissionHealthy && formHealthy)
+  const notificationSnapshot = () => notifications?.snapshot(controller.pendingViews,
+    new Set([...permissionRoots].filter(root => formRoots.has(root))))
   // Forms are optional observer evidence. Their failures must never hold up
   // permission admission or an otherwise eligible automatic reply.
-  const formRefresh = notifications ? new PendingRefresh<never>({ get revision() { return revision() },
-    reconcile: notificationSnapshot,
+  const formRefresh = notifications ? new PendingRefresh<ReadonlySet<string>>({ get revision() { return revision() },
+    reconcile(roots) { formRoots = roots; notificationSnapshot() },
   }, signal => owned((async () => {
     signal.throwIfAborted()
     const route = ctx.ui.router.current()
-    const sessions = new Set([...notificationSessions, ...controller.pendingViews.map(view => view.request.sessionID),
+    const sessions = new Set([...notifications.trackedSessions(), ...controller.pendingViews.map(view => view.request.sessionID),
       ...(route.type === "session" ? [route.sessionID] : [])])
-    const ids = await refreshNativeFamily(sessions, familyReader, signal)
-    for (const id of ids) {
-      signal.throwIfAborted()
-      await ctx.data.session.form.sync(id)
-    }
-    signal.throwIfAborted()
     await ctx.data.session.form.sync("global", scope.location)
     signal.throwIfAborted()
-    return []
-  })()), life.signal, healthy => { formHealthy = healthy; notificationSnapshot() }) : undefined
+    return refreshNativeFamilies(sessions, familyReader, signal, id => ctx.data.session.form.sync(id))
+  })()), life.signal, healthy => { if (!healthy) formRoots = new Set(); notificationSnapshot() }) : undefined
   life.addCleanup(() => formRefresh?.dispose())
-  const refresh = new PendingRefresh<HostPendingSnapshot>({ get revision() { return revision() },
-    reconcile(requests, revision) {
-      if (controller.revision + events !== revision) return
+  const refresh = new PendingRefresh<{ requests: readonly HostPendingSnapshot[]; roots: ReadonlySet<string> }>({ get revision() { return permissionRevision() },
+    reconcile({ requests, roots }, revision) {
+      if (permissionRevision() !== revision) return
+      permissionRoots = roots
       snapshots.clear()
       for (const snapshot of requests) {
         if (!("unavailable" in snapshot.request)) snapshots.set(snapshot.request.id, snapshot as HostRequestSnapshot)
@@ -239,17 +243,18 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     signal.throwIfAborted()
     const all = await owned(transport.pendingScope(signal))
     // Public native caches must be refreshed as well as the server snapshot.
-    const ids = await refreshNativeFamily(new Set([...all.map(value => value.request.sessionID),
-      ...controller.pendingViews.map(value => value.request.sessionID)]), familyReader, signal)
-    for (const id of ids) {
+    const route = ctx.ui.router.current()
+    const roots = await refreshNativeFamilies(new Set([...all.map(value => value.request.sessionID),
+      ...controller.pendingViews.map(value => value.request.sessionID), ...(notifications?.trackedSessions() ?? []),
+      ...(notifications && route.type === "session" ? [route.sessionID] : [])]), familyReader, signal, async id => {
       signal.throwIfAborted()
       ctx.data.session.permission.invalidate(id)
       await owned(ctx.data.session.permission.sync(id))
       signal.throwIfAborted()
-    }
-    return all
+    })
+    return { requests: all, roots }
   })())), life.signal, healthy => {
-    permissionHealthy = healthy
+    if (!healthy) permissionRoots = new Set()
     notificationSnapshot()
     if (healthy) void formRefresh?.refresh()
   })
@@ -281,14 +286,14 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       || event.type === "session.deleted" || notificationWorkEvent(event) || event.type.startsWith("form.")) {
       // Withdraw deferred deliveries before publishing events against stale
       // native caches. Observer health remains separate from approval admission.
-      permissionHealthy = false; formHealthy = false
+      // Optional form/activity churn invalidates observer health, not a settled
+      // permission refresh or otherwise eligible automatic approval.
+      if (interrupted || event.type.startsWith("permission.") || event.type === "session.deleted") {
+        permissionEvents++; permissionRoots = new Set()
+      }
+      formRoots = new Set()
       notificationSnapshot()
     }
-    const notificationSession = event.type === "form.created" ? event.data.form.sessionID
-      : "sessionID" in event.data ? event.data.sessionID : undefined
-    if (event.type === "session.deleted") notificationSessions.delete(event.data.sessionID)
-    else if (notifications && typeof notificationSession === "string" && notificationSession !== "global"
-      && (notificationSessions.has(notificationSession) || notificationSessions.size < 1024)) notificationSessions.add(notificationSession)
     notifications?.event(event)
     if (event.type === "permission.asked") {
       events++

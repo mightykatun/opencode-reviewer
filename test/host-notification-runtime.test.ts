@@ -119,6 +119,36 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", i
   return { ...f, runtime: f.compose(f.state) }
 }
 
+test("notification-only fallback isolates an unreadable independent conversation instead of silencing the current root", async t => {
+  const f = fixture(); t.after(() => f.life.stop())
+  await f.flush()
+  f.hooks.sync = async id => { if (id === "unvisited") throw Error("Independent metadata unavailable") }
+  const other = permission("other", "unvisited")
+  f.permissions.set("unvisited", [other]); f.ask(other)
+  const question = form("healthy-question")
+  f.forms.set("root", [question]); f.emit("form.created", { form: question })
+  await f.flush(); await f.flush()
+  assert.deepEqual(f.banners.map(value => value.kind), ["question"])
+})
+
+test("notification-only fallback retires inactive visits without losing a live root or inventing baseline births", async t => {
+  const f = fixture(); t.after(() => f.life.stop()); await f.flush()
+  const first = permission("still-pending")
+  f.permissions.set("root", [first]); f.ask(first); await f.flush()
+  for (let index = 0; index < 300; index++) {
+    const id = "visited-" + index
+    f.sessions.set(id, { id, title: "Visited", location })
+    f.permissions.set(id, []); f.forms.set(id, [])
+    f.route(id)
+  }
+  await f.flush()
+  const latest = permission("latest", "visited-299")
+  f.permissions.set(latest.sessionID, [latest]); f.ask(latest); await f.flush()
+  assert.deepEqual(f.banners.map(value => value.sessionID), ["root", "visited-299"])
+  assert.ok(f.runtime.views().some(view => view.request.id === first.id))
+  assert.equal(f.runtime.notifications.trackedSessions().size, 256)
+})
+
 for (const failure of ["companion", "configuration", "timeout", "unobserved", "conflicting"] as const) {
   test(`failed CLI ${failure} state composes attention with only its verified initial echo exempted`, async t => {
     const f = contextFixture(); t.after(() => f.life.stop())

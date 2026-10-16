@@ -8,8 +8,8 @@ import type { HostRequest } from "./host-types.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
 import { sameLocation } from "./companion-protocol.js"
 import { hostQueueSnapshot, hostPermissionIdentities } from "./host-queue.js"
-import { refreshNativeFamily } from "./host-native-observations.js"
-import { setupHostNotifications } from "./host-notifications.js"
+import { refreshNativeFamilies } from "./host-native-observations.js"
+import { setupHostNotifications, type HostNotificationCheckpoint } from "./host-notifications.js"
 import { PendingRefresh } from "./pending-refresh.js"
 import { conversationRoot } from "./route-approval.js"
 import { TransportOwnership } from "./transport-ownership.js"
@@ -27,12 +27,13 @@ function request(value: PermissionRequest): HostRequest {
  * The caller retains the single app surface and all history/storage disposal.
  * No controller, mode files, evaluator, model transport or permission replies. */
 export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle,
-  records: ReturnType<typeof setupHostHistory>) {
+  records: ReturnType<typeof setupHostHistory>, checkpoint?: HostNotificationCheckpoint, supervised = false) {
   const location = records.location
   const abort = new AbortController()
   const signal = AbortSignal.any([life.signal, abort.signal])
   const reads = new TransportOwnership()
-  const sessions = new Set<string>(), visited = new Set<string>(), deleted = new Set<string>()
+  const deleted = new Set<string>()
+  let visited: string | undefined
   let revision = 0, stopped = false
   let views: View<HostRequest>[] = []
   const owned = <T>(work: Promise<T>) => reads.track(work)
@@ -49,12 +50,12 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
     session, family: id => ctx.data.session.family(id), permissions,
   })
   const notifications = setupHostNotifications(ctx, state, {
-    signal, nativeQueue: front, resolveRoot: (id, parent) => records.history.root(id, parent),
+    signal, nativeQueue: front, resolveRoot: (id, parent) => records.history.root(id, parent), checkpoint,
   })
   // Failed/disabled desktop setup is isolated from the read-only history owner.
   if (!notifications) return
 
-  const publish = (healthy: boolean) => notifications.snapshot(views, healthy)
+  const publish = (healthy: boolean | ReadonlySet<string>) => notifications.snapshot(views, healthy)
   const remember = (set: Set<string>, id: string) => {
     if (!id || set.has(id) || set.size >= 16384) return false
     set.add(id); return true
@@ -66,29 +67,26 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
     if (read.settled) owned(read.settled)
     return owned(read)
   }
-  const refresh = new PendingRefresh<HostRequest>({
+  const refresh = new PendingRefresh<{ values: HostRequest[]; roots: ReadonlySet<string> }>({
     get revision() { return revision },
-    reconcile(values, at) {
+    reconcile({ values, roots }, at) {
       if (stopped || at !== revision) return
       views = values.map(request => ({ request, status: state.config ? "suspended" : "unavailable" }))
+      publish(roots)
     },
   }, parent => owned((async () => {
     parent.throwIfAborted()
-    // Read known pending caches to discover families, without syncing every
-    // unrelated session in the server's public session catalog.
-    const catalog = ctx.data.session.list()
-    if (catalog.length > 16384) throw Error("Native session catalog unavailable")
-    for (const value of catalog) {
-      if (!session(value.id)) continue
-      if (ctx.data.session.permission.list(value.id)?.length || ctx.data.session.form.list(value.id)?.length)
-        remember(sessions, value.id)
-    }
-     const members = await refreshNativeFamily(new Set([...visited, ...sessions].filter(id => !deleted.has(id))), {
-       resolveRoot: root, session, family: id => ctx.data.session.family(id),
-       sync: id => ctx.data.session.sync(id), owned,
-     }, parent)
+    await owned(ctx.data.session.form.sync("global", location))
+    parent.throwIfAborted()
+    if (!ctx.data.session.form.list("global", location)) throw Error("Native global forms unavailable")
     const values: HostRequest[] = [], identities = new Set<string>()
-    for (const id of members) {
+    let duplicate = false
+    // The bridge already bounds visited roots and live births. Refresh each
+    // complete native family without a second lifetime inventory of old visits.
+    const roots = await refreshNativeFamilies(notifications.trackedSessions(), {
+      resolveRoot: root, session, family: id => ctx.data.session.family(id),
+      sync: id => ctx.data.session.sync(id), owned,
+    }, parent, async id => {
       parent.throwIfAborted()
       ctx.data.session.permission.invalidate(id)
       await owned(ctx.data.session.permission.sync(id))
@@ -99,27 +97,29 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
       const forms = ctx.data.session.form.list(id)
       if (!pending || !forms || forms.some(value => value.sessionID !== id)) throw Error("Native queues unavailable")
       for (const value of pending) {
-        if (identities.has(value.id) || identities.size >= 16384) throw Error("Native permission identities unavailable")
+        if (identities.has(value.id) || identities.size >= 16384) {
+          duplicate = true
+          throw Error("Native permission identities unavailable")
+        }
         identities.add(value.id); values.push(request(value))
       }
-    }
+    })
     parent.throwIfAborted()
-    await owned(ctx.data.session.form.sync("global", location))
-    parent.throwIfAborted()
-    if (!ctx.data.session.form.list("global", location)) throw Error("Native global forms unavailable")
-    return values
-  })()), signal, publish)
+    if (duplicate) throw Error("Native permission identities unavailable")
+    return { values, roots }
+  })()), signal, healthy => { if (!healthy) publish(false) })
 
   /** Also usable by the caller's existing app composition, without another slot. */
   const visit = (id?: string) => {
     if (stopped || signal.aborted) return
     try {
       notifications.routeChanged()
-      if (!id || deleted.has(id)) return
+      if (!id) { visited = undefined; return }
+      if (deleted.has(id)) return
       const cached = ctx.data.session.get(id)
       if (cached && !sameLocation(cached.location, location)) return
       notifications.visit(id)
-      if (remember(visited, id)) { revision++; publish(false); void refresh.refresh() }
+      if (visited !== id) { visited = id; revision++; publish(false); void refresh.refresh() }
     } catch { publish(false) }
   }
   const observeRoute = () => {
@@ -141,7 +141,7 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
     stopped = true; abort.abort(); refresh.dispose()
     clearInterval(timer); off(); removeEffect()
     life.signal.removeEventListener("abort", onAbort)
-    views = []; sessions.clear(); visited.clear(); deleted.clear()
+    views = []; visited = undefined; deleted.clear()
     return disposal = Promise.allSettled([notifications.dispose(), settled()]).then(() => {})
   }
   const onAbort = () => { void dispose() }
@@ -151,6 +151,9 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   off = ctx.data.listen(({ details: event }) => {
     if (event.type === "server.connected") {
       if (initialConnectionEcho(state.connectionID, event.id)) return
+      // The supervisor captures continuity before aborting this composition,
+      // regardless of whether typed or general native listeners run first.
+      if (supervised) return
       void dispose(); return
     }
     if (stopped || signal.aborted) return
@@ -168,12 +171,11 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
         if (cached && !session(id)) return
         if (!event.location && !session(id)) return
         if (deleted.has(id)) return
-        if (event.type === "permission.asked" || event.type === "form.created") remember(sessions, id)
       }
       // Revoke stale native ownership before publishing births or terminal facts.
       revision++; publish(false)
       notifications.event(event)
-      if (event.type === "session.deleted") { remember(deleted, event.data.sessionID); sessions.delete(event.data.sessionID); visited.delete(event.data.sessionID) }
+      if (event.type === "session.deleted") { remember(deleted, event.data.sessionID); if (visited === event.data.sessionID) visited = undefined }
       void refresh.refresh()
     } catch { publish(false) }
   })

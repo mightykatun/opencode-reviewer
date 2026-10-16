@@ -1,20 +1,20 @@
 import type { HostRequest } from "./host-types.js"
 import { withDeadline } from "./deadline.js"
 
-interface PendingState<R = HostRequest> {
+interface PendingState<T> {
   readonly revision: number
-  reconcile(requests: readonly R[], revision: number): void
+  reconcile(value: T, revision: number): void
 }
 
 /** Read-only recovery. Deadline callbacks produce data, never controller effects. */
-export class PendingRefresh<R = HostRequest> {
+export class PendingRefresh<T = readonly HostRequest[]> {
   private syncing = false
   private stopped = false
   private again = false
   private generation = 0
   private abort = new AbortController()
   private signal: AbortSignal
-  constructor(private pending: PendingState<R>, private read: (signal: AbortSignal) => Promise<readonly R[]>, parent: AbortSignal,
+  constructor(private pending: PendingState<T>, private read: (signal: AbortSignal) => Promise<T>, parent: AbortSignal,
     private health?: (healthy: boolean) => void) {
     this.signal = AbortSignal.any([parent, this.abort.signal])
   }
@@ -25,7 +25,7 @@ export class PendingRefresh<R = HostRequest> {
     this.syncing = true
     const generation = ++this.generation
     const revision = this.pending.revision
-    let worker: Promise<readonly R[]> | undefined
+    let worker: Promise<T> | undefined
     const report = (healthy: boolean) => { if (!this.stopped && !this.signal.aborted) { try { this.health?.(healthy) } catch {} } }
     try {
       const requests = await withDeadline(this.signal, 5000, signal => worker = Promise.resolve().then(() => {

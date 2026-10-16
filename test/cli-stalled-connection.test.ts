@@ -7,7 +7,9 @@ import type { CliPluginState } from "../src/cli-plugin.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import { setupCliReconnect } from "../src/cli-reconnect.js"
 
-test("the reviewer relinquishes a stalled shared source instead of pinning native reconnection to its old marker", async t => {
+for (const retainedSubscriber of [false, true]) test(retainedSubscriber
+  ? "a foreign subscriber may pin the shared transport, but cannot make the reviewer admit its stale marker"
+  : "the reviewer relinquishes a stalled shared source instead of pinning native reconnection to its old marker", async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] })
   let now = 0, opens = 0, aborted = 0, native!: (event: { id: string }) => void
   t.mock.method(performance, "now", () => now)
@@ -26,15 +28,26 @@ test("the reviewer relinquishes a stalled shared source instead of pinning nativ
   const firstAbort = new AbortController(), life = new PluginLifecycle()
   const first = api.event.subscribe({ signal: firstAbort.signal })[Symbol.asyncIterator]()
   const initial = await first.next()
+  const foreignAbort = new AbortController()
+  const foreign = retainedSubscriber ? api.event.subscribe({ signal: foreignAbort.signal })[Symbol.asyncIterator]() : undefined
+  if (foreign) assert.equal((await foreign.next()).value!.id, initial.value!.id)
   const ctx = { location, client, data: { on: (_type: string, callback: typeof native) => { native = callback; return () => {} } } } as unknown as Plugin.Context
   const state = { connectionID: initial.value!.id, companion, config: {}, dependencies: {} } as CliPluginState
   let installs = 0
   setupCliReconnect(ctx, state, life, () => ({ generation: ++installs }))
-  t.after(async () => { firstAbort.abort(); await first.return?.(); await life.stop(); await life.settled() })
+  t.after(async () => { firstAbort.abort(); foreignAbort.abort(); await foreign?.return?.(); await first.return?.(); await life.stop(); await life.settled() })
   await settle()
   // The native watchdog owns only its subscriber, not the shared transport.
   firstAbort.abort(); await first.return?.()
   now += 45000; t.mock.timers.tick(45000); await settle(); await settle()
+  if (foreign) {
+    assert.equal(aborted, 0, "A plugin cannot cancel another subscriber's physical connection")
+    now += 250; t.mock.timers.tick(250); await settle(); await settle()
+    assert.equal(opens, 1); assert.equal(installs, 1); assert.equal(state.companion, undefined)
+    // A replay from a source still owned elsewhere is not fresh admission.
+    // Release only the fixture's own subscriber to permit actual native recovery.
+    foreignAbort.abort(); await foreign.return?.()
+  }
   assert.equal(aborted, 1, "The reviewer's own idle boundary must release the remaining shared-source subscription")
   const nextAbort = new AbortController()
   const next = api.event.subscribe({ signal: nextAbort.signal })[Symbol.asyncIterator]()

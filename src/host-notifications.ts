@@ -8,16 +8,31 @@ import type { AncestryRead, AncestryReader } from "./session-ancestry.js"
 import { conversationRoot } from "./route-approval.js"
 import { withDeadline } from "./deadline.js"
 import { LinuxNotifications } from "./notification-linux.js"
-import { NotificationPolicy } from "./notification-policy.js"
+import { NotificationPolicy, type NotificationAnnouncement } from "./notification-policy.js"
 import { notificationClock, type NotificationClock, type NotificationClick, type NotificationClickLease,
   type NotificationInteraction } from "./notification-types.js"
 import { uiText } from "./ui-text.js"
 import { hostBackgroundIdle } from "./host-background-work.js"
+import { sameLocation } from "./companion-protocol.js"
 
 type Target = { root: string; sessionID: string; title: string }
-type Birth = { sessionID: string; received: number; target?: Target }
+type Birth = { sessionID: string; received: number; root?: string; target?: Target; announced?: readonly NotificationAnnouncement[] }
 type Execution = { id: string; seq: number; terminal?: "ended" | "error"; done?: boolean }
 type ClickOwner = { sessionID: string; history?: HistoryTarget; route?: string; lease: NotificationClickLease }
+
+/** Volatile facts from actually delivered events, not startup snapshot eligibility,
+ * assessment evidence, timers, backend handles or approval confirmation leases. */
+export interface HostNotificationCheckpoint {
+  client: Plugin.Context["client"]
+  location: LocationRef
+  sequence: number
+  roots: ReadonlyMap<string, number>
+  visits: ReadonlyMap<string, number>
+  permissions: ReadonlyMap<string, Birth>
+  forms: ReadonlyMap<string, Birth>
+  closed: ReadonlySet<string>
+  deleted: ReadonlySet<string>
+}
 
 export interface HostNotificationOptions {
   resolveRoot: AncestryReader
@@ -26,6 +41,7 @@ export interface HostNotificationOptions {
   signal: AbortSignal
   openHistory?(sessionID: string, target: HistoryTarget, lease: NotificationClickLease): void | Promise<void>
   clock?: NotificationClock
+  checkpoint?: HostNotificationCheckpoint
 }
 
 /** Scope filtering, native cache synchronization and route observation belong to
@@ -53,7 +69,7 @@ export class HostNotifications {
   private completionReads = new Map<string, Promise<void>>()
   private activityRevision = 0
   private views: readonly View<RequestIdentity>[] = []
-  private healthy = false
+  private healthy: boolean | ReadonlySet<string> = false
   private clickOwner?: ClickOwner
   private clickWait?: () => void
   private onAbort = () => { void this.dispose() }
@@ -68,6 +84,16 @@ export class HostNotifications {
     const backend = state.dependencies.notifications?.(click, config)
       ?? new LinuxNotifications(config, click, state.dependencies.notificationProcesses?.())
     this.policy = new NotificationPolicy<RequestIdentity>(config, state.config?.autoApprove === true, backend, this.clock)
+    const previous = options.checkpoint
+    if (previous?.client === context.client && sameLocation(previous.location, this.location)) {
+      const copy = (values: ReadonlyMap<string, Birth>) => new Map([...values].map(([id, birth]) => [id, {
+        sessionID: birth.sessionID, received: birth.received, root: birth.root, announced: [...(birth.announced ?? [])],
+      }]))
+      this.sequence = previous.sequence
+      this.roots = new Map(previous.roots); this.visits = new Map(previous.visits)
+      this.permissions = copy(previous.permissions); this.forms = copy(previous.forms)
+      this.closed = new Set(previous.closed); this.deletedSessions = new Set(previous.deleted)
+    }
     options.signal.addEventListener("abort", this.onAbort, { once: true })
     if (options.signal.aborted) this.onAbort()
   }
@@ -151,13 +177,24 @@ export class HostNotifications {
   }
   private track(root: string, since: number) {
     const existing = this.roots.get(root)
-    if (!this.deletedSessions.has(root) && (existing !== undefined || this.roots.size < 256)) {
-      // A repeated route observation can see native metadata before an earlier
-      // asynchronous visit settles. Preserve the earliest actual visit boundary.
-      this.roots.set(root, Math.min(existing ?? since, since))
-      return true
+    if (this.deletedSessions.has(root)) return false
+    if (existing === undefined && this.roots.size >= 256) {
+      const inactive = [...this.roots.keys()].find(id => !this.live(id))
+      if (inactive === undefined) return false
+      this.roots.delete(inactive)
+      this.executions.delete(inactive)
     }
-    return false
+    // A repeated route observation can see native metadata before an earlier
+    // asynchronous visit settles. Preserve the earliest actual visit boundary.
+    this.roots.set(root, Math.min(existing ?? since, since))
+    return true
+  }
+  private live(root: string): boolean {
+    if (this.executions.has(root) && !this.executions.get(root)!.done) return true
+    if ([...this.dispatches.values()].some(value => value.target.root === root)) return true
+    if (this.views.some(view => this.rootOf(view.request.sessionID) === root)) return true
+    return [...this.permissions.values(), ...this.forms.values()].some(birth => (birth.target?.root ?? birth.root) === root
+      || (birth.received >= this.roots.get(root)! && this.rootOf(birth.sessionID) === root))
   }
   private admit(kind: "permission" | "question", id: string, birth: Birth) {
     if (birth.target || this.deletedSessions.has(birth.sessionID)) return
@@ -168,16 +205,17 @@ export class HostNotifications {
       return
     }
     const since = this.roots.get(root)
-    if (since === undefined || birth.received < since || this.deletedSessions.has(root)) return
+    if (since === undefined || birth.received < since || this.deletedSessions.has(root) || (birth.root && birth.root !== root)) return
     const request = kind === "permission" ? this.views.find(view => view.request.id === id && view.request.sessionID === birth.sessionID)?.request : undefined
     if (kind === "permission" && !request) return
     birth.target = this.target(root)
-    if (request) this.policy.permission(request, birth.target, true)
-    else this.policy.question(id, birth.target, true)
+    birth.root = root
+    if (request) this.policy.permission(request, birth.target, true, birth.announced)
+    else this.policy.question(id, birth.target, true, birth.announced)
   }
 
   private blocker(root: string): NotificationInteraction | undefined {
-    if (!this.healthy) return
+    if (!this.isHealthy(root)) return
     const queue = this.options.nativeQueue(root)
     if (queue.state === "unknown") return
     if (queue.state === "front") return { kind: "permission", id: queue.request.id }
@@ -201,7 +239,7 @@ export class HostNotifications {
     return blockers
   }
   private clearQueue(root: string) {
-    if (!this.healthy) return false
+    if (!this.isHealthy(root)) return false
     const queue = this.options.nativeQueue(root)
     return queue.state === "empty" && !this.formFront(queue.family)
   }
@@ -247,13 +285,15 @@ export class HostNotifications {
     // Registration changes only maps, never publishes recursively. Healthy
     // publications retry unresolved visits using their original event boundary.
     for (const [sessionID, since] of this.visits) {
-      try { this.registerVisit(sessionID, since, this.healthy) } catch {}
+      try { this.registerVisit(sessionID, since, this.healthy !== false) } catch {}
     }
     const blockers = this.blockers()
     for (const birth of [...this.permissions.values(), ...this.forms.values()]) {
       if (birth.target) birth.target.title = this.target(birth.target.root).title
     }
-    this.policy.snapshot(this.views, blockers, this.healthy)
+    // This bridge resolves absent permissions only for a freshly healthy family.
+    // The generic policy must not retire another family's temporarily missing view.
+    this.policy.snapshot(this.views, blockers, false)
     for (const [id, birth] of this.permissions) { try { this.admit("permission", id, birth) } catch {} }
     for (const [id, birth] of this.forms) { try { this.admit("question", id, birth) } catch {} }
     this.policy.pending(blockers)
@@ -265,17 +305,31 @@ export class HostNotifications {
       } catch {}
     }
   }
-  snapshot(views: readonly View<RequestIdentity>[], healthy?: boolean) {
+  private isHealthy(root: string) { return this.healthy === true || (this.healthy !== false && this.healthy.has(root)) }
+  trackedSessions(): ReadonlySet<string> {
+    return new Set([...this.roots.keys(), ...this.visits.keys(),
+      ...[...this.permissions.values(), ...this.forms.values()].map(birth => birth.sessionID)])
+  }
+  snapshot(views: readonly View<RequestIdentity>[], healthy?: boolean | ReadonlySet<string>) {
     this.guard(() => {
       this.routeChanged()
       if (healthy !== undefined) {
-        if (!healthy) this.activityRevision++
-        this.healthy = healthy
+        if (healthy === false) this.activityRevision++
+        this.healthy = typeof healthy === "boolean" ? healthy : new Set(healthy)
       }
       this.views = views.filter(view => !view.resolved && !view.retained)
       if (this.healthy) {
         const pending = new Set(this.views.map(view => view.request.id))
-        for (const [id, birth] of this.permissions) if (birth.target && !pending.has(id)) this.resolve("permission", id, birth.sessionID)
+        for (const [id, birth] of this.permissions) {
+          const root = birth.target?.root ?? birth.root ?? this.rootOf(birth.sessionID)
+          if (root && this.isHealthy(root) && !pending.has(id)) this.resolve("permission", id, birth.sessionID)
+        }
+        for (const [id, birth] of this.forms) {
+          const root = birth.target?.root ?? birth.root ?? this.rootOf(birth.sessionID)
+          if (!root || !this.isHealthy(root)) continue
+          const forms = hostPermissionIdentities(birth.sessionID, this.context.data.session.form.list(birth.sessionID))
+          if (forms && !forms.some(form => form.id === id)) this.resolve("question", id, birth.sessionID)
+        }
       }
       this.publish()
     })
@@ -396,12 +450,21 @@ export class HostNotifications {
       this.roots.delete(sessionID); this.executions.delete(sessionID)
       this.visits.delete(sessionID)
       for (const [id, root] of this.ancestry) if (id === sessionID || root === sessionID) this.ancestry.delete(id)
-      for (const [id, birth] of this.permissions) if (birth.sessionID === sessionID || birth.target?.root === sessionID) this.resolve("permission", id, birth.sessionID)
-      for (const [id, birth] of this.forms) if (birth.sessionID === sessionID || birth.target?.root === sessionID) this.resolve("question", id, birth.sessionID)
+      for (const [id, birth] of this.permissions) if (birth.sessionID === sessionID || (birth.target?.root ?? birth.root) === sessionID) this.resolve("permission", id, birth.sessionID)
+      for (const [id, birth] of this.forms) if (birth.sessionID === sessionID || (birth.target?.root ?? birth.root) === sessionID) this.resolve("question", id, birth.sessionID)
       for (const [id, dispatch] of this.dispatches) if (dispatch.request.sessionID === sessionID || dispatch.target.root === sessionID) this.dispatches.delete(id)
       this.policy.deleted(sessionID)
       this.publish()
     })
+  }
+  checkpoint(): HostNotificationCheckpoint {
+    const births = (kind: "permission" | "question", values: ReadonlyMap<string, Birth>) => new Map([...values].map(([id, birth]) => [id, {
+      sessionID: birth.sessionID, received: birth.received, root: birth.target?.root ?? birth.root,
+      announced: birth.target ? this.policy.announced(kind, id) : birth.announced,
+    }]))
+    return { client: this.context.client, location: { ...this.location }, sequence: this.sequence,
+      roots: new Map(this.roots), visits: new Map(this.visits), permissions: births("permission", this.permissions),
+      forms: births("question", this.forms), closed: new Set(this.closed), deleted: new Set(this.deletedSessions) }
   }
   dispose(): Promise<void> {
     if (this.disposal) return this.disposal

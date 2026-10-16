@@ -71,8 +71,12 @@ export class NotificationAudio {
     return file
   }
   private async file(kind: NotificationKind, signal: AbortSignal) {
+    // Bound the caller's entire wait, including time queued behind two physically
+    // unsettled preparations. The shared preparation keeps its own I/O lease.
+    const wait = (pending: Promise<string | undefined>) => withDeadline(signal, 2000,
+      bounded => notificationWait(pending, bounded))
     const existing = this.prepared.get(kind)
-    if (existing) return notificationWait(existing, signal)
+    if (existing) return wait(existing)
     let yes!: (file: string | undefined) => void, no!: (error: unknown) => void
     const preparation = new Promise<string | undefined>((resolve, reject) => { yes = resolve; no = reject })
     this.prepared.set(kind, preparation)
@@ -96,7 +100,7 @@ export class NotificationAudio {
     this.prepareNext()
     // A resolved/canceled banner stops its playback wait, not a shared bounded
     // preparation that a following notification of the same kind still needs.
-    return notificationWait(preparation, signal)
+    return wait(preparation)
   }
   private prepareNext() { while (this.preparing < 2 && this.preparations.length) this.preparations.shift()!() }
   /** Decode/cache before desktop delivery, so a visible banner does not wait on WASM or file I/O. */

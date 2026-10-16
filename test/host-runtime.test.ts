@@ -19,7 +19,7 @@ const location = { directory: "/server/project" }
 const companion = { protocol: 1 as const, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location,
   project: { id: "project", directory: "/server", canonical: "/server" } }
 const pending = (id: string) => ({ id, sessionID: "root", action: "unknown", resources: ["scope"] })
-async function fixture(options: { notify?: boolean; formSync?: () => Promise<void>; sessionSync?: () => Promise<void>;
+async function fixture(options: { notify?: boolean; reminderSeconds?: number; formSync?: (id: string) => Promise<void>; sessionSync?: (id: string) => Promise<void>;
   backend?: NotificationBackend; unavailable?: "configuration" | "companion"; connectionID?: string;
   startupFailure?: "companion" | "configuration" | "unobserved" | "conflicting"; recovery?: boolean;
   location?: { directory: string; workspaceID?: string }; reverseEvents?: boolean } = {}) {
@@ -60,10 +60,10 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
         listeners.add(listen); return () => { listeners.delete(listen) }
       },
       session: { list: () => [{ id: "root", location }],
-        get: (id: string) => ({ id, location, ...(id === "child" ? { parentID: "root" } : {}) }), family: () => ["root"],
-        sync: async (id: string) => { calls.push("session:" + id); await options.sessionSync?.() },
+         get: (id: string) => ({ id, location, ...(id === "child" ? { parentID: "root" } : {}) }), family: (id: string) => [id],
+         sync: async (id: string) => { calls.push("session:" + id); await options.sessionSync?.(id) },
         permission: { invalidate: (id: string) => calls.push("invalidate:" + id), sync: async (id: string) => { calls.push("sync:" + id) },
-           list: () => state.nativeRequests ?? state.requests }, form: { sync: async () => { calls.push("form"); await options.formSync?.() },
+            list: (id: string) => (state.nativeRequests ?? state.requests).filter(value => value.sessionID === id) }, form: { sync: async (id: string) => { calls.push("form"); await options.formSync?.(id) },
              list: (id: string) => id === "root" ? state.forms : [] } } },
     keymap: { mode: { current: () => "base" }, layer: (factory: () => { commands: typeof commands }) => {
       const owned = factory().commands
@@ -87,7 +87,8 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
   const root = await mkdtemp("/tmp/reviewer-runtime-source-")
   const dependencies = { notifications: () => options.backend ?? ({ show: async () => undefined, dispose: () => {} }) }
   let pluginState: CliPluginState = { ...(options.unavailable === "configuration" ? { configError: "Invalid configuration" }
-    : { config: parseConfig({ baseURL: "http://localhost:40999", model: "unused", notify: options.notify ?? false }) }),
+    : { config: parseConfig({ baseURL: "http://localhost:40999", model: "unused", notify: options.notify ?? false,
+      ...(options.reminderSeconds !== undefined ? { staleReminderSeconds: options.reminderSeconds } : {}) }) }),
     ...(options.unavailable === "companion" ? {} : { companion: scopedCompanion }), connectionID: options.connectionID ?? (options.recovery ? "event-initial" : undefined), stateRoot: root, prompts: BUILTIN_PROMPTS,
     dependencies }
   if (options.startupFailure) {
@@ -107,7 +108,7 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
   const recovery = options.recovery ? setupHostRecovery(ctx, pluginState, life) : undefined
   const runtime = recovery ? recovery.current()! : setupHostRuntime(ctx, pluginState, life)!
   let sequence = 0
-  return { life, runtime, recovery, slots, listeners, pluginState, state, calls, ancestryReads, commands, renderer, stateRoot: root,
+  return { life, runtime, recovery, slots, listeners, pluginState, state, ctx, calls, ancestryReads, commands, renderer, stateRoot: root,
     clientMarker: (id: string) => { markers.push(id); markerAvailable() }, event: (type: string, data: unknown, eventID?: string) => {
     sequence++
     for (const listen of options.reverseEvents ? [...listeners].reverse() : listeners) listen({ details: { type, data, location, id: eventID ?? `event-${sequence}`, created: sequence,
@@ -115,6 +116,33 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
   } }
 }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+
+for (const unavailable of [undefined, "companion"] as const) for (const reverseEvents of [false, true])
+test(`production ${unavailable ? "fallback" : "reviewer"} reconnection resumes proven pending reminders with ${reverseEvents ? "general" : "typed"} listeners first`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] })
+  let now = 0
+  t.mock.method(performance, "now", () => now)
+  const banners: string[] = []
+  const f = await fixture({ recovery: true, notify: true, reminderSeconds: 1, reverseEvents, unavailable,
+    backend: { async show(message) { banners.push(message.title); return { close() {} } }, dispose() {} } })
+  t.after(async () => { await f.life.stop(); await f.life.settled() })
+  for (let turn = 0; turn < 10; turn++) await tick()
+  f.state.route = { type: "session", sessionID: "root" }; f.runtime?.notifications!.visit("root")
+  f.event("permission.asked", pending("first"))
+  for (let turn = 0; turn < 10; turn++) await tick()
+  assert.deepEqual(banners, ["Session needs attention"])
+  f.event("server.connected", {}, "event-next"); f.clientMarker("event-next")
+  for (let turn = 0; turn < 20; turn++) await tick()
+  assert.equal(f.recovery!.current()?.controller.pendingViews[0]?.request.id, "first")
+  assert.deepEqual(banners, ["Session needs attention"], "Fresh snapshots cannot replay the initial")
+  now = 1000; t.mock.timers.tick(1000)
+  for (let turn = 0; turn < 10; turn++) await tick()
+  assert.deepEqual(banners, ["Session needs attention", "Session needs attention (Reminder)"])
+  f.state.requests = []; f.event("permission.replied", { sessionID: "root", requestID: "first", reply: "once" })
+  for (let turn = 0; turn < 10; turn++) await tick()
+  now = 2000; t.mock.timers.tick(1000); await tick()
+  assert.equal(banners.length, 2, "Native resolution ends the resumed reminder")
+})
 
 test("production reconnect admits permissions while an aborted optional native form read remains owned", async t => {
   let release!: () => void, forms = 0
@@ -267,6 +295,37 @@ test("full runtime preserves a delivered question initial across unrelated shell
   f.event("shell.deleted", { id: "unrelated-shell" })
   await tick(); await tick(); await tick()
   assert.deepEqual(banners, ["Agent has a question"])
+})
+
+test("an unreadable other conversation's forms cannot silence a fresh native question in the current root", async t => {
+  const banners: string[] = []
+  const f = await fixture({ notify: true, formSync: async id => { if (id === "other") throw Error("Other forms unavailable") },
+    backend: { async show(message) { banners.push(message.kind); return { close() {} } }, dispose() {} } })
+  t.after(() => f.life.stop())
+  await tick(); await tick()
+  f.state.requests = []; await f.runtime.refresh.refresh()
+  f.state.route = { type: "session", sessionID: "root" }; f.runtime.notifications!.visit("root")
+  f.runtime.notifications!.visit("other")
+  f.event("session.execution.started", { sessionID: "other" })
+  const question: FormInfo = { id: "healthy-question", sessionID: "root", title: "Question", fields: [{ type: "string", key: "answer" }] }
+  f.state.forms = [question]; f.event("form.created", { form: question })
+  for (let turn = 0; turn < 10; turn++) await tick()
+  assert.deepEqual(banners, ["question"])
+})
+
+test("unreadable independent metadata cannot block valid pending admission or acquire a cache refresh", async t => {
+  const f = await fixture(); t.after(() => f.life.stop())
+  await tick(); await tick()
+  const get = f.ctx.client.session.get
+  f.ctx.client.session.get = (async (input: { sessionID: string }) => {
+    if (input.sessionID === "other") throw Error("Other metadata unavailable")
+    return get(input)
+  }) as typeof get
+  f.state.requests = [pending("healthy-new"), { ...pending("unreadable"), sessionID: "other" }]
+  await f.runtime.refresh.refresh(); await tick()
+  assert.deepEqual(f.runtime.controller.pendingViews.map(view => view.request.id), ["healthy-new", "unreadable"])
+  assert.equal(f.runtime.front("root"), "healthy-new")
+  assert.equal(f.calls.includes("sync:other"), false, "Incomplete metadata never counts as a successful native-cache refresh")
 })
 
 for (const unavailable of ["configuration", "companion"] as const) {
@@ -508,6 +567,25 @@ test("notification form failures cannot prevent valid permission admission", asy
     await f.runtime.refresh.refresh()
     assert.equal(f.runtime.controller.pendingViews[0]?.request.id, "next")
   } finally { await f.life.stop() }
+})
+
+test("optional form churn cannot invalidate a settled permission snapshot while its follow-up read waits", async t => {
+  const f = await fixture({ notify: true })
+  let release!: () => void, followup!: () => void
+  const first = new Promise<void>(resolve => { release = resolve }), second = new Promise<void>(resolve => { followup = resolve })
+  t.after(async () => { release(); followup(); await f.life.stop(); await f.life.settled() })
+  await tick(); await tick()
+  let reads = 0
+  f.state.list = async () => {
+    await (++reads === 1 ? first : second)
+    return { location, data: [pending("after-forms")] }
+  }
+  const refreshing = f.runtime.refresh.refresh()
+  await tick()
+  const question: FormInfo = { id: "optional", sessionID: "root", title: "Question", fields: [{ type: "string", key: "answer" }] }
+  f.event("form.created", { form: question })
+  release(); await refreshing; await tick()
+  assert.deepEqual(f.runtime.controller.pendingViews.map(view => view.request.id), ["after-forms"])
 })
 
 test("stalled optional form work remains owned without blocking permission refresh", async () => {

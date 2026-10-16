@@ -117,12 +117,40 @@ test("sound preparation reserves two slots before deferred callbacks and retains
   assert.equal(writes.length, 2)
   now = 2000; t.mock.timers.tick(2000); await settle()
   assert.equal(await waits[0], false); assert.equal(await waits[1], false)
+  assert.equal(await waits[2], false, "Queueing is included in the caller's preparation budget")
   assert.equal(writes.length, 2, "timed-out writes still own preparation slots")
   writes[0]!()
   for (let i = 0; i < 20 && writes.length < 3; i++) await settle()
   assert.equal(writes.length, 3)
-  writes[1]!(); writes[2]!(); assert.equal(await waits[2], true)
+  const recovered = audio.ready("question", signal)
+  writes[1]!(); writes[2]!(); assert.equal(await recovered, true)
   await audio.dispose()
+})
+
+test("queued sound preparation has a bounded wait even while both physical writes remain stuck", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  let now = 0
+  t.mock.method(performance, "now", () => now)
+  const f = transport(), writes: (() => void)[] = []
+  const sound = { format: "wav" as const, data: fixtureWav().toString("base64") }
+  const audio = new NotificationAudio(f.raw, undefined, { attention: sound, unsafe: sound, question: sound }, {
+    open, mkdtemp: (async () => "/fixture-sounds") as never,
+    writeFile: () => new Promise<void>(resolve => writes.push(resolve)), rm: async () => {},
+  })
+  t.after(async () => { const stopped = audio.dispose(); for (const release of writes) release(); await stopped })
+  const signal = new AbortController().signal
+  const first = audio.ready("attention", signal), second = audio.ready("unsafe", signal)
+  for (let turn = 0; turn < 20 && writes.length < 2; turn++) await settle()
+  assert.equal(writes.length, 2)
+  now = 2000; t.mock.timers.tick(2000); await settle()
+  assert.equal(await first, false); assert.equal(await second, false)
+  let result: boolean | undefined
+  void audio.ready("question", signal).then(value => { result = value })
+  await settle()
+  now = 4000; t.mock.timers.tick(2000); await settle()
+  assert.equal(result, false, "An unavailable sound must not hold its banner's preparation indefinitely")
+  assert.equal(writes.length, 2, "A caller timeout cannot release either physical preparation slot")
+  assert.equal(f.calls.length, 0)
 })
 
 test("approval playback spacing begins at actual player dispatch after cold preparation", async t => {

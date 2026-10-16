@@ -268,8 +268,12 @@ existing user directories.
   evidence or approval leases. Critical native-cache/write work must settle before
   replacement; aborted optional notification/history cleanup remains physically
   owned but does not gate admission. Carry only manual tombstones and identity-bound
-  monotonic countdown deadlines, not assessments. Own the live subscriber through
-  failure, resubscription and cleanup. Invalid handshakes stay manual.
+  monotonic countdown deadlines for review, not assessments. Notification continuity
+  carries only observed births, visits and announcement attempts for the identical
+  public client and location; fresh native family health must precede reminders,
+  with no startup-snapshot replay, old timers, backend handles or approval leases.
+  Own the live subscriber through failure, resubscription and cleanup. Invalid
+  handshakes stay manual.
 - CLI startup consumes the public client's current `server.connected` marker before
   dispatching the first companion RPC, including when setup begins after connection.
   Ignore the native data bridge's delayed echo only for that exact public event ID;
@@ -303,8 +307,10 @@ existing user directories.
   transactions through abort/settlement, and fail notification health closed on errors.
 - `host-native-observations.ts` refreshes roots/seeds before reading native family
   rosters, then all member metadata before ancestry validation. Permission and form
-  callers retain separate budgets and health. `host-queue.ts` keeps early native
-  priority separate from complete unknown/empty/front notification observations.
+  callers retain separate budgets and per-conversation health. Settled failures in
+  one conversation cannot silence another; an incomplete member still excludes its
+  entire family, and aborts retain actual transaction ownership. `host-queue.ts`
+  keeps early native priority separate from complete unknown/empty/front notification observations.
   Native reactive caches supply public identities, never mandatory operation evidence.
 - `host-sidebar.tsx` measures native FRAME geometry; `host-review-panel.tsx` and
   `host-history-view.tsx` prove actual hit ownership for UI/fixture observations,
