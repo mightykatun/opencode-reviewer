@@ -553,6 +553,34 @@ test("category switches gate before files and remain independent; unknown source
   assert.deepEqual(files.calls, [])
 })
 
+test("collection and response validation honor exactly their own review-category switch", async () => {
+  const disabled = { ...options, reviewBash: false, reviewEdits: false, reviewExternalDirectories: false, reviewSkills: false, reviewTools: false }
+  const skill = owned("skill", { id: "fixture" }, { ...externalRequest, action: "skill", resources: ["fixture"] })
+  const catalog = async () => ({ location, data: [{ id: "fixture", name: "Fixture", path: "/skills/fixture/SKILL.md", content: "Fixture instructions." }] })
+  const cases = [
+    { flag: "reviewBash", kind: "shell", value: shell("echo safe") },
+    { flag: "reviewEdits", kind: "edit", value: owned() },
+    { flag: "reviewExternalDirectories", kind: "external-directory", value: owned("write", externalInput, externalRequest) },
+    { flag: "reviewSkills", kind: "skill", value: skill },
+    { flag: "reviewTools", kind: "tool", value: owned("fixture_lookup", {}, { ...externalRequest, action: "lookup" }) },
+  ] as const
+  for (const { flag, kind, value } of cases) {
+    const files = io(), enabled = { ...disabled, [flag]: true }
+    const result = await collectHostOperation(value, enabled, signal(), files.access, catalog)
+    assert.ok(result.status === "ready", kind)
+    assert.equal(result.evidence.kind, kind)
+    assert.deepEqual(readHostOperationEvidence(result.evidence, value, enabled, signal()), result.evidence)
+    const before = [...files.calls]
+    for (const other of [undefined, ...cases.filter(item => item.flag !== flag).map(item => item.flag)]) {
+      const config = other ? { ...disabled, [other]: true } : disabled
+      assert.deepEqual(await collectHostOperation(value, config, signal(), files.access, async () => assert.fail("Disabled catalog read")),
+        { status: "disabled", reason: `${kind} review disabled` })
+      assert.equal(readHostOperationEvidence(result.evidence, value, config, signal()), undefined)
+    }
+    assert.deepEqual(files.calls, before, "Disabled categories do not collect filesystem evidence")
+  }
+})
+
 test("parent cancellation rejects rather than becoming an optional source omission and retains I/O ownership", async () => {
   let settle!: (value: string) => void, started!: () => void
   const pending = new Promise<string>(resolve => { settle = resolve })

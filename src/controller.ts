@@ -244,13 +244,16 @@ export class Controller<R extends RequestIdentity = HostRequest> {
       }
       this.startApproval(entry)
       if (entry.view.autoApproval?.status === "waiting" && !entry.approvalAbort && !entry.approvalRefresh && this.eligible(entry)) {
-        entry.view = { ...entry.view, autoApproval: { status: "countdown", seconds: Math.min(this.options.autoApproveDelaySeconds ?? 15,
-          Math.max(0, Math.ceil((entry.deadline! - this.time.now()) / 1000))) } }
+        entry.view = { ...entry.view, autoApproval: { status: "countdown", seconds: this.countdownSeconds(entry) } }
         this.publish()
       }
       if (entry.view.autoApproval?.status === "countdown" && !entry.cancelTimer && !entry.approvalAbort
         && !entry.approvalRefresh && this.eligible(entry)) this.schedule(entry)
     }
+  }
+
+  private countdownSeconds(entry: Entry<R>, limit = this.options.autoApproveDelaySeconds ?? 15) {
+    return Math.min(limit, Math.max(0, Math.ceil((entry.deadline! - this.time.now()) / 1000)))
   }
 
   /** Rating and settlement may start work only under fresh native policy. */
@@ -268,8 +271,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     // a full second. Zero remains an immediate attempt.
     if (entry.deadline === undefined)
       entry.deadline = this.time.now() + seconds * 1000 + (seconds > 0 ? 200 : 0)
-    entry.view = { ...entry.view, autoApproval: { status: "countdown",
-      seconds: Math.min(seconds, Math.max(0, Math.ceil((entry.deadline - this.time.now()) / 1000))) } }
+    entry.view = { ...entry.view, autoApproval: { status: "countdown", seconds: this.countdownSeconds(entry, seconds) } }
     this.publish()
     // Even zero delay goes through the same cancellable single-flight path.
     this.schedule(entry)
@@ -449,8 +451,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
       if (!this.active(entry) || entry.view.autoApproval?.status !== "countdown") return
       const eligible = this.approvalEligible(entry)
       if (this.manual.has(entry.view.request.id)) return
-      const seconds = Math.min(this.options.autoApproveDelaySeconds ?? 15,
-        Math.max(0, Math.ceil((entry.deadline! - this.time.now()) / 1000)))
+      const seconds = this.countdownSeconds(entry)
       if (entry.view.autoApproval.seconds !== seconds) {
         entry.view = { ...entry.view, autoApproval: { status: "countdown", seconds } }
         this.publish()
@@ -612,7 +613,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
           && !this.manual.has(id) && this.safe(entry)) {
           entry.eligibilityPending = false
           entry.view = { ...entry.view, autoApproval: this.options.fastMode ? undefined : { status: "countdown",
-            seconds: Math.min(this.options.autoApproveDelaySeconds ?? 15, Math.max(0, Math.ceil((entry.deadline! - this.time.now()) / 1000))) } }
+            seconds: this.countdownSeconds(entry) } }
           this.publish()
           // Only a fresh synchronous proof can resume. Preserve the original end.
           if (this.eligible(entry)) {

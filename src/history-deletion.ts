@@ -31,28 +31,28 @@ export function deleteHistory(db: HistoryDatabase, context: HistoryScope): boole
   const removeAttempt = db.prepare("DELETE FROM attempts WHERE id=?")
   const nextSession = db.prepare(isRoot ? "SELECT id FROM sessions WHERE scope=? AND root=? LIMIT 1" : "SELECT id FROM sessions WHERE id=?")
   const removeSession = db.prepare("DELETE FROM sessions WHERE id=?")
+  const deleteRow = () => {
+    const h = history.get(key)
+    if (h) { removeHistory.run(h.id); return true } // Exactly one bounded payload, including overflow pages.
+    const a = approval.get(key)
+    if (a) { removeApproval.run(a.id); return true }
+    const r = review.get(key)
+    if (r) {
+      const a = attempt.get(r.id)
+      if (a) removeAttempt.run(a.id)
+      else removeReview.run(r.id)
+      return true
+    }
+    const s = isRoot ? nextSession.get(context.scope, context.root) : nextSession.get(session)
+    if (!s) return false
+    removeSession.run(s.id)
+    return true
+  }
   const end = performance.now() + HISTORY_DELETE_MS
   for (let step = 0; step < HISTORY_DELETE_STEPS; step++) {
-    const h = history.get(key)
-    if (h) removeHistory.run(h.id) // Exactly one bounded payload, including overflow pages.
-    else {
-      const a = approval.get(key)
-      if (a) removeApproval.run(a.id)
-      else {
-        const r = review.get(key)
-        if (r) {
-          const a = attempt.get(r.id)
-          if (a) removeAttempt.run(a.id)
-          else removeReview.run(r.id)
-        } else {
-          const s = isRoot ? nextSession.get(context.scope, context.root) : nextSession.get(session)
-          if (s) removeSession.run(s.id)
-          else {
-            db.prepare("DELETE FROM history_deletions WHERE id=?").run(session)
-            return true
-          }
-        }
-      }
+    if (!deleteRow()) {
+      db.prepare("DELETE FROM history_deletions WHERE id=?").run(session)
+      return true
     }
     if (performance.now() >= end) break
   }

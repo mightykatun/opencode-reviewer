@@ -116,6 +116,11 @@ function operationKind({ snapshot: { request }, invocation }: OperationRead) {
     : !nativeTools.has(invocation.tool) ? "tool" : undefined
 }
 
+function reviewEnabled(kind: HostOperationEvidence["kind"], options: HostEvidenceOptions) {
+  return kind === "shell" ? options.reviewBash : kind === "edit" ? options.reviewEdits
+    : kind === "skill" ? options.reviewSkills : kind === "tool" ? options.reviewTools : options.reviewExternalDirectories
+}
+
 function shellLocation(invocation: HostInvocation) {
   const workdir = invocation.input.workdir as string | undefined
   if (workdir?.includes("\0") || workdir === "~" || workdir?.startsWith("~/")) {
@@ -343,9 +348,7 @@ export async function collectHostOperation(owned: OperationRead, options: HostEv
   const { snapshot: { request }, invocation } = owned
   const kind = operationKind(owned)
   if (!kind) return { status: "unsupported", reason: "Exact supported native tool/action mapping unavailable; MCP/custom origin is not inferred." }
-  const enabled = kind === "shell" ? options.reviewBash : kind === "edit" ? options.reviewEdits
-    : kind === "skill" ? options.reviewSkills : kind === "tool" ? options.reviewTools : options.reviewExternalDirectories
-  if (!enabled) return { status: "disabled", reason: `${kind} review disabled` }
+  if (!reviewEnabled(kind, options)) return { status: "disabled", reason: `${kind} review disabled` }
   if (kind === "tool") {
     const { metadata, ...permissionScope } = request
     const proposed = operation(invocation, signal)
@@ -502,9 +505,7 @@ export function readHostOperationEvidence(value: unknown, owned: OperationRead, 
   try {
     assertOperationScope(owned)
     const copy = boundedHostJSON(value, hostOperationJSONBytes), kind = operationKind(owned)
-    if (!kind || !(kind === "shell" ? options.reviewBash
-      : kind === "edit" ? options.reviewEdits : kind === "skill" ? options.reviewSkills
-        : kind === "tool" ? options.reviewTools : options.reviewExternalDirectories)) return
+    if (!kind || !reviewEnabled(kind, options)) return
     const common = ["kind", "tool", "permission", "location", "project", "operation", "limitations"]
     const fields = kind === "shell" ? ["command", "cwd", "execution", "files"] : kind === "edit" ? ["changes", "partial"]
       : kind === "skill" ? ["skill"] : kind === "tool" ? [] : ["partial"]

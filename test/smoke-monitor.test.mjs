@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import path from "node:path"
+import { rpcDefinition } from "../scripts/smoke-v2-rpc.mjs"
 
 const { parseSync } = createRequire(path.resolve("package.json"))("@babel/core")
 const deferred = () => {
@@ -10,6 +11,30 @@ const deferred = () => {
   const promise = new Promise(done => { resolve = done })
   return { promise, resolve }
 }
+
+test("shared fixture RPC schema preserves the independent wire contract and serializes without a closure", () => {
+  const text = { type: "string", minLength: 1, maxLength: 16384 }
+  const location = { type: "object", properties: { directory: text, workspaceID: text },
+    required: ["directory"], additionalProperties: false }
+  const errors = { scope: { type: "object", properties: {}, additionalProperties: false } }
+  const expected = { id: "opencode-reviewer", methods: {
+    handshake: { input: location, output: { type: "object", properties: {
+      protocol: { const: 1 }, hostVersion: text, epoch: { type: "string", format: "uuid" }, location,
+      project: { type: "object", properties: { id: text, directory: text, canonical: text },
+        required: ["id", "directory", "canonical"], additionalProperties: false },
+    }, required: ["protocol", "hostVersion", "epoch", "location", "project"], additionalProperties: false }, errors },
+    invocation: { input: { type: "object", properties: { location, epoch: text, sessionID: text, requestID: text },
+      required: ["location", "epoch", "sessionID", "requestID"], additionalProperties: false },
+    output: { anyOf: [{ type: "null" }, { type: "object", properties: {
+      request: { type: "object" }, invocation: { type: "object" },
+    }, required: ["request", "invocation"], additionalProperties: false }] }, errors },
+  }, events: {} }
+  assert.deepEqual(rpcDefinition(), expected)
+  assert.deepEqual(new Function(`${rpcDefinition}\nreturn rpcDefinition()`)(), expected)
+  const changed = rpcDefinition()
+  changed.methods.handshake.output.properties.protocol.const = 99
+  assert.deepEqual(rpcDefinition(), expected, "Each observer receives its own schema objects")
+})
 
 async function connectionObserver() {
   const text = await readFile(new URL("../scripts/smoke-v2-lifecycle.mjs", import.meta.url), "utf8")

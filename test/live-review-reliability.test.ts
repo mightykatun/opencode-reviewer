@@ -22,7 +22,7 @@ test("missing mandatory evidence remains visible and manual while its native per
   let reads = 0, posts = 0
   const client = { rpc: () => ({ invocation: async () => { reads++; return null } }) } as unknown as OpenCodeClient
   const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", notify: false })
-  const controller = new Controller((request, signal, identified) =>
+  const controller = new Controller((_request, signal, identified) =>
     evaluateHostReview(client, snapshot, config, BUILTIN_PROMPTS, signal, identified, {
       fetcher: async () => { posts++; throw Error("No model call without evidence") },
     }), () => {}, { candidate: () => true, nativeFront: () => snapshot.request.id })

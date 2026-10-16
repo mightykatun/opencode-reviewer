@@ -34,27 +34,7 @@ import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 import { activatePalette } from "./smoke-ui.mjs"
 import { readProductionHistory, assertWriteInspection, assertWriteEvidence, assertEvidenceRequest,
   savedStageHistory } from "./smoke-v2-review-support.mjs"
-
-// Independent public wire schema. No production imports in either observer.
-function rpcDefinition() {
-  const text = { type: "string", minLength: 1, maxLength: 16384 }
-  const location = { type: "object", properties: { directory: text, workspaceID: text },
-    required: ["directory"], additionalProperties: false }
-  return { id: "opencode-reviewer", methods: {
-    handshake: { input: location, output: { type: "object", properties: {
-      protocol: { const: 1 }, hostVersion: text, epoch: { type: "string", format: "uuid" }, location,
-      project: { type: "object", properties: { id: text, directory: text, canonical: text },
-        required: ["id", "directory", "canonical"], additionalProperties: false },
-    }, required: ["protocol", "hostVersion", "epoch", "location", "project"], additionalProperties: false },
-    errors: { scope: { type: "object", properties: {}, additionalProperties: false } } },
-    invocation: { input: { type: "object", properties: { location, epoch: text, sessionID: text, requestID: text },
-      required: ["location", "epoch", "sessionID", "requestID"], additionalProperties: false },
-    output: { anyOf: [{ type: "null" }, { type: "object", properties: {
-      request: { type: "object" }, invocation: { type: "object" },
-    }, required: ["request", "invocation"], additionalProperties: false }] },
-    errors: { scope: { type: "object", properties: {}, additionalProperties: false } } },
-  }, events: {} }
-}
+import { rpcDefinition } from "./smoke-v2-rpc.mjs"
 
 // Title interception suppresses auxiliary model calls. Registered-tool cases
 // advertise one genuine MCP tool directly through its public Code Mode option.
