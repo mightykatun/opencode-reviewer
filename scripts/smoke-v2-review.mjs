@@ -13,6 +13,8 @@
 // normal-skill / fast-skill (registered main instructions and actual native skill loading).
 // normal-tool / fast-tool (real local MCP server, shared registered-tool review).
 // normal-project-transition (nongit to committed Git identity with the original companion still loaded).
+// normal-long-session (512 completed native Code Mode calls before direct review).
+// normal-large-source (oversized source excerpts through the installed companion and judge).
 // Build first. Do not execute a host until the main session grants approval.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
@@ -61,7 +63,29 @@ async function serverSetup(ctx) {
   const advertised = fixture.registeredTool ? await ctx.tool.transform(editor => {
     editor.update("fixture_lookup", tool => { tool.options = { ...tool.options, codemode: false } })
   }) : undefined
-  return async () => { await advertised?.dispose(); await registration.dispose() }
+  const registrations = [], publisher = fixture.longSession ? observationPublisher(fixture.warmup) : undefined
+  if (publisher) {
+    const record = { before: 0, after: 0, completed: 0, pending: 0, maximum: 0, identities: {} }
+    registrations.push(await ctx.tool.transform(editor => {
+      editor.namespace({ name: "fixture", description: "Isolated long-session fixture" })
+      editor.add({ name: "noop", description: "Return a fixed marker without I/O", options: { namespace: "fixture", codemode: true },
+        input: { type: "object", properties: {}, additionalProperties: false }, execute: async () => ({ content: "warmup" }) })
+    }))
+    for (const phase of ["before", "after"]) registrations.push(await ctx.tool.hook(`execute.${phase}`, event => {
+      if (!event.id.startsWith("warmup-")) return
+      record[phase]++
+      record.pending += phase === "before" ? 1 : -1
+      record.maximum = Math.max(record.maximum, record.pending)
+      if (phase === "after" && event.status === "completed") record.completed++
+      const counts = record.identities[event.id] ??= { before: 0, after: 0 }
+      counts[phase]++
+      void publisher.publish(record)
+    }))
+  }
+  return async () => {
+    for (const item of registrations.toReversed()) await item.dispose()
+    await publisher?.close(); await advertised?.dispose(); await registration.dispose()
+  }
 }
 
 async function monitorSetup(ctx) {
@@ -410,6 +434,8 @@ const directoryEditCase = scenario === "normal-directory-edit"
 const notificationCase = scenario === "fast-notifications", savedCase = automatic && scenario !== "normal-cancel"
 const projectTransition = scenario === "normal-project-transition"
 const evidenceTimeout = scenario === "advisory-evidence-timeout"
+const longSession = scenario === "normal-long-session", largeSource = scenario === "normal-large-source"
+const warmupBatches = 16, warmupBatchSize = 32, warmupCalls = []
 const requestCount = projectTransition ? 4 : coverCase || directoryEditCase ? 2 : 1
 const expectedReviewPOSTs = evidenceTimeout ? 0 : requestCount
 const nativeCallCount = editCase ? 1 : requestCount
@@ -474,7 +500,8 @@ const prompt = registeredTool ? "Look up the public account once using fixture_l
   : skillCase ? `Load the ${skillID} skill once with the native skill tool.`
   : editCase ? `Use native write once to replace ${writeTarget} with exactly V2_EDIT_AFTER followed by a newline.`
   : "Run python3 fixture.py once in inputs. It appends the isolated V2_REVIEW_EXECUTED marker and prints it."
-const script = 'from pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write("V2_REVIEW_EXECUTED\\n")\nprint("V2_REVIEW_EXECUTED")\n'
+const script = (largeSource ? "# oversized source fixture context\n".repeat(8000) : "")
+  + 'from pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write("V2_REVIEW_EXECUTED\\n")\nprint("V2_REVIEW_EXECUTED")\n'
 const description = "V2 local marker report.\n\nThe script writes one isolated marker."
 // Only the second keyboard-case response is long. The first genuine report keeps
 // all existing saved-history text/metadata and selected-original assertions intact.
@@ -949,8 +976,25 @@ try {
       assert.equal(req.method, "POST")
       let text = ""
       for await (const chunk of req) { text += chunk; assert.ok(text.length < 8 * 1024 * 1024) }
-      const body = JSON.parse(text)
-      calls.push({ url: req.url, body })
+       const body = JSON.parse(text)
+       if (longSession && req.url === "/v1/chat/completions" && warmupCalls.length < warmupBatches) {
+         const batch = warmupCalls.length
+         const completed = body.messages.filter(message => message.role === "tool" && message.tool_call_id.startsWith("warmup-"))
+         assert.equal(completed.length, batch * warmupBatchSize)
+         assert.ok(completed.every(message => JSON.stringify(message.content).includes("warmup complete")))
+         assert.ok(body.tools.some(tool => tool.function.name === "execute"))
+         warmupCalls.push({ url: req.url, body })
+         const message = { role: "assistant", content: null, tool_calls: Array.from({ length: warmupBatchSize }, (_, index) => ({
+           index, id: `warmup-${batch * warmupBatchSize + index}`, type: "function", function: { name: "execute", arguments: JSON.stringify({
+              code: 'const found = search({namespace:"fixture",query:"noop"}); if (!found.items.some(item => item.path === "tools.fixture.noop")) throw Error("Fixture tool unavailable"); await Promise.all([tools.fixture.noop({}), tools.fixture.noop({})]); return "warmup complete";',
+           }) },
+         })) }
+         res.writeHead(200, { "Content-Type": "text/event-stream" })
+         res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: message, finish_reason: null }] })}\n\n`)
+         sse(res, undefined, "tool_calls"); res.end("data: [DONE]\n\n")
+         return
+       }
+       calls.push({ url: req.url, body })
        if (req.url === "/review/chat/completions") {
          reviewPOSTs++
           assert.ok(reviewPOSTs <= expectedReviewPOSTs, "Evidence timeout must fail before any reviewer model POST")
@@ -1002,8 +1046,24 @@ try {
           assert.deepEqual(evidence.permission.resources, [toolCall.input.command])
           assert.equal(evidence.permission.type, undefined, "No fabricated native permission type")
           assert.equal(evidence.files.length, 1)
-          assert.equal(evidence.files[0].status, "captured")
-          assert.equal(evidence.files[0].contents, script)
+           if (largeSource) {
+             const file = evidence.files[0], numbered = file.contents.split("\n")
+             assert.equal(file.status, "excerpt")
+             assert.equal(file.excerpt.totalLines, 8004)
+             assert.equal(numbered.pop(), `missing ${8004 - numbered.length} more lines`)
+             assert.equal(file.excerpt.includedLines, numbered.length)
+             assert.ok(Buffer.byteLength(file.contents) < 2048)
+             assert.match(file.contents, /L8001: from pathlib import Path/)
+             assert.match(file.contents, /L8003:     output.write/)
+             const source = script.split("\n")
+             for (const line of numbered) {
+               const [, index, text] = /^L(\d+): (.*)$/.exec(line)
+               assert.equal(text, source[Number(index) - 1])
+             }
+           } else {
+             assert.equal(evidence.files[0].status, "captured")
+             assert.equal(evidence.files[0].contents, script)
+           }
         }
          reviewResponse = res
          const transaction = { res, completed: false }
@@ -1037,7 +1097,7 @@ try {
         return
       }
       assert.ok(allowWrites, "Advisory must not resume native execution")
-      const toolResults = body.messages.filter(message => message.role === "tool")
+       const toolResults = body.messages.filter(message => message.role === "tool" && !message.tool_call_id.startsWith("warmup-"))
         assert.equal(toolResults.length, projectTransition
           ? requests.filter(item => item.sessionID === request.sessionID).length : coverCase ? mainCalls.length / 2 : 1)
        const latestResult = toolResults.at(-1)
@@ -1085,7 +1145,8 @@ try {
   const prelude = helpers + '\nimport assert from "node:assert/strict"\n'
     + 'import {setTimeout as sleep} from "node:timers/promises"\nconst fixture=' + JSON.stringify(fixture) + "\n"
   await publish(path.join(observer, "package.json"), { name: "v2-review-title-observer", type: "module", exports: { ".": "./index.mjs" } })
-  await writeFile(path.join(observer, "index.mjs"), 'const fixture=' + JSON.stringify(fixture) + '\n' + serverSetup + '\nexport default {id:"fixture.review.title",setup:serverSetup}\n')
+  await writeFile(path.join(observer, "index.mjs"), helpers + '\nconst fixture=' + JSON.stringify({ ...fixture, longSession,
+    warmup: path.join(artifacts, "warmup.json") }) + '\n' + serverSetup + '\nexport default {id:"fixture.review.title",setup:serverSetup}\n')
   await publish(path.join(monitor, "package.json"), { name: "v2-review-independent-monitor", type: "module", exports: { "./tui": "./tui.mjs" } })
   await writeFile(path.join(monitor, "tui.mjs"), prelude + rpcDefinition + "\n" + monitorSetup
     + '\nexport default {id:"fixture.review.monitor",setup:monitorSetup}\n')
@@ -1117,7 +1178,8 @@ createInterface({input:process.stdin}).on('line',line=>{
     session: { permissions: "prompt" }, plugins: [{ package: reviewer, options: { baseURL: origin + "/review", model: "v2-production-reviewer",
        stream: streaming, autoApprove: automatic, fastMode: fast, autoApproveDelaySeconds: approvalDelaySeconds,
         ...(directoryEditCase ? { reviewExternalDirectories: true } : {}),
-        ...(registeredTool ? { reviewTools: true, maxEvidenceBytes: fast ? 131072 : 2048 } : {}),
+         ...(registeredTool ? { reviewTools: true, maxEvidenceBytes: fast ? 131072 : 2048 } : {}),
+         ...(largeSource ? { maxEvidenceBytes: 2048 } : {}),
        timeoutMs: evidenceTimeout ? 1 : 120000, notify: notificationCase, notifySound: false, staleReminderSeconds: 0,
        ...(notificationCase ? { notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } : {}) } }, monitor] }
   const startupCli = { ...cli, plugins: ["-opencode-reviewer", monitor] }
@@ -1156,6 +1218,22 @@ createInterface({input:process.stdin}).on('line',line=>{
   const session = await command({ type: "start", text: prompt })
   sessionID = session.id
   await until("controlled initial native model request", () => mainResponse)
+   if (longSession) {
+     const completed = mainResponse.body.messages.filter(message => message.role === "tool" && message.tool_call_id.startsWith("warmup-"))
+     assert.equal(warmupCalls.length, warmupBatches)
+     assert.equal(completed.length, 512)
+     assert.ok(completed.every(message => JSON.stringify(message.content).includes("warmup complete")))
+     const hooks = await until("all real warmup hooks settled", async () => {
+       const value = await readObservation(path.join(artifacts, "warmup.json"), { optional: true })
+       return value?.after === 1536 && value
+     })
+     assert.equal(hooks.before, 1536); assert.equal(hooks.completed, 1536); assert.equal(hooks.pending, 0)
+     assert.ok(hooks.maximum < 512, "This is cumulative history, not live capacity exhaustion")
+     assert.equal(Object.keys(hooks.identities).length, 512)
+     assert.ok(Object.values(hooks.identities).every(counts => counts.before === 3 && counts.after === 3))
+     assert.deepEqual((await command({ type: "status" })).handshake, handshake, "No restart or new capture epoch")
+     await publish(path.join(artifacts, "warmup-model-calls.json"), warmupCalls)
+   }
     releaseNativeCall()
    if (editCase) {
      // One direct native call remains running across both permission stages. The
@@ -1406,7 +1484,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.equal(payload.conversation.current.location.directory, initial)
   assert.equal(payload.conversation.current.projectID, handshake.project.id)
   assert.deepEqual(payload.limitations, ["Optional effective native tool definition is not included; exact captured arguments and pending permission scope are retained.",
-    "Only literal Python/shell source and supported cat/head file operands are collected. Files are full review-time snapshots, not command output. Imports, dependencies, other runtimes and calls inside source files are not recursively inspected."])
+     "Only literal Python/shell source and supported cat/head file operands are collected. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Imports, dependencies, other runtimes and calls inside source files are not recursively inspected."])
   await until("rendered production evaluating panel", () => capture().includes("Permission analysis"))
   await saveCapture("evaluating")
    await negativeWindow("review response held", [request], [], null, 1, 1500, notificationCase ? noAttention : savedCase ? noSavedBody : () => {})
@@ -2349,7 +2427,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.deepEqual(await readObservation(monitorPath), cleaned, "No observer callback after final close")
   if (notificationCase) assert.deepEqual(await notificationObservations(), notificationEvidence.cleaned, "No backend publication after final close")
   await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, temp, handshake, inspection,
-         assessment, reviewCompleted, reviewPOSTs, calls, requests, inspections, childSession, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, projectTransitionEvidence,
+          assessment, reviewCompleted, reviewPOSTs, calls, warmupBatches: warmupCalls.length, requests, inspections, childSession, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, projectTransitionEvidence,
         ...(editCase ? { editStages, editTarget, beforeEdit, afterEdit } : {}), negativeWindows, observations: cleaned, execution: await executed(), limits })
   console.log(`PASS V2 installed production review ${scenario}: ${artifacts}`)
   console.log(`Isolated files: ${temp}`)

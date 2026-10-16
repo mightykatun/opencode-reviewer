@@ -201,7 +201,7 @@ test("large write content and optional preview cross both RPCs without a shared 
     assert.deepEqual(value.snapshot.request.metadata, pending.metadata)
     assert.deepEqual(value.result.evidence.operation.input, { path: "target.txt" })
     assert.equal(value.result.evidence.changes[0]?.status, "omitted")
-    assert.equal(value.result.evidence.changes[0]?.patch, undefined, "Optional previews are omitted whole, never truncated")
+    assert.equal(value.result.evidence.changes[0]?.patch, undefined, "A budget below the minimum excerpt allowance omits the preview")
     assert.equal(value.result.evidence.partial, true)
     assert.equal(value.result.evidence.userPrompt, "Update target.txt")
     assert.deepEqual(f.reads, [])

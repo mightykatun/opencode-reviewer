@@ -4,8 +4,38 @@ import type { Evidence, FileEvidence, Limits } from "./types.js"
 import { FileLimit, omittedFile } from "./files.js"
 import { fileAccess, fileFailure, type FileScope } from "./file-access.js"
 import { discover, type Reference } from "./shell-discovery.js"
+import { ExcerptLines, LineExcerpt, excerptScanBytes, type Excerpt } from "./excerpts.js"
+import { remainingTime, reviewStage } from "./deadline.js"
+import type { FileHandle } from "node:fs/promises"
 
 export { discover } from "./shell-discovery.js"
+
+async function captureExcerpt(handle: FileHandle, budget: number, signal: AbortSignal): Promise<
+  { status: string } | { firstLine: string; contents?: string; excerpt?: Excerpt }> {
+  const lines = new ExcerptLines(new LineExcerpt(budget, "source"))
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+  const buffer = Buffer.alloc(Math.min(65536, excerptScanBytes))
+  let position = 0, firstLine = "", firstComplete = false, complete = false
+  while (position < excerptScanBytes && remainingTime(signal) > 100) {
+    reviewStage(signal, "File capture")
+    const read = await handle.read(buffer, 0, Math.min(buffer.length, excerptScanBytes - position), position)
+    reviewStage(signal, "File capture")
+    let text: string
+    try { text = decoder.decode(buffer.subarray(0, read.bytesRead), { stream: !!read.bytesRead }) }
+    catch { return { status: "not valid UTF-8 source; contents not provided" } }
+    if (text.includes("\u0000")) return { status: "binary content; contents not provided" }
+    if (!firstComplete) {
+      const end = text.indexOf("\n")
+      firstLine += text.slice(0, end < 0 ? Math.max(0, 4096 - firstLine.length) : Math.min(end, Math.max(0, 4096 - firstLine.length)))
+      firstComplete = end >= 0 || firstLine.length >= 4096
+    }
+    lines.push(text)
+    if (!read.bytesRead) { complete = true; break }
+    position += read.bytesRead
+  }
+  const result = lines.finish(complete)
+  return { firstLine, ...result }
+}
 
 export async function captureFile(reference: Reference, budget: number, signal: AbortSignal, scope: FileScope): Promise<FileEvidence> {
   const result: FileEvidence = { filename: reference.filename, status: "unavailable" }
@@ -25,7 +55,20 @@ export async function captureFile(reference: Reference, budget: number, signal: 
         const before = await handle.stat()
         signal.throwIfAborted()
         if (!before.isFile()) return { ...result, status: "not a regular file; contents not provided" }
-        if (before.size > budget) return { ...result, status: "file too large for remaining evidence budget; contents not provided; assess risk accordingly" }
+        if (before.size > budget) {
+          const omitted = { ...result, status: "file too large for remaining evidence budget; contents not provided; assess risk accordingly" }
+          if (budget <= 80) return omitted
+          const excerpt = await captureExcerpt(handle, budget, signal)
+          const after = await handle.stat()
+          signal.throwIfAborted()
+          if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs)
+            return { ...result, status: "file changed while being read; contents not provided" }
+          if ("status" in excerpt) return { ...result, status: excerpt.status }
+          if (reference.executable && !/\.(py|sh|bash|zsh|ksh)$/.test(filename)
+            && !/^#![^\n]*(?:\bpython[\d.]*|\b(?:ba|da|k|z)?sh)\b/.test(excerpt.firstLine ?? ""))
+            return { ...result, status: "direct executable is not identifiable as Python/shell source; contents not provided" }
+          return excerpt.contents === undefined ? omitted : { ...result, status: "excerpt", contents: excerpt.contents, excerpt: excerpt.excerpt }
+        }
         // Keep an overflow-probe byte even for empty or exact-budget files. Stat
         // size is only an initial estimate: short reads and growth still need EOF.
         let buffer = Buffer.alloc(before.size + 1)
@@ -82,7 +125,7 @@ export async function collectEvidence(
   const discovery = discover(input.command, { declared: input.cwd, canonical }, 0, signal)
   const evidence: Evidence = { ...input, kind: "shell", files: [], limitations: [
     ...(input.limitations ?? []),
-    "Only literal Python/shell source and supported cat/head file operands are collected. Files are full review-time snapshots, not command output. Imports, dependencies, other runtimes and calls inside source files are not recursively inspected.",
+    "Only literal Python/shell source and supported cat/head file operands are collected. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Imports, dependencies, other runtimes and calls inside source files are not recursively inspected.",
     ...discovery.limitations,
   ] }
   if (!input.userPrompt) evidence.limitations.push("User prompt unavailable.")

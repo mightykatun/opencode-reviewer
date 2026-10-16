@@ -200,6 +200,63 @@ test("shell response validation preserves exact arguments, declared cwd, complet
   }
 })
 
+test("source excerpts survive the companion boundary, reject false completeness/counts and reach the judge", async () => {
+  const call = shell("python source.py"), files = io({ [`${location.directory}/source.py`]:
+    "# context\n".repeat(1000) + "def entry():\n    return 1\n" })
+  const selected = { ...options, maxEvidenceBytes: 1200 }
+  const result = await collectHostOperation(call, selected, signal(), files.access)
+  assert.ok(result.status === "ready" && result.evidence.kind === "shell")
+  const file = result.evidence.files[0]!
+  assert.equal(file.status, "excerpt")
+  assert.equal(file.excerpt?.totalLines, 1002)
+  assert.ok(readHostOperationEvidence(result.evidence, call, selected, signal()))
+  for (const mutate of [
+    (file: any) => { file.status = "captured" },
+    (file: any) => { file.excerpt.totalLines++ },
+    (file: any) => { file.contents = "x".repeat(1200) },
+    (file: any) => { delete file.excerpt },
+  ]) {
+    const copy: any = structuredClone(result.evidence)
+    mutate(copy.files[0])
+    assert.equal(readHostOperationEvidence(copy, call, selected, signal()), undefined)
+  }
+  await review(attachHostConversation(call, result.evidence), parseConfig({ baseURL: "http://localhost/v1", model: "reviewer" }), signal(), {
+    fetcher: async (_url, init) => {
+      const body = JSON.parse(String(init?.body))
+      assert.deepEqual(JSON.parse(body.messages[1].content).files[0], file)
+      assert.match(body.messages[0].content, /Excerpts are incomplete/)
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ safe: false, desc: "Some executable source is missing." }) }, finish_reason: "stop" }] }))
+    },
+  })
+})
+
+test("large native diffs retain actual distant changes within budget and independently validate partial coverage", async () => {
+  const patch = "--- target.txt\n+++ target.txt\n@@ -1,102 +1,102 @@\n" + " unchanged\n".repeat(50)
+    + "-old behavior\n+new behavior\n" + " unchanged\n".repeat(50)
+  const call = owned("write", nativeInput, { ...nativeRequest, metadata: { files: [{ ...nativeFile, patch }] } })
+  const selected = { ...options, maxEvidenceBytes: 340 }, files = io()
+  const result = await collectHostOperation(call, selected, signal(), files.access)
+  assert.ok(result.status === "ready" && result.evidence.kind === "edit")
+  const change = result.evidence.changes[0]!
+  assert.equal(result.evidence.partial, true)
+  assert.equal(change.status, "excerpt")
+  assert.match(change.patch!, /L54: -old behavior\nL55: \+new behavior/)
+  assert.equal(change.excerpt?.totalLines, 105)
+  assert.ok(Buffer.byteLength(change.patch!) <= 340)
+  assert.ok(readHostOperationEvidence(result.evidence, call, selected, signal()))
+  for (const mutate of [
+    (evidence: any) => { evidence.partial = false },
+    (evidence: any) => { evidence.changes[0].status = "included" },
+    (evidence: any) => { evidence.changes[0].patch += " invented" },
+    (evidence: any) => { evidence.changes[0].excerpt.totalLines++ },
+  ]) {
+    const copy: any = structuredClone(result.evidence)
+    mutate(copy)
+    assert.equal(readHostOperationEvidence(copy, call, selected, signal()), undefined)
+  }
+  assert.deepEqual(files.calls, [], "Native diffs never cause full target reads")
+})
+
 test("pinned write preview retains native request identity and uses only pending diffs without target I/O", async () => {
   const value = owned(), files = io()
   const evidence = await ready(value, options, files.access)
@@ -280,7 +337,7 @@ test("changed source, session, epoch, location and conversation identities rejec
   }
 })
 
-test("optional diffs are omitted whole with real counts, including count limits and invalid hunks", async () => {
+test("diffs below the minimum excerpt allowance are omitted with real counts, including count limits and invalid hunks", async () => {
   const files = io()
   const evidence = await ready(owned(), { ...options, maxEvidenceBytes: 1 }, files.access)
   assert.ok(evidence.kind === "edit")
@@ -393,7 +450,7 @@ test("missing write previews and both move declarations retain verbatim scope wi
   assert.deepEqual(files.calls, [])
 })
 
-test("multibyte diffs are never sliced to fit, and optional source failures retain a factual limitation", async () => {
+test("multibyte diff lines are not sliced to fit, and optional source failures retain a factual limitation", async () => {
   const patch = "@@ -0,0 +1,1 @@\n+éééééééééé\n"
   const evidence = await ready(owned("write", nativeInput, { ...nativeRequest,
     metadata: { files: [{ file: "target.txt", status: "added", patch }] } }), { ...options, maxEvidenceBytes: patch.length })

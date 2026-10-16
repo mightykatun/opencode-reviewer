@@ -25,7 +25,7 @@ const wireExact = (value: unknown): boolean => typeof value === "number" ? !Obje
  * of evicting a pending call. Native execution never depends on these observations.
  */
 export class InvocationCapture {
-  private readonly calls = new Map<string, { value?: CapturedCall; bytes: number }>()
+  private readonly calls = new Map<string, { value?: CapturedCall; bytes: number; pending: number }>()
   private bytes = 0
   private available = true
   private readonly handshake: CompanionHandshake
@@ -40,7 +40,8 @@ export class InvocationCapture {
     try {
       if (![event.sessionID, event.messageID, event.id, event.tool].every(validID)) return
       key = identity(event.sessionID, event.messageID, event.id)
-      if (this.calls.has(key)) return this.ambiguous(key)
+      const existing = this.calls.get(key)
+      if (existing) { existing.pending++; return this.ambiguous(key) }
       if (this.calls.size >= maxCalls) return this.clear()
       if (!event.input || typeof event.input !== "object" || Array.isArray(event.input)) return this.ambiguous(key)
       const input = boundedHostJSON(event.input)
@@ -48,7 +49,7 @@ export class InvocationCapture {
       const { epoch, location, project } = this.handshake
       const copied = boundedCopy({ sessionID: event.sessionID, assistantID: event.messageID,
         callID: event.id, tool: event.tool, input: input as Record<string, unknown>, scope: { epoch, location }, project }, maxBytes - this.bytes)
-      this.calls.set(key, { value: copied.value, bytes: copied.bytes })
+      this.calls.set(key, { value: copied.value, bytes: copied.bytes, pending: 1 })
       this.bytes += copied.bytes
     } catch { if (key !== undefined) this.ambiguous(key) }
   }
@@ -56,8 +57,10 @@ export class InvocationCapture {
   after(event: Pick<HookCall, "sessionID" | "messageID" | "id">): void {
     const key = identity(event.sessionID, event.messageID, event.id)
     const found = this.calls.get(key)
-    // A nested/duplicate call's completion cannot disambiguate its siblings.
-    if (!found?.value) return
+    // Code Mode's outer call and nested calls share an identity. Keep it
+    // ambiguous until *all* observed executions settle, including failures.
+    // Lifetime tombstones would fill the live-call bound in long sessions.
+    if (!found || --found.pending > 0) return
     this.calls.delete(key)
     this.bytes -= found.bytes
   }
@@ -68,8 +71,9 @@ export class InvocationCapture {
   }
 
   private ambiguous(key: string): void {
-    this.bytes -= this.calls.get(key)?.bytes ?? 0
-    this.calls.set(key, { bytes: 0 })
+    const found = this.calls.get(key)
+    this.bytes -= found?.bytes ?? 0
+    this.calls.set(key, { bytes: 0, pending: found?.pending ?? 1 })
   }
 
   clear(): void {

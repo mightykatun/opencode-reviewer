@@ -19,7 +19,7 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  43-case production/foundation selection available in manual extended checks,
+  45-case production/foundation selection available in manual extended checks,
   including history, statistics, approval notifications and explicitly classified
   synthetic probes.
   `npm run test:runtime` selects `--profile v2-acceptance`, which currently selects
@@ -82,6 +82,7 @@ All commands below use the installed five-file archive and production runtime.
 | Shared registered-tool review / fast approval (local MCP) | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-tool` / `fast-tool` |
 | Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
 | Saved history and statistics | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history` |
+| Review after 512 completed Code Mode calls / oversized source excerpts | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-long-session` / `normal-large-source` |
 | Unsafe history after native Once / Always / reject | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory-history-once` / `advisory-history-always` / `advisory-history-reject` |
 | Default HOME with writable host state | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-default-home` |
 | Keyboard history with mouse disabled | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-keyboard-mouse-off` |
@@ -196,6 +197,9 @@ existing user directories.
   direct-tool transform or remove native Code Mode search. Exact direct-call
   linkage is usable; ambiguous nested calls stay manual. Never recover their
   identity by arrival order, JavaScript parsing or forced serialization.
+  Invocation capture counts live executions sharing each identity. Release an
+  ambiguous record only after every matching after-hook settles; completed Code
+  Mode calls must not consume the live-call capacity for the rest of the session.
 - The user accepted a trusted native-tool installation: installed plugins preserve
   native tool meanings, do not replace/alias native executors, and do not rewrite
   commands after evidence capture. This is an installation assumption, not public
@@ -378,8 +382,10 @@ existing user directories.
   descriptions, schemas and registry availability are optional evidence. Send
   factual omission reasons to the LLM, which decides Safe/Unsafe. Never infer
   origin, import/invoke executors or call MCP servers for evidence.
-- Preserve exact mandatory scope/arguments or fail analysis. Omit whole optional
-  files/diffs/definitions with factual reasons; do not truncate commands, invent
+- Preserve exact mandatory scope/arguments or fail analysis. Oversized optional
+  files/diffs use bounded, numbered relevant excerpts and exact omitted-line counts
+  when fully scanned; incomplete scans explicitly leave the count unavailable.
+  Omit unavailable optional evidence/definitions with factual reasons; do not truncate commands, invent
   missing line counts or synthesize ratings. Partial evidence alone is not an
   automatic-approval veto. Proposed `always` patterns are not existing grants.
 - `deadline.ts` shares one budget across context, files, HTTP and corrections.

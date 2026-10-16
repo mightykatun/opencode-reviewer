@@ -53,6 +53,41 @@ test("capacity failure cannot evict then resurrect a request; a new companion ow
   assert.equal(next.read("session", "assistant", "0"), undefined)
 })
 
+test("long Code Mode sessions release completed ambiguous calls without admitting pending siblings", () => {
+  const captures = new InvocationCapture(handshake())
+  const held = event("held-direct")
+  captures.before(held)
+  for (let index = 0; index < 1024; index++) {
+    const outer = { ...event(`code-${index}`), tool: "execute", input: { code: "nested calls" } }
+    const nested = event(outer.id)
+    captures.before(outer)
+    captures.before(nested)
+    captures.after(nested)
+    assert.equal(captures.read("session", "assistant", outer.id), undefined)
+    // A later sibling still shares the in-flight outer identity.
+    captures.before(nested)
+    captures.after(outer)
+    assert.equal(captures.read("session", "assistant", outer.id), undefined)
+    captures.after(nested)
+    assert.ok(captures.read("session", "assistant", held.id))
+    const direct = event(`direct-${index}`)
+    captures.before(direct)
+    assert.equal(captures.read("session", "assistant", direct.id)?.tool, "shell")
+    captures.after(direct)
+  }
+})
+
+test("completed invalid captures release capacity and bytes for later direct reviews", () => {
+  const captures = new InvocationCapture(handshake())
+  for (let index = 0; index < 1024; index++) {
+    const invalid = { ...event(String(index)), input: { command: NaN } }
+    captures.before(invalid)
+    captures.after(invalid)
+  }
+  captures.before(event("valid"))
+  assert.ok(captures.read("session", "assistant", "valid"))
+})
+
 test("invalid/oversized mandatory input stays unavailable without executing accessors or throwing into the tool", () => {
   let accessed = false
   const accessor = Object.defineProperty({}, "command", { enumerable: true, get() { accessed = true; throw Error("unexpected") } })

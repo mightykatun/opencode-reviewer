@@ -9,6 +9,7 @@ export interface FileEvidence {
   aliases?: string[]
   status: string
   contents?: string
+  excerpt?: import("./excerpts.js").Excerpt
   warning?: string
 }
 

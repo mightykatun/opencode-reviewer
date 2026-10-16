@@ -105,7 +105,7 @@ test("repeated activity revisions discard stale pending refreshes; a stable revi
   assert.deepEqual(evaluated, ["stable"])
 })
 
-test("completed ambiguous duplicate tombstones fill 512 identities and intentionally invalidate capture for later calls", () => {
+test("completed ambiguous calls release capacity while pending duplicates remain unavailable", () => {
   const captures = new InvocationCapture({ protocol: 1, hostVersion: "2.0.26",
     epoch: "10000000-1000-4000-8000-100000000000", location: { directory: "/fixture" },
     project: { id: "fixture", directory: "/fixture", canonical: "/fixture" } })
@@ -115,23 +115,24 @@ test("completed ambiguous duplicate tombstones fill 512 identities and intention
     const call = event(`duplicate-${index}`)
     captures.before(call)
     assert.ok(read(call.id), "each new identity is initially exact")
-    captures.before(call)
-    captures.after(call)
-    captures.after(call)
-    assert.equal(read(call.id), undefined, "both completions leave the ambiguity tombstone intact")
+     captures.before(call)
+     captures.after(call)
+     assert.equal(read(call.id), undefined, "one completion cannot disambiguate a live sibling")
+     captures.after(call)
+     assert.equal(read(call.id), undefined, "settlement cannot resurrect captured arguments")
     if (index === 510) {
       const probe = event("probe-at-511")
       captures.before(probe)
-      assert.ok(read(probe.id), "511 tombstones still leave capacity for an exact call")
+       assert.ok(read(probe.id), "completed identities leave capacity for an exact call")
       captures.after(probe)
     }
   }
-  captures.before(event("duplicate-0"))
-  assert.equal(read("duplicate-0"), undefined, "old tombstones cannot be evicted or resurrected")
-  for (const id of ["unrelated-overflow", "later-unrelated", "duplicate-0"]) {
-    captures.before(event(id))
-    assert.equal(read(id), undefined, "capacity invalidation deliberately leaves this epoch manual")
-    captures.after(event(id))
+  captures.after(event("duplicate-0"))
+  assert.equal(read("duplicate-0"), undefined, "a late completion does not resurrect an old capture")
+  for (const id of ["unrelated-after-512", "later-unrelated"]) {
+     captures.before(event(id))
+     assert.ok(read(id), "completed Code Mode calls cannot permanently disable unrelated review")
+     captures.after(event(id))
   }
 })
 

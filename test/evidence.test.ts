@@ -578,6 +578,84 @@ test("missing, oversized, binary, invalid UTF-8 and special files have factual p
   }
 })
 
+test("oversized files reach evidence as relevant UTF-8 excerpts with exact omitted lines", async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), "checker-excerpts-"))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const source = ["#!/usr/bin/env python3", ...Array(5000).fill("# context 🍐"),
+    "def entry():", "    print('café')", ...Array(5000).fill("# context"), "entry()"]
+  const command = "python large.py"
+  for (const newline of ["\n", "\r\n"]) for (const trailing of ["", newline]) {
+    await writeFile(`${dir}/large.py`, source.join(newline) + trailing)
+    const result = await collectEvidence({ command, cwd: dir, userPrompt: "Run entry" }, { ...limits, maxEvidenceBytes: 600 }, signal())
+    const file = result.files[0]!
+    assert.equal(file.status, "excerpt")
+    assert.equal(file.excerpt?.totalLines, source.length)
+    assert.match(file.contents!, /L5002: def entry\(\):/)
+    assert.match(file.contents!, /L5003:     print\('café'\)/)
+    assert.match(file.contents!, /entry\(\)/)
+    const included = file.contents!.split("\n").slice(0, -1)
+    assert.equal(file.contents!.split("\n").at(-1), `missing ${source.length - included.length} more lines`)
+    assert.equal(file.warning, undefined)
+    assert.ok(Buffer.byteLength(command) + Buffer.byteLength(file.contents!) <= 600)
+    assert.ok(!file.contents!.includes("�"))
+  }
+})
+
+test("oversized source still validates UTF-8 and binary bytes outside selected excerpts", async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), "checker-excerpts-invalid-"))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  for (const [byte, expected] of [[0xff, /UTF-8/], [0, /binary/]] as const) {
+    await writeFile(`${dir}/large.py`, Buffer.concat([Buffer.from("# header\n".repeat(10000)), Buffer.from([byte])]))
+    const result = await collectEvidence({ command: "python large.py", cwd: dir, userPrompt: null }, { ...limits, maxEvidenceBytes: 400 }, signal())
+    assert.match(result.files[0]!.status, expected)
+    assert.equal(result.files[0]!.contents, undefined)
+  }
+})
+
+test("excerpt capture preserves streaming Unicode boundaries, rejects races, and closes on abort", async t => {
+  const { FileAccess } = await import("../src/file-access.js")
+  const dir = await mkdtemp(path.join(tmpdir(), "checker-excerpt-race-"))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const filename = `${dir}/large.py`, source = "#".repeat(65535) + "🍐\ndef entry():\n    return 'café'\n"
+  await writeFile(filename, source)
+  const clean = await collectEvidence({ command: "python large.py", cwd: dir, userPrompt: null }, { ...limits, maxEvidenceBytes: 300 }, signal())
+  assert.equal(clean.files[0]?.excerpt?.totalLines, 3)
+  assert.match(clean.files[0]!.contents!, /L2: def entry\(\):\nL3:     return 'café'/)
+  for (const scenario of ["rewrite", "abort"] as const) {
+    await writeFile(filename, source)
+    await utimes(filename, new Date(0), new Date(0))
+    const controller = new AbortController()
+    let handle: FileHandle | undefined, first = true
+    const files = new FileAccess({ realpath: async name => name, open: async (...args) => {
+      handle = await open(...args)
+      const read = handle.read.bind(handle)
+      handle.read = (async (...args: Parameters<typeof read>) => {
+        const result = await read(...args)
+        if (first) {
+          first = false
+          if (scenario === "abort") controller.abort()
+          else await appendFile(filename, "# changed\n")
+        }
+        return result
+      }) as typeof handle.read
+      return handle
+    } })
+    const pending = collectEvidence({ command: "python large.py", cwd: dir, userPrompt: null },
+      { ...limits, maxEvidenceBytes: 300 }, controller.signal, files.scope(controller.signal))
+    if (scenario === "abort") await assert.rejects(pending, { name: "AbortError" })
+    else {
+      const result = await pending
+      assert.equal(result.files[0]?.contents, undefined)
+      assert.match(result.files[0]!.status, /changed while being read/)
+    }
+    // Caller abort can win the race with physical cleanup; the owned slot and
+    // descriptor must settle before another transaction is admitted.
+    for (let turn = 0; files.outstanding && turn < 100; turn++) await new Promise(resolve => setImmediate(resolve))
+    assert.equal(files.outstanding, 0)
+    assert.equal(handle?.fd, -1)
+  }
+})
+
 test("total UTF-8 budget, file-count limit, deduplication and command-size failure", async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), "checker-evidence-"))
   t.after(() => rm(dir, { recursive: true, force: true }))

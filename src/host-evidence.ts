@@ -4,6 +4,7 @@ import { reviewStage } from "./deadline.js"
 import { collectEvidence } from "./evidence.js"
 import type { FileAccess } from "./file-access.js"
 import { DiffBudget, diffDelta, omittedFile } from "./files.js"
+import { diffExcerpt, validExcerpt, type Excerpt } from "./excerpts.js"
 import { sameLocation } from "./companion-protocol.js"
 import { boundedHostJSON, hostOperationJSONBytes, sameHostJSON } from "./host-request.js"
 import type { HostInvocationRead } from "./host-reader.js"
@@ -46,8 +47,9 @@ export interface HostEditChange {
   file: string
   /** Present only when supplied by native preview metadata. */
   hostStatus?: "added" | "deleted" | "modified"
-  status: "included" | "omitted"
+  status: "included" | "excerpt" | "omitted"
   patch?: string
+  excerpt?: Excerpt
   reason?: string
   warning?: string
   delta?: string
@@ -270,7 +272,7 @@ function editChanges(request: HostRequest, proposed: Operation, limits: Limits, 
   const previewed = new Set<string>()
   const changes: HostEditChange[] = []
   // Mandatory per-file identities have a separate normalization ceiling.
-  // Only whole optional bodies use the diff allowance.
+  // Full diffs and numbered excerpts share the same optional-body allowance.
   boundedCopy(raw.map(file => {
     if (!file || typeof file !== "object" || Array.isArray(file)) throw new Error("Native edit file scope unavailable")
     return { file: file.file, status: file.status }
@@ -286,17 +288,23 @@ function editChanges(request: HostRequest, proposed: Operation, limits: Limits, 
     const diff = file.patch
     if (!selected.get(file.file)) change.reason = "file-count limit reached"
     else if (typeof diff !== "string" || !diff.length) change.reason = "pending host diff unavailable"
-    else if (diff.length > remaining) change.reason = "complete diff exceeds remaining evidence byte budget"
     else if (diff.length > measurement) change.reason = "shared diff UTF-8 measurement work limit reached"
     else {
       measurement -= diff.length
       const size = Buffer.byteLength(diff)
-      if (size > remaining) change.reason = "complete diff exceeds remaining evidence byte budget"
+      if (size > remaining) {
+        change.reason = "complete diff exceeds remaining evidence byte budget"
+        const excerpt = diffExcerpt(diff, remaining, signal)
+        if (excerpt) {
+          change.status = "excerpt"; change.patch = excerpt.contents; change.excerpt = excerpt.excerpt
+          remaining -= Buffer.byteLength(excerpt.contents)
+        }
+      }
       else if (!diff.trim()) change.reason = "pending host diff unavailable"
       else { change.status = "included"; change.patch = diff; remaining -= size }
     }
-    if (change.status === "omitted") {
-      change.warning = omittedFile(change.file)
+    if (change.status !== "included") {
+      if (change.status === "omitted") change.warning = omittedFile(change.file)
       const counts = Number.isSafeInteger(file.additions) && Number(file.additions) >= 0
         && Number.isSafeInteger(file.deletions) && Number(file.deletions) >= 0
         ? { added: Number(file.additions), removed: Number(file.deletions) }
@@ -393,8 +401,8 @@ export async function collectHostOperation(owned: OperationRead, options: HostEv
     base.limitations.push("Proposed diffs come from pending V2 metadata.files. Full target files and post-approval formatter changes are not inspected; host previews may normalize whitespace or omit BOMs.",
       "Targets are host-declared; filesystem aliases are not resolved and distinct declared file names count separately.")
     const changes = editChanges(request, proposed, options, signal, base.limitations)
-    const partial = !changes.length || changes.some(change => change.status === "omitted")
-    if (partial) base.limitations.push("Edit evidence is incomplete; omitted changes are not assessed by the supplied diffs.")
+    const partial = !changes.length || changes.some(change => change.status !== "included")
+    if (partial) base.limitations.push("Edit evidence is incomplete; omitted changes are not assessed by the supplied diffs. Numbered excerpts prioritize changed lines, original hunk headers and nearby context; their footer counts omitted diff lines, not target-file lines.")
     reviewStage(signal, "Evidence collection")
     return { status: "ready", evidence: { ...base, kind, tool: invocation.tool as HostEditEvidence["tool"], operation: mandatory.value.operation,
       permission: { ...mandatory.value.permission, metadataStatus: "Pending metadata.files normalized into changes; duplicate raw metadata and edit bodies omitted." }, changes, partial } }
@@ -463,19 +471,20 @@ function shellFiles(value: unknown, options: HostEvidenceOptions, budget: number
   let included = 0
   for (const file of value) {
     reviewStage(signal, "Evidence validation")
-    if (!shape(file, ["filename", "status"], ["path", "aliases", "contents", "warning"])
+    if (!shape(file, ["filename", "status"], ["path", "aliases", "contents", "excerpt", "warning"])
       || typeof file.filename !== "string" || !file.filename || file.filename.includes("\0")
       || typeof file.status !== "string"
       || (Object.hasOwn(file, "path") && !absolute(file.path))
       || (Object.hasOwn(file, "aliases") && (!strings(file.aliases) || !file.aliases.every(absolute)))
       || (Object.hasOwn(file, "warning") && typeof file.warning !== "string")) return false
-    if (file.status === "captured") {
+    if (file.status === "captured" || file.status === "excerpt") {
       if (!absolute(file.path) || typeof file.contents !== "string" || file.contents.includes("\0")
         || Object.hasOwn(file, "warning") || ++included > options.maxFiles) return false
+      if (file.status === "excerpt" ? !validExcerpt(file.excerpt, file.contents) : Object.hasOwn(file, "excerpt")) return false
       budget -= Buffer.byteLength(file.contents)
       if (budget < 0) return false
     } else {
-      if (Object.hasOwn(file, "contents") || typeof file.warning !== "string"
+      if (Object.hasOwn(file, "contents") || Object.hasOwn(file, "excerpt") || typeof file.warning !== "string"
         || (!omittedSourceStatuses.has(file.status)
           && !/^cannot read file \([^()\r\n]+\); contents not provided$/.test(file.status))) return false
     }
@@ -535,10 +544,10 @@ export function readHostOperationEvidence(value: unknown, owned: OperationRead, 
     if (kind === "edit") {
       // Normalize the independently retained pending preview again, without any
       // file access or a second patch parser. This also checks count/byte limits,
-      // exact resource membership and complete (never truncated) diff bodies.
+      // exact resource membership and byte-faithful full diffs or labeled excerpts.
       const changes = editChanges(owned.snapshot.request, proposed, options, signal, [])
       if (Object.hasOwn(copy.permission, "metadata") || !sameHostJSON(copy.changes, changes)
-        || copy.partial !== (!changes.length || changes.some(change => change.status === "omitted"))) return
+        || copy.partial !== (!changes.length || changes.some(change => change.status !== "included"))) return
     } else {
       const metadataBytes = metadata === undefined ? 0 : boundedCopy(metadata, options.maxEvidenceBytes).bytes
       const budget = options.maxEvidenceBytes - mandatory.bytes - metadataBytes
