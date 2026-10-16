@@ -1,5 +1,5 @@
 import type { HostRequest } from "./host-types.js"
-import type { ApprovalFact, ReviewLifecycleFact } from "./controller.js"
+import type { ApprovalFact, RequestIdentity, ReviewLifecycleFact } from "./controller.js"
 import type { Config } from "./config.js"
 import type { ReviewKind, ReviewObservation } from "./types.js"
 import type { HistoryEvent, HistoryOutcome, HistoryPayload, HistoryReview, HistoryScope } from "./history-records.js"
@@ -26,7 +26,7 @@ interface Resolved { context: HistoryReview; outcome: HistoryOutcome }
  * Native once proves approval, not the submitting client's identity. Attribution
  * may improve later without gating storage or inventing automatic success.
  */
-export class HistoryCoordinator<R extends HostRequest = HostRequest> {
+export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
   private candidates = new Map<string, Candidate>()
   private dispatches = new Map<string, Dispatch>()
   private early = new Map<string, EarlyReview>()

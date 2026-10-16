@@ -2,8 +2,7 @@ import { createEffect, createMemo, createSignal, Index, Match, onCleanup, Show, 
 import { CliRenderEvents, CodeRenderable, RGBA, ScrollBoxRenderable, type BoxRenderable, type MarkdownRenderable, type Renderable } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { Config } from "./config.js"
-import { displayText, type View } from "./controller.js"
-import type { HostRequest } from "./host-types.js"
+import { displayText, type RequestIdentity, type View } from "./controller.js"
 import { scannerFrame, SCANNER_FRAME_COUNT, SCANNER_INTERVAL_MS } from "./appearance.js"
 import { HostReviewDescription } from "./review-description.js"
 import { ReviewGeometryProof, type ReviewLayout, type ReviewRegion } from "./review-geometry.js"
@@ -25,9 +24,9 @@ export interface HostSidebarAnchor {
 export interface HostReviewPanelProps {
   context: Plugin.Context
   id: string
-  view(): View<HostRequest>
+  view(): View<RequestIdentity>
   /** Current selection identity for fixture observations only. */
-  select(): View<HostRequest> | undefined
+  select(): View<RequestIdentity> | undefined
   rootSession(): string | undefined
   sidebarOwner(): HostSidebarAnchor | undefined
   /** Bounds measured from the current anchor after a genuine renderer FRAME. */
@@ -58,7 +57,7 @@ export function hostPanelOwnsHit(node: HostPanelNode | undefined, hit: number): 
 
 export interface HostPanelProofInput extends ReviewLayout {
   id: string
-  request: Pick<HostRequest, "id" | "sessionID">
+  request: RequestIdentity
   root?: string
   route: { type: string; sessionID?: string }
   mode: string
@@ -167,7 +166,7 @@ function HostReviewButton(props: { context: Plugin.Context; label: string; selec
     }}><text fg={foreground()}>{props.label}</text></box>
 }
 
-function HostReviewFooter(props: Pick<HostReviewPanelProps, "context" | "onApprove" | "onCancel"> & { view: View<HostRequest>; enabled: boolean; ref(value: BoxRenderable): void }) {
+function HostReviewFooter(props: Pick<HostReviewPanelProps, "context" | "onApprove" | "onCancel"> & { view: View<RequestIdentity>; enabled: boolean; ref(value: BoxRenderable): void }) {
   const [selected, setSelected] = createSignal<"approve" | "cancel">("approve")
   const state = () => props.view.autoApproval
   const label = () => { const current = state(); return current?.status === "countdown" ? uiText.autoApproval.countdown(current.seconds) : uiText.autoApproval.checking }
@@ -219,7 +218,7 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
   const unavailable = () => view().status === "unavailable" || view().status === "unidentified"
   if (props.historyProbe) {
     const proof = new HostPanelPresentationProof()
-    let paintedAssessment: View<HostRequest>["assessment"], readyAssessment: View<HostRequest>["assessment"]
+    let paintedAssessment: View<RequestIdentity>["assessment"], readyAssessment: View<RequestIdentity>["assessment"]
     observePaint = () => {
       const assessment = view().assessment
       if (assessment && description && !description.isDestroyed && !description.streaming

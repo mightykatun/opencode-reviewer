@@ -79,7 +79,7 @@ test("location reconciliation retains root and descendant requests instead of mi
   await assert.rejects(f.transport.listScope(signal()), /location unavailable/)
 })
 
-test("location inventory admits each 9 MiB preview separately but fails closed on their aggregate", async () => {
+test("location inventory bounds each preview independently rather than rejecting their aggregate", async () => {
   const f = fixture(), requests = [raw("large-one"), raw("large-two", "child")].map(request =>
     ({ ...request, metadata: { preview: "p".repeat(9 * 1024 * 1024) } }))
   for (const request of requests) {
@@ -89,7 +89,7 @@ test("location inventory admits each 9 MiB preview separately but fails closed o
   }
   f.state.pending.clear()
   for (const request of requests) f.add(request)
-  await assert.rejects(f.transport.listScope(signal()), /Pending permissions unavailable/)
+  assert.equal((await f.transport.listScope(signal())).length, 2)
   assert.equal(f.state.calls.length, 0)
 })
 

@@ -145,7 +145,7 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
     return disposal = Promise.allSettled([notifications.dispose(), settled()]).then(() => {})
   }
   const onAbort = () => { void dispose() }
-  life.addCleanup(dispose)
+  life.addCleanup(dispose, false)
   life.signal.addEventListener("abort", onAbort, { once: true })
   if (life.signal.aborted) { void dispose(); return { notifications, refresh, front, visit, views: () => views, dispose, settled } }
   off = ctx.data.listen(({ details: event }) => {

@@ -69,14 +69,16 @@ test("native evaluation sends exact V2 evidence as data under the correct guidan
   assert.equal(data.location.directory, scope.location.directory)
 })
 
-test("disabled or missed-capture native evidence cannot identify or dispatch a reviewer POST", async () => {
+test("disabled evidence skips review while missed capture stays visibly unavailable without a model POST", async () => {
   for (const missing of [false, true]) {
     const f = fixture()
     f.state.missing = missing
     let identified = false, observed = false
-    assert.equal(await evaluateHostReview(f.client, f.snapshot, { ...config(), reviewEdits: missing }, BUILTIN_PROMPTS,
+    const evaluation = evaluateHostReview(f.client, f.snapshot, { ...config(), reviewEdits: missing }, BUILTIN_PROMPTS,
       new AbortController().signal, () => { identified = true }, { fetcher: f.fetcher,
-        observeEvidence: () => { observed = true; return { review: "must-not-exist" } } }), null)
+        observeEvidence: () => { observed = true; return { review: "must-not-exist" } } })
+    if (missing) await assert.rejects(evaluation, /Exact operation evidence unavailable/)
+    else assert.equal(await evaluation, null)
     assert.equal(identified, false)
     assert.equal(observed, false)
     assert.equal(f.posts.length, 0)
@@ -106,9 +108,9 @@ test("invalid native evidence never creates an accounting observation", async ()
   const f = fixture()
   f.state.invalidEvidence = true
   let observed = false, identified = false
-  const result = await evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, new AbortController().signal,
-    () => { identified = true }, { fetcher: f.fetcher, observeEvidence: () => { observed = true; return { review: "invalid" } } })
-  assert.equal(result, null)
+  await assert.rejects(evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, new AbortController().signal,
+    () => { identified = true }, { fetcher: f.fetcher, observeEvidence: () => { observed = true; return { review: "invalid" } } }),
+    /Exact operation evidence unavailable/)
   assert.equal(identified, false)
   assert.equal(observed, false)
   assert.equal(f.posts.length, 0)

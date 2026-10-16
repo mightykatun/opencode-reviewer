@@ -19,7 +19,7 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  46-case production/foundation selection available in manual extended checks,
+  48-case production/foundation selection available in manual extended checks,
   including history, statistics, approval notifications and explicitly classified
   synthetic probes.
   `npm run test:runtime` selects `--profile v2-acceptance`, which currently selects
@@ -81,6 +81,7 @@ All commands below use the installed five-file archive and production runtime.
 | --- | --- |
 | Initial connection / delayed native marker echo | `node scripts/test-runtime.mjs smoke-v2-lifecycle.mjs cold-startup` |
 | Real network disconnect / fresh live-review admission | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-reconnect` |
+| Disconnect during visible review/countdown / silent event-stream stall | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-reconnect-visible` / `normal-stalled-stream` |
 | Native skill loading / fast skill approval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-skill` / `fast-skill` |
 | Shared registered-tool review / fast approval (local MCP) | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-tool` / `fast-tool` |
 | Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
@@ -264,7 +265,9 @@ existing user directories.
   requested automatic recovery after network disconnects: admit a fresh composition
   only when the public client and native connection markers agree and a fresh scoped
   handshake finishes. Drain the old composition first; never mix clients, caches,
-  evidence or approval leases. Carry only manual tombstones and identity-bound
+  evidence or approval leases. Critical native-cache/write work must settle before
+  replacement; aborted optional notification/history cleanup remains physically
+  owned but does not gate admission. Carry only manual tombstones and identity-bound
   monotonic countdown deadlines, not assessments. Own the live subscriber through
   failure, resubscription and cleanup. Invalid handshakes stay manual.
 - CLI startup consumes the public client's current `server.connected` marker before
@@ -274,10 +277,15 @@ existing user directories.
   Own subscriber abort/return settlement; it never substitutes for scope/protocol/epoch
   checks or replays business events. Connection waiting and startup handshakes recover
   within one 10-second budget: 1.5-second
-  attempts, 250 ms backoff, timeout/`rpc.unavailable` only. Own physical settlement
+  attempts, 250 ms backoff, timeout/`rpc.unavailable` and recognized transient
+  transport failures only. Own physical settlement
   before retry; fence pre-admission connection changes. Invalid replies stay manual.
   Choose runtime/fallback once per connection; never promote fallback on a duplicate
   marker or revive an old generation. Fresh reconnection admission may replace either.
+  Release an idle reviewer event subscriber at the native 45-second activity boundary
+  so it cannot pin a stalled shared source; replay of that source's old marker is
+  not fresh admission. Read-only active-companion health checks may replace a changed
+  epoch only after critical drain and a new scoped handshake, without plugin reload.
 - `host-history-runtime.tsx` owns the indexed worker, history, totals and shutdown.
   History/statistics also initialize when review configuration or the companion is
   unavailable. The absolute V2 namespace is an index, not deletion authority.

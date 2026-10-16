@@ -4,16 +4,17 @@ type Cleanup = () => void | Promise<void>
 export class PluginLifecycle {
   private readonly controller = new AbortController()
   readonly signal = this.controller.signal
-  private readonly cleanups: Cleanup[] = []
+  private readonly cleanups: { run: Cleanup; critical: boolean }[] = []
   private readonly pending = new Set<Promise<void>>()
+  private readonly critical = new Set<Promise<void>>()
   private startup?: Promise<void>
   private stopping?: Promise<void>
   private disposing = false
 
   /** Register as soon as a resource is acquired, including after an awaited call. */
-  addCleanup(cleanup: Cleanup): void {
-    if (this.disposing) this.dispose(cleanup)
-    else this.cleanups.push(cleanup)
+  addCleanup(cleanup: Cleanup, critical = true): void {
+    if (this.disposing) this.dispose(cleanup, critical)
+    else this.cleanups.push({ run: cleanup, critical })
   }
 
   /** Own setup through actual settlement; a failure also disposes partial setup. */
@@ -44,8 +45,8 @@ export class PluginLifecycle {
     // Publish stopping before abort: listeners and disposals may reenter stop().
     this.controller.abort()
     this.disposing = true
-    let cleanup: Cleanup | undefined
-    while ((cleanup = this.cleanups.pop())) this.dispose(cleanup)
+    let cleanup: { run: Cleanup; critical: boolean } | undefined
+    while ((cleanup = this.cleanups.pop())) this.dispose(cleanup.run, cleanup.critical)
     void this.drain(end).then(done, done)
     return this.stopping
   }
@@ -57,14 +58,21 @@ export class PluginLifecycle {
     while (this.pending.size) await Promise.allSettled([...this.pending])
   }
 
-  private track(work: Promise<void>): void {
+  /** Recovery fences writes, mandatory native-cache reads and mode writes first.
+   * Optional observers remain owned by settled(), but cannot block a new reviewer. */
+  async criticalSettled(): Promise<void> {
+    while (this.critical.size) await Promise.allSettled([...this.critical])
+  }
+
+  private track(work: Promise<void>, critical = true): void {
     this.pending.add(work)
-    const release = () => { this.pending.delete(work) }
+    if (critical) this.critical.add(work)
+    const release = () => { this.pending.delete(work); this.critical.delete(work) }
     void work.then(release, release)
   }
 
-  private dispose(cleanup: Cleanup): void {
-    try { this.track(Promise.resolve(cleanup())) }
+  private dispose(cleanup: Cleanup, critical = true): void {
+    try { this.track(Promise.resolve(cleanup()), critical) }
     catch { /* One failed disposal must not strand other resources. */ }
   }
 

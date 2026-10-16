@@ -42,10 +42,10 @@ function events() {
     } }
 }
 function fixture(t: TestContext, options: { read?: (signal: AbortSignal, attempt: number) => Promise<unknown>;
-  cleanup?: () => Promise<void>; checkpoint?: () => void; initialFallback?: boolean } = {}) {
+  cleanup?: () => Promise<void>; optionalCleanup?: () => Promise<void>; checkpoint?: () => void; initialFallback?: boolean } = {}) {
   let native!: (event: { id: string }) => void, now = 0
   t.mock.method(performance, "now", () => now)
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] })
   const life = new PluginLifecycle(), source = events(), calls: AbortSignal[] = []
   const installations: { signal: AbortSignal; client: unknown; state: CliPluginState; cleaned: boolean }[] = []
   const client = { event: source, rpc: () => ({ handshake: (at: unknown, request: { location: unknown; signal: AbortSignal }) => {
@@ -63,6 +63,7 @@ function fixture(t: TestContext, options: { read?: (signal: AbortSignal, attempt
     const value = { signal: child.signal, client: context.client, state: next, cleaned: false }
     installations.push(value)
     child.addCleanup(async () => { await options.cleanup?.(); value.cleaned = true })
+    if (options.optionalCleanup) child.addCleanup(options.optionalCleanup, false)
     return value
   }, value => { checkpoints.push(value); options.checkpoint?.() })
   t.after(() => life.stop())
@@ -249,4 +250,68 @@ test("a failed continuity checkpoint cannot strand the old generation or silentl
   assert.equal(f.installations[0]!.signal.aborted, true); assert.equal(f.installations[0]!.cleaned, true)
   assert.equal(f.recovery.current(), undefined); assert.equal(f.calls.length, 0)
   assert.equal(f.state.companion, undefined)
+})
+
+test("a transient reconnect reset recovers without requiring another connection marker", async t => {
+  const f = fixture(t, { read: async (_signal, attempt) => {
+    if (attempt === 1) throw Object.assign(Error("temporary reset"), { code: "ECONNRESET" })
+    return handshake()
+  } })
+  f.source.marker("initial"); await f.advance()
+  f.native("next"); f.source.marker("next"); await f.advance()
+  await f.advance(250)
+  assert.deepEqual(f.state.companion, handshake())
+  assert.equal(f.state.connectionID, "next")
+  assert.equal(f.calls.length, 2)
+})
+
+test("a replaced companion epoch admits a fresh generation on the unchanged connection", async t => {
+  const fresh = handshake("20000000-1000-4000-8000-100000000000")
+  const f = fixture(t, { read: async () => fresh })
+  f.source.marker("initial"); await f.advance(); await f.advance(2000)
+  assert.equal(f.installations.length, 2)
+  assert.equal(f.installations[0]!.signal.aborted, true)
+  assert.deepEqual(f.state.companion, fresh)
+  assert.equal(f.state.connectionID, "initial")
+})
+
+test("healthy companion checks cannot remount a controller or reset its continuity", async t => {
+  const f = fixture(t)
+  f.source.marker("initial"); await f.advance()
+  await f.advance(2000); await f.advance(2000)
+  assert.equal(f.calls.length, 2)
+  assert.equal(f.installations.length, 1)
+  assert.deepEqual(f.checkpoints, [])
+})
+
+test("a transport wrapper can recover but certificate and authentication failures stay terminal", async t => {
+  for (const failure of [
+    { reason: "Transport", cause: { code: "ECONNRESET" } },
+    { reason: "Transport", cause: { code: "ERR_TLS_CERT_ALTNAME_INVALID" } },
+    { reason: "UnexpectedStatus", cause: { status: 401 } },
+  ]) await t.test(JSON.stringify(failure), async t => {
+    const transient = "code" in failure.cause && failure.cause.code === "ECONNRESET"
+    const f = fixture(t, { read: async (_signal, attempt) => { if (attempt === 1) throw failure; return handshake() } })
+    f.source.marker("initial"); await f.advance()
+    f.native("next"); f.source.marker("next"); await f.advance(); await f.advance(250)
+    assert.equal(f.calls.length, transient ? 2 : 1)
+    assert.deepEqual(f.state.companion, transient ? handshake() : undefined)
+    await f.advance(2000)
+    assert.equal(f.installations.length, 2, "Health checks cannot promote a terminal fallback")
+  })
+})
+
+test("optional observer cleanup stays owned but cannot prevent fresh review admission", async t => {
+  const held = deferred<void>()
+  const f = fixture(t, { optionalCleanup: () => held.promise })
+  try {
+    f.source.marker("initial"); await f.advance()
+    f.native("next"); f.source.marker("next"); await f.advance()
+    assert.equal(f.installations.length, 2)
+    let settled = false
+    const stopped = f.life.stop()
+    const draining = f.life.settled().then(() => { settled = true })
+    await f.advance(); assert.equal(settled, false, "New admission must not discard ownership of optional cleanup")
+    held.resolve(); await stopped; await draining
+  } finally { held.resolve(); await f.life.stop() }
 })

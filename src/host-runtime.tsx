@@ -10,7 +10,8 @@ import { evaluateHostReview } from "./host-evaluate.js"
 import { PendingRefresh } from "./pending-refresh.js"
 import { SessionModes, SessionModeStore } from "./session-mode.js"
 import { conversationRoot, RouteSessions } from "./route-approval.js"
-import type { HostRequest, HostRequestSnapshot } from "./host-types.js"
+import type { HostPendingRequest, HostPendingSnapshot, HostRequestSnapshot } from "./host-types.js"
+import { uiText } from "./ui-text.js"
 import type { CliPluginState } from "./cli-plugin.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
 import { sameLocation } from "./companion-protocol.js"
@@ -33,7 +34,7 @@ import { setupCliReconnect } from "./cli-reconnect.js"
  * A detached Solid root has no native providers; plugin-setup ownership alone
  * would instead retain every old generation's commands until plugin reload. */
 export function setupHostRecovery(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle) {
-  const checkpoints = new Map<string, ControllerCheckpoint<HostRequest>>()
+  const checkpoints = new Map<string, ControllerCheckpoint<HostPendingRequest>>()
   const checkpointKey = (location: { directory: string; workspaceID?: string }) =>
     JSON.stringify([location.directory, location.workspaceID ?? null])
   return setupCliReconnect(ctx, state, life, (context, next, child) => {
@@ -60,7 +61,7 @@ export function setupHostRecovery(ctx: Plugin.Context, state: CliPluginState, li
 
 /** One scope-pinned controller. A replaced companion never adopts old evidence. */
 export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle,
-  checkpoint?: ControllerCheckpoint<HostRequest>, supervised = false) {
+  checkpoint?: ControllerCheckpoint<HostPendingRequest>, supervised = false) {
   const config = state.config, companion = state.companion
   if (!config || !companion) {
     const standalone = setupHostHistoryOnly(ctx, state, life)
@@ -84,8 +85,10 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   const snapshots = new Map<string, HostRequestSnapshot>()
   const eventOwners = new Map<string, string>()
   const reads = new TransportOwnership()
+  const permissionReads = new TransportOwnership()
   const owned = <T,>(work: Promise<T>) => reads.track(work)
-  life.addCleanup(() => reads.settled())
+  life.addCleanup(() => reads.settled(), false)
+  life.addCleanup(() => permissionReads.settled())
   const routes = new RouteSessions(id => ctx.data.session.get(id))
   const store = new SessionModeStore(path.join(state.stateRoot, "session-mode-v2"), JSON.stringify(scope.location))
   const ancestry = new SessionAncestry(async (id, signal) => {
@@ -97,7 +100,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     return session
   })
   const modes = new SessionModes(store, ancestry)
-  const [views, setViews] = createSignal<View<HostRequest>[]>([])
+  const [views, setViews] = createSignal<View<HostPendingRequest>[]>([])
   const queueReader: HostQueueReader = {
     session: id => routes.get(id), family: id => ctx.data.session.family(id),
     // Shared queue observations read only public identities from reactive native
@@ -157,9 +160,9 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       })
     },
   })
-  const controller = new Controller<HostRequest>((request, signal, identified, onProgress, observation) => {
+  const controller = new Controller<HostPendingRequest>((request, signal, identified, onProgress, observation) => {
     const snapshot = snapshots.get(request.id)
-    if (!snapshot) return Promise.resolve(null)
+    if (!snapshot) return Promise.reject(new Error(uiText.review.evidenceUnavailable))
     let pricing: PricingLookup | undefined
     try { pricing = hostPricingLookup(config.baseURL, ctx.data.location.model.list(scope.location), ctx.data.location.provider.list(scope.location)) }
     catch { /* Missing/failed optional pricing cannot change the review. */ }
@@ -168,16 +171,17 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
         observeEvidence: evidence => observation ? records.history.observation(request, evidence.kind, config, observation) : undefined })
   }, values => { setViews(values); notifications?.snapshot(controller.pendingViews) }, {
     reviewOptions: config, modes, session: id => routes.get(id), checkpoint,
+    unavailable: request => "unavailable" in request ? uiText.review.evidenceUnavailable : undefined,
     approvalReady: (request, root) => hostApprovalReady(request, root, ctx.ui.router.current(), id => routes.get(id),
       () => nativeDecisionPending(ctx.renderer.root, ctx.theme.background.action.primary.focused)),
     nativeFront: root => front(root),
     onLifecycle: records.history.lifecycle,
     onApproval: fact => { records.history.approval(fact); notifications?.approval(fact) },
-    candidate: request => !!request.source && ((request.action === "shell" && config.reviewBash)
+    candidate: request => !("unavailable" in request) && !!request.source && ((request.action === "shell" && config.reviewBash)
       || (request.action === "edit" && config.reviewEdits) || (request.action === "external_directory" && config.reviewExternalDirectories)
       || (request.action === "skill" && config.reviewSkills) || config.reviewTools),
     nativeApproval: {
-      list: async signal => (await owned(transport.listScope(signal))).map(value => value.request),
+      list: async signal => (await owned(transport.pendingScope(signal))).map(value => value.request),
       once: (request, signal, dispatch) => {
         const snapshot = snapshots.get(request.id)
         return snapshot ? owned(transport.once(snapshot, signal, dispatch)) : Promise.resolve({ status: "unavailable" as const })
@@ -216,12 +220,12 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     return []
   })()), life.signal, healthy => { formHealthy = healthy; notificationSnapshot() }) : undefined
   life.addCleanup(() => formRefresh?.dispose())
-  const refresh = new PendingRefresh<HostRequestSnapshot>({ get revision() { return revision() },
+  const refresh = new PendingRefresh<HostPendingSnapshot>({ get revision() { return revision() },
     reconcile(requests, revision) {
       if (controller.revision + events !== revision) return
       snapshots.clear()
       for (const snapshot of requests) {
-        snapshots.set(snapshot.request.id, snapshot)
+        if (!("unavailable" in snapshot.request)) snapshots.set(snapshot.request.id, snapshot as HostRequestSnapshot)
         eventOwners.set(snapshot.request.id, snapshot.request.sessionID)
       }
       if (eventOwners.size > 16384) {
@@ -231,9 +235,9 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       controller.reconcile(requests.map(value => value.request), controller.revision)
       notificationSnapshot()
     },
-  }, signal => owned((async () => {
+  }, signal => permissionReads.track(owned((async () => {
     signal.throwIfAborted()
-    const all = await owned(transport.listScope(signal))
+    const all = await owned(transport.pendingScope(signal))
     // Public native caches must be refreshed as well as the server snapshot.
     const ids = await refreshNativeFamily(new Set([...all.map(value => value.request.sessionID),
       ...controller.pendingViews.map(value => value.request.sessionID)]), familyReader, signal)
@@ -244,7 +248,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       signal.throwIfAborted()
     }
     return all
-  })()), life.signal, healthy => {
+  })())), life.signal, healthy => {
     permissionHealthy = healthy
     notificationSnapshot()
     if (healthy) void formRefresh?.refresh()
@@ -313,9 +317,10 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     }
   })
   life.addCleanup(off)
-  life.addCleanup(() => { const at = performance.now(); refresh.dispose(); return records.dispose(controller.dispose(), at) })
+  life.addCleanup(() => controller.dispose())
+  life.addCleanup(() => { const at = performance.now(); refresh.dispose(); return records.dispose(controller.dispose(), at) }, false)
   life.addCleanup(() => modes.flush())
-  life.addCleanup(() => notifications?.dispose())
+  life.addCleanup(() => notifications?.dispose(), false)
   const timer = setInterval(() => { void refresh.refresh() }, 2000)
   life.addCleanup(() => clearInterval(timer))
   life.addCleanup(ctx.ui.slot({ append: "app", render: () => {

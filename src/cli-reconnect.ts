@@ -5,6 +5,7 @@ import { companionRpc, readHandshake, sameLocation } from "./companion-protocol.
 import { DeadlineError, remainingTime, withDeadline } from "./deadline.js"
 import { TransportOwnership } from "./transport-ownership.js"
 import timers from "node:timers/promises"
+import { connectionFailureIsTransient } from "./transport-retry.js"
 
 function marker(id: unknown): id is string {
   return typeof id === "string" && id.length > 0 && id.length <= 1024 && !id.includes("\0")
@@ -17,21 +18,29 @@ export function setupCliReconnect<T>(context: Plugin.Context, state: CliPluginSt
   install: (context: Plugin.Context, state: CliPluginState, life: PluginLifecycle) => T,
   checkpoint: (runtime: T) => void = () => {}) {
   const reads = new TransportOwnership()
-  let active: { life: PluginLifecycle; runtime: T; id?: string; client: Plugin.Context["client"] } | undefined
+  const retired = new Set<Promise<void>>()
+  let active: { life: PluginLifecycle; runtime: T; id?: string; client: Plugin.Context["client"]; companion?: CliPluginState["companion"] } | undefined
   let nativeID = state.connectionID, streamID: string | undefined
   let streamClient: Plugin.Context["client"] | undefined
   let source: { client: Plugin.Context["client"]; abort: AbortController } | undefined
   let admission: AbortController | undefined
   let draining = Promise.resolve(), worker: Promise<void> | undefined, dirty = false
   let continuityHealthy = true
-  let attempted = state.connectionID
+  let probeAt = performance.now() + 2000
   let manualConnection = state.companion ? undefined : state.connectionID
+  let stalled: { client: Plugin.Context["client"]; id?: string } | undefined
   const location = () => {
     const value = context.location ?? context.data.location.default()
     return { directory: value.directory, ...(value.workspaceID ? { workspaceID: value.workspaceID } : {}) }
   }
-  const retire = () => {
-    admission?.abort()
+  const ownRetired = (child: PluginLifecycle) => {
+    const settled = child.settled()
+    retired.add(settled)
+    void settled.finally(() => retired.delete(settled))
+    draining = Promise.allSettled([draining, child.criticalSettled()]).then(() => {})
+  }
+  const retire = (cancelAdmission = true) => {
+    if (cancelAdmission) admission?.abort()
     const previous = active
     if (!previous) return
     active = undefined
@@ -39,10 +48,11 @@ export function setupCliReconnect<T>(context: Plugin.Context, state: CliPluginSt
     catch { continuityHealthy = false }
     state.companion = undefined
     state.connectionID = undefined
-    // stop() aborts and invokes every cleanup synchronously. Physical settlement,
-    // including old SQLite workers and uncertain writes, precedes replacement.
+    probeAt = 0
+    // Abort all old work synchronously. Only mandatory native-cache, approval and
+    // mode-write leases fence replacement; optional work remains owned separately.
     void previous.life.stop()
-    draining = Promise.allSettled([draining, previous.life.settled()]).then(() => {})
+    ownRetired(previous.life)
   }
   const start = (client: Plugin.Context["client"], next: CliPluginState) => {
     const child = new PluginLifecycle()
@@ -51,12 +61,12 @@ export function setupCliReconnect<T>(context: Plugin.Context, state: CliPluginSt
     const scoped = new Proxy(context, { get: (target, key) => key === "client" ? client : Reflect.get(target, key) })
     try {
       const runtime = install(scoped, next, child)
-      active = { life: child, runtime, id: next.connectionID, client }
+      active = { life: child, runtime, id: next.connectionID, client, companion: next.companion }
       state.companion = next.companion
       state.connectionID = next.connectionID
     } catch (error) {
       void child.stop()
-      draining = Promise.allSettled([draining, child.settled()]).then(() => {})
+      ownRetired(child)
       throw error
     }
   }
@@ -69,11 +79,13 @@ export function setupCliReconnect<T>(context: Plugin.Context, state: CliPluginSt
       await draining
       const id = streamID, client = streamClient, at = location()
       if (!continuityHealthy || !id || !client || !current(id, client, at)
-        || attempted === id || manualConnection === id || active) continue
-      attempted = id
+        || manualConnection === id || (active && performance.now() < probeAt)) continue
+      probeAt = performance.now() + 2000
       const abort = new AbortController()
       admission = abort
       let companion: CliPluginState["companion"]
+      let terminal = false
+      let rebind = false
       try {
         companion = await withDeadline(AbortSignal.any([life.signal, abort.signal]), 10000, async signal => {
           while (!signal.aborted) {
@@ -82,11 +94,13 @@ export function setupCliReconnect<T>(context: Plugin.Context, state: CliPluginSt
               const value = await withDeadline(signal, 1500, attempt =>
                 pending = reads.track(client.rpc(companionRpc).handshake(at, { location: at, signal: attempt })), "Companion handshake")
               signal.throwIfAborted()
-              return readHandshake(value, at)
+              const parsed = readHandshake(value, at)
+              if (!parsed) terminal = true
+              return parsed
             } catch (error) {
               signal.throwIfAborted()
-              if (!state.config || (!(error instanceof DeadlineError)
-                && (!error || typeof error !== "object" || !("type" in error) || error.type !== "rpc.unavailable"))) return
+              if (!(error instanceof DeadlineError) && !connectionFailureIsTransient(error)) { terminal = true; return }
+              if (!state.config) return
             }
             await pending?.then(() => {}, () => {})
             signal.throwIfAborted()
@@ -95,11 +109,23 @@ export function setupCliReconnect<T>(context: Plugin.Context, state: CliPluginSt
           }
         }, "Companion reconnection")
       } catch { /* Failed admission leaves this connection manual. */ }
-      if (!companion && !abort.signal.aborted) manualConnection = id
+      if (!abort.signal.aborted && (terminal || (!companion && !active))) manualConnection = id
       // A caller deadline is not physical settlement and never permits overlap.
       await reads.settled()
-      if (!abort.signal.aborted && current(id, client, at))
-        start(client, { ...state, companion, connectionID: id })
+      if (!abort.signal.aborted && current(id, client, at)) {
+        const previous = active
+        if (previous?.companion && companion?.epoch === previous.companion.epoch) {
+          // A read-only health check cannot re-review or reset a countdown.
+        } else if (previous && (companion || terminal)) {
+          retire(false)
+          await draining
+          if (!abort.signal.aborted && current(id, client, at)) {
+            if (companion) { dirty = true; rebind = true } // Bind again after the old critical work settled.
+            else start(client, { ...state, companion: undefined, connectionID: id })
+          }
+        } else if (!previous) start(client, { ...state, companion, connectionID: id })
+      }
+      probeAt = rebind ? 0 : performance.now() + 2000
       if (admission === abort) admission = undefined
     }
   }
@@ -123,11 +149,13 @@ export function setupCliReconnect<T>(context: Plugin.Context, state: CliPluginSt
     wake()
   })
   let monitor = Promise.resolve()
+  const health = setInterval(wake, 2000)
   life.addCleanup(async () => {
-    off(); retire()
+    clearInterval(health); off(); retire()
     await Promise.allSettled([monitor, worker])
     await draining
     await reads.settled()
+    while (retired.size) await Promise.allSettled([...retired])
   })
   start(context.client, { ...state })
   monitor = (async () => {
@@ -136,11 +164,26 @@ export function setupCliReconnect<T>(context: Plugin.Context, state: CliPluginSt
       const abort = new AbortController()
       source = { client, abort }
       const signal = AbortSignal.any([life.signal, abort.signal])
+      let idle: ReturnType<typeof setTimeout> | undefined
+      const touch = () => {
+        clearTimeout(idle)
+        idle = setTimeout(() => {
+          stalled = { client, id: streamID }
+          retire()
+          abort.abort()
+        }, 45000)
+      }
+      touch()
       try {
-        for await (const event of client.event.subscribe({ signal })) {
+        for await (const event of client.event.subscribe({ signal, onActivity: touch })) {
           signal.throwIfAborted()
           if (event.type !== "server.connected") continue
           const id = marker(event.id) ? event.id : undefined
+          // Do not pin a source already rejected as stalled while the native
+          // subscriber is still releasing it. A replay is not fresh activity.
+          if (stalled?.client === client && stalled.id === id) { abort.abort(); break }
+          stalled = undefined
+          touch()
           if (id !== streamID || client !== streamClient) {
             streamID = id; streamClient = client
             if (active && (active.id !== id || active.client !== client)) retire()
@@ -149,12 +192,10 @@ export function setupCliReconnect<T>(context: Plugin.Context, state: CliPluginSt
           }
         }
       } catch { /* The client stream is live-only. Subscribe again after loss. */ }
+      clearTimeout(idle)
       if (source.abort === abort) source = undefined
       streamID = undefined; streamClient = undefined
       retire()
-      // A source failure permits fresh admission of a previously healthy marker,
-      // but cannot promote a connection whose handshake already failed.
-      attempted = undefined
       if (!life.signal.aborted) {
         try { await timers.setTimeout(250, undefined, { signal: life.signal }) } catch {}
       }

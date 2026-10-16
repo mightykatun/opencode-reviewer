@@ -16,6 +16,8 @@
 // normal-long-session (512 completed native Code Mode calls before direct review).
 // normal-large-source (oversized source excerpts through the installed companion and judge).
 // normal-reconnect (real loopback socket loss, same TUI and fresh production generation).
+// normal-reconnect-visible (socket loss during a visible review and its countdown).
+// normal-stalled-stream (silently held SSE bytes, native idle recovery during review).
 // Build first. Do not execute a host until the main session grants approval.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
@@ -448,10 +450,12 @@ const notificationCase = scenario === "fast-notifications", savedCase = automati
 const projectTransition = scenario === "normal-project-transition"
 const evidenceTimeout = scenario === "advisory-evidence-timeout"
 const longSession = scenario === "normal-long-session", largeSource = scenario === "normal-large-source"
-const reconnectCase = scenario === "normal-reconnect"
+const stalledStream = scenario === "normal-stalled-stream"
+const pendingReconnect = scenario === "normal-reconnect-visible" || stalledStream
+const reconnectCase = scenario === "normal-reconnect" || pendingReconnect
 const warmupBatches = 16, warmupBatchSize = 32, warmupCalls = []
 const requestCount = projectTransition ? 4 : coverCase || directoryEditCase ? 2 : 1
-const expectedReviewPOSTs = evidenceTimeout ? 0 : requestCount
+const expectedReviewPOSTs = evidenceTimeout ? 0 : pendingReconnect ? stalledStream ? 2 : 3 : requestCount
 const nativeCallCount = editCase ? 1 : requestCount
 const negative = scenario === "normal-cancel"
 const descendant = scenario.endsWith("-descendant")
@@ -531,6 +535,7 @@ const toolCall = registeredTool ? { id: "v2-production-review-registered", name:
 const publishers = new Map(), calls = [], errors = [], negativeWindows = []
 let version, modelServer, mainResponse, reviewResponse, sessionID, childSession, request, inspection, handshake, sequence = 0
 let networkProxy, networkBlocked = false, networkEvidence
+const eventResponses = new Set()
 const proxySockets = new Set(), proxyRequests = []
 let reviewPOSTs = 0, reviewCompleted = false, allowWrites = false, manualDecision = false
 let allowedReplies = 1, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, notificationSequence = 0
@@ -651,6 +656,47 @@ const readHistory = async () => {
 const noSavedBody = async () => {
   const value = await readHistory()
   if (value) assert.equal(value.payloadCount, 0, "Unresolved report text remains memory-only")
+}
+const recoverPendingConnection = async (label, { silent = false, outageMs = 1500 } = {}) => {
+  const before = await readObservation(path.join(artifacts, "storage-observations.json"))
+  assert.equal(before.connection.active, true)
+  const posts = reviewPOSTs, previous = reviewResponse, started = performance.now()
+  const transaction = reviewerTransactions.at(-1)
+  if (!transaction.completed) transaction.expectedAbort = true
+  if (silent) {
+    assert.ok(eventResponses.size > 0, "Silence an existing live SSE response without closing its socket")
+    for (const response of eventResponses) response.silent = true
+  } else {
+    networkBlocked = true
+    for (const socket of proxySockets) socket.destroy()
+    await until(label + " runtime revoked", async () =>
+      (await readObservation(path.join(artifacts, "storage-observations.json"))).connection?.active === false, 10000)
+    const hold = performance.now()
+    do {
+      assert.deepEqual((await observations()).replied, [])
+      assert.equal(await executed(), null); assert.equal(reviewPOSTs, posts)
+      await noSavedBody(); await sleep(75)
+    } while (performance.now() - hold < outageMs)
+    networkBlocked = false
+  }
+  const after = await until(label + " fresh native/client admission", async record => {
+    const value = await readObservation(path.join(artifacts, "storage-observations.json"))
+    assert.deepEqual(record.replied, []); assert.equal(await executed(), null)
+    return value.connection?.active && value.connection.id !== before.connection.id
+      && record.connections?.some(item => item.id === value.connection.id) && value
+  })
+  assert.equal(after.setups, before.setups, "No plugin reload for network recovery")
+  assert.equal(after.connection.generation, before.connection.generation + 1)
+  await until(label + " new evidence-bound reviewer POST", () => reviewPOSTs === posts + 1 && reviewResponse !== previous)
+  if (transaction.expectedAbort) assert.equal(transaction.closed, true, "The old generation cancels its actual model response")
+  assert.deepEqual(await command({ type: "pending", sessionID }), [request])
+  assert.deepEqual((await command({ type: "status" })).handshake, handshake)
+  const proof = { label, silent, before, after, elapsedMs: performance.now() - started, posts: reviewPOSTs }
+  if (silent) assert.ok(proof.elapsedMs >= 44000, "A silent source must reach its actual native idle boundary")
+  networkEvidence ??= []
+  networkEvidence.push(proof)
+  await publish(path.join(artifacts, "network-reconnect.json"), networkEvidence)
+  await saveCapture(label + "-recovered")
 }
 const savedHistory = async () => {
   const value = await readHistory()
@@ -935,7 +981,8 @@ const limits = [
   "Mouse capture is explicitly configured only by the isolated fixture, never forced by production. UI changes use real native commands/navigation, keyboard choices or actual tmux resize; no synthesized paint, modes, hits or geometry. Individual cases do not imply full UI-matrix acceptance.",
   projectTransition ? "The transition includes a real descendant-owned shell request in the root native queue. A distinct public location read discovers the committed repository and lets native worktree resolution adopt existing sessions; the original companion must retain its exact handshake and epoch. No fabricated events, location reload, database edits, remote changes or uncertain writes. Markerless startup IDs are observed, not assumed to be global on every V2 release."
     : "Descendant cases navigate a real child while a root request is pending; they do not exercise descendant-owned native queue ordering. No disabled kinds or uncertain writes.",
-      reconnectCase ? "Actual TCP socket destruction and a 1.5-second network outage while the session's first model response is held, before its native tool call. Independent native connection markers and the production embedding accessor prove the old runtime is absent during loss and a fresh runtime is admitted without plugin reload. One subsequent real review, native once reply, tool execution and saved report prove live review resumes. Pending countdown, uncertain-write and cancellation continuity are source-tested, not host-accepted by this case."
+      pendingReconnect ? "An actual pending native shell permission survives a silently held event stream or TCP socket loss. Independent native connection markers and the production accessor prove fresh admission without plugin reload; every replacement review must recollect evidence. The visible-socket case disconnects during both analysis and a started countdown, holding the second outage beyond its original deadline. Exact once-only reply, native execution, final saved report and accounting are verified. No uncertain-write or cancellation host acceptance."
+      : reconnectCase ? "Actual TCP socket destruction and a 1.5-second network outage while the session's first model response is held, before its native tool call. Independent native connection markers and the production embedding accessor prove the old runtime is absent during loss and a fresh runtime is admitted without plugin reload. One subsequent real review, native once reply, tool execution and saved report prove live review resumes. Pending countdown, uncertain-write and cancellation continuity are source-tested, not host-accepted by this case."
       : evidenceTimeout ? "A genuine native shell permission with a one-millisecond production evidence deadline. Actual terminal captures must show Analysis unavailable and timed out while the native request stays pending, with no reviewer POST, reply, execution or saved report. No injected transport errors, protocol changes, missing-linkage substitution or model latency acceptance."
      : registeredTool ? "One real local MCP request advertised directly with a public Code Mode option, a scoped registered definition (normal omits the oversized description and reports the reason), one production once reply, actual MCP result continuation, saved tool category and confirmed approval totals. No ambiguous nested call, remote implementation inspection or live-provider acceptance."
     : skillCase ? "One direct native skill request with full scoped registry main instructions, an unchanged selected definition, one production once reply and actual native tool-result loading. Normal countdown or fast preview/remainder is observed, and read-only SQLite verifies the saved skill category, confirmed approval and usage totals. No supporting-file inspection, catalog-mutation guarantee, ambiguous nested call, live-provider judgment or multi-client acceptance."
@@ -1082,10 +1129,14 @@ try {
              assert.equal(evidence.files[0].contents, script)
            }
         }
+         reviewCompleted = false
          reviewResponse = res
          const transaction = { res, completed: false }
          reviewerTransactions.push(transaction)
-         res.once("close", () => { if (!transaction.completed) errors.push("Reviewer response closed before its controlled terminal EOF") })
+         res.once("close", () => {
+           transaction.closed = true
+           if (!transaction.completed && !transaction.expectedAbort) errors.push("Reviewer response closed before its controlled terminal EOF")
+         })
         if (streaming) { res.writeHead(200, { "Content-Type": "text/event-stream" }); res.flushHeaders() }
         return
       }
@@ -1229,8 +1280,14 @@ createInterface({input:process.stdin}).on('line',line=>{
       proxyRequests.push(observed)
       const upstream = httpRequest(new URL(req.url, target), { method: req.method, headers: { ...req.headers, ...authentication } }, response => {
         observed.type = response.headers["content-type"]
-        res.writeHead(response.statusCode, response.headers); res.flushHeaders(); response.pipe(res)
-        response.on("error", () => res.destroy())
+        res.writeHead(response.statusCode, response.headers); res.flushHeaders()
+        if (/event-stream/.test(observed.type)) {
+          eventResponses.add(observed)
+          response.on("data", chunk => { if (!observed.silent) res.write(chunk) })
+          response.on("end", () => res.end())
+          res.on("close", () => eventResponses.delete(observed))
+        } else response.pipe(res)
+         response.on("error", () => res.destroy())
       })
       upstream.on("error", () => res.destroy())
       res.on("close", () => upstream.destroy())
@@ -1269,7 +1326,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   const session = await command({ type: "start", text: prompt })
   sessionID = session.id
   await until("controlled initial native model request", () => mainResponse)
-  if (reconnectCase) {
+  if (reconnectCase && !pendingReconnect) {
     const before = await until("initial production connection observation", async () => {
       const value = await readObservation(path.join(artifacts, "storage-observations.json"))
       return value.connection?.active && value.connection.id && value
@@ -1570,7 +1627,29 @@ createInterface({input:process.stdin}).on('line',line=>{
   await until("rendered production evaluating panel", () => capture().includes("Permission analysis"))
   await saveCapture("evaluating")
    await negativeWindow("review response held", [request], [], null, 1, 1500, notificationCase ? noAttention : savedCase ? noSavedBody : () => {})
-   if (descendant || hiddenComplete) {
+    if (pendingReconnect) {
+      await recoverPendingConnection(stalledStream ? "silent-review" : "visible-review", { silent: stalledStream })
+      await until("fresh visible evaluating report", () => capture().includes("Permission analysis"))
+      await negativeWindow("recovered pending review stays manual until a fresh assessment", [request], [], null, 2, 1500, noSavedBody)
+      finishReview()
+      await until("recovered validated countdown", () => /Allowed in \d+s/.test(capture()))
+      await saveCapture("recovered-countdown")
+      if (!stalledStream) {
+        await recoverPendingConnection("visible-countdown", { outageMs: approvalDelaySeconds * 1000 + 1500 })
+        await noSavedBody()
+        allowWrites = true
+        const resumed = performance.now()
+        finishReview()
+        await until("expired original countdown approves only after fresh assessment", async record =>
+          record.replied.length === 1 && await executed() === markerLine)
+        assert.ok(performance.now() - resumed < approvalDelaySeconds * 1000, "Recovery must not restart a full countdown")
+      } else {
+        await negativeWindow("silent-source recovery countdown remains native pending", [request], [], null, 2, 1500, noSavedBody)
+        allowWrites = true
+        await until("silent-source recovery approves once", async record => record.replied.length === 1 && await executed() === markerLine)
+      }
+    } else {
+    if (descendant || hiddenComplete) {
     childSession = await command({ type: "child", sessionID })
     assert.equal(childSession.parentID, sessionID)
     assert.equal(childSession.location.directory, initial)
@@ -1835,7 +1914,8 @@ createInterface({input:process.stdin}).on('line',line=>{
      }
    }
   }
-   if (allowWrites) {
+    }
+    if (allowWrites) {
     await until("actual native tool-result continuation", () => calls.filter(call => call.url === "/v1/chat/completions").length === 2)
     const completed = await command({ type: "message", sessionID, messageID: request.source.messageID })
     const result = completed.content.filter(item => item.type === "tool" && item.id === toolCall.id)
@@ -1845,7 +1925,7 @@ createInterface({input:process.stdin}).on('line',line=>{
     assert.deepEqual(result[0].state.input, toolCall.input)
     assert.match(JSON.stringify(result[0].state), /V2_REVIEW_EXECUTED/)
     await until("production report cleared after completion", () => !capture().includes("Permission analysis"))
-    await negativeWindow("resolved automatic request stays once-only", [], (await observations()).replied, "V2_REVIEW_EXECUTED\n", 1)
+     await negativeWindow("resolved automatic request stays once-only", [], (await observations()).replied, "V2_REVIEW_EXECUTED\n", pendingReconnect ? expectedReviewPOSTs : 1)
   }
    if (projectTransition) {
      const baseline = await until("nongit review saved before Git initialization", savedHistory, 20000)
@@ -2275,7 +2355,25 @@ createInterface({input:process.stdin}).on('line',line=>{
           })
       }
     }
-   if (savedCase && !coverCase && !historyCase && !notificationCase && !editCase && !skillCase && !projectTransition) {
+   if (pendingReconnect) {
+     historyEvidence = await until("recovery saves the final report and drains every actual POST", async () => {
+       const value = await readHistory()
+       if (value?.rows.length !== 1 || value.approvals[0]?.state !== "confirmed"
+         || value.attempts.length !== expectedReviewPOSTs || value.attempts.some(item => !item.finalized)) return
+       const totals = JSON.parse(value.meta.totals)
+       // The interrupted first response sends no usage. Count its dispatched and
+       // finalized attempt, but do not invent a usage-bearing request or zeros.
+       if (totals.activity.usageRequests !== expectedReviewPOSTs - 1 || totals.activity.reviews !== expectedReviewPOSTs - 1) return
+       assert.equal(value.payloadCount, 1); assert.equal(value.approvals.length, 1)
+       const row = value.rows[0], context = JSON.parse(row.context), body = JSON.parse(row.body)
+       assert.equal(context.permission, request.id); assert.equal(context.session, sessionID)
+       assert.equal(body.safe, true); assert.equal(body.desc, description); assert.equal(row.outcome, "auto")
+       assert.equal(totals.activity.autoApproved, 1); assert.equal(totals.activity.retries, 0)
+       assert.equal(value.attempts.filter(item => !JSON.parse(item.finalized).usage).length, 1)
+       assert.equal(totals.input, 23 * (expectedReviewPOSTs - 1)); assert.equal(totals.output, 11 * (expectedReviewPOSTs - 1))
+       return value
+     }, 20000)
+   } else if (savedCase && !coverCase && !historyCase && !notificationCase && !editCase && !skillCase && !projectTransition) {
      historyEvidence = await until("background automatic report and aggregates save normally", savedHistory, 20000)
      await publish(path.join(artifacts, "background-saved-history.json"), historyEvidence)
    }

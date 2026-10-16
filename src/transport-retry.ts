@@ -28,6 +28,17 @@ export function networkFailure(error: unknown, message: string): Error {
   return new Error(message)
 }
 
+/** Public client transport errors only. Invalid protocol/scope, auth and TLS
+ * failures are not transient admission failures. Never inspect error messages. */
+export function connectionFailureIsTransient(error: unknown): boolean {
+  if (error && typeof error === "object") {
+    const value = error as { type?: unknown; reason?: unknown; cause?: { status?: unknown } }
+    if (value.type === "rpc.unavailable") return true
+    if (value.reason === "UnexpectedStatus" && typeof value.cause?.status === "number") return statuses.has(value.cause.status)
+  }
+  return networkFailure(error, "Connection unavailable") instanceof TransientTransportError
+}
+
 /** Retry-After is a minimum, not a delay to clamp down to our remaining budget. */
 export function retryAfter(value: string | null, now = Date.now()): number {
   if (value === null) return 0

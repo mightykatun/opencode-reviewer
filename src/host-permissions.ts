@@ -1,8 +1,8 @@
 import type { OpenCodeClient } from "@opencode/client"
 import { companionRpc, readHandshake } from "./companion-protocol.js"
-import { boundedHostJSON, hostRequestWire, readHostScope, sameRequest, snapshotRequest } from "./host-request.js"
+import { hostRequestWire, readHostScope, readPendingInventory, sameRequest, snapshotRequest } from "./host-request.js"
 import { transportOwnership } from "./transport-ownership.js"
-import type { HostRequestSnapshot, HostScope } from "./host-types.js"
+import type { HostPendingSnapshot, HostRequestSnapshot, HostScope } from "./host-types.js"
 
 export type OnceSubmission = { status: "submitted" | "unavailable" | "uncertain" }
 /** Preparation may await host reads. Call dispatch exactly once, synchronously
@@ -19,6 +19,7 @@ export interface HostPermissionTransport extends NativeApprovalTransport<HostReq
   /** Local source-test/embedding count, not configuration or UI diagnostics. */
   readonly retainedReservations: number
   /** Complete location snapshot, not one session's native queue. */
+  pendingScope(signal: AbortSignal): Promise<readonly HostPendingSnapshot[]>
   listScope(signal: AbortSignal): Promise<readonly HostRequestSnapshot[]>
   list(sessionID: string, signal: AbortSignal): Promise<readonly HostRequestSnapshot[]>
   get(sessionID: string, requestID: string, signal: AbortSignal): Promise<HostRequestSnapshot | undefined>
@@ -74,19 +75,16 @@ export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): 
       prune(key, reservation)
     },
     async listScope(signal) {
+      const values = await this.pendingScope(signal)
+      if (values.some(value => "unavailable" in value.request)) throw Error("Pending permission evidence unavailable")
+      return values as readonly HostRequestSnapshot[]
+    },
+    async pendingScope(signal) {
       if (!await currentEpoch(signal)) throw Error("Pending permission scope unavailable")
-      const raw = boundedHostJSON(await owned(signal, client.permission.request.list({ location: scope.location }, options(signal))))
+      const raw = await owned(signal, client.permission.request.list({ location: scope.location }, options(signal)))
       signal.throwIfAborted()
-      if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw Error("Pending permissions unavailable")
-      const result = raw as Record<string, unknown>, location = result.location as { directory?: unknown } | undefined
-      if (Object.keys(result).length !== 2 || location?.directory !== scope.location.directory || !Array.isArray(result.data))
-        throw Error("Pending permission location unavailable")
-      const requests: HostRequestSnapshot[] = [], ids = new Set<string>()
-      for (const value of result.data) {
-        const snapshot = snapshotRequest(value, scope)
-        if (!snapshot || ids.has(snapshot.request.id)) throw Error("Pending permission identity unavailable")
-        ids.add(snapshot.request.id); requests.push(snapshot)
-      }
+      const requests = readPendingInventory(raw, scope)
+      if (!requests) throw Error("Pending permission location unavailable")
       if (!await currentEpoch(signal)) throw Error("Pending permission connection replaced")
       return requests
     },

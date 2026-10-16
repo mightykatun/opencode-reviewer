@@ -13,6 +13,7 @@ import { loadHostRuntime } from "./host-runtime-loader.js"
 import { parseNotificationConfig, type NotificationConfig } from "./notification-config.js"
 import type { setupHostRuntime } from "./host-runtime.js"
 import { initialConnectionEcho } from "./connection-marker.js"
+import { connectionFailureIsTransient } from "./transport-retry.js"
 
 export interface CliPluginState {
   config?: Config
@@ -109,8 +110,7 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
           }
         } catch (error) {
           signal.throwIfAborted()
-          if (!state.config || (turn === generation && !(error instanceof DeadlineError)
-            && (!error || typeof error !== "object" || !("type" in error) || error.type !== "rpc.unavailable"))) return
+          if (!state.config || (turn === generation && !(error instanceof DeadlineError) && !connectionFailureIsTransient(error))) return
         }
         // Abort ends the caller's wait, not the transaction. Do not overlap
         // attempts even when a client ignores cancellation or settles late.

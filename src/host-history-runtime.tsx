@@ -4,7 +4,6 @@ import path from "node:path"
 import { createHash } from "node:crypto"
 import type { CliPluginState } from "./cli-plugin.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
-import type { HostRequest } from "./host-types.js"
 import type { HostPanelBounds, HostSidebarAnchor } from "./host-review-panel.js"
 import { HistoryStore, type HistoryStoreOptions } from "./history-store.js"
 import { HistoryCoordinator, drainHistory } from "./history-coordinator.js"
@@ -20,6 +19,7 @@ import { conversationRoot, RouteSessions } from "./route-approval.js"
 import { sameLocation } from "./companion-protocol.js"
 import { historyStateRoot } from "./local-state.js"
 import { initialConnectionEcho } from "./connection-marker.js"
+import type { RequestIdentity } from "./controller.js"
 
 export interface HostHistoryRuntimeOptions {
   rootRoute(): string | undefined
@@ -69,7 +69,7 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
     if (read.settled) owned(read.settled)
     return read
   }
-  const history = new HistoryCoordinator<HostRequest>(scope, store, root)
+  const history = new HistoryCoordinator<RequestIdentity>(scope, store, root)
   const [state, setState] = createSignal<HistoryViewState>({ open: false, status: "loading", reset: 0 })
   const browser = new HistoryController(scope, store, (id, signal) => history.root(id, signal), setState)
   // Opt-in fixture observation of the actual mounted view's input ownership.
@@ -190,7 +190,7 @@ export function setupHostHistoryOnly(ctx: Plugin.Context, state: CliPluginState,
   }))
   // Keep actual ancestry settlement owned even if the bounded storage drain ends
   // first. There are no review/accounting finalizers in this composition.
-  life.addCleanup(() => records.settled())
-  life.addCleanup(() => records.dispose())
+  life.addCleanup(() => records.settled(), false)
+  life.addCleanup(() => records.dispose(), false)
   return { records, routes, rootRoute, sidebar, geometry, active: () => !disconnected && !life.signal.aborted }
 }

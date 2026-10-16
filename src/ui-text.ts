@@ -31,6 +31,7 @@ export const uiText = {
     retrying: "Retrying",
     staticIndicator: "[⋯]",
     failed: "Review failed",
+    evidenceUnavailable: "Exact operation evidence unavailable. Use native controls.",
     invalidConfiguration: "Invalid configuration",
   },
   autoApproval: {

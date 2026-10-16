@@ -116,6 +116,51 @@ async function fixture(options: { notify?: boolean; formSync?: () => Promise<voi
 }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
 
+test("production reconnect admits permissions while an aborted optional native form read remains owned", async t => {
+  let release!: () => void, forms = 0
+  const held = new Promise<void>(resolve => { release = resolve })
+  const f = await fixture({ recovery: true, notify: true, formSync: async () => { if (++forms === 1) await held } })
+  t.after(async () => { release(); await f.life.stop(); await f.life.settled() })
+  await tick(); await tick()
+  assert.equal(forms, 1)
+  f.state.requests = [pending("after-form-stall")]
+  f.event("server.connected", {}, "event-next"); f.clientMarker("event-next")
+  let next
+  for (let turn = 0; turn < 50; turn++) {
+    await tick(); next = f.recovery!.current()
+    if (next?.controller.pendingViews[0]?.request.id === "after-form-stall") break
+  }
+  assert.ok(next); assert.notEqual(next, f.runtime)
+  assert.equal(next.controller.pendingViews[0]?.request.id, "after-form-stall")
+  const stopped = f.life.stop()
+  let settled = false
+  const drained = f.life.settled().then(() => { settled = true })
+  await tick(); assert.equal(settled, false, "Retired optional work is still physically owned")
+  release(); await stopped; await drained
+  assert.equal(f.listeners.size, 0); assert.equal(f.slots.size, 0); assert.equal(f.commands.length, 0)
+})
+
+test("production reconnect cannot mix generations across a physically held mandatory native-cache refresh", async t => {
+  let release!: () => void, syncs = 0
+  const held = new Promise<void>(resolve => { release = resolve })
+  const f = await fixture({ recovery: true, sessionSync: async () => { if (++syncs === 1) await held } })
+  t.after(async () => { release(); await f.life.stop(); await f.life.settled() })
+  await tick(); assert.equal(syncs, 1)
+  f.state.requests = [pending("after-mandatory-stall")]
+  f.event("server.connected", {}, "event-next"); f.clientMarker("event-next")
+  await tick(); await tick()
+  assert.equal(f.recovery!.current(), undefined)
+  assert.equal(f.calls.filter(call => call.startsWith("sync:")).length, 0)
+  release()
+  let next
+  for (let turn = 0; turn < 50; turn++) {
+    await tick(); next = f.recovery!.current()
+    if (next?.controller.pendingViews[0]?.request.id === "after-mandatory-stall") break
+  }
+  assert.equal(next?.controller.pendingViews[0]?.request.id, "after-mandatory-stall")
+  assert.deepEqual(f.calls.filter(call => call.startsWith("sync:")), ["sync:root"], "Only the fresh transaction may reach permission cache synchronization")
+})
+
 test("fresh production generations recover pending queues without accumulating commands, slots, frames or listeners", async t => {
   const f = await fixture({ recovery: true }); t.after(() => f.life.stop())
   await tick(); await tick()

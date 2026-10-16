@@ -39,3 +39,12 @@ export interface HostRequestSnapshot {
   readonly request: HostRequest
   readonly scope: HostScope
 }
+
+/** Identity-only manual blocker. No invented action, arguments or invocation. */
+export interface UnavailableHostRequest {
+  readonly id: string
+  readonly sessionID: string
+  readonly unavailable: true
+}
+export type HostPendingRequest = HostRequest | UnavailableHostRequest
+export type HostPendingSnapshot = HostRequestSnapshot | { readonly request: UnavailableHostRequest; readonly scope: HostScope }

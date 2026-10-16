@@ -1,7 +1,7 @@
 import path from "node:path"
 import { types } from "node:util"
 import { boundedCopy } from "./tool-evidence.js"
-import type { HostInvocation, HostLocation, HostRequest, HostRequestSnapshot, HostScope, JSONObject, JSONValue } from "./host-types.js"
+import type { HostInvocation, HostLocation, HostPendingSnapshot, HostRequest, HostRequestSnapshot, HostScope, JSONObject, JSONValue } from "./host-types.js"
 
 /** Preprocessing ceiling only; collectors still enforce maxEvidenceBytes. */
 export const hostJSONBytes = 16 * 1024 * 1024
@@ -108,6 +108,45 @@ function scope(value: JSONValue | undefined): value is JSONObject & HostScope {
 export function readHostScope(value: unknown): HostScope | undefined {
   const copy = boundedHostJSON(value)
   return scope(copy) ? copy : undefined
+}
+
+/** The inventory envelope and each permission are independently bounded. A bad
+ * component retains only its exact public identity as a manual native blocker;
+ * it cannot starve valid requests in independent conversations. */
+export function readPendingInventory(value: unknown, scope: HostScope): readonly HostPendingSnapshot[] | undefined {
+  try {
+    const record = (value: unknown) => {
+      if (!value || typeof value !== "object" || types.isProxy(value) || Array.isArray(value)) throw Error("Invalid inventory record")
+      const prototype = Object.getPrototypeOf(value)
+      if (prototype !== Object.prototype && prototype !== null) throw Error("Invalid inventory prototype")
+      return value
+    }
+    const own = (value: object, name: string): unknown => {
+      const property = Object.getOwnPropertyDescriptor(value, name)
+      if (!property?.enumerable || !Object.hasOwn(property, "value")) throw Error("Invalid inventory property")
+      return property.value
+    }
+    const outer = record(value), keys = Reflect.ownKeys(outer)
+    if (keys.length !== 2 || !keys.includes("location") || !keys.includes("data")) return
+    const at = boundedHostJSON(own(outer, "location"))
+    if (!location(at) || at.directory !== scope.location.directory
+      || (at.workspaceID !== undefined && at.workspaceID !== scope.location.workspaceID)) return
+    const data = own(outer, "data")
+    if (!Array.isArray(data) || types.isProxy(data) || Object.getPrototypeOf(data) !== Array.prototype
+      || data.length > 16384 || Reflect.ownKeys(data).length !== data.length + 1) return
+    const result: HostPendingSnapshot[] = [], ids = new Set<string>()
+    for (let index = 0; index < data.length; index++) {
+      const raw = own(data, String(index)), item = record(raw)
+      const id = own(item, "id"), sessionID = own(item, "sessionID")
+      const valid = (value: unknown): value is string => typeof value === "string" && value.length > 0
+        && value.length <= 16384 && !value.includes("\0")
+      if (!valid(id) || !valid(sessionID) || ids.has(id)) return
+      ids.add(id)
+      const snapshot = snapshotRequest(raw, scope)
+      result.push(snapshot ?? { scope, request: Object.freeze({ id, sessionID, unavailable: true }) })
+    }
+    return result
+  } catch { return }
 }
 
 /** Accept the native permission payload, not an event envelope.

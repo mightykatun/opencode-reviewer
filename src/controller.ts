@@ -90,6 +90,8 @@ export interface ControllerCheckpoint<R extends RequestIdentity> {
 }
 
 export interface ControllerOptions<R extends RequestIdentity = HostRequest> {
+  /** Exact native identity exists, but mandatory request data is unavailable. */
+  unavailable?: (request: R) => string | undefined
   checkpoint?: ControllerCheckpoint<R>
   reviewOptions?: Options
   nativeApproval?: NativeApproval<R>
@@ -137,9 +139,11 @@ export class Controller<R extends RequestIdentity = HostRequest> {
   private ratingObserver?: ControllerOptions<R>["onRating"]
   private lifecycleObserver?: ReviewLifecycleObserver<R>
   private previous: Map<string, { request: R; deadline?: number }>
+  private unavailable?: ControllerOptions<R>["unavailable"]
   constructor(private evaluate: Evaluate<R>, private changed: (views: View<R>[]) => void,
     { reviewOptions = { reviewBash: true, reviewEdits: true }, nativeApproval, clock: time = clock, modes,
-      onApproval, onRating, onLifecycle, session, candidate = () => false, nativeFront, approvalReady, checkpoint }: ControllerOptions<R> = {}) {
+      onApproval, onRating, onLifecycle, session, candidate = () => false, nativeFront, approvalReady, checkpoint, unavailable }: ControllerOptions<R> = {}) {
+    this.unavailable = unavailable
     this.manual = new Map(checkpoint?.manual)
     this.previous = new Map(checkpoint?.pending)
     this.options = reviewOptions
@@ -623,7 +627,8 @@ export class Controller<R extends RequestIdentity = HostRequest> {
   asked(request: R) {
     if (this.stopped || this.entries.has(request.id)) return
     this.version++
-    const enabled = this.candidate(request, this.options)
+    const error = this.unavailable?.(request)
+    const enabled = !!error || this.candidate(request, this.options)
     const previous = this.previous.get(request.id)
     if (previous && !isDeepStrictEqual(previous.request, request)) this.manual.set(request.id, "failed")
     const entry: Entry<R> = {
@@ -659,6 +664,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
           return null
         }
       }
+      if (error) throw Error(error)
       return this.admission.run(request, entry.root ?? request.sessionID, entry.abort.signal, () => {
         if (!active()) return Promise.resolve(null)
         if (this.modes && (!this.modes.enabled(entry.root!) || (this.modeChanges.get(entry.root!) ?? 0) > entry.gateRevision)) {
@@ -767,7 +773,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
       const ids = new Set(requests.map((request) => request.id))
       for (const [id, entry] of this.entries) if (!ids.has(id) && !entry.view.resolved) this.replied(id, true, "reconciled")
       for (const request of requests) {
-        const entry = this.entries.get(request.id)
+        let entry = this.entries.get(request.id)
         if (entry && this.options.autoApprove && !entry.approvalDispatched && !this.manual.has(request.id)
           && !isDeepStrictEqual(request, entry.view.request)) {
           this.manual.set(request.id, "failed")
@@ -775,6 +781,10 @@ export class Controller<R extends RequestIdentity = HostRequest> {
           entry.approvalAbort?.abort(requestChanged)
           entry.view = { ...entry.view, autoApproval: { status: "failed" } }
           this.publish()
+        }
+        if (entry && !entry.fastApproval && this.unavailable?.(entry.view.request) !== this.unavailable?.(request)) {
+          this.replied(request.id, true, "reconciled")
+          entry = undefined
         }
         if (entry?.approvalRefresh && !entry.approvalAbort && !this.approvalRead && !this.manual.has(request.id)
           && entry.view.autoApproval?.status === "checking") {

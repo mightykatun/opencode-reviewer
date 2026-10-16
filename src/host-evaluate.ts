@@ -8,6 +8,7 @@ import { review, type ReviewerDependencies } from "./reviewer.js"
 import { ownedReview, type ReviewEvaluation } from "./review-admission.js"
 import type { HostRequestSnapshot } from "./host-types.js"
 import type { ReviewObservation, ReviewResult } from "./types.js"
+import { uiText } from "./ui-text.js"
 
 export interface HostReviewerDependencies extends ReviewerDependencies {
   /** Synchronous accounting setup using the validated evidence kind. */
@@ -22,10 +23,11 @@ export function evaluateHostReview(client: OpenCodeClient, snapshot: HostRequest
   prompts: PromptSet, parent: AbortSignal, onIdentified: () => void, dependencies: HostReviewerDependencies = {}): ReviewEvaluation<ReviewResult | null> {
   return ownedReview(parent, config.timeoutMs, async signal => {
     const wire = hostRequestWire(snapshot)
-    if (!wire) return null
+    if (!wire) throw new Error(uiText.review.evidenceUnavailable)
     const owned = await readHostEvidence(client, snapshot.scope, wire, config, signal)
     signal.throwIfAborted()
-    if (!owned || owned.result.status !== "ready") return null
+    if (!owned) throw new Error(uiText.review.evidenceUnavailable)
+    if (owned.result.status !== "ready") return null
     onIdentified()
     signal.throwIfAborted()
     const { observeEvidence, ...reviewer } = dependencies

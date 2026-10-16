@@ -93,7 +93,7 @@ for (const failure of ["missing", "duplicate", "foreign", "changed", "changedCan
     const reading = f.evaluate(() => { identified = true })
     if (["missing", "duplicate", "foreign", "changedCheckout", "missingCheckout"].includes(failure))
       await assert.rejects(reading, /Registered invocation project metadata unavailable or ambiguous/)
-    else assert.equal(await reading, null)
+    else await assert.rejects(reading, /Exact operation evidence unavailable/)
     assert.equal(identified, false)
     assert.equal(f.posts.length, 0)
   })
@@ -131,7 +131,7 @@ for (const failure of ["permission", "epoch", "source"] as const)
     if (failure === "epoch") f.state.epoch = "20000000-1000-4000-8000-100000000000"
     if (failure === "source") f.client.session.message.get = async () => ({ id: "assistant", type: "assistant", content: [] })
     let identified = false
-    assert.equal(await f.evaluate(() => { identified = true }), null)
+    await assert.rejects(f.evaluate(() => { identified = true }), /Exact operation evidence unavailable/)
     assert.equal(identified, false)
     assert.equal(f.posts.length, 0)
     if (failure === "source") assert.deepEqual(f.calls, [], "Invalid direct linkage cannot trigger metadata repair")

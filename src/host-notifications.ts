@@ -1,8 +1,7 @@
 import type { LocationRef, OpenCodeEvent } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { CliPluginState } from "./cli-plugin.js"
-import type { ApprovalFact, View } from "./controller.js"
-import type { HostRequest } from "./host-types.js"
+import type { ApprovalFact, RequestIdentity, View } from "./controller.js"
 import { hostPermissionIdentities, type HostQueueSnapshot } from "./host-queue.js"
 import type { HistoryTarget } from "./history-records.js"
 import type { AncestryRead, AncestryReader } from "./session-ancestry.js"
@@ -33,7 +32,7 @@ export interface HostNotificationOptions {
  * the runtime. This bridge subscribes to nothing and never starts a host/read poll.
  * `visit`, `event`, `snapshot` and `routeChanged` are its publication seams. */
 export class HostNotifications {
-  readonly policy: NotificationPolicy<HostRequest>
+  readonly policy: NotificationPolicy<RequestIdentity>
   private clock: NotificationClock
   private location: LocationRef
   private abort = new AbortController()
@@ -49,11 +48,11 @@ export class HostNotifications {
   private forms = new Map<string, Birth>()
   private closed = new Set<string>()
   private deletedSessions = new Set<string>()
-  private dispatches = new Map<string, { request: HostRequest; target: Target; approval?: string; automatic: boolean }>()
+  private dispatches = new Map<string, { request: RequestIdentity; target: Target; approval?: string; automatic: boolean }>()
   private executions = new Map<string, Execution>()
   private completionReads = new Map<string, Promise<void>>()
   private activityRevision = 0
-  private views: readonly View<HostRequest>[] = []
+  private views: readonly View<RequestIdentity>[] = []
   private healthy = false
   private clickOwner?: ClickOwner
   private clickWait?: () => void
@@ -68,7 +67,7 @@ export class HostNotifications {
     click.begin = (sessionID, target) => this.beginClick(sessionID, target)
     const backend = state.dependencies.notifications?.(click, config)
       ?? new LinuxNotifications(config, click, state.dependencies.notificationProcesses?.())
-    this.policy = new NotificationPolicy<HostRequest>(config, state.config?.autoApprove === true, backend, this.clock)
+    this.policy = new NotificationPolicy<RequestIdentity>(config, state.config?.autoApprove === true, backend, this.clock)
     options.signal.addEventListener("abort", this.onAbort, { once: true })
     if (options.signal.aborted) this.onAbort()
   }
@@ -266,7 +265,7 @@ export class HostNotifications {
       } catch {}
     }
   }
-  snapshot(views: readonly View<HostRequest>[], healthy?: boolean) {
+  snapshot(views: readonly View<RequestIdentity>[], healthy?: boolean) {
     this.guard(() => {
       this.routeChanged()
       if (healthy !== undefined) {
@@ -281,7 +280,7 @@ export class HostNotifications {
       this.publish()
     })
   }
-  approval(fact: ApprovalFact<HostRequest>) {
+  approval(fact: ApprovalFact<RequestIdentity>) {
     this.guard(() => {
       const id = fact.request.id
       if (fact.type === "dispatched") {

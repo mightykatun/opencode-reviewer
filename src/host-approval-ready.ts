@@ -41,7 +41,7 @@ export function nativeDecisionPending(tree: NativeDecisionNode, selected: RGBA):
 
 /** UI presentation is deliberately absent. Only a known same-conversation route
  * admits writes; dashboard/home, unrelated routes and unknown ancestry wait. */
-export function hostApprovalReady(request: HostRequest, root: string | undefined,
+export function hostApprovalReady(request: Pick<HostRequest, "sessionID">, root: string | undefined,
   route: { type: string; sessionID?: string }, session: (id: string) => SessionLocation | undefined,
   decisionPending: () => boolean): boolean {
   return !!root && route.type === "session" && conversationRoot(route.sessionID, session) === root
