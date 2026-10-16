@@ -198,12 +198,12 @@ for (const suffix of ["", "-wal", "-shm", "-journal"]) {
       const mode = statSync(name).mode
       if (kind === "owner") {
         // Unprivileged tests cannot chown. Inject only the kernel ownership result,
-        // retaining actual open/fstat and file bytes, and verify zero chmod calls.
-        const original = fs.fstatSync
+        // retaining actual lstat and file bytes, and verify zero chmod calls.
+        const original = fs.lstatSync
         const identity = statSync(name)
-        t.mock.method(fs, "fstatSync", (...args: Parameters<typeof original>) => {
+        t.mock.method(fs, "lstatSync", (...args: Parameters<typeof original>) => {
           const stat = original(...args)
-          if (stat.ino === identity.ino && stat.dev === identity.dev) stat.uid = process.geteuid!() + 1
+          if (stat && stat.ino === identity.ino && stat.dev === identity.dev) stat.uid = process.geteuid!() + 1
           return stat
         })
         syncBuiltinESMExports()

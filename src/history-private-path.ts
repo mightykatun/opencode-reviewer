@@ -1,4 +1,4 @@
-import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync } from "node:fs"
+import { constants, closeSync, lstatSync, mkdirSync, openSync } from "node:fs"
 import path from "node:path"
 import { HistoryInvalid } from "./history-records.js"
 
@@ -15,6 +15,8 @@ import { HistoryInvalid } from "./history-records.js"
  * these Unix permissions are outside it. Public SQLite adapters cannot anchor all
  * later sidecar opens against a malicious same-UID rename. Rechecking after their
  * constructor would not repair that boundary. Never chmod an existing object.
+ * Inspect existing files with lstat in this trusted namespace: opening/closing
+ * them can release SQLite's process-wide POSIX locks, even from another worker.
  */
 export function privateDatabase(file: string, create = true): boolean {
   const uid = process.geteuid?.()
@@ -44,23 +46,22 @@ export function privateDatabase(file: string, create = true): boolean {
   let exists = false
   for (const suffix of ["", "-wal", "-shm", "-journal"]) {
     const name = file + suffix
-    let fd: number
-    try { fd = openSync(name, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK) }
+    let stat
+    try { stat = lstatSync(name) }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
       if (suffix) continue
       if (!create) continue
-      try { fd = openSync(name, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600) }
+      try { closeSync(openSync(name, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)) }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-        fd = openSync(name, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK)
       }
+      stat = lstatSync(name)
     }
-    try {
-      const stat = fstatSync(fd)
-      if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== uid || (stat.mode & 0o077)) throw new HistoryInvalid("History file must be private")
-      if (!suffix) exists = true
-    } finally { closeSync(fd) }
+    // A sidecar removed by a concurrent SQLite commit is already handled by
+    // ENOENT above. Never inspect an opened, now-unlinked journal inode instead.
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== uid || (stat.mode & 0o077)) throw new HistoryInvalid("History file must be private")
+    if (!suffix) exists = true
   }
   return exists
 }

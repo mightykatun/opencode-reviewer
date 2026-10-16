@@ -61,9 +61,11 @@
   fixture captures stay in their documented `.runtime/` locations. Manual extended
   checks upload those synthetic artifacts.
 
-- Source tests use two concurrent files. Keep this bound: timing-sensitive shell
-  discovery and history-watchdog tests should not compete with dozens of workers.
-  Preserve their actual budgets and assertions rather than increasing time limits.
+- Source tests run through `scripts/test-source.mjs`, which discovers every
+  `test/*.test.ts` once. The real history-bootstrap watchdog runs in an exclusive
+  phase before the two-concurrent-file pool, away from competing large SQLite
+  fixtures. Keep that bound and preserve actual budgets and assertions rather
+  than increasing time limits. Failed phases stop the check; never retry to green.
 
 ### Focused V2 host checks (build first)
 
@@ -426,6 +428,9 @@ existing user directories.
   attributable old rows; lifetime must never be reconstructed from detail rows.
   Deleting details must not reduce accumulated totals.
 - Preserve private ownership and nonreplaceable paths for saved modes and history.
+  Validate existing SQLite database/sidecar metadata with lstat inside the trusted
+  namespace, never open/close them for inspection: close can release another
+  worker's process-wide SQLite locks, and journals may disappear during commits.
   `local-state.ts` keeps safely accessible history in place, or uses a private
   plugin-owned sibling without chmod of host/user directories. An existing safe
   sibling database stays selected across restarts. Mode files stay in the original

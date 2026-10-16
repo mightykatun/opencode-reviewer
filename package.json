@@ -48,7 +48,7 @@
     "build": "node scripts/build.mjs",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test --test-concurrency=2 test/*.test.ts",
+    "test": "node scripts/test-source.mjs",
     "test:helpers": "node scripts/test-helpers.mjs",
     "test:runtime-cleanup": "node --test test/smoke-runtime.test.mjs",
     "test:runtime-permissions": "node scripts/test-runtime.mjs --profile v2-permissions",

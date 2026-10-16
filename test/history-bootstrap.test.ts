@@ -92,11 +92,22 @@ test("80k legacy reviews progress under the actual watchdog after interrupted sl
     const prepare = sqlite.DatabaseSync.prototype.prepare, exec = sqlite.DatabaseSync.prototype.exec;
     let reads=0, slices=0, bootstrapWrite=false;
     const wait = new Int32Array(new SharedArrayBuffer(4));
+    // Shared numeric phases survive forced worker exit: prepare, scan, injected
+    // stall, commit, other exec. No SQL text, row data or paths leave the worker.
+    let trace;
+    require('node:worker_threads').parentPort.on('message', message => { trace = message.trace; });
+    const measured = (phase, call) => {
+      if(trace) Atomics.store(trace,0,phase);
+      const start = performance.now();
+      try { return call(); } finally {
+        if(trace) { Atomics.store(trace,1,Math.max(Atomics.load(trace,1),Math.ceil(performance.now()-start))); Atomics.store(trace,0,0); }
+      }
+    };
     sqlite.DatabaseSync.prototype.prepare = function(sql) {
-      const statement = prepare.call(this, sql);
+      const statement = measured(1,()=>prepare.call(this, sql));
       if (/FROM (reviews|attempts) WHERE .*id>.*LIMIT 1/.test(sql)) {
         const get=statement.get.bind(statement);
-        statement.get=(...args)=>{if(++reads%8===0) Atomics.wait(wait,0,0,1); return get(...args)};
+        statement.get=(...args)=>{if(++reads%8===0) Atomics.wait(wait,0,0,1); return measured(2,()=>get(...args))};
       }
       if(sql.includes('INSERT INTO conversation_bootstrap VALUES')) {
         const run=statement.run.bind(statement);
@@ -107,27 +118,33 @@ test("80k legacy reviews progress under the actual watchdog after interrupted sl
     sqlite.DatabaseSync.prototype.exec=function(sql) {
       if(sql==='COMMIT' && bootstrapWrite) {
         bootstrapWrite=false;
-        if(++slices===10 && ${interrupt}) Atomics.wait(wait,0,0,10000);
+        if(++slices===10 && ${interrupt}) measured(3,()=>Atomics.wait(wait,0,0,10000));
       }
-      return exec.call(this,sql);
+      return measured(sql==='COMMIT'?4:5,()=>exec.call(this,sql));
     };
   `
   let workers = 0, active = 0, maximumActive = 0, slices = 0, maximumSteps = 0, maximumSliceMs = 0, cursorAtRestart: any
-  const errors: string[] = []
+  const errors: string[] = [], slow: { phase: number; sqliteMs: number; roundTripMs: number }[] = []
   const store = new HistoryStore(directory, { adapter: "node", transport: () => {
     if (workers) cursorAtRestart = db.prepare("SELECT * FROM conversation_bootstrap").get()
     const worker = new HistoryWorker(instrumentation(workers++ === 0) + bundle.outputFiles[0]!.text)
+    const trace = new Int32Array(new SharedArrayBuffer(8))
     return { async call(message: Record<string, unknown>) {
       active++; maximumActive = Math.max(maximumActive, active)
       const start = performance.now()
       try {
-        const result = await worker.call(message)
+        trace.fill(0)
+        const result = await worker.call({ ...message, trace })
         if (message.type === "bootstrap") {
           slices++; maximumSteps = Math.max(maximumSteps, result.steps); maximumSliceMs = Math.max(maximumSliceMs, performance.now() - start)
         }
         return result
       } catch (error) { errors.push(`${message.type}: ${String(error)}`); throw error
-      } finally { active-- }
+      } finally {
+        const roundTripMs = performance.now() - start
+        if (roundTripMs > 200 && slow.length < 20) slow.push({ phase: Atomics.load(trace, 0), sqliteMs: Atomics.load(trace, 1), roundTripMs })
+        active--
+      }
     }, terminate: () => worker.terminate() }
   } })
   t.after(async () => { await store.dispose(performance.now() - 3500); seed.close(); rmSync(directory, { recursive: true, force: true }) })
@@ -145,7 +162,7 @@ test("80k legacy reviews progress under the actual watchdog after interrupted sl
     }
     await new Promise(resolve => setTimeout(resolve, 20))
   }
-  t.diagnostic(JSON.stringify({ workers, slices, errors, cursor: db.prepare("SELECT review,phase,after FROM conversation_bootstrap").get() }))
+  t.diagnostic(JSON.stringify({ workers, slices, errors, slow, cursor: db.prepare("SELECT review,phase,after FROM conversation_bootstrap").get() }))
   assert.equal(store.pendingOperations, 0); assert.equal(maximumActive, 1); assert.equal(workers, 2)
   assert.ok(cursorAtRestart?.review); assert.ok(readDuringBootstrap); assert.ok(slices > 1900)
   assert.ok(maximumSteps <= HISTORY_BOOTSTRAP_STEPS); assert.ok(maximumSliceMs < 2000)

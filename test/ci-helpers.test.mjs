@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { readFile, mkdtemp, mkdir, writeFile, rm } from "node:fs/promises"
+import { readFile, readdir, mkdtemp, mkdir, writeFile, rm } from "node:fs/promises"
 import { execFileSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -8,6 +8,22 @@ import { fileURLToPath } from "node:url"
 import { runtimeSummary } from "../scripts/runtime-summary.mjs"
 import { latestV2Host, verifyInstalledHost } from "../scripts/ci-host.mjs"
 import { connectionProbe } from "../scripts/smoke-connection.mjs"
+import { sourceTestPlan } from "../scripts/test-source.mjs"
+
+test("source checks discover every test exactly once and isolate the real watchdog from competing SQLite fixtures", async () => {
+  const names = [...await readdir(new URL("./", import.meta.url)), "future-regression.test.ts"]
+  const plan = sourceTestPlan(names)
+  assert.deepEqual(plan.flat().sort(), names.filter(name => name.endsWith(".test.ts")).map(name => `test/${name}`).sort())
+  assert.deepEqual(plan.find(group => group.includes("test/history-bootstrap.test.ts")), ["test/history-bootstrap.test.ts"])
+  assert.ok(plan.some(group => group.includes("test/future-regression.test.ts")))
+  assert.throws(() => sourceTestPlan(["other.test.ts"]), /Missing real history watchdog/)
+  assert.throws(() => sourceTestPlan(["history-bootstrap.test.ts", "history-bootstrap.test.ts"]), /Duplicate source tests/)
+  const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
+  assert.equal(manifest.scripts.test, "node scripts/test-source.mjs")
+  const runner = await readFile(new URL("../scripts/test-source.mjs", import.meta.url), "utf8")
+  assert.match(runner, /"--test-concurrency=2"/)
+  assert.doesNotMatch(runner, /--test-skip-pattern|--test-name-pattern|catch\s*\(/)
+})
 
 test("a version tag runs verification and artifact-only publication in one workflow without branch-CI polling or TUI prerequisites", async () => {
   const workflow = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8")
