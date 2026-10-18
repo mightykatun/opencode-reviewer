@@ -5,6 +5,7 @@ import type { HistoryController, HistoryViewState } from "./history-controller.j
 import { historyLayout, historyMetadata } from "./history-layout.js"
 import { hostPanelOwnsHit, type HostPanelBounds, type HostPanelNode, type HostSidebarAnchor } from "./host-review-panel.js"
 import { HostReviewDescription } from "./review-description.js"
+import { HostReviewMetadata } from "./host-review-metadata.js"
 import { uiText } from "./ui-text.js"
 
 export interface HostHistoryProofInput {
@@ -227,7 +228,7 @@ export function HostHistoryView(props: HostHistoryViewProps) {
       scrollbarOptions={{ trackOptions: { backgroundColor: context.theme.background.raised.base, foregroundColor: context.theme.scrollbar.base } }}>
       <Show when={record()}>{value => <>
         <HostReviewDescription context={context} text={value().payload.desc} streaming={false} ref={value => { description = value }} />
-        <box marginTop={1} flexShrink={0}><text fg={context.theme.text.muted} flexShrink={0}>{historyMetadata(value())}</text></box>
+        <HostReviewMetadata context={context} id="reviewer.history.metadata" marginTop={1} text={historyMetadata(value())} />
       </>}</Show>
       <Show when={!selection()?.entry}><text fg={context.theme.text.base} flexShrink={0}>{props.state().status === "loading"
         ? uiText.history.loading : props.state().status === "error" ? uiText.history.unavailable : uiText.history.empty}</text></Show>

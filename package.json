@@ -1,6 +1,6 @@
 {
   "name": "opencode-reviewer",
-  "version": "2.2.5",
+  "version": "2.2.6",
   "license": "MIT",
   "publishConfig": {
     "access": "public",
@@ -71,6 +71,7 @@
     "mpg123-decoder": "1.0.3",
     "shell-quote": "1.12.0",
     "solid-js": "1.9.15",
+    "string-width": "7.2.0",
     "tsx": "4.23.15",
     "typescript": "5.9.3"
   },

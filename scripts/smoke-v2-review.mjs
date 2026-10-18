@@ -95,6 +95,7 @@ async function monitorSetup(ctx) {
     record.mode = ctx.keymap.mode.current()
     record.controlSequence = memory.sequence
     record.choices = {}
+    record.metadata = {}
     record.rejectEditing = false
     record.statisticsReport = undefined
     let budget = 8192
@@ -103,6 +104,8 @@ async function monitorSetup(ctx) {
       if (typeof node.id === "string" && node.id.startsWith("session.permission.action."))
         record.choices[node.id.slice("session.permission.action.".length)] = node.backgroundColor?.equals(ctx.theme.background.action.primary.focused)
       if (node.id === "session.permission.reject") record.rejectEditing = true
+      if (["reviewer.review.metadata", "reviewer.review.lifetime", "reviewer.history.metadata"].includes(node.id))
+        record.metadata[node.id] = { text: node.plainText, width: node.width, height: node.height, wrapMode: node.wrapMode }
       for (const child of node.getChildren()) choices(child)
     }
     choices(ctx.renderer.root)
@@ -741,6 +744,18 @@ const historyScreen = (record, screen) => {
   assert.match(screen, /1\/1/)
   assert.match(screen, /model: v2-production-reviewer/)
   assert.match(screen, /token: 23 in 11 out/)
+  if (historyCase) {
+    const metadata = record.metadata["reviewer.history.metadata"]
+    assert.ok(metadata, "History metadata is a genuine native text node")
+    const rows = metadata.text.split("\n")
+    assert.equal(metadata.wrapMode, "none")
+    assert.equal(metadata.height, rows.length, "Each metadata field occupies exactly one terminal row")
+    assert.ok(rows.every(row => row.length <= metadata.width), "ASCII metadata fits the measured text width")
+    const provider = `provider: ${historyEvidence.context.provider}`
+    assert.equal(rows.find(row => row.startsWith("provider:")), provider.length <= metadata.width
+      ? provider : provider.slice(0, metadata.width - 2) + "..", "Provider clips only at the right edge with two dots")
+    assert.ok(screen.includes(rows.find(row => row.startsWith("provider:"))), "The clipped provider is actually painted")
+  }
   assert.doesNotMatch(screen, /Permission analysis|Allowed in|Loading history|History could not be read/)
 }
 const coverState = async () => {
@@ -1811,6 +1826,14 @@ createInterface({input:process.stdin}).on('line',line=>{
        }
       await publish(path.join(artifacts, "countdown-proof.json"), proof)
       await saveCapture("countdown")
+       if (historyCase) {
+         const metadata = (await observations()).metadata["reviewer.review.metadata"]
+         assert.ok(metadata, "Live usage uses the shared measured metadata component")
+         assert.equal(metadata.wrapMode, "none")
+         assert.equal(metadata.height, 1)
+         assert.equal(metadata.text, "token: 23 in 11 out")
+         assert.ok(capture().includes(metadata.text), "Live usage is actually painted")
+       }
        if (visibilityLoss) {
          const before = (await observations()).frame
          if (scenario === "normal-hide") {

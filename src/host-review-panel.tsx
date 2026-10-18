@@ -5,6 +5,7 @@ import type { Config } from "./config.js"
 import { displayText, type RequestIdentity, type View } from "./controller.js"
 import { scannerFrame, SCANNER_FRAME_COUNT, SCANNER_INTERVAL_MS } from "./appearance.js"
 import { HostReviewDescription } from "./review-description.js"
+import { HostReviewMetadata } from "./host-review-metadata.js"
 import { ReviewGeometryProof, type ReviewLayout, type ReviewRegion } from "./review-geometry.js"
 import { uiText } from "./ui-text.js"
 import { usageText } from "./usage.js"
@@ -298,8 +299,8 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
         {displayText(view().error ?? uiText.review.failed)}
       </text></Show>
       <Show when={view().assessment?.usage}>{usage => <>
-        <text marginTop={1} fg={context.theme.text.muted} width="100%" flexShrink={0}>{usageText(usage())}</text>
-        <Show when={props.lifetimeText?.()}>{text => <text fg={context.theme.text.muted} width="100%" flexShrink={0}>{text()}</text>}</Show>
+        <HostReviewMetadata context={context} id="reviewer.review.metadata" marginTop={1} text={usageText(usage())} />
+        <Show when={props.lifetimeText?.()}>{text => <HostReviewMetadata context={context} id="reviewer.review.lifetime" text={text()} />}</Show>
       </>}</Show>
     </scrollbox>
     <HostReviewFooter ref={value => { footer = value }} context={context} view={view()} onApprove={props.onApprove} onCancel={props.onCancel}

@@ -183,6 +183,7 @@ function panelObserverFixture(probe: boolean) {
     "./controller.js": { displayText },
     "./appearance.js": { scannerFrame, SCANNER_FRAME_COUNT, SCANNER_INTERVAL_MS },
     "./review-description.js": { HostReviewDescription() {} },
+    "./host-review-metadata.js": { HostReviewMetadata() {} },
     "./review-geometry.js": { ReviewGeometryProof },
     "./ui-text.js": { uiText }, "./usage.js": { usageText },
   }
