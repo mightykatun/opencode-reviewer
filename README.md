@@ -1,10 +1,13 @@
 # OpenCode Reviewer
 
 Reviews pending permissions in the [OpenCode](https://github.com/anomalyco/opencode) sidebar using a separate LLM. Reviews
-native shell commands, file edits, skill loading, and external-directory access.
-MCP and custom tools share a tool-review category, with registered descriptions and JSON Schemas included when available.
+native shell commands, file edits, skill loading, external-directory access and tools/MCPs.
 Supports streaming explanations, saved report history and stats, auto-approval, and Linux
 desktop notifications (Gnome) with distinct sounds.
+
+Commands:
+  - Review/outcome history panel: **Alt+h**
+  - Per session reviewer instructions: **Alt+i**
 
 This plugin is meant to enable you to run sessions with less frequent input in a safer way. Also giving the reviewer context of specific files the agent might want to run/see/... The review prompts are freely configurable, so you can determine the reviewers behavior very accurately.
 
