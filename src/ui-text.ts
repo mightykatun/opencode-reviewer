@@ -72,7 +72,7 @@ export const uiText = {
     timeToReport: (seconds: string) => `Time to full report: ${seconds}s`,
   },
   usage: {
-    tokens: (input: number, output: number) => `token: ${input} in ${output} out`,
+    tokens: (input: number, output: number) => `tokens: ${input} in ${output} out`,
     cost: (amount: string) => `cost: $${amount}`,
   },
   lifetime: {

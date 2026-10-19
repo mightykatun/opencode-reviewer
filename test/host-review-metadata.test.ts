@@ -37,7 +37,7 @@ test("live and history metadata use measured width, never wrap, and restore text
       assert.ok(name in dependencies, `unexpected dependency ${name}`)
       return dependencies[name]
     }, module, module.exports)
-    const [text, setText] = solid.createSignal("token: 1933 in 755 out\ncost: $0.0020")
+    const [text, setText] = solid.createSignal("tokens: 1933 in 755 out\ncost: $0.0020")
     const [theme, setTheme] = solid.createSignal({ text: { muted: "muted" } })
     let dispose!: () => void
     solid.createRoot(stop => {
@@ -45,7 +45,7 @@ test("live and history metadata use measured width, never wrap, and restore text
       module.exports.HostReviewMetadata({ context: { get theme() { return theme() } }, id, marginTop: 1, get text() { return text() } })
     })
     assert.equal(node.id, id)
-    assert.equal(node.content, "token: 1933 in 755..\ncost: $0.0020")
+    assert.equal(node.content, "tokens: 1933 in 75..\ncost: $0.0020")
     assert.equal(node.height, 2)
     assert.equal(node.wrapMode, "none")
     assert.equal(node.minWidth, 0)
@@ -56,7 +56,7 @@ test("live and history metadata use measured width, never wrap, and restore text
     container.width = 40; container.onSizeChange.call(container)
     assert.equal(node.content, text(), "Widening restores the original without changing the stored value")
     container.width = 12; container.onSizeChange.call(container)
-    assert.equal(node.content, "token: 193..\ncost: $0.0..", "Scrollbar and sidebar changes use the actual padding-free content width")
+    assert.equal(node.content, "tokens: 19..\ncost: $0.0..", "Scrollbar and sidebar changes use the actual padding-free content width")
     setText("model: x\u001b[31m\nprovider: long.example.com")
     assert.equal(node.content, "model: x\\u..\nprovider: ..", "Controls are escaped before measuring")
     assert.equal(node.height, 2)

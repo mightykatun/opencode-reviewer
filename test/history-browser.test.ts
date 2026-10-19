@@ -50,7 +50,7 @@ test("historical metadata order, fallback, usage independence and control saniti
   assert.equal(historyMetadata(selection.record!), "model: m\nprovider: https://example.com")
   assert.equal(historyMetadata({ ...selection.record!, payload: { ...selection.record!.payload, reportedModel: "reported",
     usage: { input: 12, output: 3, cost: 0.0001 }, timing: { ratingMs: 1250, fullReportMs: 3500 } } }),
-    "token: 12 in 3 out\ncost: $0.0001\nmodel: reported\nprovider: https://example.com\nTime to first rating: 1.25s\nTime to full report: 3.50s")
+    "tokens: 12 in 3 out\ncost: $0.0001\nmodel: reported\nprovider: https://example.com\nTime to first rating: 1.25s\nTime to full report: 3.50s")
   const unsafe = historyMetadata({ ...selection.record!, payload: { ...selection.record!.payload, reportedModel: "x\x1b[31m\u202ey" } })
   assert.ok(!unsafe.includes("\x1b")); assert.ok(!unsafe.includes("\u202e")); assert.ok(!unsafe.includes("lifetime"))
 })

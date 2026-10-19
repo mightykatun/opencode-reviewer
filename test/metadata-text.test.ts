@@ -4,13 +4,13 @@ import stringWidth from "string-width"
 import { metadataText } from "../src/metadata-text.js"
 
 test("metadata preserves short and exactly fitting lines, trimming long rows with two trailing dots", () => {
-  const text = ["token: 1933 in 755 out", "cost: $0.0020", "model: deepseek/deepseek-v4.1-flash-1017",
+  const text = ["tokens: 1933 in 755 out", "cost: $0.0020", "model: deepseek/deepseek-v4.1-flash-1017",
     "provider: https://openrouter.ai/api/v1", "Time to first rating: 16.61s", "Time to full report: 19.09s"].join("\n")
-  assert.equal(metadataText(text, 30), ["token: 1933 in 755 out", "cost: $0.0020", "model: deepseek/deepseek-v4...",
+  assert.equal(metadataText(text, 30), ["tokens: 1933 in 755 out", "cost: $0.0020", "model: deepseek/deepseek-v4...",
     "provider: https://openrouter..", "Time to first rating: 16.61s", "Time to full report: 19.09s"].join("\n"))
   assert.equal(metadataText("exact fit", 9), "exact fit")
   assert.equal(metadataText("exact fits", 9), "exact f..")
-  assert.equal(metadataText(text, 12), ["token: 193..", "cost: $0.0..", "model: dee..", "provider: ..",
+  assert.equal(metadataText(text, 12), ["tokens: 19..", "cost: $0.0..", "model: dee..", "provider: ..",
     "Time to fi..", "Time to fu.."].join("\n"), "Every field truncates independently, including counts, cost and timings")
   assert.equal(metadataText(text, 100), text, "Widening restores the full original text")
   assert.equal(text.split("\n")[2], "model: deepseek/deepseek-v4.1-flash-1017", "Source values stay intact")

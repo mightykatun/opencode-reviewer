@@ -743,7 +743,7 @@ const historyScreen = (record, screen) => {
   assert.match(screen, /Auto approved/)
   assert.match(screen, /1\/1/)
   assert.match(screen, /model: v2-production-reviewer/)
-  assert.match(screen, /token: 23 in 11 out/)
+  assert.match(screen, /tokens: 23 in 11 out/)
   if (historyCase) {
     const metadata = record.metadata["reviewer.history.metadata"]
     assert.ok(metadata, "History metadata is a genuine native text node")
@@ -778,7 +778,7 @@ const selectedOriginal = async (record, screen, total = 1) => {
     // Independently verified in failed.txt and the read-only SQL pair capture.
     assert.match(screen, /1\/2/)
     assert.match(screen, /model: v2-production-reviewer/)
-    assert.match(screen, /token: 23 in 11 out/)
+    assert.match(screen, /tokens: 23 in 11 out/)
     assert.doesNotMatch(screen, /Permission analysis|Allowed in|Loading history|History could not be read/)
   }
   const facts = await coverState()
@@ -1509,7 +1509,7 @@ createInterface({input:process.stdin}).on('line',line=>{
          assert.deepEqual(record.route, { type: "session", sessionID })
          assert.match(screen, /Analysis history/)
          assert.match(screen, /V2 native edit report\./)
-         assert.match(screen, /token: 23 in 11 out/)
+          assert.match(screen, /tokens: 23 in 11 out/)
          await stable()
        })
      runtime.tmux("send-keys", "-t", "v2-review", "Escape")
@@ -1831,7 +1831,7 @@ createInterface({input:process.stdin}).on('line',line=>{
          assert.ok(metadata, "Live usage uses the shared measured metadata component")
          assert.equal(metadata.wrapMode, "none")
          assert.equal(metadata.height, 1)
-         assert.equal(metadata.text, "token: 23 in 11 out")
+          assert.equal(metadata.text, "tokens: 23 in 11 out")
          assert.ok(capture().includes(metadata.text), "Live usage is actually painted")
        }
        if (visibilityLoss) {

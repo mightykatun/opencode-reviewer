@@ -12,17 +12,17 @@ test("usage requires both actual endpoint counts; malformed or missing usage is 
     assert.equal(responseUsage({ usage }, "fixture"), undefined)
   }
   assert.deepEqual(responseUsage(response(0, 0), "fixture"), { input: 0, output: 0 })
-  assert.equal(usageText(responseUsage(response(), "fixture")!), "token: 1000 in 100 out")
+  assert.equal(usageText(responseUsage(response(), "fixture")!), "tokens: 1000 in 100 out")
 })
 
 test("cost uses per-million input/output, cached reads/writes and returns four decimal places", () => {
   const plain = responseUsage(response(), "fixture", () => prices)!
   assert.equal(plain.cost, 0.0045)
-  assert.equal(usageText(plain), "token: 1000 in 100 out\ncost: $0.0045")
+  assert.equal(usageText(plain), "tokens: 1000 in 100 out\ncost: $0.0045")
   const cached = responseUsage({ usage: { ...response().usage, prompt_tokens_details: { cached_tokens: 600, cache_write_tokens: 100 } } }, "fixture", () => prices)!
   assert.ok(Math.abs(cached.cost! - 0.002955) < 1e-10)
   const free = responseUsage(response(), "fixture", () => ({ input: 0, output: 0, cache: { read: 0, write: 0 } }))!
-  assert.equal(usageText(free), "token: 1000 in 100 out\ncost: $0.0000")
+  assert.equal(usageText(free), "tokens: 1000 in 100 out\ncost: $0.0000")
 })
 
 test("context-tier prices include cached input; exact thresholds use the preceding tier", () => {
