@@ -259,6 +259,31 @@ requests are read again without reusing old evidence. Canceled or uncertain appr
 stay manual, and started countdowns keep their original deadline. A companion replaced
 without a connection change still requires a plugin reload.
 
+### Session instructions
+
+From a main conversation, use **Alt+I**, `/reviewer-instructions`, or
+**Reviewer: Session instructions** in the palette. Enter adds a newline and Tab
+inserts a tab. **Apply** or Ctrl+S saves and closes; **Clear** only empties the draft.
+**Close** or Escape discards unapplied changes.
+
+These literal instructions go only to the judge, across every review category
+and all descendants of that conversation. Explicit session rules override ordinary
+and extra-careful review guidance, not evidence checks, approval safeguards, or
+the fixed response format. Other cases keep ordinary guidance.
+
+Rules persist locally until cleared, follow the conversation when moved, and are
+shared by this user's terminals. Forks start empty. Each newly started review
+captures the saved rules before evidence collection; changes do not alter existing
+reviews, retries or countdowns. The last successful Apply wins without replacing
+other open drafts. Report history does not store the rules.
+
+Outer whitespace is trimmed. Empty Apply clears saved rules. The UTF-8 limit is
+`maxEvidenceBytes`, independently of operation evidence; oversized text is never
+truncated. Unreadable or invalid saved rules silently fall back to ordinary guidance
+and open as an empty editor. Editing remains available with review disabled or the
+companion unavailable, provided `maxEvidenceBytes` is valid. The shortcut is
+configurable through `keybinds["reviewer.instructions"]` in global `cli.json`.
+
 ### Report history
 
 Use `/reviewer-history` or **Reviewer: Report history** in the command palette to

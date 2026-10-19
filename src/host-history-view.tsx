@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from "solid-js"
+import { createEffect, createMemo, onCleanup, Show, untrack } from "solid-js"
 import { CliRenderEvents, CodeRenderable, ScrollBoxRenderable, type BoxRenderable, type MarkdownRenderable, type Renderable } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { HistoryController, HistoryViewState } from "./history-controller.js"
@@ -7,6 +7,7 @@ import { hostPanelOwnsHit, type HostPanelBounds, type HostPanelNode, type HostSi
 import { HostReviewDescription } from "./review-description.js"
 import { HostReviewMetadata } from "./host-review-metadata.js"
 import { uiText } from "./ui-text.js"
+import { HostButton as HistoryButton } from "./host-button.js"
 
 export interface HostHistoryProofInput {
   session: string
@@ -128,16 +129,6 @@ export interface HostHistoryViewProps {
 
 function highlightingComplete(node: Renderable): boolean {
   return !(node instanceof CodeRenderable && node.isHighlighting) && node.getChildren().every(highlightingComplete)
-}
-
-function HistoryButton(props: { context: Plugin.Context; label: string; disabled?: boolean; run(): void }) {
-  const [hover, setHover] = createSignal(false)
-  return <box paddingLeft={1} paddingRight={1} flexShrink={0}
-    backgroundColor={hover() && !props.disabled ? props.context.theme.background.action.primary.focused : props.context.theme.background.raised.high}
-    onMouseOver={() => setHover(true)} onMouseOut={() => setHover(false)}
-    onMouseUp={event => { event.stopPropagation(); if (event.button === 0 && !props.disabled) props.run() }}>
-    <text fg={props.disabled ? props.context.theme.text.muted : hover() ? props.context.theme.text.action.primary.focused : props.context.theme.text.base}>{props.label}</text>
-  </box>
 }
 
 /** Absolute sibling over the live panel. Its enclosing app-slot parent owns the

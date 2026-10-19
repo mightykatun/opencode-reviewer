@@ -51,6 +51,7 @@ export const uiText = {
     enable: "Reviewer: Enable for conversation",
     disable: "Reviewer: Disable for conversation",
     lifetime: "Reviewer: Statistics",
+    instructions: "Reviewer: Session instructions",
   },
   sessionMode: {
     saved: (enabled: boolean) => enabled
@@ -60,6 +61,15 @@ export const uiText = {
       ? "Reviewer enabled locally, but saving failed. Resume may use the previous setting."
       : "Reviewer disabled locally, but saving failed. Resume may use the previous setting.",
     unavailable: "Reviewer setting unavailable. Session ancestry or saved mode could not be read.",
+  },
+  sessionInstructions: {
+    title: "Session instructions",
+    close: "Close",
+    placeholder: "Type instructions...",
+    clear: "Clear",
+    apply: "Apply",
+    saveFailed: "Session instructions could not be saved.",
+    tooLarge: (limit: number) => `Session instructions exceed maxEvidenceBytes (${limit} bytes).`,
   },
   history: {
     heading: "Analysis history", close: "Close",

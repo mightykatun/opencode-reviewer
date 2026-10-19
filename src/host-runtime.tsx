@@ -29,6 +29,9 @@ import { SessionAncestry } from "./session-ancestry.js"
 import { TransportOwnership } from "./transport-ownership.js"
 import { initialConnectionEcho } from "./connection-marker.js"
 import { setupCliReconnect } from "./cli-reconnect.js"
+import { configuredEvidenceBytes } from "./config.js"
+import { SessionInstructionsStore } from "./session-instructions.js"
+import { setupHostSessionInstructions } from "./host-session-instructions.js"
 
 /** Own setup commands in a native component, where Keymap.Provider is available.
  * A detached Solid root has no native providers; plugin-setup ownership alone
@@ -69,8 +72,17 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   checkpoint?: ControllerCheckpoint<HostPendingRequest>, supervised = false,
   continuity?: { previous?: HostNotificationCheckpoint; current?: HostNotifications }) {
   const config = state.config, companion = state.companion
+  const instructions = new SessionInstructionsStore(path.join(state.stateRoot, "session-instructions-v1"))
+  life.addCleanup(() => instructions.flush(), false)
+  const setupInstructions = (root: () => string | undefined) => {
+    let maxBytes: number
+    try { maxBytes = configuredEvidenceBytes(ctx.options) } catch { return }
+    setupHostSessionInstructions(ctx, life, { root, maxBytes,
+      read: (id, signal) => instructions.read(id, maxBytes, signal), write: (id, text) => instructions.write(id, text) })
+  }
   if (!config || !companion) {
     const standalone = setupHostHistoryOnly(ctx, state, life)
+    setupInstructions(standalone.rootRoute)
     const attention = setupHostNotificationOnly(ctx, state, life, standalone.records, continuity?.previous, supervised)
     if (continuity) continuity.current = attention?.notifications
     // Conversation preferences are local controls, not companion admission.
@@ -122,6 +134,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     return route.sessionID
   }
   const select = () => visibleReview(views(), rootRoute(), id => routes.get(id), root => front(root))
+  setupInstructions(rootRoute)
   const { sidebar, geometry } = setupHostSidebar(ctx, life, rootRoute)
   const records = setupHostHistory(ctx, state, life, { rootRoute, sidebarOwner: sidebar, sidebarGeometry: geometry, ancestry })
   let cancelReveal = () => {}
@@ -177,6 +190,8 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     catch { /* Missing/failed optional pricing cannot change the review. */ }
     return evaluateHostReview(ctx.client, snapshot, config, state.prompts, signal, identified,
       { onProgress, observation, pricing, onDiagnostics: state.dependencies.observer,
+        loadSessionInstructions: signal => observation?.root
+          ? instructions.read(observation.root, config.maxEvidenceBytes, signal) : Promise.resolve(""),
         observeEvidence: evidence => observation ? records.history.observation(request, evidence.kind, config, observation) : undefined })
   }, values => { setViews(values); notifications?.snapshot(controller.pendingViews) }, {
     reviewOptions: config, modes, session: id => routes.get(id), checkpoint,
