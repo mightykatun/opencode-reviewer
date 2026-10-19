@@ -146,11 +146,14 @@ export function setupHostSessionInstructions(context: Plugin.Context,
       draft.setReady(true)
     }))
   }
-  // One public command owns discovery and its configurable default binding.
-  // Base-mode ownership excludes Alt+i from native dialogs and other input modes.
-  context.keymap.layer(() => ({ priority: 100, mode: "base", enabled: () => !!selected(), commands: [{
+  // Discovery must survive the palette's modal mode. Keyboard dispatch receives
+  // an event and falls through outside base mode; palette/slash dispatch does not.
+  context.keymap.layer(() => ({ priority: 100, mode: "global", enabled: () => !!selected(), commands: [{
     id: "reviewer.instructions", title: uiText.commands.instructions, group: uiText.commands.category,
-    palette: true, slash: { name: "reviewer-instructions" }, bind: "alt+i", run: open,
+    palette: true, slash: { name: "reviewer-instructions" }, bind: "alt+i", run: (_input, event) => {
+      if (event && context.keymap.mode.current() !== "base") return false
+      open()
+    },
   }] }))
   createEffect(() => {
     const draft = active(), root = selected()

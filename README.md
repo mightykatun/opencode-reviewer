@@ -105,7 +105,7 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `model` | string | Required | Nonempty model identifier accepted by the configured endpoint. |
 | `apiKey` | string | Unset | Nonempty Bearer token. Takes precedence over `apiKeyEnv`. |
 | `apiKeyEnv` | string | Unset | Environment-variable name matching `[A-Za-z_][A-Za-z_0-9]*`. Without an inline key, its value must be set and nonblank when a review runs. Omit both key options for no Authorization header. |
-| `instructions` | string | Unset (built-ins) | Absolute, NUL-free directory path containing overrides for the [prompt templates](https://github.com/mightykatun/opencode-reviewer/tree/main/prompts), not inline instructions. Missing named files use built-ins; supplied files must be readable, regular, non-symlink, nonempty UTF-8 text up to 64 KiB. Fixed contracts cannot be overridden. |
+| `instructions` | string | Unset (built-ins) | Absolute, NUL-free directory path containing category and extra-careful [prompt template](https://github.com/mightykatun/opencode-reviewer/tree/main/prompts) overrides, not inline instructions. Missing named files use built-ins; supplied files must be readable, regular, non-symlink, nonempty UTF-8 text up to 64 KiB. Fixed contracts and the session-instructions precedence wrapper cannot be overridden. |
 | `stream` | boolean | `false` | Request SSE and show provisional rating/text updates. Normal automatic approval waits for a completed, validated report; fast mode can approve on an early Safe rating. Approval rules are described below. |
 | `reviewBash` | boolean | `true` | Review native `shell` permissions. The option keeps its existing name. |
 | `reviewEdits` | boolean | `true` | Review native `edit`, `write` and `patch` tools, which use the `edit` permission action. |
@@ -125,7 +125,7 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `maxOutputTokens` | integer | `4096` | `1` through the maximum safe integer. Sent as `max_tokens` on every reviewer POST, including retries/corrections. Your provider/model enforces its supported output limit. |
 | `timeoutMs` | integer | `30000` | `1`–`3600000` milliseconds shared across evidence collection, HTTP requests, retries and corrections; not a fresh budget per POST. |
 | `maxFiles` | integer | `6` | `1`–`1000` distinct file candidates per shell/edit review, including unavailable candidates. |
-| `maxEvidenceBytes` | integer | `131072` | `1`–`16777216` bytes for command/source content, edit diffs or category-specific JSON evidence. Oversized source files and diffs use numbered relevant excerpts with a `missing X more lines` footer. Counts are exact when the bounded scan completes, otherwise marked unavailable. Other optional items may be omitted; oversized mandatory evidence fails analysis. This is not a cap on the full prompt or HTTP request. |
+| `maxEvidenceBytes` | integer | `131072` | `1`–`16777216` bytes for command/source content, edit diffs or category-specific JSON evidence. Oversized source files and diffs use numbered relevant excerpts with a `missing X more lines` footer. Counts are exact when the bounded scan completes, otherwise marked unavailable. Other optional items may be omitted; oversized mandatory evidence fails analysis. Independently caps trimmed session instructions. This is not a cap on the full prompt or HTTP request. |
 
 Notification channels are independent: `banner: false, sound: true` is sound-only,
 `banner: true, sound: false` is banner-only, both `false` disable that type.

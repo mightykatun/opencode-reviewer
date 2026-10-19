@@ -6,6 +6,7 @@ import { sessionInstructionsText, setupHostSessionInstructions } from "../src/ho
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import { uiText } from "../src/ui-text.js"
 import { setImmediate as settle } from "node:timers/promises"
+import type { KeyEvent } from "@opentui/core"
 
 test("session instructions trim before measuring UTF-8 and preserve empty saves", () => {
   assert.equal(sessionInstructionsText(" \n\t ", 0), "")
@@ -20,10 +21,10 @@ function fixture(read: (root: string, signal: AbortSignal) => Promise<string>,
   write: (root: string, text: string) => Promise<void> = async () => { throw Error("unexpected write") }) {
   const life = new PluginLifecycle()
   let route: { type: "session"; sessionID: string } | { type: "home" } = { type: "session", sessionID: "root" }
-  let root: string | undefined = "root", layer!: () => KeymapLayer, clears = 0
+  let root: string | undefined = "root", layer!: () => KeymapLayer, clears = 0, mode = "base"
   const closes: (() => void)[] = [], reads: string[] = [], signals: AbortSignal[] = [], toasts: string[] = []
   const context = {
-    keymap: { layer(factory: () => KeymapLayer) { layer = factory } },
+    keymap: { mode: { current: () => mode }, layer(factory: () => KeymapLayer) { layer = factory } },
     ui: { toast: { show: (value: { message: string }) => toasts.push(value.message) }, router: { current: () => route }, dialog: {
       show(_render: unknown, close: () => void) { closes.push(close) },
       clear() { clears++; closes.at(-1)?.() },
@@ -34,18 +35,22 @@ function fixture(read: (root: string, signal: AbortSignal) => Promise<string>,
     write,
   })
   return { life, ui, closes, reads, signals, toasts, layer: () => layer(), clears: () => clears,
-    route(value: typeof route) { route = value }, root(value: string | undefined) { root = value } }
+    route(value: typeof route) { route = value }, root(value: string | undefined) { root = value }, mode(value: string) { mode = value } }
 }
 
-test("one configurable base-mode command exposes exact palette and no-argument slash entry", async () => {
+test("global discovery remains visible in the modal palette while the configurable shortcut is base-only", async () => {
   const host = fixture(async () => "saved")
   const layer = host.layer(), command = layer.commands![0]!
-  assert.equal(layer.mode, "base")
+  assert.equal(layer.mode, "global")
   assert.equal(command.id, "reviewer.instructions")
   assert.equal(command.bind, "alt+i")
   assert.equal(command.title, "Reviewer: Session instructions")
   assert.equal(command.palette, true)
   assert.deepEqual(command.slash, { name: "reviewer-instructions" })
+  host.mode("modal")
+  assert.equal(command.run(undefined, {} as KeyEvent), false)
+  assert.equal(host.closes.length, 0)
+  host.mode("base")
   host.route({ type: "session", sessionID: "child" })
   assert.equal((layer.enabled as () => boolean)(), false)
   command.run()
