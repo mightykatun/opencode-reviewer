@@ -18,6 +18,7 @@
 // normal-reconnect (real loopback socket loss, same TUI and fresh production generation).
 // normal-reconnect-visible (socket loss during a visible review and its countdown).
 // normal-stalled-stream (silently held SSE bytes, native idle recovery during review).
+// normal-instructions (real draft editing, committed persistence and root/descendant judge requests).
 // Build first. Do not execute a host until the main session grants approval.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
@@ -31,7 +32,7 @@ import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { connectionProbe } from "./smoke-connection.mjs"
 import { smokeEnvironment, smokeGitInit, smokeGit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
-import { activatePalette } from "./smoke-ui.mjs"
+import { activatePalette, renditionRows } from "./smoke-ui.mjs"
 import { readProductionHistory, assertWriteInspection, assertWriteEvidence, assertEvidenceRequest,
   savedStageHistory } from "./smoke-v2-review-support.mjs"
 import { rpcDefinition } from "./smoke-v2-rpc.mjs"
@@ -98,6 +99,7 @@ async function monitorSetup(ctx) {
     record.metadata = {}
     record.rejectEditing = false
     record.statisticsReport = undefined
+    if (fixture.instructionsCase) { record.instructions = {}; record.instructionsButtons = {} }
     let budget = 8192
     const choices = node => {
       if (--budget < 0 || !node.visible || node.isDestroyed) return
@@ -119,6 +121,19 @@ async function monitorSetup(ctx) {
         chunks: node.textNode.toChunks().map(chunk => ({ text: chunk.text,
           safe: chunk.fg?.equals(ctx.theme.text.feedback.success.base) === true,
           unsafe: chunk.fg?.equals(ctx.theme.text.feedback.error.base) === true })),
+      }
+      const instructionsButton = fixture.instructionsCase && ["Close", "Clear", "Apply"].includes(node.plainText)
+      if (fixture.instructionsCase && node.visible && (node.id === "reviewer.instructions.input" || instructionsButton)) {
+        const x = node.x + Math.min(1, Math.max(0, node.width - 1)), y = node.y
+        const hit = ctx.renderer.hitTest(x, y)
+        const owns = owner => owner.num === hit || owner.getChildren().some(owns)
+        // HostButton's real mouse handler belongs to the label's immediate box.
+        // Accept only that observed box/subtree, never the modal's broad owner.
+        const owner = instructionsButton ? node.parent : node
+        const observed = { num: node.num, x: node.x, y: node.y, width: node.width, height: node.height,
+          text: node.plainText, focused: node.focused, probe: { x, y, hit, owner: owner?.num, owned: !!owner && owns(owner) }, frame: ctx.renderer.frameId }
+        if (instructionsButton) (record.instructionsButtons[node.plainText] ??= []).push(observed)
+        else record.instructions[node.id] = observed
       }
       for (const child of node.getChildren()) statistics(child)
     }
@@ -230,12 +245,14 @@ async function monitorSetup(ctx) {
          else if (command.type === "keymap") {
             // Native IDs checked against stock 2.0.26's session-frame.tsx,
             // config/keybind.ts and command-palette.tsx, plus the V2 keybind docs.
-            assert.ok(["reviewer.history", "reviewer.lifetime", "session.sidebar.toggle", "command.palette.show",
+             assert.ok(["reviewer.history", "reviewer.lifetime", "session.sidebar.toggle", "command.palette.show",
+               ...(fixture.instructionsCase ? ["reviewer.instructions"] : []),
               ...(fixture.projectTransition ? ["reviewer.disable", "reviewer.enable"] : [])].includes(command.id),
               "Only public production browsing, fixture-scoped mode or native presentation commands")
            const registered = ctx.keymap.commands().find(item => item.id === command.id)
            const enabled = !!registered && (typeof registered.enabled === "function" ? registered.enabled() : registered.enabled !== false)
-            value = { id: command.id, title: registered?.title, registered: !!registered, enabled, mode: ctx.keymap.mode.current() }
+             value = { id: command.id, title: registered?.title, registered: !!registered, enabled, mode: ctx.keymap.mode.current(),
+               ...(fixture.instructionsCase ? { bind: registered?.bind, slash: registered?.slash } : {}) }
            if (command.dispatch && enabled) ctx.keymap.dispatch(command.id)
          }
          else if (command.type === "mouse") {
@@ -431,13 +448,14 @@ const skillCase = registeredTool || ["normal-skill", "fast-skill"].includes(scen
 const directoryEditCase = scenario === "normal-directory-edit"
 const notificationCase = scenario === "fast-notifications", savedCase = automatic && scenario !== "normal-cancel"
 const projectTransition = scenario === "normal-project-transition"
+const instructionsCase = scenario === "normal-instructions"
 const evidenceTimeout = scenario === "advisory-evidence-timeout"
 const longSession = scenario === "normal-long-session", largeSource = scenario === "normal-large-source"
 const stalledStream = scenario === "normal-stalled-stream"
 const pendingReconnect = scenario === "normal-reconnect-visible" || stalledStream
 const reconnectCase = scenario === "normal-reconnect" || pendingReconnect
 const warmupBatches = 16, warmupBatchSize = 32, warmupCalls = []
-const requestCount = projectTransition ? 4 : coverCase || directoryEditCase ? 2 : 1
+const requestCount = projectTransition ? 4 : coverCase || directoryEditCase || instructionsCase ? 2 : 1
 const expectedReviewPOSTs = evidenceTimeout ? 0 : pendingReconnect ? stalledStream ? 2 : 3 : requestCount
 const nativeCallCount = editCase ? 1 : requestCount
 const negative = scenario === "normal-cancel"
@@ -504,6 +522,7 @@ const prompt = registeredTool ? "Look up the public account once using fixture_l
 const script = (largeSource ? "# oversized source fixture context\n".repeat(8000) : "")
   + 'from pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write("V2_REVIEW_EXECUTED\\n")\nprint("V2_REVIEW_EXECUTED")\n'
 const description = "V2 local marker report.\n\nThe script writes one isolated marker."
+const instructionsText = 'SESSION_INSTRUCTIONS_LITERAL: keep "quoted" text and {{braces}}.\n\tRoot and descendant share this note.'
 // Only the second keyboard-case response is long. The first genuine report keeps
 // all existing saved-history text/metadata and selected-original assertions intact.
 const keyboardDescription = description + "\n\n" + Array.from({ length: 80 }, (_, index) =>
@@ -523,6 +542,7 @@ const proxySockets = new Set(), proxyRequests = []
 let reviewPOSTs = 0, reviewCompleted = false, allowWrites = false, manualDecision = false
 let allowedReplies = 1, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, notificationSequence = 0
 let projectTransitionEvidence, currentProject
+let instructionsEvidence
 const requests = [], inspections = [], reviewerTransactions = []
 const editStages = []
 const markerLine = "V2_REVIEW_EXECUTED\n"
@@ -551,9 +571,9 @@ const observations = async () => {
      for (const reply of record.replied) {
        assert.equal(reply.reply, manualHistoryCase ? manualReply : "once")
        assert.equal(reply.sessionID, record.asked.find(asked => asked.id === reply.requestID)?.sessionID)
-       if (!projectTransition) assert.equal(reply.sessionID, sessionID)
+        if (!projectTransition && !instructionsCase) assert.equal(reply.sessionID, sessionID)
        assert.ok(record.asked.some(asked => asked.id === reply.requestID), "Reply belongs to an actual observed native request")
-         if (!coverCase && !directoryEditCase && !projectTransition) assert.equal(reply.requestID, request.id)
+          if (!coverCase && !directoryEditCase && !projectTransition && !instructionsCase) assert.equal(reply.requestID, request.id)
         assert.equal(record.replied.filter(item => item.requestID === reply.requestID).length, 1, "Exact once-only native reply per permission")
     }
   }
@@ -969,14 +989,143 @@ const releaseNativeCall = () => {
     mainResponse.res.end(JSON.stringify({ choices: [{ message, finish_reason: "tool_calls" }] }))
   }
 }
+const instructionsFile = () => path.join(stateRoot, "session-instructions-v1",
+  createHash("sha256").update(sessionID).digest("hex") + ".json")
+const committedInstructions = async () => {
+  try {
+    const file = instructionsFile(), stat = await lstat(file)
+    assert.ok(stat.isFile() && !stat.isSymbolicLink())
+    assert.equal(stat.mode & 0o777, 0o600)
+    const value = JSON.parse(await readFile(file, "utf8"))
+    assert.equal(value.version, 1)
+    const text = Buffer.from(value.data, "base64").toString("utf8")
+    assert.equal(value.bytes, Buffer.byteLength(text))
+    return text
+  } catch (error) { if (error.code === "ENOENT") return null; throw error }
+}
+const exerciseInstructions = async cli => {
+  const send = (...keys) => runtime.tmux("send-keys", "-t", "v2-review", ...keys)
+  const inputID = "reviewer.instructions.input"
+  instructionsEvidence = { editor: [], judge: [] }
+  const editor = async expected => until("real session instructions draft " + JSON.stringify(expected), async record => {
+    const input = record?.instructions?.[inputID], screen = capture()
+    if (record?.mode !== "modal" || record.frame?.mode !== "modal" || !input || input.text !== expected
+      || !screen.includes("Session instructions") || !screen.includes("Close") || !screen.includes("Clear") || !screen.includes("Apply")) return false
+    assert.ok(input.width > 40 && input.height >= 3, "The production editor is a large multiline native dialog")
+    assert.ok(input.x > 0 && input.x + input.width < record.terminal.width, "Actual dialog is centered inside the terminal")
+    return input
+  }, 15000)
+  const closed = (mode = "base") => until("native instructions dialog closes", record => record?.mode === mode
+    && !record.instructions?.[inputID] && !capture().includes("Session instructions"))
+  const click = async action => {
+    const label = action[0].toUpperCase() + action.slice(1)
+    const node = await until("actual hit-tested instructions " + action, record => {
+      const input = record?.instructions?.[inputID]
+      if (record?.mode !== "modal" || !input) return false
+      const candidates = (record.instructionsButtons?.[label] ?? []).filter(node => node.probe.owned
+        && node.width > 0 && node.height > 0 && node.x >= input.x && node.x + node.width <= input.x + input.width
+        && (action === "close" ? node.y < input.y : node.y >= input.y + input.height))
+      return candidates.length === 1 && candidates[0]
+    }, 5000)
+    instructionsEvidence.editor.push({ action, node })
+    const { x, y } = node.probe
+    send("-l", `\x1b[<0;${x + 1};${y + 1}M\x1b[<0;${x + 1};${y + 1}m`)
+  }
+  const open = async expected => { send("-l", "\x1bi"); return editor(expected) }
+  const typeInstructions = () => {
+    const [first, second] = instructionsText.split("\n")
+    send("-l", first); send("Enter"); send("Tab"); send("-l", second.slice(1))
+  }
+  const registered = await command({ type: "keymap", id: "reviewer.instructions" })
+  assert.equal(registered.registered, true); assert.equal(registered.enabled, true)
+  assert.equal(registered.title, "Reviewer: Session instructions")
+  await activatePalette({ send, capture: () => runtime.tmux("capture-pane", "-p", "-e", "-t", "v2-review") },
+    registered.title, async screen => (await observations())?.instructions?.[inputID]?.text === "" && screen.includes("Session instructions"))
+  await editor("")
+  assert.match(capture(), /Type instructions\.\.\./)
+  typeInstructions()
+  await editor(instructionsText)
+  await saveCapture("instructions-draft-enter-tab")
+  assert.equal(await committedInstructions(), null, "Typing, Enter and literal Tab do not commit")
+  await negativeWindow("editor draft has no permission, model call or durable commit", [], [], null, 0, 1500, async () => {
+    await editor(instructionsText)
+    assert.equal(await committedInstructions(), null)
+    assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 1)
+  })
+  send("Escape"); await closed()
+  await open("")
+  send("-l", "DRAFT_TO_CLEAR"); await editor("DRAFT_TO_CLEAR")
+  await click("clear"); await editor("")
+  assert.equal(await committedInstructions(), null, "Clear only changes the draft")
+  typeInstructions(); await editor(instructionsText)
+  await click("apply"); await closed()
+  assert.equal(await committedInstructions(), instructionsText, "Mouse Apply commits the exact multiline text")
+  await open(instructionsText)
+  await click("clear"); await editor("")
+  await click("close"); await closed()
+  assert.equal(await committedInstructions(), instructionsText, "Mouse Close discards a cleared draft")
+  await open(instructionsText)
+  await click("clear"); await editor("")
+  await click("apply"); await closed()
+  assert.equal(await committedInstructions(), "", "Clear then Apply commits empty instructions")
+  await open("")
+  typeInstructions(); await editor(instructionsText)
+  send("C-s"); await closed()
+  assert.equal(await committedInstructions(), instructionsText, "Ctrl+S applies and closes")
+  await saveCapture("instructions-committed")
+  // Public unload/reload rereads durable state, never fixture-created drafts.
+  await publish(cliPath, { ...cli, plugins: ["-opencode-reviewer", cli.plugins[1]] })
+  await until("production instructions command unloads", async () => !(await command({ type: "keymap", id: "reviewer.instructions" })).registered)
+  await publish(cliPath, cli)
+  await until("production instructions command reloads", async () => (await command({ type: "keymap", id: "reviewer.instructions" })).registered)
+  await open(instructionsText)
+  await saveCapture("instructions-persisted-after-reload")
+  send("Escape"); await closed()
+  childSession = await command({ type: "child", sessionID })
+  await navigate(childSession.id)
+  const childMode = (await observations()).mode
+  const childCommand = await command({ type: "keymap", id: "reviewer.instructions", dispatch: true })
+  assert.equal(childCommand.enabled, false, "The public editor command is root-only")
+  assert.equal((await observations()).mode, childMode, "Disabled descendant command preserves native input ownership")
+  assert.equal((await observations()).instructions?.[inputID], undefined, "Disabled descendant command opens no editor")
+  await navigate(sessionID)
+  const unrelated = await command({ type: "away", destination: "other" })
+  await until("unrelated root route", record => record?.route.sessionID === unrelated.sessionID)
+  const unrelatedMode = (await observations()).mode
+  send("-l", "/reviewer-instructions")
+  instructionsEvidence.slash = await until("painted native no-argument instructions slash completion", () => {
+    const ansi = runtime.tmux("capture-pane", "-p", "-e", "-t", "v2-review")
+    const matches = renditionRows(ansi).map(row => ({ ...row, at: row.text.indexOf("reviewer-instructions") }))
+      .filter(row => row.at >= 0)
+    if (matches.length !== 2) return false
+    const completion = matches.find(row => row.text.includes(registered.title)), input = matches.find(row => row !== completion)
+    if (!completion || !input || !input.text.includes("/reviewer-instructions")) return false
+    const background = completion.backgrounds[completion.at]
+    if (background === undefined || background === input.backgrounds[input.at]
+      || !completion.backgrounds.slice(completion.at, completion.at + "reviewer-instructions".length).every(value => value === background)) return false
+    return { completion: completion.text, input: input.text, background }
+  }, 15000)
+  await saveCapture("instructions-slash-completion")
+  send("Enter")
+  await editor("")
+  await saveCapture("instructions-slash-open")
+  send("Escape"); await closed(unrelatedMode)
+  await navigate(sessionID)
+  assert.equal(await committedInstructions(), instructionsText, "Another root never replaces this root's record")
+  assert.equal(reviewPOSTs, 0, "Editor actions never dispatch a review")
+  assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 1, "Editor actions never create model messages")
+  instructionsEvidence.file = instructionsFile()
+}
 const limits = [
    "Behavioral review activates through public CLI configuration only after an owned prompt-free session's exact genuine birth and deletion are observed on the native data stream. This is not pre-connection startup acceptance; the separate lifecycle fixture checks startup. No runtime reconnect policy is overridden.",
      "One installed default archive with separate server companion and global CLI configuration. The independent monitor never imports production code or replies to permissions.",
    `One ${reconnectCase ? "loopback server plus network-proxied TUI" : "standalone"} Linux OpenCode V2 verification host, ${nativeCallCount} direct ${registeredTool ? "local MCP" : skillCase ? "native skill" : editCase ? "native write" : "native shell"} call(s), ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal${reconnectCase ? "" : ", disconnect"} or tab-switch acceptance.`,
   "Mouse capture is explicitly configured only by the isolated fixture, never forced by production. UI changes use real native commands/navigation, keyboard choices or actual tmux resize; no synthesized paint, modes, hits or geometry. Individual cases do not imply full UI-matrix acceptance.",
   projectTransition ? "The transition includes a real descendant-owned shell request in the root native queue. A distinct public location read discovers the committed repository and lets native worktree resolution adopt existing sessions; the original companion must retain its exact handshake and epoch. No fabricated events, location reload, database edits, remote changes or uncertain writes. Markerless startup IDs are observed, not assumed to be global on every V2 release."
+    : instructionsCase ? "A real descendant-owned shell permission uses its root's saved instructions. No location migration, simultaneous multi-terminal editing, uncertain write or live-provider acceptance."
     : "Descendant cases navigate a real child while a root request is pending; they do not exercise descendant-owned native queue ordering. No disabled kinds or uncertain writes.",
-      pendingReconnect ? "An actual pending native shell permission survives a silently held event stream or TCP socket loss. Independent native connection markers and the production accessor prove fresh admission without plugin reload; every replacement review must recollect evidence. The visible-socket case disconnects during both analysis and a started countdown, holding the second outage beyond its original deadline. Exact once-only reply, native execution, final saved report and accounting are verified. No uncertain-write or cancellation host acceptance."
+      instructionsCase ? "Actual production palette, Alt+I and no-argument /reviewer-instructions editor activation with painted native completion, Enter newline, literal Tab, Escape discard, hit-tested mouse Clear/Close/Apply, Ctrl+S apply, private durable record inspection and public plugin unload/reload. A different root opens empty and a descendant cannot open the editor. Two real root/descendant judge HTTP bodies retain literal instructions while main-model messages do not. No full process restart, location migration or multi-terminal acceptance."
+      : pendingReconnect ? "An actual pending native shell permission survives a silently held event stream or TCP socket loss. Independent native connection markers and the production accessor prove fresh admission without plugin reload; every replacement review must recollect evidence. The visible-socket case disconnects during both analysis and a started countdown, holding the second outage beyond its original deadline. Exact once-only reply, native execution, final saved report and accounting are verified. No uncertain-write or cancellation host acceptance."
       : reconnectCase ? "Actual TCP socket destruction and a 1.5-second network outage while the session's first model response is held, before its native tool call. Independent native connection markers and the production embedding accessor prove the old runtime is absent during loss and a fresh runtime is admitted without plugin reload. One subsequent real review, native once reply, tool execution and saved report prove live review resumes. Pending countdown, uncertain-write and cancellation continuity are source-tested, not host-accepted by this case."
       : evidenceTimeout ? "A genuine native shell permission with a one-millisecond production evidence deadline. Actual terminal captures must show Analysis unavailable and timed out while the native request stays pending, with no reviewer POST, reply, execution or saved report. No injected transport errors, protocol changes, missing-linkage substitution or model latency acceptance."
      : registeredTool ? "One real local MCP request advertised directly with a public Code Mode option, a scoped registered definition (normal omits the oversized description and reports the reason), one production once reply, actual MCP result continuation, saved tool category and confirmed approval totals. No ambiguous nested call, remote implementation inspection or live-provider acceptance."
@@ -1061,7 +1210,11 @@ try {
         assert.equal(body.stream, streaming)
         assert.equal(body.messages.length, 2)
         assert.equal(body.messages[0].role, "system")
-        assert.equal(body.messages[1].role, "user")
+         assert.equal(body.messages[1].role, "user")
+         if (instructionsCase) {
+           assert.ok(body.messages[0].content.includes(instructionsText), "Actual judge system body receives committed instructions literally")
+           instructionsEvidence.judge.push({ index: reviewPOSTs, body })
+         }
         const evidence = JSON.parse(body.messages[1].content)
         if (skillCase) {
           assert.match(body.messages[0].content, registeredTool ? /pending tool operation/ : /permission\.action="skill"/)
@@ -1135,11 +1288,13 @@ try {
         if (streaming) { res.writeHead(200, { "Content-Type": "text/event-stream" }); res.flushHeaders() }
         return
       }
-      assert.equal(req.url, "/v1/chat/completions")
+       assert.equal(req.url, "/v1/chat/completions")
+       if (instructionsCase) assert.ok(!JSON.stringify(body.messages).includes("SESSION_INSTRUCTIONS_LITERAL"),
+         "Reviewer-local session instructions are never sent to the main model")
       assert.ok(body.tools?.some(tool => tool.function.name === "execute"), "Native Code Mode search/execution remains installed")
       const mainCalls = calls.filter(call => call.url === req.url)
         assert.ok(mainCalls.length <= nativeCallCount * 2, "Only genuine prompts and tool-result continuations")
-        if (mainCalls.length === 1 || coverCase && mainCalls.length === 3 || projectTransition && mainCalls.length % 2 === 1) {
+         if (mainCalls.length === 1 || coverCase && mainCalls.length === 3 || (projectTransition || instructionsCase) && mainCalls.length % 2 === 1) {
           assert.ok(body.tools.some(tool => tool.function.name === toolCall.name), "Use the actually advertised direct native tool")
           if (skillCase) {
             assert.ok(body.messages.some(message => typeof message.content === "string" && message.content.includes(prompt)))
@@ -1187,7 +1342,7 @@ try {
   })
   await new Promise(resolve => modelServer.listen(0, "127.0.0.1", resolve))
   const origin = `http://127.0.0.1:${modelServer.address().port}`
-   const fixture = { initial, project, projectTransition, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase, registeredTool }
+   const fixture = { initial, project, projectTransition, instructionsCase, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase, registeredTool }
   const observer = path.join(temp, "observer"), monitor = path.join(temp, "monitor")
   const reviewer = path.join(temp, "reviewer")
   await mkdir(reviewer)
@@ -1368,8 +1523,9 @@ createInterface({input:process.stdin}).on('line',line=>{
      assert.deepEqual((await command({ type: "status" })).handshake, handshake, "No restart or new capture epoch")
      await publish(path.join(artifacts, "warmup-model-calls.json"), warmupCalls)
    }
-    releaseNativeCall()
-   if (editCase) {
+     if (instructionsCase) await exerciseInstructions(cli)
+     releaseNativeCall()
+    if (editCase) {
      // One direct native call remains running across both permission stages. The
      // monitor reads native data and the companion RPC; only production replies.
      for (const [index, action] of editActions.entries()) {
@@ -2055,6 +2211,57 @@ createInterface({input:process.stdin}).on('line',line=>{
      await negativeWindow("migrated root and descendant remain once-only after re-enable", [], (await observations()).replied,
        markerLine.repeat(requestCount), requestCount)
    }
+   if (instructionsCase) {
+      instructionsEvidence.first = await until("root instructions report saved", savedHistory, 20000)
+      const firstReplies = (await observations()).replied
+      mainResponse = undefined; reviewResponse = undefined; reviewCompleted = false
+      await command({ type: "prompt", sessionID: childSession.id, text: "Perform the same isolated fixture operation once as a descendant." })
+      await until("genuine descendant main model request", () => mainResponse
+        && calls.filter(call => call.url === "/v1/chat/completions").length === 3)
+      releaseNativeCall()
+      request = await until("descendant-owned native shell permission", record => record?.asked[1])
+      requests.push(request)
+      assert.equal(request.sessionID, childSession.id)
+      assert.notEqual(request.id, requests[0].id)
+      inspection = await command({ type: "inspect", sessionID: childSession.id, requestID: request.id, epoch: handshake.epoch })
+      inspections.push(inspection)
+      assert.equal(inspection.native.root, sessionID)
+      assert.equal(inspection.session.parentID, sessionID)
+      assert.deepEqual(inspection.captured.invocation.input, toolCall.input)
+      await until("descendant judge receives root instructions", () => reviewPOSTs === 2 && reviewResponse)
+      const payload = JSON.parse(instructionsEvidence.judge[1].body.messages[1].content)
+      assert.equal(payload.conversation.root.id, sessionID)
+      assert.equal(payload.conversation.current.id, childSession.id)
+      assert.equal(payload.permission.id, request.id)
+      assert.equal(payload.userPrompt, prompt, "Root prompt stays independent of descendant instructions")
+      await negativeWindow("descendant instructions review held without a new reply or execution", [request], firstReplies,
+        markerLine, 2, 1500, () => {}, childSession.id)
+      finishReview()
+      allowedReplies = 2
+      await until("descendant production once reply and execution", async record => record?.replied.length === 2
+        && await executed() === markerLine.repeat(2))
+      await until("descendant native tool-result continuation", () => calls.filter(call => call.url === "/v1/chat/completions").length === 4)
+      const completed = await command({ type: "message", sessionID: childSession.id, messageID: request.source.messageID })
+      const native = completed.content.filter(item => item.type === "tool" && item.id === toolCall.id)
+      assert.equal(native.length, 1); assert.equal(native[0].state.status, "completed")
+      historyEvidence = await until("root and descendant instructions reports save independently", async () => {
+        const value = await readHistory()
+        if (value?.rows.length !== 2 || value.approvals.filter(item => item.state === "confirmed").length !== 2) return false
+        for (const expected of requests) {
+          const row = value.rows.find(item => JSON.parse(item.context).permission === expected.id)
+          assert.ok(row)
+          const context = JSON.parse(row.context)
+          assert.equal(context.root, sessionID); assert.equal(context.session, expected.sessionID)
+          assert.equal(row.outcome, "auto"); assert.equal(JSON.parse(row.body).desc, description)
+        }
+        return value
+      }, 20000)
+      assert.equal(instructionsEvidence.judge.length, 2)
+      assert.equal(await committedInstructions(), instructionsText)
+      await negativeWindow("instructions root and descendant remain once-only", [], (await observations()).replied,
+        markerLine.repeat(2), 2, 1500, () => {}, childSession.id)
+      await publish(path.join(artifacts, "session-instructions.json"), instructionsEvidence)
+   }
    if (coverCase) {
      historyEvidence = await until("first actual saved automatic report and aggregates", savedHistory, 20000)
      coverEvidence = { first: historyEvidence, phases: [] }
@@ -2376,7 +2583,7 @@ createInterface({input:process.stdin}).on('line',line=>{
        assert.equal(totals.input, 23 * (expectedReviewPOSTs - 1)); assert.equal(totals.output, 11 * (expectedReviewPOSTs - 1))
        return value
      }, 20000)
-   } else if (savedCase && !coverCase && !historyCase && !notificationCase && !editCase && !skillCase && !projectTransition) {
+    } else if (savedCase && !coverCase && !historyCase && !notificationCase && !editCase && !skillCase && !projectTransition && !instructionsCase) {
      historyEvidence = await until("background automatic report and aggregates save normally", savedHistory, 20000)
      await publish(path.join(artifacts, "background-saved-history.json"), historyEvidence)
    }
@@ -2610,7 +2817,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.deepEqual(await readObservation(monitorPath), cleaned, "No observer callback after final close")
   if (notificationCase) assert.deepEqual(await notificationObservations(), notificationEvidence.cleaned, "No backend publication after final close")
   await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, temp, handshake, inspection,
-          assessment, reviewCompleted, reviewPOSTs, calls, warmupBatches: warmupCalls.length, requests, inspections, childSession, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, projectTransitionEvidence, networkEvidence,
+          assessment, reviewCompleted, reviewPOSTs, calls, warmupBatches: warmupCalls.length, requests, inspections, childSession, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, projectTransitionEvidence, networkEvidence, instructionsEvidence,
         ...(editCase ? { editStages, editTarget, beforeEdit, afterEdit } : {}), negativeWindows, observations: cleaned, execution: await executed(), limits })
   console.log(`PASS V2 installed production review ${scenario}: ${artifacts}`)
   console.log(`Isolated files: ${temp}`)

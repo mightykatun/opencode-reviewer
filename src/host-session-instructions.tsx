@@ -71,7 +71,7 @@ function SessionInstructionsView(props: {
       backgroundColor={context.theme.background.raised.base} focusedBackgroundColor={context.theme.background.raised.base}
       textColor={context.theme.text.base} focusedTextColor={context.theme.text.base} placeholderColor={context.theme.text.muted}
       cursorColor={context.theme.text.base} wrapMode="word"
-      onKeyDown={event => { if (busy()) { event.preventDefault(); event.stopPropagation() } }}
+      onKeyDown={event => { if (busy() && event.name !== "escape") { event.preventDefault(); event.stopPropagation() } }}
       onPaste={event => { if (busy()) { event.preventDefault(); event.stopPropagation() } }} />
     <box flexDirection="row" justifyContent="flex-end" gap={1} flexShrink={0}>
       <HostButton context={context} label={uiText.sessionInstructions.clear} disabled={busy()} run={clear} />

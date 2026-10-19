@@ -19,8 +19,8 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  48-case production/foundation selection available in manual extended checks,
-  including history, statistics, approval notifications and explicitly classified
+  49-case production/foundation selection available in manual extended checks,
+  including session instructions, history, statistics, approval notifications and explicitly classified
   synthetic probes.
   `npm run test:runtime` selects `--profile v2-acceptance`, which currently selects
   the same cases. These profiles do not prove real desktop/audio acceptance.
@@ -86,6 +86,7 @@ All commands below use the installed five-file archive and production runtime.
 | Shared registered-tool review / fast approval (local MCP) | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-tool` / `fast-tool` |
 | Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
 | Saved history and statistics | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history` |
+| Session instructions editor / persistence / root and descendant judge requests | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-instructions` |
 | Review after 512 completed Code Mode calls / oversized source excerpts | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-long-session` / `normal-large-source` |
 | Unsafe history after native Once / Always / reject | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory-history-once` / `advisory-history-always` / `advisory-history-reject` |
 | Default HOME with writable host state | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-default-home` |
