@@ -13,7 +13,7 @@ This plugin is meant to enable you to run sessions with less frequent input in a
 
 > ⚠️ **Disclaimer**
 >
-> This does not make running agents foolproof and safe! An actor running intrusive commands on your machine will always create attack surface! It just reduces risk, and enables you to get more insight into what your agent is doing.
+> This does not make running agents foolproof and safe! An actor able to run any/intrusive commands on your machine can always exploit an attack surface or create damage! It's meant to reduce risks, and enables you to get more insight into what your agent is doing.
 
 ![](./assets/recording.gif)
 
