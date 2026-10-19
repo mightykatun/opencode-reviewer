@@ -9,8 +9,10 @@ import { ownedReview, type ReviewEvaluation } from "./review-admission.js"
 import type { HostRequestSnapshot } from "./host-types.js"
 import type { ReviewObservation, ReviewResult } from "./types.js"
 import { uiText } from "./ui-text.js"
+import { sessionInstructionsSnapshot } from "./session-instructions-snapshot.js"
 
 export interface HostReviewerDependencies extends ReviewerDependencies {
+  loadSessionInstructions?: (signal: AbortSignal) => Promise<string>
   /** Synchronous accounting setup using the validated evidence kind. */
   observeEvidence?: (evidence: HostReviewEvidence) => ReviewObservation | void
 }
@@ -22,6 +24,10 @@ export interface HostReviewerDependencies extends ReviewerDependencies {
 export function evaluateHostReview(client: OpenCodeClient, snapshot: HostRequestSnapshot, config: Config,
   prompts: PromptSet, parent: AbortSignal, onIdentified: () => void, dependencies: HostReviewerDependencies = {}): ReviewEvaluation<ReviewResult | null> {
   return ownedReview(parent, config.timeoutMs, async signal => {
+    const { loadSessionInstructions, ...captured } = dependencies
+    const sessionInstructions = loadSessionInstructions
+      ? await sessionInstructionsSnapshot(loadSessionInstructions, signal) : captured.sessionInstructions
+    signal.throwIfAborted()
     const wire = hostRequestWire(snapshot)
     if (!wire) throw new Error(uiText.review.evidenceUnavailable)
     const owned = await readHostEvidence(client, snapshot.scope, wire, config, signal)
@@ -30,10 +36,10 @@ export function evaluateHostReview(client: OpenCodeClient, snapshot: HostRequest
     if (owned.result.status !== "ready") return null
     onIdentified()
     signal.throwIfAborted()
-    const { observeEvidence, ...reviewer } = dependencies
+    const { observeEvidence, ...reviewer } = captured
     let observation: ReviewObservation | void = undefined
     try { observation = observeEvidence?.(owned.result.evidence) } catch { /* Accounting cannot change review. */ }
     signal.throwIfAborted()
-    return review(owned.result.evidence, config, signal, { ...reviewer, ...(observation ? { observation } : {}), prompts })
+    return review(owned.result.evidence, config, signal, { ...reviewer, sessionInstructions, ...(observation ? { observation } : {}), prompts })
   })
 }

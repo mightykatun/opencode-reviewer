@@ -26,6 +26,15 @@ export interface Config extends Limits, NotificationConfig {
 export type ReviewOptions = Pick<Config, "reviewBash" | "reviewEdits"> & Partial<Pick<Config,
   "reviewSkills" | "reviewTools" | "reviewExternalDirectories">>
 
+/** Local instruction editing remains available when unrelated configuration fails. */
+export function configuredEvidenceBytes(options: Readonly<Record<string, unknown>>): number {
+  const value = options.maxEvidenceBytes === undefined ? 131072 : options.maxEvidenceBytes
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 16 * 1024 * 1024) {
+    throw new Error("maxEvidenceBytes must be an integer between 1 and 16777216")
+  }
+  return value
+}
+
 export function parseConfig(options: Record<string, unknown> = {}): Config {
   const keys = new Set(["baseURL", "model", "apiKey", "apiKeyEnv", "instructions", "stream", "reviewBash", "reviewEdits", "reviewSkills", "reviewTools", "reviewExternalDirectories", "autoApprove", "fastMode", "extraCareful", "autoApproveDelaySeconds", "formatRetries", "timeoutMs", "maxOutputTokens", "maxFiles", "maxEvidenceBytes", "notify", "notifySound", "notificationSoundDirectory", "staleReminderSeconds", "notifications"])
   for (const key of Object.keys(options)) if (!keys.has(key)) throw new Error(`Unknown opencode-reviewer setting: ${key}`)
@@ -78,6 +87,6 @@ export function parseConfig(options: Record<string, unknown> = {}): Config {
     timeoutMs: number("timeoutMs", 30000, 1, 3600000),
     maxOutputTokens: number("maxOutputTokens", 4096, 1, Number.MAX_SAFE_INTEGER),
     maxFiles: number("maxFiles", 6, 1, 1000),
-    maxEvidenceBytes: number("maxEvidenceBytes", 131072, 1, 16 * 1024 * 1024),
+    maxEvidenceBytes: configuredEvidenceBytes(options),
   }
 }

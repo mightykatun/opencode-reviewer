@@ -5,6 +5,7 @@
   "skill": "prompts/SKILL-REVIEW-PROMPT.md",
   "tool": "prompts/TOOL-REVIEW-PROMPT.md",
   "extraCareful": "prompts/EXTRA-CAREFUL-REVIEW-PROMPT.md",
+  "sessionInstructions": "prompts/SESSION-INSTRUCTIONS-PROMPT.md",
   "contract": "contracts/PERMISSION-REVIEW-CONTRACT.md",
   "correction": "contracts/PERMISSION-REVIEW-CORRECTION.md"
 }

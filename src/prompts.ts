@@ -28,6 +28,11 @@ export const BUILTIN_PROMPTS: PromptSet = Object.freeze({
 export const CONTRACT = prompt("contract")
 export const CORRECTION = prompt("correction")
 
+/** Session text is literal user guidance, never substituted as a template. */
+export function sessionInstructionsPrompt(text: string): string {
+  return `${prompt("sessionInstructions")}\n\n${text}`
+}
+
 export function correctionPrompt(validationError: string): string {
   return CORRECTION.replaceAll("{{validationError}}", () => validationError)
 }

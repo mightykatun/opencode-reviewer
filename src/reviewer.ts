@@ -1,7 +1,7 @@
 import type { Config } from "./config.js"
 import type { Assessment, ReviewProgress, ReviewResult, ReviewObservation, ReviewAttemptEvent } from "./types.js"
 import { randomUUID } from "node:crypto"
-import { BUILTIN_PROMPTS, CONTRACT, correctionPrompt, type PromptSet } from "./prompts.js"
+import { BUILTIN_PROMPTS, CONTRACT, correctionPrompt, sessionInstructionsPrompt, type PromptSet } from "./prompts.js"
 import { usageAttempt, sumUsage, type PricingLookup, type Usage } from "./usage.js"
 import { remainingTime, reviewStage, withDeadline } from "./deadline.js"
 import { SSEParser } from "./sse.js"
@@ -224,6 +224,7 @@ async function streamedAssessment(response: Response, signal: AbortSignal, owner
 }
 
 export interface ReviewerDependencies {
+  sessionInstructions?: string
   fetcher?: typeof fetch
   environment?: NodeJS.ProcessEnv
   prompts?: PromptSet
@@ -240,7 +241,7 @@ export async function review(
   config: Config,
   signal: AbortSignal,
   { fetcher = fetch, environment = process.env, prompts = BUILTIN_PROMPTS,
-    pricing, onUsage, onProgress, onDiagnostics, onRetry, observation = { review: randomUUID() } }: ReviewerDependencies = {},
+    pricing, onUsage, onProgress, onDiagnostics, onRetry, sessionInstructions, observation = { review: randomUUID() } }: ReviewerDependencies = {},
 ): Promise<ReviewResult> {
   // Production already shares a deadline with evidence collection. Direct
   // callers get the same bound, including all internal backoff and POSTs.
@@ -248,14 +249,15 @@ export async function review(
     let worker: Promise<ReviewResult> | undefined
     try {
       return await withDeadline(signal, config.timeoutMs, (bounded) =>
-        worker = review(evidence, config, bounded, { fetcher, environment, prompts, pricing, onUsage, onProgress, onDiagnostics, onRetry, observation }))
+        worker = review(evidence, config, bounded, { fetcher, environment, prompts, pricing, onUsage, onProgress, onDiagnostics, onRetry, sessionInstructions, observation }))
     } finally { await worker?.catch(() => {}) }
   }
   const key = config.apiKey ?? (config.apiKeyEnv ? environment[config.apiKeyEnv]?.trim() : undefined)
   if (config.apiKeyEnv && !key) throw new Error(`API key environment variable ${config.apiKeyEnv} is unset or empty`)
   const prompt = prompts[evidence.kind]
   const messages = [
-    { role: "system", content: [prompt.instructions, ...(config.autoApprove && config.extraCareful ? [prompts.extraCareful] : []), CONTRACT].join("\n\n") },
+    { role: "system", content: [prompt.instructions, ...(config.autoApprove && config.extraCareful ? [prompts.extraCareful] : []),
+      ...(sessionInstructions ? [sessionInstructionsPrompt(sessionInstructions)] : []), CONTRACT].join("\n\n") },
     { role: "user", content: JSON.stringify(evidence) },
   ]
   let usage: Usage | undefined
