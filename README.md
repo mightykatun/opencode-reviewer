@@ -17,8 +17,7 @@ This plugin is meant to enable you to run sessions with less frequent input in a
 
 ![](./assets/recording.gif)
 
-For OpenCode V2 on Linux. The plugin checks the server companion's protocol and
-each request's data and scope rather than allowing only specific host versions.
+For OpenCode V2 on Linux.
 
 ## Install and config
 
