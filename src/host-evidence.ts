@@ -368,6 +368,9 @@ export async function collectHostOperation(owned: OperationRead, options: HostEv
       reviewStage(signal, "Evidence collection")
       limitations.push("Tool definition unavailable: scoped registry read failed.")
     }
+    if (!definition?.name && !definition?.description && !definition?.input) {
+      limitations.push("No registered tool data is available: name, description and input JSON Schema are unavailable. Exact tool ID, captured arguments and permission scope are retained for the reviewer to assess.")
+    }
     reviewStage(signal, "Evidence collection")
     const optional = definition ? boundedCopy({ definition }, options.maxEvidenceBytes - mandatory.bytes, 16384 - mandatory.values) : undefined
     const permission = permissionMetadata(mandatory.value.permission, metadata, options.maxEvidenceBytes - mandatory.bytes - (optional?.bytes ?? 0),

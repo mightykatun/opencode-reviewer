@@ -171,8 +171,10 @@ Tool reviews use the exact effective tool ID, captured arguments and pending
 permission scope. Current server-side registered names, descriptions and input
 JSON Schemas are included when available. Missing, duplicate, oversized,
 unreadable or unsupported definitions are omitted with factual reasons sent to
-the LLM. The LLM decides whether the remaining evidence justifies Safe or Unsafe;
-missing optional evidence does not itself force manual approval.
+the LLM. Reviews still run when no registered tool data is available, with that
+absence stated explicitly. The LLM decides whether the remaining evidence
+justifies Safe or Unsafe; missing optional evidence does not itself force manual
+approval.
 
 This assumes any supplied definition stays unchanged while approval is pending
 and accurately describes behavior. The reviewer does not inspect executors or

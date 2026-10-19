@@ -16,15 +16,27 @@ test("missing tool evidence reaches the LLM, whose Safe or Unsafe decision is pr
   const call = owned("account_lookup", { account: "public" }, { ...nativeRequest, action: "account_lookup", resources: ["*"] })
   const files = io()
   const base = { id: "account_lookup", name: "lookup", description: "x".repeat(140000), input: { type: "object", properties: {} } }
-  for (const tools of [undefined, async () => { throw new Error("private registry error") },
-    async () => ({ location, data: [base] }), async () => ({ location, data: [{ ...base, description: "Public lookup", input: { "~standard": {} } }] })]) {
+  const emptyDataNote = "No registered tool data is available: name, description and input JSON Schema are unavailable. Exact tool ID, captured arguments and permission scope are retained for the reviewer to assess."
+  const cases = [
+    { noData: true, tools: undefined },
+    { noData: true, tools: async () => { throw new Error("private registry error") } },
+    { noData: true, tools: async () => ({ location, data: [] }) },
+    { noData: true, tools: async () => ({ location, data: [{ id: "account_lookup" }] }) },
+    { noData: true, tools: async () => ({ location, data: [{ id: "account_lookup", name: "", description: "", input: { "~standard": {} } }] }) },
+    { noData: true, tools: async () => ({ location, data: [base, base] }) },
+    { noData: true, tools: async () => ({ location: { directory: "/wrong" }, data: [base] }) },
+    { noData: false, tools: async () => ({ location, data: [base] }) },
+    { noData: false, tools: async () => ({ location, data: [{ ...base, description: "Public lookup", input: { "~standard": {} } }] }) },
+  ]
+  for (const { tools, noData } of cases) {
     const result = await collectHostEvidence(call, options, signal(), files.access, undefined, tools)
     assert.equal(result.status, "ready")
     if (result.status !== "ready") continue
     assert.ok(result.evidence.limitations.some(note => /unavailable|omitted/.test(note)))
     assert.ok(readHostOperationEvidence((await collectHostOperation(call, options, signal(), files.access, undefined, tools) as { evidence: unknown }).evidence, call, options, signal()))
     if (result.evidence.kind !== "tool") assert.fail("Expected tool evidence")
-    if (result.evidence.definition?.description === undefined && result.evidence.definition) {
+    assert.equal(result.evidence.limitations.includes(emptyDataNote), noData)
+    if (!noData && result.evidence.definition?.description === undefined && result.evidence.definition) {
       assert.deepEqual(result.evidence.definition.input, base.input, "Oversized descriptions do not suppress usable schemas")
     }
     for (const safe of [true, false]) {
@@ -32,10 +44,12 @@ test("missing tool evidence reaches the LLM, whose Safe or Unsafe decision is pr
         fetcher: async (_url, init) => {
           const body = JSON.parse(String(init?.body))
           assert.match(body.messages[0].content, /Missing descriptions or schemas do not automatically mean Unsafe/)
+          assert.match(body.messages[0].content, /Always produce a safety assessment, even when no registered tool data is available/)
           const evidence = JSON.parse(body.messages[1].content)
           assert.deepEqual(evidence.operation.input, call.invocation.input)
           assert.deepEqual(evidence.permission.resources, ["*"])
           assert.ok(evidence.limitations.some((note: string) => /unavailable|omitted/.test(note)))
+          assert.equal(evidence.limitations.includes(emptyDataNote), noData)
           assert.doesNotMatch(body.messages[1].content, /private registry error/)
           return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ safe, desc: "Assessment based on available evidence." }) }, finish_reason: "stop" }] }))
         },
