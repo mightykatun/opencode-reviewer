@@ -5,7 +5,7 @@ native shell commands, file edits, skill loading, external-directory access and 
 Supports streaming explanations, saved report history and stats, auto-approval, and Linux
 desktop notifications (Gnome) with distinct sounds.
 
-Commands:
+### Commands:
   - Review/outcome history panel: **Alt+h**
   - Per session reviewer instructions: **Alt+i**
 
