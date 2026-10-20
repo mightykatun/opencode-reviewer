@@ -2758,7 +2758,7 @@ createInterface({input:process.stdin}).on('line',line=>{
      }
      const opened = await command({ type: "keymap", id: "reviewer.history", dispatch: true })
      assert.equal(opened.registered, true); assert.equal(opened.enabled, true)
-     const label = manualReply === "once" ? "Approved" : manualReply === "always" ? "Manually approved" : "Rejected"
+     const label = manualReply === "reject" ? "Rejected" : "Manually approved"
      const historical = (record, screen) => {
        assert.equal(record.mode, "base")
        assert.match(screen, /Analysis history/); assert.match(screen, /Unsafe/)
