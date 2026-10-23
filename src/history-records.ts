@@ -58,9 +58,7 @@ export type HistoryQuery =
   | { type: "totals"; conversation?: { scope: string; root: string } }
   | { type: "conversationTotals"; scope: string; root: string }
   | { type: "history"; scope: string; root: string; entry?: string; permission?: HistoryTarget; direction?: "older" | "newer"; order?: HistoryOrder }
-  | { type: "sessions"; scope: string; after?: string; limit?: number }
   | { type: "resolution"; scope: string; root: string; session: string; permission: string }
-  | { type: "session"; scope: string; session: string }
 
 export const opaque = (...parts: string[]): string => createHash("sha256").update(JSON.stringify(parts)).digest("hex")
 export const entryID = (c: HistoryReview): string => opaque(c.scope, c.permission)
@@ -154,7 +152,7 @@ export function decodeEvent(text: string): HistoryEvent {
   try { return validateEvent(JSON.parse(text)) } catch { throw new HistoryInvalid("Invalid history event") }
 }
 export function validateQuery(q: HistoryQuery): void {
-  requireValue(q && ["totals", "conversationTotals", "history", "sessions", "resolution", "session"].includes(q.type))
+  requireValue(q && ["totals", "conversationTotals", "history", "resolution"].includes(q.type))
   if (q.type === "totals") {
     object(q, ["type", "conversation"])
     if (q.conversation !== undefined) {
@@ -165,28 +163,21 @@ export function validateQuery(q: HistoryQuery): void {
   }
   text(q.scope); requireValue(path.isAbsolute(q.scope))
   if (q.type === "conversationTotals") { object(q, ["type", "scope", "root"]); text(q.root); return }
-  if (q.type === "session") { object(q, ["type", "scope", "session"]); text(q.session); return }
   if (q.type === "resolution") {
     object(q, ["type", "scope", "root", "session", "permission"])
     validateScope(q); text(q.permission); return
   }
-  if (q.type === "sessions") {
-    object(q, ["type", "scope", "after", "limit"])
-    if (q.after !== undefined) text(q.after)
-    requireValue(q.limit === undefined || (count(q.limit) && q.limit > 0 && q.limit <= 100))
-  } else {
-    object(q, ["type", "scope", "root", "entry", "permission", "direction", "order"]); text(q.root)
-    if (q.permission !== undefined) {
-      object(q.permission, ["session", "permission"]); text(q.permission.session); text(q.permission.permission)
-      requireValue(q.entry === undefined && q.direction === undefined && q.order === undefined)
-    }
-    if (q.order !== undefined) {
-      object(q.order, ["completed", "tie", "id"]); timestamp(q.order.completed); text(q.order.tie)
-      requireValue(q.entry && q.order.id === q.entry && /^[a-f0-9]{64}$/.test(q.order.id))
-    }
-    if (q.entry !== undefined) requireValue(/^[a-f0-9]{64}$/.test(q.entry))
-    requireValue(q.direction === undefined || (q.entry && ["older", "newer"].includes(q.direction)))
+  object(q, ["type", "scope", "root", "entry", "permission", "direction", "order"]); text(q.root)
+  if (q.permission !== undefined) {
+    object(q.permission, ["session", "permission"]); text(q.permission.session); text(q.permission.permission)
+    requireValue(q.entry === undefined && q.direction === undefined && q.order === undefined)
   }
+  if (q.order !== undefined) {
+    object(q.order, ["completed", "tie", "id"]); timestamp(q.order.completed); text(q.order.tie)
+    requireValue(q.entry && q.order.id === q.entry && /^[a-f0-9]{64}$/.test(q.order.id))
+  }
+  if (q.entry !== undefined) requireValue(/^[a-f0-9]{64}$/.test(q.entry))
+  requireValue(q.direction === undefined || (q.entry && ["older", "newer"].includes(q.direction)))
 }
 export function snapshotQuery(q: HistoryQuery): HistoryQuery {
   validateQuery(q)

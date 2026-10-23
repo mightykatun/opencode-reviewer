@@ -4,7 +4,7 @@ import { mkdtemp } from "node:fs/promises"
 import { EventEmitter } from "node:events"
 import { CliRenderEvents } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
-import { setupHostRuntime, setupHostRecovery } from "../src/host-runtime.js"
+import { setupHostRecovery } from "../src/host-runtime.js"
 import { createRoot, getOwner, onCleanup } from "solid-js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import { parseConfig } from "../src/config.js"
@@ -21,7 +21,7 @@ const companion = { protocol: 1 as const, hostVersion: "2.0.26", epoch: "1000000
 const pending = (id: string) => ({ id, sessionID: "root", action: "unknown", resources: ["scope"] })
 async function fixture(options: { notify?: boolean; reminderSeconds?: number; formSync?: (id: string) => Promise<void>; sessionSync?: (id: string) => Promise<void>;
   backend?: NotificationBackend; unavailable?: "configuration" | "companion"; connectionID?: string;
-  startupFailure?: "companion" | "configuration" | "unobserved" | "conflicting"; recovery?: boolean;
+  startupFailure?: "companion" | "configuration" | "unobserved" | "conflicting";
   location?: { directory: string; workspaceID?: string }; reverseEvents?: boolean } = {}) {
   const location: { directory: string; workspaceID?: string } = options.location ?? companion.location
   const scopedCompanion = { ...companion, location: { directory: location.directory,
@@ -39,7 +39,8 @@ async function fixture(options: { notify?: boolean; reminderSeconds?: number; fo
   const ctx = {
     location,
     client: { event: { async *subscribe({ signal }: { signal: AbortSignal }) {
-      yield { type: "server.connected", id: "event-initial" }
+      if (options.startupFailure !== "unobserved" && options.startupFailure !== "conflicting")
+        yield { type: "server.connected", id: options.connectionID ?? "event-initial" }
       while (!signal.aborted) {
         if (!markers.length) {
           const aborted = () => markerAvailable()
@@ -77,7 +78,7 @@ async function fixture(options: { notify?: boolean; reminderSeconds?: number; fo
       // Exercise only the null command-owner component, not source-test JSX or
       // simulated terminal presentation. Real panel mounting stays host-tested.
       let dispose = () => {}
-      if (options.recovery && value.render.name === "registerCommands")
+      if (value.render.name === "registerCommands")
         createRoot(stop => { dispose = stop; assert.equal(value.render(), null) })
       return () => { dispose(); slots.delete(value) }
     }, router: { current: () => state.route,
@@ -89,7 +90,7 @@ async function fixture(options: { notify?: boolean; reminderSeconds?: number; fo
   let pluginState: CliPluginState = { ...(options.unavailable === "configuration" ? { configError: "Invalid configuration" }
     : { config: parseConfig({ baseURL: "http://localhost:40999", model: "unused", notify: options.notify ?? false,
       ...(options.reminderSeconds !== undefined ? { staleReminderSeconds: options.reminderSeconds } : {}) }) }),
-    ...(options.unavailable === "companion" ? {} : { companion: scopedCompanion }), connectionID: options.connectionID ?? (options.recovery ? "event-initial" : undefined), stateRoot: root, prompts: BUILTIN_PROMPTS,
+    ...(options.unavailable === "companion" ? {} : { companion: scopedCompanion }), connectionID: options.connectionID ?? "event-initial", stateRoot: root, prompts: BUILTIN_PROMPTS,
     dependencies }
   if (options.startupFailure) {
     state.route = { type: "session", sessionID: "root" }
@@ -105,8 +106,8 @@ async function fixture(options: { notify?: boolean; reminderSeconds?: number; fo
     } as unknown as Plugin.Context
     pluginState = { ...await setupCli(cli, life, { ...dependencies, adapterOnly: true }), stateRoot: root }
   }
-  const recovery = options.recovery ? setupHostRecovery(ctx, pluginState, life) : undefined
-  const runtime = recovery ? recovery.current()! : setupHostRuntime(ctx, pluginState, life)!
+  const recovery = setupHostRecovery(ctx, pluginState, life)
+  const runtime = recovery.current()!
   let sequence = 0
   return { life, runtime, recovery, slots, listeners, pluginState, state, ctx, calls, ancestryReads, commands, renderer, stateRoot: root,
     clientMarker: (id: string) => { markers.push(id); markerAvailable() }, event: (type: string, data: unknown, eventID?: string) => {
@@ -123,7 +124,7 @@ test(`production ${unavailable ? "fallback" : "reviewer"} reconnection resumes p
   let now = 0
   t.mock.method(performance, "now", () => now)
   const banners: string[] = []
-  const f = await fixture({ recovery: true, notify: true, reminderSeconds: 1, reverseEvents, unavailable,
+  const f = await fixture({ notify: true, reminderSeconds: 1, reverseEvents, unavailable,
     backend: { async show(message) { banners.push(message.title); return { close() {} } }, dispose() {} } })
   t.after(async () => { await f.life.stop(); await f.life.settled() })
   for (let turn = 0; turn < 10; turn++) await tick()
@@ -147,7 +148,7 @@ test(`production ${unavailable ? "fallback" : "reviewer"} reconnection resumes p
 test("production reconnect admits permissions while an aborted optional native form read remains owned", async t => {
   let release!: () => void, forms = 0
   const held = new Promise<void>(resolve => { release = resolve })
-  const f = await fixture({ recovery: true, notify: true, formSync: async () => { if (++forms === 1) await held } })
+  const f = await fixture({ notify: true, formSync: async () => { if (++forms === 1) await held } })
   t.after(async () => { release(); await f.life.stop(); await f.life.settled() })
   await tick(); await tick()
   assert.equal(forms, 1)
@@ -171,7 +172,7 @@ test("production reconnect admits permissions while an aborted optional native f
 test("production reconnect cannot mix generations across a physically held mandatory native-cache refresh", async t => {
   let release!: () => void, syncs = 0
   const held = new Promise<void>(resolve => { release = resolve })
-  const f = await fixture({ recovery: true, sessionSync: async () => { if (++syncs === 1) await held } })
+  const f = await fixture({ sessionSync: async () => { if (++syncs === 1) await held } })
   t.after(async () => { release(); await f.life.stop(); await f.life.settled() })
   await tick(); assert.equal(syncs, 1)
   f.state.requests = [pending("after-mandatory-stall")]
@@ -190,7 +191,7 @@ test("production reconnect cannot mix generations across a physically held manda
 })
 
 test("fresh production generations recover pending queues without accumulating commands, slots, frames or listeners", async t => {
-  const f = await fixture({ recovery: true }); t.after(() => f.life.stop())
+  const f = await fixture(); t.after(() => f.life.stop())
   await tick(); await tick()
   const initialCommands = f.commands.map(command => command.id).sort()
   assert.equal(new Set(initialCommands).size, initialCommands.length)
@@ -222,7 +223,7 @@ test("fresh production generations recover pending queues without accumulating c
 })
 
 test("reconnect continuity is location-value based and checkpointing precedes disposal regardless of listener order", async t => {
-  const f = await fixture({ recovery: true, reverseEvents: true, location: { workspaceID: "workspace", directory: location.directory } })
+  const f = await fixture({ reverseEvents: true, location: { workspaceID: "workspace", directory: location.directory } })
   t.after(() => f.life.stop())
   await tick(); await tick()
   let checkpoints = 0
@@ -249,27 +250,29 @@ for (const failure of ["companion", "configuration", "unobserved", "conflicting"
     } })
     t.after(() => f.life.stop())
     const verified = failure === "companion" || failure === "configuration"
+    const commands = [...f.commands]
+    const command = (id: string) => commands.find(command => command.id === id)!
     assert.equal(f.runtime, undefined, "fallback does not construct a reviewer")
     assert.equal(f.pluginState.companion, undefined)
     assert.equal(f.pluginState.connectionID, verified ? "event-initial" : undefined)
     await tick(); await tick()
     f.event("server.connected", {}, "event-initial")
-    assert.equal(f.commands.find(command => command.id === "reviewer.history")!.enabled!(), verified)
-    assert.equal(f.commands.find(command => command.id === "reviewer.lifetime")!.enabled!(), verified)
+    assert.equal(command("reviewer.history").enabled!(), verified)
+    assert.equal(command("reviewer.lifetime").enabled!(), verified)
     f.state.requests = [pending("fresh")]; f.event("permission.asked", pending("fresh"))
     await tick(); await tick(); await tick()
     assert.deepEqual(banners, verified ? ["attention"] : [])
     const store = new SessionModeStore(path.join(f.stateRoot, "session-mode-v2"), JSON.stringify(location))
     if (verified) {
-      await f.commands.find(command => command.id === "reviewer.disable")!.run()
+      await command("reviewer.disable").run()
       assert.equal(await store.read("root", f.life.signal), false)
     }
     f.event("server.connected", {}, "event-distinct")
     f.event("server.connected", {}, "event-initial")
-    assert.equal(f.commands.find(command => command.id === "reviewer.history")!.enabled!(), false)
-    assert.equal(f.commands.find(command => command.id === "reviewer.lifetime")!.enabled!(), false)
+    assert.equal(command("reviewer.history").enabled!(), false)
+    assert.equal(command("reviewer.lifetime").enabled!(), false)
     if (verified) {
-      await f.commands.find(command => command.id === "reviewer.enable")!.run()
+      await command("reviewer.enable").run()
       assert.equal(await store.read("root", f.life.signal), false, "revoked local controls cannot revive fallback")
     }
     f.state.requests = [pending("late")]; f.event("permission.asked", pending("late"))
@@ -529,7 +532,7 @@ test("a delayed initial marker preserves the active reviewer while a distinct co
     f.event("permission.asked", pending("after-reconnect"))
     f.event("server.connected", {}, "event-initial")
     await f.runtime.refresh.refresh()
-    assert.equal(f.runtime.views().length, 0, "An old initial marker cannot revive a revoked generation")
+    assert.equal(f.runtime.controller.views.length, 0, "An old initial marker cannot revive a retired controller")
   } finally { await f.life.stop() }
 })
 
@@ -542,7 +545,8 @@ test("a reconnected event stream cannot use a controller bound to the previous c
     f.state.requests = [pending("new-server")]
     f.event("permission.asked", pending("new-server"))
     await f.runtime.refresh.refresh()
-    assert.equal(f.runtime.views().length, 0)
+    assert.equal(f.runtime.controller.views.length, 0)
+    assert.equal(f.recovery.current(), undefined, "Native replacement alone cannot admit a new generation")
   } finally { await f.life.stop() }
 })
 

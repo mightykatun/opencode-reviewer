@@ -15,7 +15,6 @@ import { conversationRoot } from "./route-approval.js"
 import { TransportOwnership } from "./transport-ownership.js"
 import type { AncestryReader } from "./session-ancestry.js"
 import { notificationWorkEvent } from "./host-background-work.js"
-import { initialConnectionEcho } from "./connection-marker.js"
 
 /** Native cache data supplies notification identity, not review provenance. */
 function request(value: PermissionRequest): HostRequest {
@@ -27,7 +26,7 @@ function request(value: PermissionRequest): HostRequest {
  * The caller retains the single app surface and all history/storage disposal.
  * No controller, mode files, evaluator, model transport or permission replies. */
 export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle,
-  records: ReturnType<typeof setupHostHistory>, checkpoint?: HostNotificationCheckpoint, supervised = false) {
+  records: ReturnType<typeof setupHostHistory>, checkpoint?: HostNotificationCheckpoint) {
   const location = records.location
   const abort = new AbortController()
   const signal = AbortSignal.any([life.signal, abort.signal])
@@ -149,14 +148,8 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   life.signal.addEventListener("abort", onAbort, { once: true })
   if (life.signal.aborted) { void dispose(); return { notifications, refresh, front, visit, views: () => views, dispose, settled } }
   off = ctx.data.listen(({ details: event }) => {
-    if (event.type === "server.connected") {
-      if (initialConnectionEcho(state.connectionID, event.id)) return
-      // The supervisor captures continuity before aborting this composition,
-      // regardless of whether typed or general native listeners run first.
-      if (supervised) return
-      void dispose(); return
-    }
-    if (stopped || signal.aborted) return
+    // Connection revocation belongs to the supervisor, after its checkpoint.
+    if (stopped || signal.aborted || event.type === "server.connected") return
     if (event.location && !sameLocation(event.location, location)) return
     if (event.type !== "permission.asked" && event.type !== "permission.replied" && event.type !== "session.deleted"
       && !event.type.startsWith("form.") && !notificationWorkEvent(event)) return

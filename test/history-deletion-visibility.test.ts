@@ -115,7 +115,7 @@ for (const size of [1000, 10000]) test(`two-connection sliced child deletion imm
   t.diagnostic(JSON.stringify({ hiddenRows: size, maximumCandidateVisits: coldWork.maximumSeek, warmScans: f.work().scans, warmSeeks: f.work().seeks }))
 })
 
-test("tombstones alone invalidate foreign caches; pending child/root owner and resolution reads behave as deleted", t => {
+test("tombstones alone invalidate foreign caches; pending child/root resolution reads behave as deleted", t => {
   const f = fixture(t, 300), selected = f.reader.query(query) as HistorySelection
   assert.equal(selected.record?.context.session, context.session)
   // Direct insertion isolates tombstone invalidation from physical history deletes.
@@ -124,24 +124,19 @@ test("tombstones alone invalidate foreign caches; pending child/root owner and r
   const visible = f.reader.query(query) as HistorySelection
   assert.equal(visible.total, 3); assert.equal(visible.rank, 3)
   assert.equal((f.reader.query({ ...query, entry: selected.entry }) as HistorySelection).record, undefined)
-  assert.deepEqual(f.reader.query({ type: "session", scope: context.scope, session: context.session }), {})
   // Even corrupt or conflicting pending attribution is no longer a fact about a
   // logically deleted permission; do not expose uncertainty from obsolete rows.
   f.db.prepare("UPDATE history SET resolution='conflict' WHERE id=?").run(selected.entry!)
   assert.deepEqual(f.reader.query({ type: "resolution", scope: context.scope, root: context.root, session: context.session,
     permission: selected.record!.context.permission }), { outcome: undefined, uncertain: false, conflict: false, deleted: true })
-  assert.deepEqual(f.reader.query({ type: "session", scope: context.scope, session: f.siblings[0]!.session }),
-    { context: { scope: context.scope, root: context.root, session: f.siblings[0]!.session } })
   const deletion = encodeEvent({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.root }, at: 50000 })
   assert.deepEqual(f.writer.applyReady("root-delete", 1, deletion), { deleting: true })
   assert.ok(f.db.prepare("SELECT count(*) n FROM history").get()!.n as number > 0)
   f.reset()
   assert.deepEqual(f.reader.query(query), { revision: visible.revision, total: 0, rank: 0, deleted: true })
-  assert.deepEqual(f.reader.query({ type: "session", scope: context.scope, session: f.siblings[0]!.session }), {})
   assert.deepEqual(f.reader.query({ type: "resolution", scope: context.scope, root: context.root, session: f.siblings[0]!.session,
     permission: f.siblings[0]!.permission }), { outcome: undefined, uncertain: false, conflict: false, deleted: true })
   assert.deepEqual(f.payloadReads, [])
-  // Maintenance intentionally retains a bounded physical inventory until erasure.
-  const inventory = f.reader.query({ type: "sessions", scope: context.scope, limit: 1 }) as any
-  assert.equal(inventory.sessions.length, 1); assert.ok(inventory.after)
+  assert.ok(f.db.prepare("SELECT count(*) n FROM sessions").get()!.n as number > 0,
+    "pending deletion retains physical session rows until bounded erasure completes")
 })

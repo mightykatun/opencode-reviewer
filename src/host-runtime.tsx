@@ -27,7 +27,6 @@ import { hostApprovalReady, nativeDecisionPending } from "./host-approval-ready.
 import { setupHostModeCommands } from "./host-mode-commands.js"
 import { SessionAncestry } from "./session-ancestry.js"
 import { TransportOwnership } from "./transport-ownership.js"
-import { initialConnectionEcho } from "./connection-marker.js"
 import { setupCliReconnect } from "./cli-reconnect.js"
 import { configuredEvidenceBytes } from "./config.js"
 import { SessionInstructionsStore } from "./session-instructions.js"
@@ -50,7 +49,7 @@ export function setupHostRecovery(ctx: Plugin.Context, state: CliPluginState, li
     const scoped = new Proxy(context, { get: (target, key) => key === "keymap" ? keymap : Reflect.get(target, key) })
     const location = context.location ?? context.data.location.default()
     const continuity: { previous?: HostNotificationCheckpoint; current?: HostNotifications } = { previous: notificationCheckpoint }
-    const runtime = setupHostRuntime(scoped, next, child, checkpoints.get(checkpointKey(location)), true, continuity)
+    const runtime = setupHostRuntime(scoped, next, child, checkpoints.get(checkpointKey(location)), continuity)
     notifications = continuity.current
     collecting = false
     // This contributes no UI surface. Component disposal removes the layers,
@@ -67,9 +66,9 @@ export function setupHostRecovery(ctx: Plugin.Context, state: CliPluginState, li
   })
 }
 
-/** One scope-pinned controller. A replaced companion never adopts old evidence. */
+/** One supervisor-owned, scope-pinned composition. Never revive a retired lifecycle. */
 export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle,
-  checkpoint?: ControllerCheckpoint<HostPendingRequest>, supervised = false,
+  checkpoint?: ControllerCheckpoint<HostPendingRequest>,
   continuity?: { previous?: HostNotificationCheckpoint; current?: HostNotifications }) {
   const config = state.config, companion = state.companion
   const instructions = new SessionInstructionsStore(path.join(state.stateRoot, "session-instructions-v1"))
@@ -83,7 +82,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   if (!config || !companion) {
     const standalone = setupHostHistoryOnly(ctx, state, life)
     setupInstructions(standalone.rootRoute)
-    const attention = setupHostNotificationOnly(ctx, state, life, standalone.records, continuity?.previous, supervised)
+    const attention = setupHostNotificationOnly(ctx, state, life, standalone.records, continuity?.previous)
     if (continuity) continuity.current = attention?.notifications
     // Conversation preferences are local controls, not companion admission.
     // Keep their native commands available without constructing or reviving a
@@ -213,7 +212,6 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     },
   })
   let events = 0, permissionEvents = 0
-  let disconnected = false
   const revision = () => controller.revision + events
   const permissionRevision = () => controller.revision + permissionEvents
   const familyReader = {
@@ -274,27 +272,9 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     if (healthy) void formRefresh?.refresh()
   })
   const off = ctx.data.listen(({ details: event }) => {
-    if (event.type === "server.connected") {
-      // Startup has already admitted this exact public marker. The native data
-      // bridge can deliver its initial echo after the controller is installed.
-      if (initialConnectionEcho(state.connectionID, event.id)) return
-      // The supervisor checkpoints and aborts synchronously on this same event.
-      // Do not dispose entries first if the host calls general listeners before
-      // typed listeners. The composition itself is still never revived.
-      if (supervised) return
-      // Native caches can follow a new connection while the captured client still
-      // targets its original server. Never combine those generations for a write.
-      disconnected = true
-      events++
-      refresh.dispose()
-      formRefresh?.dispose()
-      setViews([])
-      records.revoke()
-      void notifications?.dispose()
-      void controller.dispose()
-      return
-    }
-    if (disconnected) return
+    // The supervisor checkpoints before aborting, even when general native
+    // listeners run first. Child observers never revoke on their own marker.
+    if (life.signal.aborted || event.type === "server.connected") return
     if (event.location && !sameLocation(event.location, scope.location)) return
     const interrupted = event.type === "session.step.failed" && event.data.error.type === "aborted"
     if (interrupted || event.type === "permission.asked" || event.type === "permission.replied"
@@ -371,7 +351,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     life.addCleanup(() => clearInterval(eligibility))
   }
   setupHostModeCommands(ctx, modes, life.signal, {
-    active: () => !disconnected,
+    active: () => !life.signal.aborted,
     onChanged: root => controller.modeChanged(root),
     onRefresh: () => refresh.refresh(),
   })

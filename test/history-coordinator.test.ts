@@ -212,14 +212,15 @@ test("observed remote uncertainty suppresses cancellation bodies until shared co
   assert.equal(f.history().record?.outcome, "auto")
 })
 
-test("live child deletion after restart uses stored ownership when public ancestry is already gone", async t => {
+test("live child invalidation after restart preserves stored reports when public ancestry is already gone", t => {
   const f = fixture(t)
   f.h.lifecycle(accepted()); f.h.reply({ requestID: request.id, sessionID: "child", reply: "always" }); f.h.lifecycle(removed())
   f.h.dispose()
   const resumed = f.make(async () => { throw new Error("session missing") }); t.after(() => resumed.dispose())
-  await resumed.sessionDeleted({ id: "child", parentID: "root" })
-  assert.equal(f.history().total, 0); assert.equal(f.totals().safe, 1)
-  assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 0)
+  resumed.invalidateSession("child")
+  assert.equal(f.history().total, 1); assert.equal(f.totals().safe, 1)
+  assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 1)
+  assert.ok(f.events.every(event => event.type !== "sessionDeleted"))
 })
 
 test("missing, unavailable, late and wrong-session facts never invent outcomes", async t => {
@@ -328,7 +329,7 @@ test("timed-out shared read retains ownership until actual settlement and cannot
   assert.equal(f.history().total, 0)
 })
 
-test("saturated resolved admission drops bodies, deletion invalidates candidates and preserves totals", t => {
+test("saturated resolved admission drops bodies, session invalidation drops candidates and preserves stored facts", t => {
   const f = fixture(t)
   f.h.lifecycle(accepted()); f.admission(false)
   f.h.reply({ requestID: request.id, sessionID: "child", reply: "always" }); f.h.lifecycle(removed())
@@ -336,9 +337,11 @@ test("saturated resolved admission drops bodies, deletion invalidates candidates
   assert.equal(f.history().total, 0)
   const other = { ...request, id: "other" }
   f.h.lifecycle(accepted(result("other"), other))
-  f.h.deleted({ scope: "/host", root: "root", session: "root" }); f.h.lifecycle(removed(other))
+  f.h.invalidateSession("root"); f.h.lifecycle(removed(other))
+  f.h.reply({ requestID: other.id, sessionID: other.sessionID, reply: "always" })
   assert.equal(f.history().total, 0); assert.equal(f.totals().safe, 2)
-  assert.equal(f.db.prepare("SELECT count(*) n FROM reviews").get()!.n, 0)
+  assert.equal(f.db.prepare("SELECT count(*) n FROM reviews").get()!.n, 2)
+  assert.ok(f.events.every(event => event.type !== "sessionDeleted"))
 })
 
 test("real controller preserves completed candidate through disabled mode and failed replacement", async t => {

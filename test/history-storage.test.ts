@@ -62,17 +62,15 @@ test("data-only resolution queries observe independent clients without reading o
   assert.equal((second.query(query) as HistoryResolution).outcome, undefined)
 })
 
-test("stored session ownership and late outcome updates remain strict, data-only and deletion-aware", t => {
+test("late outcome updates remain strict, data-only and deletion-aware", t => {
   const f = fixture(t)
   f.apply(resolve(context, payload, "cancelled"))
-  assert.deepEqual(f.sql.query({ type: "session", scope: context.scope, session: context.session }),
-    { context: { scope: context.scope, root: context.root, session: context.session } })
   f.apply({ type: "permissionOutcome", context, at: 300, outcome: "rejected" })
   assert.equal(f.history().record?.outcome, "rejected")
   assert.equal(f.history().record?.payload.desc, payload.desc)
   assert.throws(() => encodeEvent({ type: "permissionOutcome", context, at: 300, outcome: "rejected", payload } as any))
   f.apply({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.session }, at: 400 })
-  assert.deepEqual(f.sql.query({ type: "session", scope: context.scope, session: context.session }), {})
+  assert.equal(f.db.prepare("SELECT count(*) n FROM sessions").get()!.n, 0)
   const facts = f.sql.query({ type: "resolution", scope: context.scope, root: context.root, session: context.session, permission: context.permission }) as HistoryResolution
   assert.equal(facts.deleted, true); assert.equal(facts.outcome, undefined)
 })
@@ -109,6 +107,9 @@ test("real transactions roll back every effect, detect gaps, and replay a commit
   second.apply("other", 1, encodeEvent(event)) // Duplicate lifecycle identity across writers.
   assert.equal(f.totals().safe, 1)
   assert.equal((second.query({ type: "totals" }) as HistoryTotals).totals.activity.reviews, 1)
+  assert.equal((second.query({ type: "totals" }) as HistoryTotals).revision, 1)
+  second.apply("other", 2, encodeEvent({ type: "attemptDispatched", context, at: 100, attempt: "initial", retry: "initial" }))
+  assert.equal((second.query({ type: "totals" }) as HistoryTotals).revision, 1, "empty contributions do not advance aggregate revision")
 })
 
 test("self-contained dropped predecessors never synthesize dispatch, acceptance or usage", t => {
@@ -249,7 +250,7 @@ test("root/child tombstones remove details and retain totals and opaque contribu
   f.apply({ type: "attemptFinalized", context: root, at: 302, attempt: "late", usage: { cost: 0.25 } })
   assert.equal(f.totals().requests, 1); assert.equal(f.history().total, 0)
   assert.equal(f.db.prepare("SELECT count(*) n FROM attempts").get()!.n, 0)
-  assert.deepEqual(f.sql.query({ type: "sessions", scope: context.scope }), { sessions: [], after: undefined })
+  assert.equal(f.db.prepare("SELECT count(*) n FROM sessions").get()!.n, 0)
 })
 
 test("pending operations reject text, credentials, unsafe integers and unknown fields; no pending body on disk", t => {
@@ -290,16 +291,6 @@ test("unsupported schema is not reset; precomputed totals survive reopen and ign
   const other = new DatabaseSync(f.file)
   try { assert.throws(() => new HistorySQL(other), /schema/); assert.equal(other.prepare("SELECT version FROM meta").get()!.version, 99) }
   finally { other.close() }
-})
-
-test("bounded session maintenance pages stay within invocation scope", t => {
-  const f = fixture(t)
-  for (let i = 0; i < 5; i++) f.apply(resolve({ ...context, session: `s${i}`, permission: `p${i}`, review: `r${i}` }))
-  const first = f.sql.query({ type: "sessions", scope: context.scope, limit: 2 }) as any
-  const second = f.sql.query({ type: "sessions", scope: context.scope, limit: 2, after: first.after }) as any
-  assert.equal(first.sessions.length, 2); assert.equal(second.sessions.length, 2)
-  assert.equal(new Set([...first.sessions, ...second.sessions].map(x => x.session)).size, 4)
-  assert.throws(() => f.sql.query({ type: "sessions", scope: context.scope, limit: 101 }))
 })
 
 test("real worker distinguishes private-path initialization failure from invalid admitted transactions", async t => {

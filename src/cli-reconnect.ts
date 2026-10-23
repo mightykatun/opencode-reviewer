@@ -1,11 +1,11 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import type { CliPluginState } from "./cli-plugin.js"
 import { PluginLifecycle } from "./plugin-lifecycle.js"
-import { companionRpc, readHandshake, sameLocation } from "./companion-protocol.js"
-import { DeadlineError, remainingTime, withDeadline } from "./deadline.js"
+import { sameLocation } from "./companion-protocol.js"
+import { withDeadline } from "./deadline.js"
 import { TransportOwnership } from "./transport-ownership.js"
 import timers from "node:timers/promises"
-import { connectionFailureIsTransient } from "./transport-retry.js"
+import { companionHandshake } from "./companion-handshake.js"
 
 function marker(id: unknown): id is string {
   return typeof id === "string" && id.length > 0 && id.length <= 1024 && !id.includes("\0")
@@ -88,25 +88,9 @@ export function setupCliReconnect<T>(context: Plugin.Context, state: CliPluginSt
       let rebind = false
       try {
         companion = await withDeadline(AbortSignal.any([life.signal, abort.signal]), 10000, async signal => {
-          while (!signal.aborted) {
-            let pending: Promise<unknown> | undefined
-            try {
-              const value = await withDeadline(signal, 1500, attempt =>
-                pending = reads.track(client.rpc(companionRpc).handshake(at, { location: at, signal: attempt })), "Companion handshake")
-              signal.throwIfAborted()
-              const parsed = readHandshake(value, at)
-              if (!parsed) terminal = true
-              return parsed
-            } catch (error) {
-              signal.throwIfAborted()
-              if (!(error instanceof DeadlineError) && !connectionFailureIsTransient(error)) { terminal = true; return }
-              if (!state.config) return
-            }
-            await pending?.then(() => {}, () => {})
-            signal.throwIfAborted()
-            if (remainingTime(signal) <= 250) return
-            await timers.setTimeout(250, undefined, { signal })
-          }
+          const result = await companionHandshake(() => client, at, reads, signal, !!state.config)
+          terminal = result?.terminal ?? false
+          return result?.companion
         }, "Companion reconnection")
       } catch { /* Failed admission leaves this connection manual. */ }
       if (!abort.signal.aborted && (terminal || (!companion && !active))) manualConnection = id

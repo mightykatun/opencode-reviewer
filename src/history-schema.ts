@@ -30,10 +30,8 @@ export interface HistorySelection {
 export interface ConversationTotals { totals: LifetimeTotals; partialHistory: boolean }
 export interface HistoryTotals { revision: number; totals: LifetimeTotals; conversation?: ConversationTotals }
 export interface HistoryConversationTotals extends HistoryTotals { partialHistory: boolean }
-export interface HistorySessions { sessions: { scope: string; root: string; session: string }[]; after?: string }
 export interface HistoryResolution { outcome?: HistoryOutcome; uncertain: boolean; conflict: boolean; deleted: boolean }
-export interface HistorySession { context?: HistoryScope }
-export type HistoryResult = HistorySelection | HistoryTotals | HistoryConversationTotals | HistorySessions | HistoryResolution | HistorySession
+export type HistoryResult = HistorySelection | HistoryTotals | HistoryConversationTotals | HistoryResolution
 export interface HistoryPending { pending: string }
 export interface HistoryDeleting { deleting: true }
 
@@ -103,7 +101,6 @@ export class HistorySQL {
     return statement
   }
   private get(sql: string, ...args: any[]): Row | undefined { return this.statement(sql).get(...args) }
-  private all(sql: string, ...args: any[]): Row[] { return this.statement(sql).all(...args) }
   private run(sql: string, ...args: any[]) { this.statement(sql).run(...args) }
   private transaction<T>(run: () => T, write = true): T {
     this.db.exec(write ? "BEGIN IMMEDIATE" : "BEGIN")
@@ -171,15 +168,18 @@ export class HistorySQL {
       return { totals: empty(), partialHistory: !!this.get("SELECT id FROM roots WHERE id=?", root) }
     throw new HistoryInvalid("Conversation bootstrap required")
   }
+  private updateTotals(root: string, update: (totals: LifetimeTotals) => LifetimeTotals, revise = false) {
+    const meta = this.get(`SELECT CASE WHEN length(CAST(totals AS BLOB))<=${bytes.totals} THEN totals END AS totals,revision FROM meta WHERE id=1`)!
+    const totals = JSON.stringify(update(this.parseTotals(meta.totals)))
+    const conversation = update(this.conversation(root).totals)
+    if (!count(meta.revision + 1)) throw new HistoryInvalid("History revision overflow")
+    if (revise || totals !== meta.totals) this.run("UPDATE meta SET totals=?,revision=revision+1 WHERE id=1", totals)
+    this.run("UPDATE conversation_totals SET totals=? WHERE id=?", JSON.stringify(conversation), root)
+  }
   private contribute(key: string, delta: LifetimeTotals, root: string) {
     if (this.get("SELECT id FROM contributions WHERE id=?", key)) return
-    const meta = this.get(`SELECT CASE WHEN length(CAST(totals AS BLOB))<=${bytes.totals} THEN totals END AS totals,revision FROM meta WHERE id=1`)!
-    const totals = add(this.parseTotals(meta.totals), delta)
-    const conversation = add(this.conversation(root).totals, delta)
-    if (!count(meta.revision + 1)) throw new HistoryInvalid("History revision overflow")
+    this.updateTotals(root, totals => add(totals, delta))
     this.run("INSERT INTO contributions VALUES (?)", key)
-    if (JSON.stringify(totals) !== meta.totals) this.run("UPDATE meta SET totals=?,revision=revision+1 WHERE id=1", JSON.stringify(totals))
-    this.run("UPDATE conversation_totals SET totals=? WHERE id=?", JSON.stringify(conversation), root)
   }
   private countOutcome(entry: string, root: string, outcome: HistoryOutcome | undefined, at: number) {
     const previous = this.get("SELECT * FROM permission_statistics WHERE id=?", entry)
@@ -189,14 +189,9 @@ export class HistorySQL {
     }
     const next = permissionStatistic(outcome), prior = previous?.outcome ?? "other"
     if (prior === next) return
-    const meta = this.get(`SELECT CASE WHEN length(CAST(totals AS BLOB))<=${bytes.totals} THEN totals END AS totals,revision FROM meta WHERE id=1`)!
-    const totals = replacePermissionStatistic(this.parseTotals(meta.totals), prior, next, at)
-    const conversation = replacePermissionStatistic(this.conversation(root).totals, prior, next, at)
-    if (!count(meta.revision + 1)) throw new HistoryInvalid("History revision overflow")
+    this.updateTotals(root, totals => replacePermissionStatistic(totals, prior, next, at), true)
     this.run(`INSERT INTO permission_statistics VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET outcome=excluded.outcome,at=excluded.at`,
       entry, root, next, at)
-    this.run("UPDATE meta SET totals=?,revision=revision+1 WHERE id=1", JSON.stringify(totals))
-    this.run("UPDATE conversation_totals SET totals=? WHERE id=?", JSON.stringify(conversation), root)
   }
   private event(e: Exclude<HistoryEvent, { type: "sessionDeleted" }>) {
     const c = e.context, root = rootID(c), session = sessionID(c)
@@ -313,31 +308,6 @@ export class HistorySQL {
         const revision = this.get("SELECT revision FROM meta WHERE id=1")!.revision
         if (!count(revision)) throw new HistoryInvalid("Invalid aggregate revision")
         return { revision, ...this.conversation(rootID(q)) }
-      }
-      if (q.type === "sessions") {
-        // Physical maintenance inventory, not report visibility. Keep bounded raw
-        // pages/cursors through pending deletion so reconciliation can finish it.
-        const rows = this.all(`SELECT CASE WHEN length(id)=64 THEN id END AS id,scope,
-          CASE WHEN length(CAST(root AS BLOB))<=${HISTORY_TEXT_BYTES} THEN root END AS root,
-          CASE WHEN length(CAST(session AS BLOB))<=${HISTORY_TEXT_BYTES} THEN session END AS session
-          FROM sessions WHERE scope=? AND id>? ORDER BY id LIMIT ?`, q.scope, q.after ?? "", q.limit ?? 100)
-        return { sessions: rows.map(row => {
-          validateScope(row as any)
-          if (row.id !== sessionID(row as any) || row.scope !== q.scope) throw new HistoryInvalid("Invalid session index")
-          return { scope: row.scope, root: row.root, session: row.session }
-        }), after: rows.at(-1)?.id }
-      }
-      if (q.type === "session") {
-        if (this.get("SELECT id FROM tombstones WHERE id=?", opaque(q.scope, q.session))) return {}
-        const row = this.get(`SELECT CASE WHEN length(CAST(scope AS BLOB))<=${HISTORY_TEXT_BYTES} THEN scope END AS scope,
-          CASE WHEN length(CAST(session AS BLOB))<=${HISTORY_TEXT_BYTES} THEN session END AS session,
-          CASE WHEN length(CAST(root AS BLOB))<=${HISTORY_TEXT_BYTES} THEN root END AS root
-          FROM sessions WHERE id=?`, opaque(q.scope, q.session))
-        if (!row) return {}
-        validateScope(row as HistoryScope)
-        if (row.scope !== q.scope || row.session !== q.session) throw new HistoryInvalid("Invalid session ownership")
-        if (this.get("SELECT id FROM tombstones WHERE id=?", rootID(row as HistoryScope))) return {}
-        return { context: { scope: row.scope, root: row.root, session: row.session } }
       }
       if (q.type === "resolution") {
         const entry = opaque(q.scope, q.permission), root = rootID(q), session = sessionID(q)

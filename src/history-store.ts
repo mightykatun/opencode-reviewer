@@ -81,10 +81,6 @@ export class HistoryStore {
   private failures = new Set<() => unknown>()
   private commits = new Set<() => unknown>()
   private disposal?: Promise<void>
-  private dirty = false
-  private dirtyRevision = 0
-  private scanRevision = 0
-  private maintenanceListeners = new Set<() => unknown>()
   private readonly now: () => number
   private readonly schedule: NonNullable<HistoryStoreOptions["schedule"]>
   private readonly cancel: NonNullable<HistoryStoreOptions["cancel"]>
@@ -97,25 +93,6 @@ export class HistoryStore {
   /** Local observation only; another client may have committed newer cleanup work. */
   get cleanupPending() { return this.cleanupNeeded }
   get legacyCleanupRequired() { return this.legacyCleanup }
-  /** Saturated deletion admission leaves one bounded reconciliation signal, never an ID side queue. */
-  get maintenanceDirty() { return this.dirty }
-  get maintenanceRevision() { return this.dirtyRevision }
-  get maintenanceScanRevision() { return this.scanRevision }
-  get maintenancePending() { return this.queue.length > 0 || this.blocked }
-  markMaintenanceDirty(origin?: "cleanup") {
-    if (this.stopped) return this.dirtyRevision
-    this.dirty = true
-    const revision = ++this.dirtyRevision
-    if (origin !== "cleanup") this.scanRevision++
-    this.notify(this.maintenanceListeners)
-    return revision
-  }
-  maintenanceReconciled(revision = this.dirtyRevision) {
-    if (revision !== this.dirtyRevision || this.queue.length || this.blocked) return false
-    if (!this.dirty) return true
-    this.dirty = false; this.notify(this.maintenanceListeners); return true
-  }
-  onMaintenance(listener: () => unknown) { this.maintenanceListeners.add(listener); return () => { this.maintenanceListeners.delete(listener) } }
   onCommit(listener: () => unknown) { this.commits.add(listener); return () => { this.commits.delete(listener) } }
   onWriteFailure(listener: () => unknown) { this.failures.add(listener); return () => { this.failures.delete(listener) } }
   private notify(listeners: Set<() => unknown>) {
@@ -123,15 +100,9 @@ export class HistoryStore {
     for (const listener of listeners) { try { void Promise.resolve(listener()).catch(() => {}) } catch {} }
   }
   admit(event: HistoryEvent): boolean {
-    if (this.closing || this.stopped || this.blocked) {
-      if (event.type === "sessionDeleted" && !this.stopped) this.markMaintenanceDirty()
-      return false
-    }
+    if (this.closing || this.stopped || this.blocked) return false
     const serialized = encodeEvent(event), bytes = Buffer.byteLength(serialized) + HISTORY_OPERATION_OVERHEAD
-    if (this.bytes + bytes > HISTORY_QUEUE_BYTES || !Number.isSafeInteger(this.sequence + 1)) {
-      if (event.type === "sessionDeleted") this.markMaintenanceDirty()
-      return false
-    }
+    if (this.bytes + bytes > HISTORY_QUEUE_BYTES || !Number.isSafeInteger(this.sequence + 1)) return false
     this.queue.push({ sequence: ++this.sequence, event: serialized, bytes, root: rootID(event.context) }); this.bytes += bytes
     this.pump(); return true
   }
@@ -220,15 +191,12 @@ export class HistoryStore {
         this.preferBootstrap = false; this.retryAt = 0
       } else if (read) {
         if ((read.query.type === "totals" || read.query.type === "conversationTotals") && this.writeFailed) throw new Error("History accounting unavailable")
-        const revision = this.dirtyRevision
-        if (read.query.type === "history" && this.dirty) throw new Error("History reconciliation pending")
         const result = await worker.call({ type: "query", query: read.query })
         if (result?.pending) {
           read.bootstrap = result.pending; this.rememberBootstrap(result.pending)
           if (!read.finished) this.reads.push(read)
           return
         }
-        if (read.query.type === "history" && (this.dirty || revision !== this.dirtyRevision)) throw new Error("History reconciliation pending")
         read.resolve(result); this.preferRead = false
       }
       else {
@@ -279,7 +247,7 @@ export class HistoryStore {
     return this.disposal ??= this.drain(abortAt)
   }
   private async drain(abortAt: number) {
-    this.closing = true; this.commits.clear(); this.failures.clear(); this.maintenanceListeners.clear()
+    this.closing = true; this.commits.clear(); this.failures.clear()
     for (const read of this.reads.splice(0)) read.reject(new Error("History disposed"))
     const end = abortAt + 3500
     while ((this.queue.length || this.active || this.cleanupNeeded) && performance.now() < end - 300 && !this.blocked) {

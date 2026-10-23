@@ -8,6 +8,7 @@ import type { setupHostHistory } from "../src/host-history-runtime.js"
 import type { NotificationMessage } from "../src/notification-types.js"
 import type { AncestryReader } from "../src/session-ancestry.js"
 import { setupHostNotificationOnly } from "../src/host-notification-runtime.js"
+import { setupCliReconnect } from "../src/cli-reconnect.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import { parseConfig } from "../src/config.js"
 import { parseNotificationConfig } from "../src/notification-config.js"
@@ -42,6 +43,7 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
   const background = { active: new Set<string>(), shells: [] as ShellInfo[], terminals: [] as PersistentPtyInfo[] }
   const syncs: string[] = [], unexpected: string[] = []
   let listener: ((event: { details: OpenCodeEvent }) => void) | undefined
+  let native: ((event: OpenCodeEvent) => void) | undefined
   let current = "root", serial = 0, backendDisposed = 0
   const hooks = { sync: async (_id: string) => {}, ancestry: (async (id: string) => {
     const value = sessions.get(id)
@@ -50,10 +52,14 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
   }) as AncestryReader }
   const ctx = {
     location,
-    client: { session: { active: async () => Object.fromEntries([...background.active].map(id => [id, { type: "running" }])) },
+    client: { event: { async *subscribe({ signal }: { signal: AbortSignal }) {
+      // Native-only unit fixture: no independent fresh marker can admit a replacement.
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
+    } }, session: { active: async () => Object.fromEntries([...background.active].map(id => [id, { type: "running" }])) },
       shell: { list: async () => ({ location, data: background.shells }) },
       experimental: { persistentPty: { list: async ({ sessionID }: { sessionID: string }) => background.terminals.filter(value => value.sessionID === sessionID) } } },
     data: {
+      on: (_type: string, callback: typeof native) => { native = callback; return () => { native = undefined } },
       location: { default: () => location },
       listen: (callback: NonNullable<typeof listener>) => { listener = callback; return () => { listener = undefined } },
       session: {
@@ -89,14 +95,17 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
   const records = { location, history: { root: (id: string, signal: AbortSignal) => hooks.ancestry(id, signal) } } as unknown as ReturnType<typeof setupHostHistory>
   let runtime: NonNullable<ReturnType<typeof setupHostNotificationOnly>>
   const compose = (pluginState: CliPluginState) => {
-    runtime = setupHostNotificationOnly(ctx, pluginState, life, records)!
+    runtime = setupCliReconnect(ctx, pluginState, life, (context, state, child) =>
+      setupHostNotificationOnly(context, state, child, records)!).current()!
     assert.ok(runtime)
     return runtime
   }
   const emit = <T extends OpenCodeEvent["type"]>(type: T, data: EventOf<T>["data"], scope: typeof location | undefined = location, eventID?: string) => {
     serial++
-    listener?.({ details: { type, data, id: eventID ?? `event-${serial}`, created: serial, ...(scope ? { location: scope } : {}),
-      durable: { aggregateID: (data as { sessionID?: string }).sessionID, seq: serial, version: 1 } } as unknown as EventOf<T> })
+    const details = { type, data, id: eventID ?? `event-${serial}`, created: serial, ...(scope ? { location: scope } : {}),
+      durable: { aggregateID: (data as { sessionID?: string }).sessionID, seq: serial, version: 1 } } as unknown as EventOf<T>
+    if (type === "server.connected") native?.(details)
+    listener?.({ details })
   }
   const ask = (value: PermissionRequest, scope = location) => emit("permission.asked", value, scope)
   const reply = (value: PermissionRequest) => {

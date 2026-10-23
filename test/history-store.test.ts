@@ -58,12 +58,11 @@ test("64 MiB cap includes in-flight bytes, keeps FIFO admitted operations and al
   // Fill the remaining tail with small events before rejecting a deletion.
   while (store.admit(event)) admitted++
   const deleted: HistoryEvent = { type: "sessionDeleted", context: { scope: "/project", root: "r".repeat(4096), session: "s".repeat(4096) }, at: 2 }
-  assert.equal(store.admit(deleted), false); assert.equal(store.maintenanceDirty, true)
+  assert.equal(store.admit(deleted), false)
   barrier.resolve(); await turn()
   assert.equal(store.pendingOperations, 0); assert.equal(store.retainedBytes, 0); assert.equal(maximum, 1)
   assert.deepEqual(calls, Array.from({ length: admitted }, (_, i) => i + 1))
   assert.equal(store.admit(event), true); await turn(); assert.equal(calls.at(-1), admitted + 1)
-  store.maintenanceReconciled(); assert.equal(store.maintenanceDirty, false)
   await store.dispose()
 })
 

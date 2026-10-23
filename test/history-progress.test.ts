@@ -99,7 +99,7 @@ test("an exact notification history target opens before an ordinary write backlo
   assert.equal(browser.state.selection?.record?.context.permission, "p")
 })
 
-for (const session of ["root", "child"]) test(`known live ${session} deletion and a queued destructive commit never publish the captured pre-deletion report`, async t => {
+for (const session of ["root", "child"]) test(`live ${session} invalidation closes the browser without deleting stored reports or publishing a late read`, async t => {
   const f = fixture(t); f.seed(resolved({ ...context, session }))
   const captured = deferred<void>(), release = deferred<void>()
   let hold = true
@@ -115,21 +115,19 @@ for (const session of ["root", "child"]) test(`known live ${session} deletion an
   const history = new HistoryCoordinator(scope, f.store, async () => "root", () => 20)
   t.after(() => { release.resolve(); browser.dispose(); history.dispose() })
   browser.open("root"); await captured.promise
-  // Exact live deletion with already-known scope/root ownership, not offline
-  // authority inferred from a location index or a missing-session response.
-  browser.deleted(session)
-  history.deleted({ scope, root: "root", session })
+  // Production invalidates volatile facts and closes the browser. A live event
+  // does not establish authority to delete persistent history.
+  history.invalidateSession(session)
+  browser.close()
   assert.equal(browser.state.selection?.record, undefined)
   release.resolve(); await settle()
   while (f.store.pendingOperations) await settle()
   await settle()
-  assert.equal(f.store.maintenanceDirty, false)
-  assert.equal(browser.state.open, session !== "root")
-  if (session !== "root") { assert.equal(browser.state.status, "ready"); assert.equal(browser.state.selection?.total, 0) }
+  assert.equal(browser.state.open, false)
   assert.deepEqual(ready, [])
   const stored = await f.store.query({ type: "history", scope, root: "root" })
-  assert.equal("total" in stored && stored.total, 0)
-  assert.equal("deleted" in stored && !!stored.deleted, session === "root")
+  assert.equal("total" in stored && stored.total, 1)
+  assert.equal("record" in stored && stored.record?.payload.desc, "Saved report")
 })
 
 for (const action of ["navigate", "dispose"] as const) test(`${action} remains a hard invalidation while commits are soft`, async t => {

@@ -1,19 +1,18 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { parseConfig, type Config } from "./config.js"
-import { companionRpc, readHandshake, type CompanionHandshake } from "./companion-protocol.js"
+import type { CompanionHandshake } from "./companion-protocol.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
 import { uiText } from "./ui-text.js"
 import type { PluginDependencies } from "./plugin-dependencies.js"
 import { localStateRoot } from "./local-state.js"
 import { BUILTIN_PROMPTS, loadPrompts } from "./prompts.js"
-import { DeadlineError, remainingTime, withDeadline } from "./deadline.js"
+import { remainingTime, withDeadline } from "./deadline.js"
 import { TransportOwnership } from "./transport-ownership.js"
-import timers from "node:timers/promises"
 import { loadHostRuntime } from "./host-runtime-loader.js"
 import { parseNotificationConfig, type NotificationConfig } from "./notification-config.js"
 import type { setupHostRuntime } from "./host-runtime.js"
 import { initialConnectionEcho } from "./connection-marker.js"
-import { connectionFailureIsTransient } from "./transport-retry.js"
+import { companionHandshake } from "./companion-handshake.js"
 
 export interface CliPluginState {
   config?: Config
@@ -58,7 +57,7 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
   lifecycle.signal.throwIfAborted()
   const reads = new TransportOwnership()
   lifecycle.addCleanup(() => reads.settled())
-  let generation = 0, connection = new AbortController()
+  let connection = new AbortController()
   let markerID: string | undefined, nativeID: string | undefined
   let connectionVerified = false
   let off = context.data.on("server.connected", event => {
@@ -67,7 +66,6 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
     // marker at different times. Its delayed echo is not another connection.
     if (initialConnectionEcho(markerID, event.id)) return
     markerID = event.id
-    generation++
     connection.abort()
     connection = new AbortController()
   })
@@ -94,35 +92,11 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
         || (nativeID !== undefined && !initialConnectionEcho(connected, nativeID))) return
       markerID = connected
       connectionVerified = true
-      while (!signal.aborted) {
-        const turn = generation, connected = connection.signal
-        let pending: Promise<unknown> | undefined
-        try {
-          const response = await withDeadline(signal, 1500, attempt => {
-            const request = AbortSignal.any([attempt, connected])
-            request.throwIfAborted()
-            return pending = reads.track(context.client.rpc(companionRpc).handshake(location, { location, signal: request }))
-          }, "Companion handshake")
-          signal.throwIfAborted()
-          if (turn === generation) {
-            // Invalid protocol/scope/epoch data is terminal, never retried.
-            return { companion: readHandshake(response, location), generation: turn }
-          }
-        } catch (error) {
-          signal.throwIfAborted()
-          if (!state.config || (turn === generation && !(error instanceof DeadlineError) && !connectionFailureIsTransient(error))) return
-        }
-        // Abort ends the caller's wait, not the transaction. Do not overlap
-        // attempts even when a client ignores cancellation or settles late.
-        await pending?.then(() => {}, () => {})
-        signal.throwIfAborted()
-        if (remainingTime(signal) <= 250) return
-        await timers.setTimeout(250, undefined, { signal })
-      }
+      return companionHandshake(() => context.client, location, reads, signal, !!state.config, () => connection.signal)
     }, "Companion startup")
     // Deadline callbacks produce data only. Fence the final promise handoff
     // before installing the runtime's connection fence and recovery owner.
-    if (admission?.generation === generation) {
+    if (admission?.connection === connection.signal) {
       state.companion = admission.companion
     }
   } catch { lifecycle.signal.throwIfAborted() }

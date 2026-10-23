@@ -2,12 +2,12 @@ import type { HostRequest } from "./host-types.js"
 import type { ApprovalFact, RequestIdentity, ReviewLifecycleFact } from "./controller.js"
 import type { Config } from "./config.js"
 import type { ReviewKind, ReviewObservation } from "./types.js"
-import type { HistoryEvent, HistoryOutcome, HistoryPayload, HistoryReview, HistoryScope } from "./history-records.js"
+import type { HistoryEvent, HistoryOutcome, HistoryPayload, HistoryReview } from "./history-records.js"
 import type { HistoryStore } from "./history-store.js"
-import type { HistoryResolution, HistorySession } from "./history-schema.js"
+import type { HistoryResolution } from "./history-schema.js"
 import type { AncestryReader } from "./session-ancestry.js"
 
-type Store = Pick<HistoryStore, "admit" | "query" | "onCommit"> & Partial<Pick<HistoryStore, "markMaintenanceDirty">>
+type Store = Pick<HistoryStore, "admit" | "query" | "onCommit">
 interface Candidate {
   context: HistoryReview
   reports: Map<string, { context: HistoryReview; payload: HistoryPayload }>
@@ -214,42 +214,6 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
     for (const [id, c] of this.candidates) if (c.context.session === session || c.context.root === session) this.candidates.delete(id)
     for (const [id, d] of this.dispatches) if (d.context.session === session || d.context.root === session) this.dispatches.delete(id)
     for (const [id, c] of this.resolved) if (c.context.session === session || c.context.root === session) this.resolved.delete(id)
-  }
-  private deletionReads = 0
-  /** Only a definitive public deletion event calls this. Stored ownership is a
-   * fallback when the now-deleted child's metadata is no longer readable.
-   */
-  async sessionDeleted(info: { id: string; parentID?: string }) {
-    if (this.stopped) return
-    // Invalidate before any bounded ownership lookup. A scope-wide bit also
-    // covers unknown child ownership and saturated admissions without an ID queue.
-    this.store.markMaintenanceDirty?.()
-    const known = [...this.candidates.values()].find(c => c.context.session === info.id)?.context
-      ?? [...this.resolved.values()].find(c => c.context.session === info.id)?.context
-      ?? [...this.early.values()].find(e => e.context.session === info.id)?.context
-    this.invalidateSession(info.id)
-    if (!info.parentID || known) {
-      this.deleted({ scope: this.scope, root: known?.root ?? info.id, session: info.id }); return
-    }
-    if (this.deletionReads >= 2) { this.store.markMaintenanceDirty?.(); return }
-    this.deletionReads++
-    try {
-      const read = this.store.query({ type: "session", scope: this.scope, session: info.id }, this.abort.signal)
-      try {
-        const result = await read as HistorySession
-        if (!this.stopped && result.context) this.deleted(result.context)
-      } finally { await read.settled?.catch(() => {}) }
-    } catch { this.store.markMaintenanceDirty?.() }
-    finally { this.deletionReads-- }
-  }
-  deleted(context: HistoryScope) {
-    if (this.stopped || context.scope !== this.scope) return
-    const matches = (c: HistoryScope) => c.session === context.session || (context.session === context.root && c.root === context.root)
-    for (const [id, e] of this.early) if (matches(e.context)) this.early.delete(id)
-    for (const [id, c] of this.candidates) if (matches(c.context)) this.candidates.delete(id)
-    for (const [id, d] of this.dispatches) if (matches(d.context)) this.dispatches.delete(id)
-    for (const [id, c] of this.resolved) if (matches(c.context)) this.resolved.delete(id)
-    this.admit({ type: "sessionDeleted", context, at: this.now() })
   }
   dispose() {
     if (this.stopped) return

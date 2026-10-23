@@ -23,16 +23,8 @@ export class HistoryController {
   private lookupAgain = false
   private target?: HistoryTarget & { until: number; ready: () => void }
   private targetTimeout?: ReturnType<typeof setTimeout>
-  private deletedEntries = new Set<string>()
-  private unsubscribeMaintenance?: () => void
-  constructor(private scope: string, private store: Pick<HistoryStore, "query" | "onCommit" | "onWriteFailure"> & Partial<Pick<HistoryStore, "onMaintenance" | "maintenanceDirty">>,
-    private ancestry: AncestryReader, private publish: (state: HistoryViewState) => void) {
-    this.unsubscribeMaintenance = store.onMaintenance?.(() => {
-      if ((!this.state.open && !this.target) || this.stopped) return
-      if (store.maintenanceDirty) this.update({ status: "loading" })
-      this.refresh?.refresh()
-    })
-  }
+  constructor(private scope: string, private store: Pick<HistoryStore, "query" | "onCommit" | "onWriteFailure">,
+    private ancestry: AncestryReader, private publish: (state: HistoryViewState) => void) {}
   private update(value: Partial<HistoryViewState>) { this.state = { ...this.state, ...value }; this.publish(this.state) }
   recordScroll(offset: number) { if (this.state.status === "ready") this.scroll = offset }
   isCurrent(session: string) { return !this.stopped && this.state.open && this.session === session }
@@ -67,7 +59,6 @@ export class HistoryController {
       this.root = root
       this.refresh = new HistoryRefresh(this.store, this.query(), result => {
         if (generation !== this.generation || (!this.state.open && !this.target)) return
-        if (this.store.maintenanceDirty) { this.update({ status: "loading" }); return }
         if (!result || !("rank" in result)) { if (!this.target) this.update({ status: "error" }); return }
         if (result.deleted) { this.close(); return }
         const target = this.target
@@ -78,8 +69,6 @@ export class HistoryController {
             || context.session !== target.session || context.permission !== target.permission) return
           clearTimeout(this.targetTimeout); this.target = undefined
         }
-        if (result.entry && this.deletedEntries.has(result.entry)) return
-        this.deletedEntries.clear()
         const previous = this.state.selection
         const replaced = previous?.entry !== result.entry || previous?.order?.tie !== result.order?.tie
           || JSON.stringify(previous?.record?.payload) !== JSON.stringify(result.record?.payload)
@@ -116,25 +105,13 @@ export class HistoryController {
     this.refresh?.select({ ...this.query(), direction } as HistoryQuery)
   }
   route(session?: string) { if ((this.state.open || this.target) && session !== this.session) this.close() }
-  deleted(id: string) {
-    if (id === this.root || id === this.session || id === this.target?.session) { this.close(); return }
-    const selected = this.state.selection
-    if (selected?.entry && (selected.session ?? selected.record?.context.session) === id) {
-      this.deletedEntries.add(selected.entry)
-      // Keep the cursor for adjacent-entry recovery, never known-deleted plaintext.
-      this.update({ status: "loading", selection: { revision: selected.revision, total: selected.total, rank: selected.rank,
-        entry: selected.entry, order: selected.order, session: id } })
-    }
-    this.refresh?.refresh()
-  }
   close() {
     this.lookupAgain = false
     this.generation++; this.abort?.abort(); this.refresh?.dispose(); this.refresh = undefined
     clearTimeout(this.retry); this.root = undefined; this.session = undefined
     clearTimeout(this.targetTimeout); this.target = undefined
-    this.deletedEntries.clear()
     this.scroll = 0
     this.update({ open: false, status: "loading", selection: undefined })
   }
-  dispose() { this.stopped = true; this.unsubscribeMaintenance?.(); this.close() }
+  dispose() { this.stopped = true; this.close() }
 }

@@ -18,7 +18,6 @@ import { setupHostSidebar } from "./host-sidebar.js"
 import { conversationRoot, RouteSessions } from "./route-approval.js"
 import { sameLocation } from "./companion-protocol.js"
 import { historyStateRoot } from "./local-state.js"
-import { initialConnectionEcho } from "./connection-marker.js"
 import type { RequestIdentity } from "./controller.js"
 
 export interface HostHistoryRuntimeOptions {
@@ -127,25 +126,20 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
     browser.close()
     statisticsUI.close()
   }
-  /** The captured client may belong to the old server after server.connected.
-   * Revocation is permanent for this composition; main creates any replacement. */
-  const revoke = () => {
-    generation.abort()
-    stopUI()
-    history.dispose()
-    statistics.dispose()
-  }
   /** Actual ancestry completion, even when dispose's shared budget expires. */
   const settled = () => reads.settled()
   let disposal: Promise<void> | undefined
   const dispose = (finalizers: Promise<unknown> = Promise.resolve(), abortAt = performance.now()) => {
     if (disposal) return disposal
-    revoke()
+    generation.abort()
+    stopUI()
+    history.dispose()
+    statistics.dispose()
     browser.dispose()
     return disposal = drainHistory(store, Promise.allSettled([finalizers, settled()]), abortAt)
   }
   return { history, store, browser, state, statistics, statisticsState, lifetimeText: statisticsUI.text,
-    render, scope, location, historyInput, invalidateSession, revoke, dispose, settled }
+    render, scope, location, historyInput, invalidateSession, dispose, settled }
 }
 
 /** Read-only composition for unavailable review configuration or companion. The
@@ -153,7 +147,6 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
  * No controller lease, permission listener, model transport or maintenance owner. */
 export function setupHostHistoryOnly(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle,
   storeOptions?: HistoryStoreOptions) {
-  let disconnected = false
   const current = ctx.location ?? ctx.data.location.default()
   const location = { directory: current.directory, ...(current.workspaceID ? { workspaceID: current.workspaceID } : {}) }
   const routes = new RouteSessions(id => {
@@ -161,7 +154,7 @@ export function setupHostHistoryOnly(ctx: Plugin.Context, state: CliPluginState,
     return session && sameLocation(session.location, location) ? session : undefined
   })
   const rootRoute = () => {
-    if (disconnected || life.signal.aborted) return
+    if (life.signal.aborted) return
     const route = ctx.ui.router.current()
     if (route.type !== "session" || conversationRoot(route.sessionID, id => routes.get(id)) !== route.sessionID) return
     return route.sessionID
@@ -175,13 +168,7 @@ export function setupHostHistoryOnly(ctx: Plugin.Context, state: CliPluginState,
       visible={!!rootRoute() && records.state().open}>{records.render()}</box>,
   }))
   life.addCleanup(ctx.data.listen(({ details: event }) => {
-    if (event.type === "server.connected") {
-      if (initialConnectionEcho(state.connectionID, event.id)) return
-      disconnected = true
-      records.revoke()
-      return
-    }
-    if (disconnected || event.type !== "session.deleted") return
+    if (life.signal.aborted || event.type !== "session.deleted") return
     if (event.location && !sameLocation(event.location, records.location)) return
     const known = routes.get(event.data.sessionID)
     if (!known) return
@@ -192,5 +179,5 @@ export function setupHostHistoryOnly(ctx: Plugin.Context, state: CliPluginState,
   // first. There are no review/accounting finalizers in this composition.
   life.addCleanup(() => records.settled(), false)
   life.addCleanup(() => records.dispose(), false)
-  return { records, routes, rootRoute, sidebar, geometry, active: () => !disconnected && !life.signal.aborted }
+  return { records, routes, rootRoute, sidebar, geometry, active: () => !life.signal.aborted }
 }

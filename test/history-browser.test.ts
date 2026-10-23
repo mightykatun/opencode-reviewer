@@ -18,16 +18,14 @@ const selection: HistorySelection = { revision: 1, total: 1, rank: 1, entry,
     payload: { safe: true, completedAt: 1, desc: "report" } } }
 function fixture(t: any, ancestry: (id: string, signal: AbortSignal) => Promise<string> = async () => "root") {
   const pending: { query: HistoryQuery; resolve: (s: HistorySelection) => void; reject: () => void }[] = []
-  let commit = () => {}, onMaintenance = () => {}, dirty = false
+  let commit = () => {}
   let published: HistoryViewState | undefined
   const controller = new HistoryController("/project", {
     query: query => new Promise((resolve, reject) => pending.push({ query, resolve, reject: () => reject(Error()) })),
     onCommit: cb => { commit = cb; return () => {} }, onWriteFailure: () => () => {},
-    get maintenanceDirty() { return dirty }, onMaintenance: cb => { onMaintenance = cb; return () => {} },
   }, ancestry, state => { published = state })
   t.after(() => controller.dispose())
-  return { controller, pending, commit: () => commit(), get published() { return published },
-    maintenance: (value: boolean) => { dirty = value; onMaintenance() } }
+  return { controller, pending, commit: () => commit(), get published() { return published } }
 }
 test("history has independent exact copy and extreme footer layouts", () => {
   assert.deepEqual(uiText.history.outcomes, { auto: "Auto approved", manual: "Manually approved", approved: "Manually approved", cancelled: "Canceled", rejected: "Rejected" })
@@ -92,19 +90,18 @@ test("open, insertion refresh, replacement and repeat preserve identity but rese
   assert.equal(c.scroll, 0)
   c.scroll = 20; c.open("child"); await tick(); assert.equal(c.scroll, 0); assert.equal((f.pending[0]!.query as any).entry, undefined)
 })
-test("close, route change, deletion and disposal invalidate pending snapshots", async t => {
-  for (const action of ["close", "route", "deleted", "dispose"] as const) {
+test("close, route change and disposal invalidate pending snapshots", async t => {
+  for (const action of ["close", "route", "dispose"] as const) {
     const f = fixture(t), c = f.controller
     c.open("root"); assert.equal(c.isCurrent("root"), true); assert.equal(c.isCurrent("child"), false); await tick()
     if (action === "route") c.route("child")
-    else if (action === "deleted") c.deleted("root")
     else c[action]()
     f.pending[0]!.resolve(selection); await tick(); assert.equal(c.state.open, false)
     assert.equal(c.isCurrent("root"), false)
   }
 })
 
-for (const action of ["close", "route", "root-deleted", "session-deleted", "durable-deleted", "dispose"] as const)
+for (const action of ["close", "route", "durable-deleted", "dispose"] as const)
   test(`${action} releases a loaded report from current and published state despite late reads`, async t => {
     const f = fixture(t), c = f.controller
     c.open("child"); await tick(); f.pending.shift()!.resolve(selection); await tick()
@@ -113,8 +110,6 @@ for (const action of ["close", "route", "root-deleted", "session-deleted", "dura
     c.recordScroll(17)
     f.commit(); const late = f.pending.shift()!
     if (action === "route") c.route("other")
-    else if (action === "root-deleted") c.deleted("root")
-    else if (action === "session-deleted") c.deleted("child")
     else if (action === "durable-deleted") { late.resolve({ revision: 2, total: 0, rank: 0, deleted: true }); await tick() }
     else c[action]()
     const released = () => {
@@ -143,20 +138,6 @@ test("temporary read failure preserves scroll and requests layout restoration fo
   assert.ok(c.state.reset > reset, "the remounted Markdown must restore its saved offset after layout")
   c.recordScroll(23); assert.equal(c.scroll, 23)
 })
-test("temporary maintenance loading retains the same report and restores its scroll after layout", async t => {
-  const f = fixture(t), c = f.controller
-  c.open("root"); await tick(); f.pending.shift()!.resolve(selection); await tick()
-  c.recordScroll(17); const reset = c.state.reset
-  f.maintenance(true)
-  assert.equal(c.state.status, "loading")
-  assert.equal(f.published?.selection?.record?.payload, selection.record!.payload)
-  c.recordScroll(0); assert.equal(c.scroll, 17)
-  f.pending.shift()!.resolve(selection); await tick()
-  assert.equal(c.state.status, "loading")
-  f.maintenance(false); f.pending.shift()!.resolve(selection); await tick()
-  assert.equal(c.state.status, "ready"); assert.equal(c.scroll, 17)
-  assert.ok(c.state.reset > reset)
-})
 test("late ancestry cannot reopen, invalid roots show error and never query a guessed scope", async t => {
   let resolve!: (root: string) => void
   const f = fixture(t, () => new Promise(r => { resolve = r }))
@@ -176,50 +157,18 @@ test("selection races discard old reads and navigation ends do not issue queries
   f.pending[1]!.resolve({ revision: 0, total: 0, rank: 0 }); await tick()
   assert.equal((c.state.selection as HistorySelection | undefined)?.total, 0)
 })
-test("live deletion suppresses precommit snapshots and durable root deletion closes", async t => {
+test("durable selected-child removal refreshes by saved cursor and retains adjacent navigation", async t => {
   const f = fixture(t), c = f.controller
-  c.open("root"); await tick()
-  const child = { ...selection, record: { ...selection.record!, context: { ...selection.record!.context, session: "child" } } }
-  f.pending.shift()!.resolve(child); await tick()
-  c.deleted("child"); assert.equal(c.state.status, "loading")
-  assert.equal(c.state.selection?.record, undefined)
-  assert.equal(f.published?.selection?.record, undefined)
-  f.pending.shift()!.resolve(child); await tick(); assert.equal(c.state.status, "loading")
-  assert.equal(c.state.selection?.record, undefined)
-  f.commit(); f.pending.shift()!.resolve({ ...child, record: undefined, unreadable: true }); await tick()
-  assert.equal(c.state.status, "loading", "a corrupt precommit payload cannot resurrect a deleted selection")
-  f.commit(); f.pending.shift()!.resolve({ revision: 2, rank: 0, total: 0 }); await tick()
-  assert.equal(c.state.status, "ready"); assert.equal(c.state.selection?.entry, undefined)
-  f.commit(); f.pending.shift()!.resolve({ revision: 3, rank: 0, total: 0, deleted: true }); await tick()
-  assert.equal(c.state.open, false)
-})
-
-for (const indexedSession of [false, true]) test(`selected-child deletion releases plaintext and retains adjacent navigation (indexed session: ${indexedSession})`, async t => {
-  const f = fixture(t), c = f.controller
-  const child: HistorySelection = { ...selection, ...(indexedSession ? { session: "child" } : {}), older: "b".repeat(64), newer: "c".repeat(64),
+  const child: HistorySelection = { ...selection, session: "child", older: "b".repeat(64), newer: "c".repeat(64),
     record: { ...selection.record!, context: { ...selection.record!.context, session: "child" },
       payload: { ...selection.record!.payload, desc: "deleted child plaintext" } } }
   c.open("root"); await tick(); f.pending.shift()!.resolve(child); await tick()
   assert.equal(f.published?.selection?.record?.payload.desc, "deleted child plaintext")
   c.recordScroll(23); const reset = c.state.reset
-  f.commit(); const stale = f.pending.shift()!
-  c.deleted("child")
-  const released = () => {
-    assert.equal(c.state.open, true)
-    assert.equal(c.state.selection?.record, undefined)
-    assert.equal(f.published?.selection?.record, undefined)
-    assert.equal(c.state.selection?.entry, child.entry)
-    assert.deepEqual(c.state.selection?.order, child.order)
-    assert.equal(Reflect.get(c, "target"), undefined)
-  }
-  released()
-  stale.resolve(child); await tick(); released()
+  f.commit()
   assert.deepEqual(f.pending[0]!.query, { type: "history", scope: "/project", root: "root", entry: child.entry, order: child.order })
-  f.pending.shift()!.reject(); await tick(); released()
-  assert.equal(c.state.status, "error", "failed deletion refresh cannot restore known-deleted plaintext")
-  f.commit(); f.pending.shift()!.resolve(child); await tick(); released()
   const adjacent: HistorySelection = { ...selection, entry: child.newer, order: { completed: 2, tie: "next", id: child.newer! }, older: child.older }
-  f.commit(); f.pending.shift()!.resolve(adjacent); await tick()
+  f.pending.shift()!.resolve(adjacent); await tick()
   assert.equal(c.state.selection, adjacent); assert.equal(c.state.status, "ready")
   assert.equal(c.scroll, 0); assert.ok(c.state.reset > reset)
   c.navigate("older")
@@ -265,7 +214,7 @@ test("missing, unreadable, wrong-scope or wrong-permission targets never show an
 })
 
 test("targeted open cancellation defeats late reads and never overrides a newer history command", async t => {
-  for (const action of ["close", "route", "root-deleted", "target-deleted", "dispose", "open", "cancelPendingPermission"] as const) {
+  for (const action of ["close", "route", "dispose", "open", "cancelPendingPermission"] as const) {
     const f = fixture(t); let ready = 0
     f.controller.open("root"); await tick(); f.pending.shift()!.resolve(selection); await tick()
     assert.equal(f.published?.selection?.record?.payload.desc, "report")
@@ -275,8 +224,6 @@ test("targeted open cancellation defeats late reads and never overrides a newer 
     assert.equal(Reflect.get(f.controller, "target")?.session, "child")
     const read = f.pending.shift()!
     if (action === "route") f.controller.route("other")
-    else if (action === "root-deleted") f.controller.deleted("root")
-    else if (action === "target-deleted") f.controller.deleted("child")
     else if (action === "open") f.controller.open("root")
     else f.controller[action]()
     assert.equal(Reflect.get(f.controller, "target"), undefined, "cancellation releases the target and its ready callback")
@@ -288,21 +235,20 @@ test("targeted open cancellation defeats late reads and never overrides a newer 
   }
 })
 
-test("targeted history waits through maintenance and retains actual read cleanup ownership", async t => {
-  let dirty = true, onMaintenance = () => {}, commit = () => {}, finish!: (value: HistorySelection) => void, settleRead!: () => void
+test("targeted history waits for its report and retains actual read cleanup ownership", async t => {
+  let commit = () => {}, finish!: (value: HistorySelection) => void, settleRead!: () => void
   let reads = 0, ready = 0
   const read = Object.assign(new Promise<HistorySelection>(resolve => { finish = resolve }),
     { settled: new Promise<void>(resolve => { settleRead = resolve }) })
   const c = new HistoryController("/project", {
-    get maintenanceDirty() { return dirty }, onMaintenance: cb => { onMaintenance = cb; return () => {} },
     onCommit: cb => { commit = cb; return () => {} }, onWriteFailure: () => () => {},
-    query: () => { reads++; return read },
+    query: () => ++reads === 1 ? read : Promise.resolve(targeted),
   }, async () => "root", () => {})
   t.after(() => c.dispose())
   c.openPermission("root", target, () => ready++); await tick()
-  finish(targeted); await tick()
+  finish({ revision: 1, total: 0, rank: 0 }); await tick()
   assert.equal(c.state.open, false)
-  dirty = false; onMaintenance(); commit(); await tick(); assert.equal(reads, 1)
+  commit(); await tick(); assert.equal(reads, 1)
   settleRead(); await tick()
   assert.equal(reads, 2); assert.equal(c.state.open, true); assert.equal(ready, 1)
 })
@@ -310,7 +256,7 @@ test("targeted history waits through maintenance and retains actual read cleanup
 test("production ancestry composition coalesces history reopen storms until the actual read settles", async t => {
   const pending: { id: string; resolve: (v: { id: string }) => void }[] = []
   const ancestry = new SessionAncestry(id => new Promise(resolve => pending.push({ id, resolve })))
-  const h = new HistoryCoordinator("/project", { admit: () => true, query: async () => ({}), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
+  const h = new HistoryCoordinator("/project", { admit: () => true, query: async () => ({ revision: 0, total: 0, rank: 0 }), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
     f.controller.open("old"); await settle()
@@ -335,7 +281,7 @@ for (const outcome of ["resolve", "reject"] as const) test(`production history d
   const ancestry = new SessionAncestry(async () => {
     calls++; try { return await actual } finally { await cleaning }
   })
-  const h = new HistoryCoordinator("/project", { admit: () => true, query: async () => ({}), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
+  const h = new HistoryCoordinator("/project", { admit: () => true, query: async () => ({ revision: 0, total: 0, rank: 0 }), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
     f.controller.open("old"); await settle(); t.mock.timers.tick(5000); await settle()

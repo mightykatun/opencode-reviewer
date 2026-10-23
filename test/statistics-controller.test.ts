@@ -274,7 +274,7 @@ test("write failures and actual read cleanup guard scoped snapshots and recover 
 test("production ancestry composition retains physical ownership through statistics reopen storms", async t => {
   const pending: { id: string; resolve: (v: { id: string }) => void }[] = []
   const ancestry = new SessionAncestry(id => new Promise(resolve => pending.push({ id, resolve })))
-  const h = new HistoryCoordinator("/host", { admit: () => true, query: async () => ({}), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
+  const h = new HistoryCoordinator("/host", { admit: () => true, query: async () => ({ revision: 0, total: 0, rank: 0 }), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
     f.finish(0); await settle()
@@ -299,7 +299,7 @@ for (const outcome of ["resolve", "reject"] as const) test(`production statistic
   const ancestry = new SessionAncestry(async () => {
     calls++; try { return await actual.promise } finally { await cleanup.promise }
   })
-  const h = new HistoryCoordinator("/host", { admit: () => true, query: async () => ({}), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
+  const h = new HistoryCoordinator("/host", { admit: () => true, query: async () => ({ revision: 0, total: 0, rank: 0 }), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
     f.finish(0); await settle(); f.controller.open("old"); f.controller.select("conversation"); await settle()

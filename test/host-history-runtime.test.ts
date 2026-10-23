@@ -16,6 +16,7 @@ import type { HistorySelection } from "../src/history-schema.js"
 import type { HistoryTransport } from "../src/history-store.js"
 import { setupCli } from "../src/cli-plugin.js"
 import type { CliPluginState } from "../src/cli-plugin.js"
+import { setupCliReconnect } from "../src/cli-reconnect.js"
 
 const location = { directory: "/server/project", workspaceID: "workspace" }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
@@ -38,6 +39,7 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
   ])
   let route: { type: "session"; sessionID: string } | { type: "home" } = { type: "session", sessionID: "root" }
   let listener: ((event: any) => void) | undefined, dialogClose: (() => void) | undefined
+  let native: ((event: any) => void) | undefined
   let terminated = 0
   let mode = "base"
   const scope = hostHistoryScope(location.directory)
@@ -62,11 +64,15 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
   const server = { read: async (id: string) => sessions.get(id)! }
   const ctx = {
     location,
-    client: { session: { get: async ({ sessionID }: { sessionID: string }) => { serverReads.push(sessionID); return server.read(sessionID) } },
+    client: { event: { async *subscribe({ signal }: { signal: AbortSignal }) {
+      // Native-only unit fixture: no independent fresh marker can admit a replacement.
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
+    } }, session: { get: async ({ sessionID }: { sessionID: string }) => { serverReads.push(sessionID); return server.read(sessionID) } },
       rpc: () => { unexpected.push("companion"); throw Error("unavailable") },
       permission: { request: { list: () => { unexpected.push("permissions"); throw Error("unavailable") } } },
       model: { list: () => { unexpected.push("models"); throw Error("unavailable") } } },
     data: { listen: (callback: typeof listener) => { listener = callback; return () => { listener = undefined } },
+      on: (_type: string, callback: typeof native) => { native = callback; return () => { native = undefined } },
       session: { get: (id: string) => sessions.get(id) }, location: { default: () => location } },
     keymap: { layer: (factory: () => KeymapLayer) => {
       const layer = factory(); layers.push(layer); commands.push(...layer.commands ?? [])
@@ -83,13 +89,17 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
       project: { id: "project", directory: "/server", canonical: "/server" },
     } }
       : { config: config() }) }
-  const compose = (pluginState: CliPluginState) => setupHostHistoryOnly(ctx, pluginState, life, { transport: () => transport })
+  const compose = (pluginState: CliPluginState) => setupCliReconnect(ctx, pluginState, life, (context, state, child) =>
+    setupHostHistoryOnly(context, state, child, { transport: () => transport })).current()!
   return { life, ctx, state, compose, commands, layers, slots, renderer, sessions, wire, serverReads, unexpected, server,
     mode: (value: string) => { mode = value },
     sample, totals, terminated: () => terminated, listening: () => !!listener,
     route: (value: typeof route) => { route = value },
-    event: (type: string, data: unknown, eventLocation?: typeof location, id?: string) => listener?.({ details: { type, data, id,
-      ...(eventLocation ? { location: eventLocation } : {}) } }),
+    event: (type: string, data: unknown, eventLocation?: typeof location, id?: string) => {
+      const details = { type, data, id, ...(eventLocation ? { location: eventLocation } : {}) }
+      if (type === "server.connected") native?.(details)
+      listener?.({ details })
+    },
     command: (id: string) => {
       const command = commands.find(value => value.id === id)!
       assert.equal(typeof command.enabled, "function")
@@ -279,7 +289,6 @@ test("known scoped live deletion invalidates only volatile history, never persis
   f.event("session.deleted", { sessionID: "root" }, location)
   assert.equal(f.runtime.records.state().open, false)
   assert.equal(f.runtime.rootRoute(), undefined, "native stale cache cannot resurrect the known deleted root")
-  assert.equal(f.runtime.records.store.maintenanceDirty, false)
   assert.equal(f.runtime.records.store.pendingOperations, 0)
   assert.ok(f.wire.every(value => value.type === "open" || value.type === "query"))
 })
