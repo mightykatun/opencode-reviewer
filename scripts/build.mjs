@@ -92,7 +92,7 @@ for (const output of Object.values(hostRuntime.metafile.outputs)) {
 
 const entrypoint = await build({
   stdin: {
-    contents: 'export { default } from "./src/plugin.ts"; export * from "./src/plugin.ts"; export { historyWorkerProbeSource } from "./src/history-worker-probe.ts"; export { HistoryStore, historyWorkerSource } from "./src/history-store.ts"; export { HistoryRefresh } from "./src/history-refresh.ts"',
+    contents: 'export { default } from "./src/plugin.ts"; export * from "./src/plugin.ts"; export { HistoryStore, historyWorkerSource } from "./src/history-store.ts"; export { HistoryRefresh } from "./src/history-refresh.ts"',
     resolveDir: process.cwd(),
     sourcefile: "reviewer-entry.ts",
     loader: "ts",

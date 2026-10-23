@@ -53,9 +53,8 @@ export default Plugin.define({id:'research.v2.catalog.server', async setup(ctx) 
       input:schema, options:{namespace:'catalog',codemode:true},
       execute:async()=>{throw Error('Catalog controls must never execute')}})
   })
-  // This catalog-only Promise transform measures presentation. Executor/error
-  // equivalence is covered by the Effect profile in smoke-v2-direct-tools.mjs;
-  // Promise editor.update wraps executors even for options-only changes.
+  // This catalog-only Promise transform measures presentation, not execution
+  // equivalence: editor.update wraps executors even for options-only changes.
   const activate=()=>ctx.tool.transform(editor=>{
     for(const tool of editor.list()) editor.update(tool.id,draft=>{
       const {pinned,...options}=draft.options??{}
@@ -261,7 +260,7 @@ try {
     limitations: ["Stock native catalog with synthetic cardinality additions, not the user's MCP catalog",
       "128-tool rejection is injected by the local endpoint, not verified against a live provider",
       "Byte counts are measured; tokens, billing, real provider schema acceptance and model quality are unmeasured",
-      "Catalog-only Promise transform; execution equivalence is tested separately with the public Effect profile"] }, null, 2))
+      "Catalog-only Promise transform; execution equivalence is not tested"] }, null, 2))
   console.log(`PASS V2 catalog: ${artifacts}\n${JSON.stringify(metrics, null, 2)}`)
 } catch (error) {
   await writeFile(path.join(artifacts, "failure.json"), JSON.stringify({ error: String(error), stack: error.stack, errors, requests }, null, 2))

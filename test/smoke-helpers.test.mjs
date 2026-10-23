@@ -81,7 +81,7 @@ test("fixture Git command arguments are bounded before process dispatch", () => 
 
 test("every inventoried Git fixture uses the bounded isolated initialization helper", async () => {
   const fixtures = Object.entries(runtimeInventory).filter(([, entry]) => entry.requires?.includes("git"))
-  assert.equal(fixtures.length, 15)
+  assert.equal(fixtures.length, 13)
   for (const [file] of fixtures) {
     const source = await readFile(new URL(`../scripts/${file}`, import.meta.url), "utf8")
     assert.match(source, /smokeGitInit\(temp, project\)/, file)

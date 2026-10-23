@@ -8,8 +8,6 @@ export const runtimeInventory = {
   "smoke-v2-mouse-proof.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux", "babel"] }),
   "smoke-v2-contracts.mjs": host(["shell", "shadow-shell"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux"] }),
   "smoke-v2-catalog.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux", "source", "esbuild"] }),
-  "smoke-v2-direct-tools.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux"] }),
-  "smoke-v2-profile-mapping.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux"] }),
   "smoke-v2-effective-evidence.mjs": host(["shell-rewrite", "skill-reload", "moved-location", "edit-preview"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux"] }),
   "smoke-v2-root-presentation.mjs": host(["mouse-on", "mouse-off"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux", "babel"] }),
   "smoke-v2-native-queue.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux"] }),

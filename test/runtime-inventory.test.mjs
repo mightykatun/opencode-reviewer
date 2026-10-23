@@ -138,8 +138,8 @@ test("fixtures accept stable V2 releases without a host-version allowlist", () =
   for (const version of ["opencode v2.0.28", "opencode v2.99.99"]) assert.doesNotThrow(() => assertRuntimeHostVersion(ci, version))
   for (const version of ["opencode v3.0.0", "opencode v2.0.27-beta.1", "2.0.27"])
     assert.throws(() => assertRuntimeHostVersion(ci, version), /stable OpenCode V2/)
-  const historical = runtimePlan("smoke-v2-direct-tools.mjs")
-  assert.doesNotThrow(() => assertRuntimeHostVersion([...ci, historical], "opencode v2.99.99"))
+  const synthetic = runtimePlan("smoke-v2-catalog.mjs")
+  assert.doesNotThrow(() => assertRuntimeHostVersion([...ci, synthetic], "opencode v2.99.99"))
 })
 
 test("listing and all profile planning work with no host, fixture directory, or bundle access", () => {
