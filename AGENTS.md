@@ -133,7 +133,7 @@ existing user directories.
   incompatible public API data stays manual rather than being guessed. Development
   and CI target the latest stable V2, not a fixed host release. Development uses V2
   ranges for `@opencode/plugin`, `@opencode/client` and
-  `@opencode/theme`. OpenTUI is 0.6.6 and Solid is 1.9.15, matching the host.
+  `@opencode/theme`. OpenTUI is 0.6.8 and Solid is 1.9.15, matching the host.
   Use public APIs/slots, never private UI imports or native approval-dialog patches.
 - Package and plugin ID are `opencode-reviewer`. The build starts at `src/plugin.ts`;
   its shared V2 setup selects companion/CLI lifecycle without eager terminal runtime imports.
@@ -275,6 +275,9 @@ existing user directories.
   with no startup-snapshot replay, old timers, backend handles or approval leases.
   Own the live subscriber through failure, resubscription and cleanup. Invalid
   handshakes stay manual.
+  `setupHostRecovery` is the single production connection owner; child runtimes
+  retire through their lifecycle signal. Startup and reconnection share
+  `companion-handshake.ts` while retaining their own marker-admission checks.
 - CLI startup consumes the public client's current `server.connected` marker before
   dispatching the first companion RPC, including when setup begins after connection.
   Ignore the native data bridge's delayed echo only for that exact public event ID;
@@ -454,6 +457,9 @@ existing user directories.
   attribution stays unclassified. Preserve the ledger through detail deletion and
   keep its conversation bootstrap bounded; normalize older aggregate fields internally.
 - Preserve private ownership and nonreplaceable paths for saved modes and history.
+  `private-record.ts` shares mode/instruction file mechanics, with each caller
+  retaining its own format, limits and post-commit failure policy. SQLite pathname
+  validation remains separate.
   Validate existing SQLite database/sidecar metadata with lstat inside the trusted
   namespace, never open/close them for inspection: close can release another
   worker's process-wide SQLite locks, and journals may disappear during commits.

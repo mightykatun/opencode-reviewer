@@ -6,9 +6,9 @@ import path from "node:path"
 import { adaptThemeSyntax, themeSyntaxOnlyPlugin, verifyThemeSyntaxInputs, verifyThemeSyntaxBuild } from "../scripts/theme-syntax-adapter.mjs"
 
 const manifest = {
-  name: "@opencode/theme", version: "2.1.3",
+  name: "@opencode/theme", version: "2.1.4",
   exports: { "./tui": { import: "./dist/tui/index.js" } },
-  dependencies: { "@opentui/core": "0.6.6", effect: "4.0.1" },
+  dependencies: { "@opentui/core": "0.6.8", effect: "4.0.1" },
 }
 // Independent published-input expectations, not imported adapter constants.
 const digests = {
