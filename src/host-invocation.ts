@@ -2,6 +2,7 @@ import { types } from "node:util"
 import { sameLocation } from "./companion-protocol.js"
 import { sameHostJSON } from "./host-request.js"
 import type { HostInvocation, HostRequestSnapshot } from "./host-types.js"
+import { codeModeToolAction } from "./host-tool-kind.js"
 
 function field(value: unknown, name: string): unknown {
   if (!value || typeof value !== "object" || types.isProxy(value)) return
@@ -9,7 +10,7 @@ function field(value: unknown, name: string): unknown {
   return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined
 }
 
-/** Join only a direct durable tool item to an exact continuously observed call.
+/** Join a direct durable tool item or the outer Code Mode invocation to its capture.
  * messageSessionID is the actual session used by the scoped public message.get.
  * No nested JavaScript parsing, name-prefix inference or event ordering is used.
  */
@@ -30,7 +31,8 @@ export function bindHostInvocation(snapshot: HostRequestSnapshot, messageSession
     found = entry
   }
   const state = field(found, "state")
-  if (!found || field(found, "name") !== captured.tool || captured.tool === "execute"
+  if (!found || field(found, "name") !== captured.tool
+    || (captured.tool === "execute" && (!codeModeToolAction(request.action) || typeof captured.input.code !== "string"))
     || field(state, "status") !== "running" || !sameHostJSON(field(state, "input"), captured.input)) return
   return captured
 }

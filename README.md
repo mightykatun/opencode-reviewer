@@ -181,15 +181,21 @@ approval.
 This assumes any supplied definition stays unchanged while approval is pending
 and accurately describes behavior. The reviewer does not inspect executors or
 remote implementations, infer origin from names, or claim an invocation-time
-definition snapshot. Ambiguous call linkage still remains manual because the
-reviewer cannot identify the operation being approved. Saved reports use the tool
+definition snapshot. For registered-tool permissions inside Code Mode, the judge
+receives the exact outer code and permission scope, available captured candidate
+calls and definitions, and explicit uncertainty about which inner call owns the
+permission. It decides Safe or Unsafe even without a unique match. A Safe verdict
+can use normal or fast auto-approval when enabled. Saved reports use the tool
 category. All review categories default to enabled; `autoApprove` still defaults
 to false. `reviewTools` replaces `reviewMcp` and `reviewCustomTools`.
 
-Code Mode and its tool search stay enabled. Native tool calls can be reviewed when
-the reviewer can match them exactly to their permission requests. Nested calls
-without an exact match need manual approval. This assumes other installed plugins don't change
-what native tools do, replace or alias their executors, or rewrite commands after
+Code Mode and its tool search stay enabled. Candidate observations can include
+completed siblings; later calls are not predicted, and oversized candidates are
+omitted whole with a factual reason. The judge assesses only the pending one-time
+permission, not blanket authorization of the program. Native shell, edit, skill
+and directory permissions still require their existing exact operation evidence.
+This assumes other installed plugins don't change what native tools do, replace
+or alias their executors, or rewrite commands after
 the reviewer has captured them.
 
 Subagent reviews include the latest user prompt from the main conversation. The

@@ -98,3 +98,46 @@ test("invalid/oversized mandatory input stays unavailable without executing acce
   }
   assert.equal(accessed, false)
 })
+
+test("Code Mode retains candidates without selecting a permission owner and releases the entire group", () => {
+  const captures = new InvocationCapture(handshake())
+  const outer = { ...event("outer"), tool: "execute", input: { code: "opaque code, never parsed" } }
+  const first = { ...event("outer"), tool: "account_lookup", input: { account: "A" } }
+  const second = { ...first, input: { account: "B" } }
+  captures.before(outer); captures.before(first); captures.before(second)
+  first.input.account = "rewritten"
+  assert.equal(captures.read("session", "assistant", "outer"), undefined)
+  const group = captures.readCodeMode("session", "assistant", "outer")!
+  assert.deepEqual(group.outer.input, outer.input)
+  assert.deepEqual(group.candidates, { calls: [
+    { tool: "account_lookup", input: { account: "A" } }, { tool: "account_lookup", input: { account: "B" } },
+  ], omitted: 0 })
+  captures.after(first)
+  assert.deepEqual(captures.readCodeMode("session", "assistant", "outer"), group, "Completed sibling observations are retained factually")
+  captures.after(outer)
+  assert.equal(captures.readCodeMode("session", "assistant", "outer"), undefined, "A settled outer execution cannot authorize a new read")
+  captures.before(outer)
+  assert.equal(captures.readCodeMode("session", "assistant", "outer"), undefined, "Reused outer identity remains ambiguous until all hooks settle")
+  captures.after(outer); captures.after(second)
+  captures.before(outer); captures.before(second)
+  assert.equal(captures.readCodeMode("session", "assistant", "outer")?.candidates.calls.length, 1)
+  captures.after(second); captures.after(outer)
+  assert.equal(captures.readCodeMode("session", "assistant", "outer"), undefined)
+})
+
+test("Code Mode candidate bounds omit whole calls without losing the exact outer input or running accessors", () => {
+  const captures = new InvocationCapture(handshake())
+  const outer = { ...event("outer"), tool: "execute", input: { code: "opaque" } }
+  captures.before(outer)
+  let accessed = false
+  const input = Object.defineProperty({}, "secret", { enumerable: true, get() { accessed = true; throw Error("unreadable") } })
+  captures.before({ ...event("outer"), tool: "lookup", input })
+  for (let index = 0; index < 66; index++) captures.before({ ...event("outer"), tool: "lookup", input: { index } })
+  const group = captures.readCodeMode("session", "assistant", "outer")!
+  assert.equal(accessed, false)
+  assert.equal(group.candidates.calls.length, 64)
+  assert.equal(group.candidates.omitted, 3)
+  assert.deepEqual(group.outer.input, outer.input)
+  captures.clear()
+  assert.equal(captures.readCodeMode("session", "assistant", "outer"), undefined)
+})

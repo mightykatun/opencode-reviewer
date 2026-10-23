@@ -19,7 +19,7 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  49-case production/foundation selection available in manual extended checks,
+  51-case production/foundation selection available in manual extended checks,
   including session instructions, history, statistics, approval notifications and explicitly classified
   synthetic probes.
   `npm run test:runtime` selects `--profile v2-acceptance`, which currently selects
@@ -84,6 +84,7 @@ All commands below use the installed five-file archive and production runtime.
 | Disconnect during visible review/countdown / silent event-stream stall | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-reconnect-visible` / `normal-stalled-stream` |
 | Native skill loading / fast skill approval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-skill` / `fast-skill` |
 | Shared registered-tool review / fast approval (local MCP) | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-tool` / `fast-tool` |
+| Judge-decided Code Mode MCP linkage / fast approval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-code-mode-tool` / `fast-code-mode-tool` |
 | Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
 | Saved history and statistics | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history` |
 | Session instructions editor / persistence / root and descendant judge requests | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-instructions` |
@@ -200,10 +201,16 @@ existing user directories.
 
 - The user selected native Code Mode on 2026-10-12. Do not ship the investigated
   direct-tool transform or remove native Code Mode search. Exact direct-call
-  linkage is usable; ambiguous nested calls stay manual. Never recover their
-  identity by arrival order, JavaScript parsing or forced serialization.
-  Invocation capture counts live executions sharing each identity. Release an
-  ambiguous record only after every matching after-hook settles; completed Code
+  linkage is usable. On 2026-10-23 the user delegated uncertain inner MCP/registered
+  tool linkage to the judge: provide the exact pending permission and captured
+  outer execute input, bounded candidate observations/definitions and explicit
+  uncertainty. Safe may authorize that exact once permission without a unique
+  candidate match. Never claim exact inner identity from arrival order, JavaScript
+  parsing or forced serialization. Native operation categories retain their exact
+  evidence requirements. Candidate observations may include completed siblings;
+  later calls are not predicted, and omitted candidates have factual reasons.
+  Invocation capture counts live executions sharing each identity. Release the
+  group only after every matching after-hook settles; completed Code
   Mode calls must not consume the live-call capacity for the rest of the session.
 - The user accepted a trusted native-tool installation: installed plugins preserve
   native tool meanings, do not replace/alias native executors, and do not rewrite
@@ -230,7 +237,7 @@ existing user directories.
 
 ### Current V2 runtime
 
-- Start at `src/plugin.ts`: the server companion captures exact direct invocation
+- Start at `src/plugin.ts`: the server companion captures exact direct/outer invocation
   evidence; `cli-plugin.ts` validates options and the companion handshake;
   `host-runtime.tsx` connects the generic controller to native queues and slots.
   `host-evaluate.ts` uses `host-evidence-reader.ts` and `host-reader.ts` to bind exact
@@ -405,8 +412,10 @@ existing user directories.
   approval is pending and accurately describe behavior. The user subsequently
   selected category `tool`, prompt `TOOL-REVIEW-PROMPT.md` and `reviewTools`,
   replacing reviewMcp/reviewCustomTools without aliases. All review categories
-  default enabled. Exact call linkage, scope and arguments remain mandatory;
-  descriptions, schemas and registry availability are optional evidence. Send
+  default enabled. Exact direct or outer Code Mode linkage, scope and arguments remain mandatory;
+  `host-code-mode.ts` supplies bounded inner candidates with unverified linkage for
+  the judge's decision, including Safe despite uncertainty as selected above.
+  Descriptions, schemas and registry availability are optional evidence. Send
   factual omission reasons to the LLM, which decides Safe/Unsafe. Never infer
   origin, import/invoke executors or call MCP servers for evidence.
 - Preserve exact mandatory scope/arguments or fail analysis. Oversized optional

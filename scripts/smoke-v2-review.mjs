@@ -44,7 +44,7 @@ async function serverSetup(ctx) {
   const registration = await ctx.session.hook("title", event => { event.result = "V2 production review fixture" })
   // Advertise this fixture's real MCP tool directly while keeping native Code
   // Mode installed. Do not replace its executor, description, schema or inputs.
-  const advertised = fixture.registeredTool ? await ctx.tool.transform(editor => {
+  const advertised = fixture.registeredTool && !fixture.codeModeTool ? await ctx.tool.transform(editor => {
     editor.update("fixture_lookup", tool => { tool.options = { ...tool.options, codemode: false } })
   }) : undefined
   const registrations = [], publisher = fixture.longSession ? observationPublisher(fixture.warmup) : undefined
@@ -443,7 +443,8 @@ const visibilityLoss = ["normal-hide", "normal-dialog", "normal-resize"].include
 const hiddenComplete = scenario === "normal-hidden-complete"
 const routeWait = scenario === "normal-route-wait", decisionCase = scenario.endsWith("-decision")
 const editCase = ["normal-edit", "normal-directory-edit"].includes(scenario)
-const registeredTool = ["normal-tool", "fast-tool"].includes(scenario)
+const codeModeTool = ["normal-code-mode-tool", "fast-code-mode-tool"].includes(scenario)
+const registeredTool = codeModeTool || ["normal-tool", "fast-tool"].includes(scenario)
 const skillCase = registeredTool || ["normal-skill", "fast-skill"].includes(scenario)
 const directoryEditCase = scenario === "normal-directory-edit"
 const notificationCase = scenario === "fast-notifications", savedCase = automatic && scenario !== "normal-cancel"
@@ -530,7 +531,9 @@ const keyboardDescription = description + "\n\n" + Array.from({ length: 80 }, (_
 const reportDescription = index => skillCase ? skillDescription : editCase ? editDescriptions[index - 1] : keyboardMouseOffCase && index === 2 ? keyboardDescription : description
 const assessment = { safe: !manualHistoryCase, desc: editCase ? editDescriptions.at(-1) : description }
 const reviewUsage = { prompt_tokens: 23, completion_tokens: 11, total_tokens: 34 }
-const toolCall = registeredTool ? { id: "v2-production-review-registered", name: "fixture_lookup", input: { account: "public" } }
+const toolCall = codeModeTool ? { id: "v2-production-review-code-mode", name: "execute", input: { code:
+  'const found = search({namespace:"fixture",query:"lookup"}); if (!found.items.some(item => item.path === "tools.fixture.lookup")) throw Error("Fixture tool unavailable"); await tools.fixture.ping({}); return await tools.fixture.lookup({account:"public"});' } }
+  : registeredTool ? { id: "v2-production-review-registered", name: "fixture_lookup", input: { account: "public" } }
   : skillCase ? { id: "v2-production-review-skill", name: "skill", input: { id: skillID } }
   : editCase ? { id: "v2-production-review-write", name: "write", input: { path: writeTarget, content: afterEdit } }
   : { id: "v2-production-review-shell", name: "shell", input: { command: "python3 fixture.py", workdir: "inputs" } }
@@ -1121,7 +1124,7 @@ const exerciseInstructions = async cli => {
 const limits = [
    "Behavioral review activates through public CLI configuration only after an owned prompt-free session's exact genuine birth and deletion are observed on the native data stream. This is not pre-connection startup acceptance; the separate lifecycle fixture checks startup. No runtime reconnect policy is overridden.",
      "One installed default archive with separate server companion and global CLI configuration. The independent monitor never imports production code or replies to permissions.",
-   `One ${reconnectCase ? "loopback server plus network-proxied TUI" : "standalone"} Linux OpenCode V2 verification host, ${nativeCallCount} direct ${registeredTool ? "local MCP" : skillCase ? "native skill" : editCase ? "native write" : "native shell"} call(s), ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal${reconnectCase ? "" : ", disconnect"} or tab-switch acceptance.`,
+   `One ${reconnectCase ? "loopback server plus network-proxied TUI" : "standalone"} Linux OpenCode V2 verification host, ${codeModeTool ? "one native Code Mode invocation with two local MCP calls" : `${nativeCallCount} direct ${registeredTool ? "local MCP" : skillCase ? "native skill" : editCase ? "native write" : "native shell"} call(s)`}, ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal${reconnectCase ? "" : ", disconnect"} or tab-switch acceptance.`,
   "Mouse capture is explicitly configured only by the isolated fixture, never forced by production. UI changes use real native commands/navigation, keyboard choices or actual tmux resize; no synthesized paint, modes, hits or geometry. Individual cases do not imply full UI-matrix acceptance.",
   projectTransition ? "The transition includes a real descendant-owned shell request in the root native queue. A distinct public location read discovers the committed repository and lets native worktree resolution adopt existing sessions; the original companion must retain its exact handshake and epoch. No fabricated events, location reload, database edits, remote changes or uncertain writes. Markerless startup IDs are observed, not assumed to be global on every V2 release."
     : instructionsCase ? "A real descendant-owned shell permission uses its root's saved instructions. No location migration, simultaneous multi-terminal editing, uncertain write or live-provider acceptance."
@@ -1130,6 +1133,7 @@ const limits = [
       : pendingReconnect ? "An actual pending native shell permission survives a silently held event stream or TCP socket loss. Independent native connection markers and the production accessor prove fresh admission without plugin reload; every replacement review must recollect evidence. The visible-socket case disconnects during both analysis and a started countdown, holding the second outage beyond its original deadline. Exact once-only reply, native execution, final saved report and accounting are verified. No uncertain-write or cancellation host acceptance."
       : reconnectCase ? "Actual TCP socket destruction and a 1.5-second network outage while the session's first model response is held, before its native tool call. Independent native connection markers and the production embedding accessor prove the old runtime is absent during loss and a fresh runtime is admitted without plugin reload. One subsequent real review, native once reply, tool execution and saved report prove live review resumes. Pending countdown, uncertain-write and cancellation continuity are source-tested, not host-accepted by this case."
       : evidenceTimeout ? "A genuine native shell permission with a one-millisecond production evidence deadline. Actual terminal captures must show Analysis unavailable and timed out while the native request stays pending, with no reviewer POST, reply, execution or saved report. No injected transport errors, protocol changes, missing-linkage substitution or model latency acceptance."
+     : codeModeTool ? "One real local MCP permission inside native Code Mode after a completed sibling call. The judge receives unverified linkage and captured candidates, then its Safe response follows production normal/fast approval, actual MCP continuation and saved tool history. No live-provider judgment acceptance."
      : registeredTool ? "One real local MCP request advertised directly with a public Code Mode option, a scoped registered definition (normal omits the oversized description and reports the reason), one production once reply, actual MCP result continuation, saved tool category and confirmed approval totals. No ambiguous nested call, remote implementation inspection or live-provider acceptance."
     : skillCase ? "One direct native skill request with full scoped registry main instructions, an unchanged selected definition, one production once reply and actual native tool-result loading. Normal countdown or fast preview/remainder is observed, and read-only SQLite verifies the saved skill category, confirmed approval and usage totals. No supporting-file inspection, catalog-mutation guarantee, ambiguous nested call, live-provider judgment or multi-client acceptance."
       : editCase ? "One actual native write, exact direct source linkage and pending native diff. Outside-project access, when selected, automatically resumes that same write into a distinct edit permission. Each stage holds the real reviewer response, proves no mutation, paints a full normal countdown and receives one production once reply. Read-only SQLite proves per-stage accepted reports, qualifying resolutions, categories and both aggregate scopes. Production history opens through painted palette activation. No native edit/patch variant, formatter, descendant-owned queue, notification, multi-client or live-provider judgment acceptance."
@@ -1222,7 +1226,19 @@ try {
           assert.match(body.messages[0].content, registeredTool ? /pending tool operation/ : /permission\.action="skill"/)
           assert.equal(evidence.kind, registeredTool ? "tool" : "skill"); assert.equal(evidence.tool, toolCall.name)
           assert.deepEqual(evidence.operation.input, toolCall.input)
-          if (registeredTool) {
+           if (codeModeTool) {
+             assert.equal(evidence.definition, undefined)
+             assert.equal(evidence.codeMode.linkage, "unverified")
+             assert.equal(evidence.codeMode.omittedCalls, 0)
+             const candidates = evidence.codeMode.candidates
+             assert.ok(candidates.some(call => call.tool === "fixture_ping"), "Completed siblings remain explicitly uncertain observations")
+             const lookup = candidates.filter(call => call.tool === "fixture_lookup")
+             assert.equal(lookup.length, 1)
+             assert.deepEqual(lookup[0].input, { account: "public" })
+             assert.equal(lookup[0].definition.id, "fixture_lookup")
+             assert.ok(evidence.limitations.some(note => /No candidate has been selected/.test(note)))
+             assert.match(body.messages[0].content, /may decide Safe even when the inner call cannot be identified uniquely/)
+           } else if (registeredTool) {
             assert.equal(evidence.definition.id, toolCall.name)
             assert.equal(evidence.definition.input.properties.account.type, "string")
             if (fast) assert.match(evidence.definition.description, /fixed public account summary/)
@@ -1344,7 +1360,7 @@ try {
   })
   await new Promise(resolve => modelServer.listen(0, "127.0.0.1", resolve))
   const origin = `http://127.0.0.1:${modelServer.address().port}`
-   const fixture = { initial, project, projectTransition, instructionsCase, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase, registeredTool }
+   const fixture = { initial, project, projectTransition, instructionsCase, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase, registeredTool, codeModeTool }
   const observer = path.join(temp, "observer"), monitor = path.join(temp, "monitor")
   const reviewer = path.join(temp, "reviewer")
   await mkdir(reviewer)
@@ -1376,10 +1392,11 @@ try {
   if (registeredTool) await writeFile(mcpFile, `
 import {createInterface} from 'node:readline';
 const tool={name:'lookup',description:${JSON.stringify("Return a fixed public account summary without accessing external services." + (fast ? "" : " Optional catalog description.".repeat(300)))},inputSchema:{type:'object',properties:{account:{type:'string'}},required:['account'],additionalProperties:false}};
+const tools=[tool, ...(${codeModeTool} ? [{name:'ping',description:'Return a fixed ping marker.',inputSchema:{type:'object',properties:{},additionalProperties:false}}] : [])];
 createInterface({input:process.stdin}).on('line',line=>{
  const q=JSON.parse(line); if(q.id===undefined)return;
  const result=q.method==='initialize'?{protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1.0'}}
- :q.method==='tools/list'?{tools:[tool]}:q.method==='tools/call'?{content:[{type:'text',text:'FIXTURE_PUBLIC_ACCOUNT'}]}:{};
+ :q.method==='tools/list'?{tools}:q.method==='tools/call'?{content:[{type:'text',text:q.params.name==='ping'?'FIXTURE_PING':'FIXTURE_PUBLIC_ACCOUNT'}]}:{};
  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result})+'\\n');
 });
 `)

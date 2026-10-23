@@ -404,7 +404,7 @@ const limits = [
   "Uses the archived default server companion and production invocation/evidence readers, followed by server-only observed native FileIO. The review scenario adds one advisory evaluation; no production controller/UI, approval or history integration.",
   "One local standalone host. No remote workspace, disconnect, native cache reconciliation or multi-terminal proof.",
   "Rejection controls mutate copies only at the reader boundary, never the actual pending requests, captured calls or tool executors.",
-  "Native Code Mode ambiguity is exercised using two native MCP-dispatch calls under one execute source; it does not establish MCP category evidence readiness.",
+  "Native Code Mode ambiguity is exercised using two native MCP-dispatch calls under one execute source. Both permissions retain their own identity and receive unverified candidate evidence without choosing an inner owner.",
   "Initial/nested/resumed native descendants retain root intent and omit unproven exact delegation; no unique native delegation association is claimed.",
   "An attachment-only root blocks older textual intent. Moving an idle interrupted session tests new invocation location, not a mid-execution move or retained pending write.",
   "Reload tests a continuously pending call whose capture is lost at companion unload. No missed call is reconstructed from durable inputs.",
@@ -673,13 +673,18 @@ try {
     assert.equal(request.action, "invocation_held-call")
     assert.equal(request.source.id, "phase2-nested")
     const row = await readActual(request, scope)
-    assert.deepEqual(row.result, { value: null }, "The production reader must leave actual nested requests unavailable")
+    assert.equal(row.result.value.invocation.tool, "execute", "Only the exact outer invocation binds")
     const source = row.message.content.filter(item => item.type === "tool" && item.id === request.source.id)
     assert.equal(source.length, 1); assert.equal(source[0].name, execute.function.name)
     evidence.nested.push(row)
-    assert.deepEqual((await readEvidence(request, scope)).result, { value: null }, "Evidence must not recover ambiguous nested identities")
+    const result = (await readEvidence(request, scope)).result.value.result
+    assert.equal(result.status, "ready")
+    assert.equal(result.evidence.permission.id, request.id)
+    assert.equal(result.evidence.kind, "tool")
+    assert.equal(result.evidence.codeMode.linkage, "unverified")
+    assert.deepEqual(result.evidence.codeMode.candidates.map(call => call.input), [{ label: "A" }, { label: "B" }])
   }
-  await negativeWindow(sessionID, nested, "native Code Mode ambiguity remains pending")
+  await negativeWindow(sessionID, nested, "read-only Code Mode candidate evidence cannot reply or execute tools")
   await interrupt(sessionID)
 
   const reloadPrompt = "PHASE2 RELOAD: retain this native shell permission while the companion reloads."

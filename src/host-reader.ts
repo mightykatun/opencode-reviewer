@@ -17,7 +17,7 @@ export interface HostInvocationRead {
   registeredProject?: HostInvocation["project"]
 }
 
-/** Bind the captured invocation to a durable direct call before any server
+/** Bind the captured direct or outer Code Mode invocation before any server
  * filesystem collection. The caller owns the enclosing transaction deadline.
  */
 export async function preparePendingInvocation(client: OpenCodeClient, snapshot: HostRequestSnapshot,
@@ -76,8 +76,9 @@ export async function finalizePendingInvocation(client: OpenCodeClient, current:
 }
 
 /** A read-only boundary using this CLI's connected client and companion epoch.
- * Root intent stays separate from exact invocation identity; unproven nested calls
- * and missed startup captures return unavailable instead of guessing linkage.
+ * Root intent stays separate from exact invocation identity. Code Mode binds only
+ * the outer call; the judge receives inner-linkage uncertainty as operation evidence.
+ * Missed outer/direct captures remain unavailable instead of guessing linkage.
  */
 export async function readPendingInvocation(client: OpenCodeClient, at: HostScope, pending: unknown,
   parent: AbortSignal): Promise<HostInvocationRead | undefined> {

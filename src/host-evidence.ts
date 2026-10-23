@@ -9,12 +9,14 @@ import { sameLocation } from "./companion-protocol.js"
 import { boundedHostJSON, hostOperationJSONBytes, sameHostJSON } from "./host-request.js"
 import type { HostInvocationRead } from "./host-reader.js"
 import type { HostConversationContext } from "./host-context.js"
-import type { HostInvocation, HostRequest, JSONObject } from "./host-types.js"
+import type { CodeModeCandidates, HostInvocation, HostRequest, JSONObject } from "./host-types.js"
 import { boundedCopy } from "./tool-evidence.js"
 import type { FileEvidence, Limits, PatchOperation } from "./types.js"
 import { readRegisteredSkill, requestedSkill, type RegisteredSkill, type SkillCatalogRead } from "./host-skill.js"
 import { transportOwnership } from "./transport-ownership.js"
 import { readRegisteredTool, type RegisteredTool, type ToolCatalogRead } from "./host-tool.js"
+import { codeModeToolAction, directoryTools, editTools, nativeTools } from "./host-tool-kind.js"
+import { collectCodeModeCandidates, validCodeModeEvidence, type CodeModeEvidence } from "./host-code-mode.js"
 
 export type HostEvidenceOptions = Pick<Config, "reviewBash" | "reviewEdits" | "reviewExternalDirectories"
   | "reviewSkills" | "reviewTools"> & Limits
@@ -79,6 +81,7 @@ export interface HostToolEvidence extends Base {
   tool: string
   operation: Operation
   definition?: RegisteredTool
+  codeMode?: CodeModeEvidence
 }
 export type HostReviewEvidence = HostShellEvidence | HostEditEvidence | HostDirectoryEvidence | HostSkillEvidence | HostToolEvidence
 export type HostOperationEvidence = Omit<HostShellEvidence, keyof Conversation>
@@ -89,9 +92,6 @@ export type HostEvidenceResult = { status: "ready"; evidence: HostReviewEvidence
   | { status: "disabled" | "unsupported"; reason: string }
 
 const normalizationBytes = 16 * 1024 * 1024
-const editTools = new Set(["write", "edit", "patch"])
-const directoryTools = new Set(["shell", "write", "edit", "patch", "read", "glob", "grep"])
-const nativeTools = new Set([...directoryTools, "skill", "execute", "search", "question", "subagent", "lsp", "webfetch", "websearch", "todowrite", "todoread"])
 type OperationRead = Pick<HostInvocationRead, "snapshot" | "invocation">
 
 function assertOperationScope({ snapshot: { request, scope }, invocation }: OperationRead): void {
@@ -113,6 +113,7 @@ function operationKind({ snapshot: { request }, invocation }: OperationRead) {
     : request.action === "edit" && editTools.has(invocation.tool) ? "edit"
     : request.action === "external_directory" && directoryTools.has(invocation.tool) ? "external-directory"
     : request.action === "skill" && invocation.tool === "skill" ? "skill"
+    : invocation.tool === "execute" && codeModeToolAction(request.action) && typeof invocation.input.code === "string" ? "tool"
     : !nativeTools.has(invocation.tool) ? "tool" : undefined
 }
 
@@ -211,6 +212,8 @@ function nativePatchOperations(input: JSONObject, signal: AbortSignal): PatchOpe
 
 function operation(invocation: HostInvocation, signal: AbortSignal): Operation {
   const { tool, input } = invocation
+  if (tool === "execute") return { input,
+    inputStatus: "Complete captured outer Code Mode arguments; individual inner permission-to-call linkage is unverified" }
   const knownFields = tool === "patch" ? ["patchText"] : tool === "write" ? ["path", "content"]
     : tool === "edit" ? ["path", "oldString", "newString", "replaceAll"] : undefined
   // Only these pinned schemas allow body omission. Unknown fields must not be
@@ -342,7 +345,8 @@ function editChanges(request: HostRequest, proposed: Operation, limits: Limits, 
  * no context, model, catalog mutation or permission-write calls occur here.
  */
 export async function collectHostOperation(owned: OperationRead, options: HostEvidenceOptions,
-  signal: AbortSignal, files: FileAccess, catalog?: SkillCatalogRead, tools?: ToolCatalogRead): Promise<HostOperationResult> {
+  signal: AbortSignal, files: FileAccess, catalog?: SkillCatalogRead, tools?: ToolCatalogRead,
+  candidates?: CodeModeCandidates): Promise<HostOperationResult> {
   reviewStage(signal, "Evidence collection")
   assertOperationScope(owned)
   const { snapshot: { request }, invocation } = owned
@@ -355,6 +359,16 @@ export async function collectHostOperation(owned: OperationRead, options: HostEv
     const mandatory = boundedCopy({ permission: permissionScope, operation: proposed }, options.maxEvidenceBytes)
     const limitations = ["Any supplied current scoped registered definition is assumed unchanged while permission is pending and to describe tool behavior accurately.",
       "MCP server or plugin origin and invocation-time definition snapshot are unavailable. Executors and remote implementations were not inspected."]
+    if (invocation.tool === "execute") {
+      const collected = await collectCodeModeCandidates(candidates ?? { calls: [], omitted: 0 }, invocation.location,
+        options.maxEvidenceBytes - mandatory.bytes, 16384 - mandatory.values, signal, tools)
+      limitations.push(...collected.limitations)
+      const optional = boundedCopy({ codeMode: collected.codeMode }, options.maxEvidenceBytes - mandatory.bytes, 16384 - mandatory.values)
+      const permission = permissionMetadata(mandatory.value.permission, metadata, options.maxEvidenceBytes - mandatory.bytes - optional.bytes,
+        16384 - mandatory.values - optional.values, limitations)
+      return { status: "ready", evidence: { kind, tool: "execute", location: invocation.location, project: invocation.project,
+        permission, operation: mandatory.value.operation, codeMode: collected.codeMode, limitations } }
+    }
     let definition: RegisteredTool | undefined
     if (!tools) limitations.push("Tool definition unavailable: scoped registry reader unavailable.")
     else try {
@@ -512,7 +526,7 @@ export function readHostOperationEvidence(value: unknown, owned: OperationRead, 
     const common = ["kind", "tool", "permission", "location", "project", "operation", "limitations"]
     const fields = kind === "shell" ? ["command", "cwd", "execution", "files"] : kind === "edit" ? ["changes", "partial"]
       : kind === "skill" ? ["skill"] : kind === "tool" ? [] : ["partial"]
-    if (!shape(copy, [...common, ...fields], kind === "tool" ? ["definition"] : []) || !strings(copy.limitations)
+    if (!shape(copy, [...common, ...fields], kind === "tool" ? owned.invocation.tool === "execute" ? ["codeMode"] : ["definition"] : []) || !strings(copy.limitations)
       || !sameHostJSON(copy.location, owned.invocation.location) || !sameHostJSON(copy.project, owned.invocation.project)
       || copy.kind !== kind || copy.tool !== owned.invocation.tool
       || !shape(copy.permission, ["id", "sessionID", "action", "resources", "source", "metadataStatus"], ["save", "message", "metadata"])
@@ -524,13 +538,15 @@ export function readHostOperationEvidence(value: unknown, owned: OperationRead, 
     const proposed = operation(owned.invocation, signal)
     if (!sameHostJSON(copy.operation, proposed)) return
     if (kind === "tool") {
+      if (owned.invocation.tool === "execute" && !validCodeModeEvidence(copy.codeMode, owned.invocation.location)) return
       if (copy.definition !== undefined) {
         if (!shape(copy.definition, ["id"], ["name", "description", "input"]) || copy.definition.id !== owned.invocation.tool) return
         const result = readRegisteredTool({ location: copy.location, data: [copy.definition] }, owned.invocation.location, owned.invocation.tool)
         if (!sameHostJSON(result.definition, copy.definition)) return
       }
       boundedCopy({ permission: permissionScope, operation: proposed,
-        ...(copy.definition ? { definition: copy.definition } : {}), ...(metadata !== undefined ? { metadata } : {}) }, options.maxEvidenceBytes)
+        ...(copy.codeMode ? { codeMode: copy.codeMode } : {}), ...(copy.definition ? { definition: copy.definition } : {}),
+        ...(metadata !== undefined ? { metadata } : {}) }, options.maxEvidenceBytes)
       reviewStage(signal, "Evidence validation")
       return copy as unknown as HostOperationEvidence
     }

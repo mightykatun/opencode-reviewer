@@ -9,6 +9,7 @@ import { withDeadline } from "./deadline.js"
 import { FileAccess, type FileIO } from "./file-access.js"
 import { collectHostOperation } from "./host-evidence.js"
 import { readHostEvidenceOptions } from "./host-evidence-options.js"
+import { codeModeToolAction } from "./host-tool-kind.js"
 
 type Query = { location: CompanionHandshake["location"]; epoch: string; sessionID: string; requestID: string }
 type Call = { signal: AbortSignal; error(type: typeof companionBusy, message: string, data: Record<string, never>): unknown }
@@ -50,7 +51,8 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
         const snapshot = snapshotRequest(first, scope)
         const source = snapshot?.request.source
         if (!snapshot || !source || snapshot.request.id !== ids.requestID || snapshot.request.sessionID !== ids.sessionID) return null
-        const captured = captures.read(ids.sessionID, source.assistantID, source.id)
+        const nested = codeModeToolAction(snapshot.request.action) ? captures.readCodeMode(ids.sessionID, source.assistantID, source.id) : undefined
+        const captured = nested?.outer ?? captures.read(ids.sessionID, source.assistantID, source.id)
         if (!captured) return null
         const { scope: capturedScope, ...value } = captured
         const invocation = readHostInvocation({ ...value, ...capturedScope })
@@ -65,17 +67,19 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
             const data = await ownership.track(context.tool.list())
             signal.throwIfAborted()
             return { location, data }
-          }) : undefined
+          }, nested?.candidates) : undefined
         const final = snapshotRequest(serverRequestJSON(await ownership.track(context.permission.get(ids, options))), scope)
         signal.throwIfAborted()
-        if (!final || !sameRequest(snapshot, final) || !captures.read(ids.sessionID, source.assistantID, source.id)) return null
+        if (!final || !sameRequest(snapshot, final) || !(nested
+          ? captures.readCodeMode(ids.sessionID, source.assistantID, source.id)
+          : captures.read(ids.sessionID, source.assistantID, source.id))) return null
         if (collection) {
           const current = await ownership.track(context.session.get({ sessionID: ids.sessionID }, options))
           signal.throwIfAborted()
           if (current.id !== ids.sessionID || current.location.directory !== location.directory) return null
         }
-        // A capture is observation, not a direct-call verdict. The connected
-        // CLI must additionally bind the exact durable message item and inputs.
+        // The CLI binds the exact durable direct/outer item and inputs. Code Mode
+        // candidates remain observations, never a selected inner-call identity.
         return { request: first, invocation, ...(result ? { result } : {}) }
       }, "Invocation evidence lookup")
     } catch { return null }
