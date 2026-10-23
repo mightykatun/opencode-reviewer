@@ -1,9 +1,10 @@
 import { constants } from "node:fs"
-import { lstat, mkdir, open, rename, unlink } from "node:fs/promises"
-import { createHash, randomUUID } from "node:crypto"
+import { open } from "node:fs/promises"
+import { createHash } from "node:crypto"
 import path from "node:path"
 import { withDeadline } from "./deadline.js"
 import type { SessionAncestry, AncestryRead } from "./session-ancestry.js"
+import { privateRecordDirectory, readPrivateRecord, syncPrivateDirectory, validPrivateRecord, writePrivateRecord } from "./private-record.js"
 
 const MAX_MODE_READS = 2
 interface ModeRead {
@@ -12,35 +13,6 @@ interface ModeRead {
   finished: boolean
 }
 
-/** Cross-UID namespace protection, without changing existing permissions or paths.
- * A private user-owned ancestor protects writable descendants from other users.
- * Before that boundary, only trusted owners and sticky-directory protection suffice.
- * Same-UID code and root remain outside this boundary, as for history storage. */
-async function privateModeDirectory(directory: string, create: boolean, signal?: AbortSignal): Promise<boolean> {
-  const uid = process.geteuid?.()
-  if (process.platform !== "linux" || uid === undefined) throw new Error("Session mode ownership unavailable")
-  let current = "/", protectedAncestor = false
-  for (const part of ["", ...directory.split("/").filter(Boolean)]) {
-    signal?.throwIfAborted()
-    if (part) current = path.join(current, part)
-    let stat
-    try { stat = await lstat(current) }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-      if (!create) return false // Every existing prefix has already been validated.
-      signal?.throwIfAborted()
-      try { await mkdir(current, { mode: 0o700 }) }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error }
-      stat = await lstat(current)
-    }
-    signal?.throwIfAborted()
-    if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.uid !== 0 && stat.uid !== uid)
-      || (!protectedAncestor && (stat.mode & 0o022) && !(stat.mode & 0o1000))) throw new Error("Untrusted session mode ancestor")
-    if (current === directory && (stat.uid !== uid || (stat.mode & 0o077))) throw new Error("Session mode directory must be private")
-    protectedAncestor ||= stat.uid === uid && !(stat.mode & 0o077)
-  }
-  return true
-}
 export interface SessionModeGate {
   root(sessionID: string, signal: AbortSignal): AncestryRead
   load(root: string, signal: AbortSignal): Promise<void>
@@ -64,7 +36,7 @@ export class SessionModeStore implements ModeStore {
   }
   async read(root: string, signal: AbortSignal): Promise<boolean> {
     signal.throwIfAborted()
-    if (!await privateModeDirectory(this.directory, false, signal)) { signal.throwIfAborted(); return true }
+    if (!await privateRecordDirectory(this.directory, false, "mode", signal)) { signal.throwIfAborted(); return true }
     const file = await open(this.file(root), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
       .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error })
     if (!file) { signal.throwIfAborted(); return true }
@@ -72,19 +44,11 @@ export class SessionModeStore implements ModeStore {
       signal.throwIfAborted()
       const stat = await file.stat()
       signal.throwIfAborted()
-      if (!stat.isFile() || stat.size > 1024 || stat.uid !== process.geteuid?.() || stat.nlink !== 1 || (stat.mode & 0o077)) throw new Error("Invalid session mode record")
-      const buffer = Buffer.alloc(1025)
-      let size = 0
-      while (size < buffer.length) {
-        signal.throwIfAborted()
-        const result = await file.read(buffer, size, buffer.length - size, size)
-        signal.throwIfAborted()
-        if (!result.bytesRead) break
-        size += result.bytesRead
-      }
+      if (!validPrivateRecord(stat, 1024)) throw new Error("Invalid session mode record")
+      const buffer = await readPrivateRecord(file, 1025, signal)
       signal.throwIfAborted()
-      if (size > 1024) throw new Error("Invalid session mode record")
-      const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, size)))
+      if (buffer.length > 1024) throw new Error("Invalid session mode record")
+      const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer))
       if (!value || Array.isArray(value) || Object.keys(value).length !== 2 || value.version !== 1 || typeof value.enabled !== "boolean") {
         throw new Error("Invalid session mode record")
       }
@@ -94,16 +58,9 @@ export class SessionModeStore implements ModeStore {
   write(root: string, enabled: boolean): Promise<void> {
     const file = this.file(root)
     this.pending = this.pending.catch(() => {}).then(async () => {
-      await privateModeDirectory(this.directory, true)
-      const temporary = `${file}.${randomUUID()}.tmp`
-      try {
-        const handle = await open(temporary, "wx", 0o600)
-        try { await handle.writeFile(JSON.stringify({ version: 1, enabled })); await handle.sync() }
-        finally { await handle.close() }
-        await rename(temporary, file)
-        const directory = await open(this.directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
-        try { await directory.sync() } finally { await directory.close() }
-      } finally { await unlink(temporary).catch(() => {}) }
+      await privateRecordDirectory(this.directory, true, "mode")
+      await writePrivateRecord(file, JSON.stringify({ version: 1, enabled }))
+      await syncPrivateDirectory(this.directory)
     })
     return this.pending
   }

@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { chmod, link, mkdir, mkdtemp, readdir, readFile, rename, writeFile, rm, symlink, stat } from "node:fs/promises"
+import { chmod, link, mkdir, mkdtemp, open, readdir, readFile, rename, writeFile, rm, symlink, stat, type FileHandle } from "node:fs/promises"
 import path from "node:path"
 import { tmpdir } from "node:os"
 import { setImmediate as settle } from "node:timers/promises"
@@ -74,6 +74,11 @@ test("mode reads reject corrupt, oversized, invalid UTF-8, nonregular and linked
   const store = new SessionModeStore(directory, "host")
   await store.write("root", false)
   const file = path.join(directory, (await readdir(directory))[0]!)
+  const boundary = '{"version":1,"enabled":false}'.padEnd(1024)
+  await writeFile(file, boundary)
+  assert.equal(await store.read("root", signal()), false, "the full 1024-byte record remains valid")
+  await writeFile(file, `${boundary} `)
+  await assert.rejects(store.read("root", signal()), /Invalid session mode record/)
   for (const value of ["{", "null", '{"version":2,"enabled":false}', '{"version":1,"enabled":"false"}',
     '{"version":1,"enabled":true,"extra":1}', " ".repeat(1025), Buffer.from([0xff])]) {
     await writeFile(file, value)
@@ -99,6 +104,28 @@ test("failed writes reject honestly and later serialized writes recover", async 
   await rm(blocked)
   await store.write("root", false)
   assert.equal(await store.read("root", signal()), false)
+})
+
+test("mode directory sync failures reject after rename while preserving the committed value", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "reviewer-mode-"))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const store = new SessionModeStore(directory, "host")
+  await store.write("root", true)
+  const probe = await open(path.join(directory, (await readdir(directory))[0]!), "r")
+  const prototype = Object.getPrototypeOf(probe), sync = probe.sync
+  await probe.close()
+  const failure = t.mock.method(prototype, "sync", async function(this: FileHandle) {
+    if ((await this.stat()).isDirectory()) throw new Error("postcommit sync failed")
+    return sync.call(this)
+  })
+  await assert.rejects(store.write("root", false), /postcommit sync failed/)
+  await assert.rejects(store.flush(), /postcommit sync failed/)
+  assert.equal(await new SessionModeStore(directory, "host").read("root", signal()), false)
+  assert.equal((await readdir(directory)).length, 1, "temporary records are cleaned up")
+  failure.mock.restore()
+  await store.write("root", true)
+  await store.flush()
+  assert.equal(await store.read("root", signal()), true)
 })
 
 test("replaceable mode ancestors fail closed even when a disabled record disappears", async t => {

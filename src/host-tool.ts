@@ -1,6 +1,6 @@
 import { types } from "node:util"
 import { boundedHostJSON, hostJSONBytes } from "./host-request.js"
-import { sameLocation } from "./companion-protocol.js"
+import { field, catalogText as text, selectDefinition } from "./host-catalog.js"
 import type { HostLocation, JSONObject } from "./host-types.js"
 import { boundedCopy } from "./tool-evidence.js"
 
@@ -13,13 +13,6 @@ export interface RegisteredTool {
 export interface ToolDefinitionRead { definition?: RegisteredTool; limitations: string[] }
 export type ToolCatalogRead = (signal: AbortSignal) => Promise<unknown>
 
-function field(value: unknown, name: string): unknown {
-  if (!value || typeof value !== "object" || types.isProxy(value)) return
-  const descriptor = Object.getOwnPropertyDescriptor(value, name)
-  return descriptor?.enumerable && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined
-}
-const text = (value: unknown): value is string => typeof value === "string" && !!value.trim() && !value.includes("\0")
-
 /** Read only the exact selected definition. Never copy or invoke an executor.
  * JSON Schema definitions are supported; executable codecs are omitted whole.
  * The accepted installation assumption keeps this definition stable and truthful.
@@ -27,18 +20,9 @@ const text = (value: unknown): value is string => typeof value === "string" && !
 export function readRegisteredTool(value: unknown, location: HostLocation, id: string, maxBytes = hostJSONBytes, maxValues = 16384): ToolDefinitionRead {
   const unavailable = (reason: string): ToolDefinitionRead => ({ limitations: [`Tool definition unavailable: ${reason}.`] })
   try {
-    if (!sameLocation(boundedHostJSON(field(value, "location")), location)) return unavailable("scoped registry location did not match")
-    const entries = field(value, "data")
-    if (!Array.isArray(entries) || types.isProxy(entries) || entries.length > 16384) return unavailable("registry inventory unreadable or exceeds its bounded allowance")
-    let selected: unknown, bytes = 0
-    for (let i = 0; i < entries.length; i++) {
-      const entry = field(entries, String(i)), key = field(entry, "id")
-      if (!text(key) || (bytes += key.length) > hostJSONBytes) return unavailable("registry identities unreadable or exceed their bounded allowance")
-      if (key !== id) continue
-      if (selected !== undefined) return unavailable("multiple definitions have the exact tool ID")
-      selected = entry
-    }
-    if (!selected) return unavailable("no definition has the exact tool ID")
+    const selection = selectDefinition(value, location, id)
+    if ("reason" in selection) return unavailable(selection.reason)
+    const selected = selection.entry
     const definition: RegisteredTool = { id }, limitations: string[] = []
     boundedCopy({ definition }, maxBytes, maxValues)
     for (const key of ["name", "description", "input"] as const) {

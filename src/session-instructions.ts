@@ -1,8 +1,9 @@
-import { constants, type Stats } from "node:fs"
-import { lstat, mkdir, open, rename, unlink } from "node:fs/promises"
-import { createHash, randomUUID } from "node:crypto"
+import { constants } from "node:fs"
+import { lstat, open } from "node:fs/promises"
+import { createHash } from "node:crypto"
 import path from "node:path"
 import { withDeadline } from "./deadline.js"
+import { privateRecordDirectory, readPrivateRecord, syncPrivateDirectory, validPrivateRecord, writePrivateRecord } from "./private-record.js"
 
 const MAX_BYTES = 16 * 1024 * 1024
 const MAX_READS = 2
@@ -10,39 +11,6 @@ const MAX_WAITERS = 8
 const MAX_WRITES = 8
 // Base64 bounds the physical record independently of JSON string escaping.
 const recordLimit = (bytes: number) => 4 * Math.ceil(bytes / 3) + 128
-
-/** Same ownership boundary as session modes: root/same-UID code is trusted,
- * but symlinks and replaceable cross-UID namespaces are never followed. */
-async function privateDirectory(directory: string, create: boolean, signal?: AbortSignal): Promise<boolean> {
-  const uid = process.geteuid?.()
-  if (process.platform !== "linux" || uid === undefined) throw new Error("Session instructions ownership unavailable")
-  let current = "/", protectedAncestor = false
-  for (const part of ["", ...directory.split("/").filter(Boolean)]) {
-    signal?.throwIfAborted()
-    if (part) current = path.join(current, part)
-    let stat
-    try { stat = await lstat(current) }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-      if (!create) return false
-      signal?.throwIfAborted()
-      try { await mkdir(current, { mode: 0o700 }) }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error }
-      stat = await lstat(current)
-    }
-    signal?.throwIfAborted()
-    if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.uid !== 0 && stat.uid !== uid)
-      || (!protectedAncestor && (stat.mode & 0o022) && !(stat.mode & 0o1000))) throw new Error("Untrusted session instructions ancestor")
-    if (current === directory && (stat.uid !== uid || (stat.mode & 0o077))) throw new Error("Session instructions directory must be private")
-    protectedAncestor ||= stat.uid === uid && !(stat.mode & 0o077)
-  }
-  return true
-}
-
-function validRecord(stat: Stats, limit: number): boolean {
-  return stat.isFile() && stat.uid === process.geteuid?.() && stat.nlink === 1
-    && !(stat.mode & 0o077) && stat.size <= limit
-}
 
 /** Local optional guidance, not operation evidence. Independent atomic records
  * let terminals share committed values without clobbering other conversations.
@@ -105,7 +73,7 @@ export class SessionInstructionsStore {
   }
 
   private async readRecord(root: string, maxBytes: number, signal: AbortSignal): Promise<string> {
-    if (!await privateDirectory(this.directory, false, signal)) { signal.throwIfAborted(); return "" }
+    if (!await privateRecordDirectory(this.directory, false, "instructions", signal)) { signal.throwIfAborted(); return "" }
     signal.throwIfAborted()
     const file = await open(this.file(root), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     try {
@@ -113,19 +81,11 @@ export class SessionInstructionsStore {
       const limit = recordLimit(maxBytes)
       const stat = await file.stat()
       signal.throwIfAborted()
-      if (!validRecord(stat, limit)) return ""
-      const buffer = Buffer.alloc(Math.min(limit, stat.size) + 1)
-      let size = 0
-      while (size < buffer.length) {
-        signal.throwIfAborted()
-        const result = await file.read(buffer, size, buffer.length - size, size)
-        signal.throwIfAborted()
-        if (!result.bytesRead) break
-        size += result.bytesRead
-      }
-      if (size !== stat.size || !validRecord(await file.stat(), limit)) return ""
+      if (!validPrivateRecord(stat, limit)) return ""
+      const buffer = await readPrivateRecord(file, Math.min(limit, stat.size) + 1, signal)
+      if (buffer.length !== stat.size || !validPrivateRecord(await file.stat(), limit)) return ""
       signal.throwIfAborted()
-      const source = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, size))
+      const source = new TextDecoder("utf-8", { fatal: true }).decode(buffer)
       const value = JSON.parse(source)
       if (!value || Array.isArray(value) || Object.keys(value).length !== 3 || value.version !== 1
         || !Number.isInteger(value.bytes) || value.bytes < 0 || value.bytes > maxBytes || typeof value.data !== "string"
@@ -149,28 +109,18 @@ export class SessionInstructionsStore {
     const file = this.file(root)
     this.writes++
     this.pending = this.pending.catch(() => {}).then(async () => {
-      await privateDirectory(this.directory, true)
+      await privateRecordDirectory(this.directory, true, "instructions")
       try {
-        if (!validRecord(await lstat(file), recordLimit(MAX_BYTES))) throw new Error("Invalid session instructions record")
+        if (!validPrivateRecord(await lstat(file), recordLimit(MAX_BYTES))) throw new Error("Invalid session instructions record")
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
       }
-      const temporary = `${file}.${randomUUID()}.tmp`
-      try {
-        const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-        try {
-          const bytes = Buffer.from(value, "utf8")
-          await handle.writeFile(JSON.stringify({ version: 1, bytes: bytes.length, data: bytes.toString("base64") }))
-          await handle.sync()
-        } finally { await handle.close() }
-        await rename(temporary, file)
-        // Rename is the commit. A durability/cleanup failure afterward must not
-        // tell the editor that the previous committed instructions remain active.
-        try {
-          const directory = await open(this.directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
-          try { await directory.sync() } finally { await directory.close() }
-        } catch { /* The committed value is already visible to other terminals. */ }
-      } finally { await unlink(temporary).catch(() => {}) }
+      const bytes = Buffer.from(value, "utf8")
+      await writePrivateRecord(file, JSON.stringify({ version: 1, bytes: bytes.length, data: bytes.toString("base64") }))
+      // Rename is the commit. A durability/cleanup failure afterward must not
+      // tell the editor that the previous committed instructions remain active.
+      try { await syncPrivateDirectory(this.directory) }
+      catch { /* The committed value is already visible to other terminals. */ }
     }).finally(() => { this.writes-- })
     return this.pending
   }
