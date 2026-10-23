@@ -3,7 +3,7 @@ import type { LifetimeTotals } from "./lifetime.js"
 import { count, decodeEvent, entryID, HISTORY_RECORD_BYTES as bytes, HISTORY_TEXT_BYTES, HistoryInvalid, opaque, reviewID, rootID, sessionID, validatePayload, validateQuery, validateReview, validateScope } from "./history-records.js"
 import { bootstrap, migrationSchema } from "./history-migration.js"
 import { browsingSchema, HistoryBrowsing } from "./history-browsing.js"
-import { historyDelta } from "./history-statistics.js"
+import { historyDelta, permissionStatistic, permissionStatisticsSchema, replacePermissionStatistic, validatePermissionStatistic } from "./history-statistics.js"
 import { cleanupHistory, privacySchema } from "./history-privacy.js"
 import type { HistoryCleanup } from "./history-privacy.js"
 import { deleteHistory } from "./history-deletion.js"
@@ -91,6 +91,7 @@ export class HistorySQL {
         CREATE INDEX IF NOT EXISTS approvals_review_id ON approvals(review,id);
         CREATE INDEX IF NOT EXISTS history_visible_order ON history(scope,root,completed,tie,id) WHERE outcome IS NOT NULL;`)
       historySchema(db, `CREATE INDEX IF NOT EXISTS history_permission ON history(scope,root,session,permission,completed,tie,id) WHERE outcome IS NOT NULL;`)
+      historySchema(db, permissionStatisticsSchema)
       db.exec(migrationSchema)
       historySchema(db, browsingSchema)
       privacySchema(db, tables.length > 0)
@@ -152,7 +153,8 @@ export class HistorySQL {
     if (this.get("SELECT id FROM conversation_totals WHERE id=?", root)) return true
     if (this.get("SELECT id FROM conversation_bootstrap WHERE id=?", root)) return false
     // Fresh roots take constant work, preserving the synchronous ordinary-event API.
-    if (!this.get("SELECT id FROM reviews WHERE root=? LIMIT 1", root)) {
+    if (!this.get("SELECT id FROM reviews WHERE root=? LIMIT 1", root)
+      && !this.get("SELECT id FROM permission_statistics WHERE root=? LIMIT 1", root)) {
       this.run("INSERT INTO conversation_totals VALUES (?,?,?)", root, JSON.stringify(empty()), Number(!!this.get("SELECT id FROM roots WHERE id=?", root)))
       return true
     }
@@ -164,7 +166,8 @@ export class HistorySQL {
       if (saved.partial !== 0 && saved.partial !== 1) throw new HistoryInvalid("Invalid conversation coverage")
       return { totals: this.parseTotals(saved.totals), partialHistory: saved.partial === 1 }
     }
-    if (!this.get("SELECT id FROM reviews WHERE root=? LIMIT 1", root))
+    if (!this.get("SELECT id FROM reviews WHERE root=? LIMIT 1", root)
+      && !this.get("SELECT id FROM permission_statistics WHERE root=? LIMIT 1", root))
       return { totals: empty(), partialHistory: !!this.get("SELECT id FROM roots WHERE id=?", root) }
     throw new HistoryInvalid("Conversation bootstrap required")
   }
@@ -176,6 +179,23 @@ export class HistorySQL {
     if (!count(meta.revision + 1)) throw new HistoryInvalid("History revision overflow")
     this.run("INSERT INTO contributions VALUES (?)", key)
     if (JSON.stringify(totals) !== meta.totals) this.run("UPDATE meta SET totals=?,revision=revision+1 WHERE id=1", JSON.stringify(totals))
+    this.run("UPDATE conversation_totals SET totals=? WHERE id=?", JSON.stringify(conversation), root)
+  }
+  private countOutcome(entry: string, root: string, outcome: HistoryOutcome | undefined, at: number) {
+    const previous = this.get("SELECT * FROM permission_statistics WHERE id=?", entry)
+    if (previous) {
+      validatePermissionStatistic(previous as any)
+      if (previous.root !== root) throw new HistoryInvalid("Conflicting permission statistics ownership")
+    }
+    const next = permissionStatistic(outcome), prior = previous?.outcome ?? "other"
+    if (prior === next) return
+    const meta = this.get(`SELECT CASE WHEN length(CAST(totals AS BLOB))<=${bytes.totals} THEN totals END AS totals,revision FROM meta WHERE id=1`)!
+    const totals = replacePermissionStatistic(this.parseTotals(meta.totals), prior, next, at)
+    const conversation = replacePermissionStatistic(this.conversation(root).totals, prior, next, at)
+    if (!count(meta.revision + 1)) throw new HistoryInvalid("History revision overflow")
+    this.run(`INSERT INTO permission_statistics VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET outcome=excluded.outcome,at=excluded.at`,
+      entry, root, next, at)
+    this.run("UPDATE meta SET totals=?,revision=revision+1 WHERE id=1", JSON.stringify(totals))
     this.run("UPDATE conversation_totals SET totals=? WHERE id=?", JSON.stringify(conversation), root)
   }
   private event(e: Exclude<HistoryEvent, { type: "sessionDeleted" }>) {
@@ -222,7 +242,7 @@ export class HistorySQL {
             id, entry, root, session, review, state, "automatic" in e ? Number(e.automatic) : old?.automatic ?? -1, e.at)
         } else if (old.automatic === -1 && "automatic" in e)
           this.run("UPDATE approvals SET automatic=? WHERE id=?", Number(e.automatic), id)
-        this.outcome(c.scope, c.permission, entry); this.revision(root)
+        this.countOutcome(entry, root, this.outcome(c.scope, c.permission, entry), e.at); this.revision(root)
       }
       if (e.type === "approvalConfirmed") {
         this.contribute(opaque("approvalConfirmed", id), delta, root)
@@ -249,20 +269,21 @@ export class HistorySQL {
         this.run("INSERT INTO payloads VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body", id, JSON.stringify(e.payload))
       }
       this.run("UPDATE history SET resolution=? WHERE scope=? AND permission=?", resolution, c.scope, c.permission)
-      this.outcome(c.scope, c.permission, entry); this.revision(root)
+      this.countOutcome(entry, root, this.outcome(c.scope, c.permission, entry), e.at); this.revision(root)
     }
   }
-  private outcome(scope: string, permission: string, entry: string) {
+  private outcome(scope: string, permission: string, entry: string): HistoryOutcome | undefined {
     const row = this.get("SELECT resolution FROM history WHERE scope=? AND permission=? LIMIT 1", scope, permission)
-    if (!row) return
     const auto = this.get("SELECT review FROM approvals WHERE entry=? AND state='confirmed' AND automatic=1 ORDER BY id LIMIT 1", entry)
     const manual = this.get("SELECT review FROM approvals WHERE entry=? AND state='confirmed' AND automatic=0 ORDER BY id LIMIT 1", entry)
+    if (!row) return auto ? "auto" : manual ? "manual" : undefined
     const uncertain = this.get("SELECT id FROM approvals WHERE entry=? AND state IN ('pending','uncertain') LIMIT 1", entry)
     const outcome = row.resolution === "conflict" || (row.resolution === "rejected" && (auto || manual)) ? null
       : row.resolution === "rejected" ? "rejected" : auto ? "auto" : manual ? "manual"
       : row.resolution === "cancelled" && uncertain ? null : row.resolution
     const resolution = row.resolution === "approved" ? auto ? "auto" : manual ? "manual" : row.resolution : row.resolution
     this.run("UPDATE history SET outcome=?,approving=?,resolution=? WHERE scope=? AND permission=?", outcome, auto?.review ?? manual?.review ?? null, resolution, scope, permission)
+    return outcome ?? undefined
   }
   query(q: HistoryQuery): HistoryResult {
     for (;;) {
@@ -279,7 +300,8 @@ export class HistorySQL {
         const root = rootID(conversation)
         if (!this.get("SELECT id FROM conversation_totals WHERE id=?", root)
           && (this.get("SELECT id FROM conversation_bootstrap WHERE id=?", root)
-            || this.get("SELECT id FROM reviews WHERE root=? LIMIT 1", root))) return { pending: root }
+            || this.get("SELECT id FROM reviews WHERE root=? LIMIT 1", root)
+            || this.get("SELECT id FROM permission_statistics WHERE root=? LIMIT 1", root))) return { pending: root }
       }
       if (q.type === "totals") {
         const row = this.get(`SELECT revision,CASE WHEN length(CAST(totals AS BLOB))<=${bytes.totals} THEN totals END AS totals FROM meta WHERE id=1`)!

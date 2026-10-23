@@ -346,11 +346,14 @@ Received usage counts even if a review fails or is interrupted. Unreported charg
 are missing from the totals.
 
 Both views show completed reviews, retries, tokens, cost, Safe/Unsafe
-percentages, confirmed auto-approvals, and average time to a rating and full report.
+percentages, confirmed auto-approvals, manually approved and rejected permissions,
+and average time to a rating and full report. Manual approvals and rejections count
+once per permission, including when it has multiple reviews. Manual approval requires
+known attribution; an unattributed native Once reply remains unclassified.
 Percentages use recorded completed reviews as their denominator. Each validated
 review counts once, even without usage data; a fresh review after re-enabling counts
 again. Retries count extra API attempts actually dispatched, including format
-corrections and transport recovery. Manual approvals are not auto-approvals.
+corrections and transport recovery.
 Timings run from evaluation start, including evidence and retries, to the accepted
 attempt's first rating and final validated response, excluding countdown
 time. Non-streaming reviews use the final response time for both measurements.

@@ -29,6 +29,7 @@ export const HISTORY_RECORD_BYTES = {
   totals: objectBytes({ requests: numberBytes, tokenRequests: numberBytes, input: numberBytes, output: numberBytes,
     priced: numberBytes, cost: numberBytes, since: numberBytes, safe: numberBytes, unsafe: numberBytes, ratingsSince: numberBytes,
     activity: objectBytes({ reviews: numberBytes, usageRequests: numberBytes, retries: numberBytes, autoApproved: numberBytes,
+      manuallyApproved: numberBytes, rejected: numberBytes,
       timedReviews: numberBytes, meanFullReportMs: numberBytes, meanRatingMs: numberBytes, since: numberBytes }) }),
 } as const
 export class HistoryInvalid extends Error {}

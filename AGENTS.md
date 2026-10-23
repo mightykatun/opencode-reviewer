@@ -133,7 +133,7 @@ existing user directories.
   incompatible public API data stays manual rather than being guessed. Development
   and CI target the latest stable V2, not a fixed host release. Development uses V2
   ranges for `@opencode/plugin`, `@opencode/client` and
-  `@opencode/theme`. OpenTUI is 0.5.17 and Solid is 1.9.15, matching the host.
+  `@opencode/theme`. OpenTUI is 0.6.6 and Solid is 1.9.15, matching the host.
   Use public APIs/slots, never private UI imports or native approval-dialog patches.
 - Package and plugin ID are `opencode-reviewer`. The build starts at `src/plugin.ts`;
   its shared V2 setup selects companion/CLI lifecycle without eager terminal runtime imports.
@@ -448,7 +448,11 @@ existing user directories.
   through `usage-v4/` untouched. `history-statistics.ts` applies deduplicated deltas
   to lifetime/conversation totals transactionally. Conversation baselines may use
   attributable old rows; lifetime must never be reconstructed from detail rows.
-  Deleting details must not reduce accumulated totals.
+  Deleting details must not reduce accumulated totals. Manual approvals and rejections
+  count once per permission through the opaque `permission_statistics` ledger;
+  attribution corrections update both scopes atomically. Native Once without proven
+  attribution stays unclassified. Preserve the ledger through detail deletion and
+  keep its conversation bootstrap bounded; normalize older aggregate fields internally.
 - Preserve private ownership and nonreplaceable paths for saved modes and history.
   Validate existing SQLite database/sidecar metadata with lstat inside the trusted
   namespace, never open/close them for inspection: close can release another

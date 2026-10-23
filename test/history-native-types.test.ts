@@ -63,6 +63,8 @@ test("native history saves on once, but automatic attribution requires exact loc
     permission: "permission", review: "execution", category: "edit", configuredModel: config.model, provider: config.baseURL })
   assert.equal(f.totals().requests, 1)
   assert.equal(f.totals().activity.autoApproved, 1)
+  assert.equal(f.totals().activity.manuallyApproved, 0)
+  assert.equal(f.totals().activity.rejected, 0)
   assert.equal(f.events.filter(event => event.type === "permissionResolved").length, 1)
   assert.equal(Object.hasOwn(request, "permission"), false)
   assert.equal(Object.hasOwn(request, "tool"), false)
@@ -76,6 +78,7 @@ test("external native once resolution saves the body without inventing approving
   assert.equal(f.history().record?.outcome, "approved")
   assert.equal(f.totals().safe, 1)
   assert.equal(f.totals().activity.autoApproved, 0)
+  assert.equal(f.totals().activity.manuallyApproved, 0)
   assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 1)
   assert.equal(f.history().record?.payload.desc, "Final validated native report.")
 })
@@ -142,6 +145,8 @@ for (const reply of ["once", "always", "reject"] as const) test(`fast review com
   assert.equal(f.history().record?.payload.safe, false)
   assert.equal(f.history().record?.outcome, reply === "once" ? "approved" : reply === "always" ? "manual" : "rejected")
   assert.equal(f.totals().activity.autoApproved, 0)
+  assert.equal(f.totals().activity.manuallyApproved, reply === "always" ? 1 : 0)
+  assert.equal(f.totals().activity.rejected, reply === "reject" ? 1 : 0)
 })
 
 test("a rejected fast remainder counts received usage and confirmation without storing its preview", async t => {

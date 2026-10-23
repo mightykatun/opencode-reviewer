@@ -7,13 +7,13 @@ import path from "node:path"
 const fingerprints = {
   "index.js": "70f5649897f56c66ab0cbf095915c68f6ac7a1e2089ff215504d0d77a347e317",
   "schema.js": "d958ce796a79a06449ad6f9083a106b72459c4aa5d37f1727f77936a406e2055",
-  "syntax.js": "bcac1cbfad2dcf80c1010c5ae8befc386ec48a931c4fc8cfef348284a6b6957f",
+  "syntax.js": "d31a110203ddfb4849440522951f82f02de1d5028f9a4174cfb45ee0a6e69358",
 }
 
 export function verifyThemeSyntaxInputs(manifest, digests) {
   if (manifest?.name !== "@opencode/theme" || !/^2\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(manifest.version)
     || manifest.exports?.["./tui"]?.import !== "./dist/tui/index.js"
-    || manifest.dependencies?.["@opentui/core"] !== "0.5.17"
+    || manifest.dependencies?.["@opentui/core"] !== "0.6.6"
     || manifest.dependencies?.effect !== "4.0.1") {
     throw new Error("Pinned theme package identity or public barrel changed")
   }
@@ -26,14 +26,12 @@ export function verifyThemeSyntaxInputs(manifest, digests) {
 }
 
 export function adaptThemeSyntax(source) {
-  const signature = "export function generateSyntax(theme) {"
-  const close = "\n    ]);\n}"
-  if (typeof source !== "string" || source.split(signature).length !== 2 || source.split(close).length !== 2) {
+  const signature = "export function generateSyntax(theme, owner) {"
+  const factory = "return SyntaxStyle.fromTheme(rules, owner);"
+  if (typeof source !== "string" || source.split(signature).length !== 2 || source.split(factory).length !== 2) {
     throw new Error("Pinned theme syntax source changed")
   }
   return source
-    .replace(signature, "export function generateSyntax(theme, owner) {")
-    .replace(close, "\n    ], owner);\n}")
 }
 
 export const themeSyntaxOnlyPlugin = {
@@ -53,7 +51,7 @@ export const themeSyntaxOnlyPlugin = {
         return { contents: adaptThemeSyntax(sources["syntax.js"]), loader: "js" }
       }
       // The public barrel eagerly initializes Effect schemas and theme parsers.
-      // Replace only that barrel; adapt syntax.js to forward the SyntaxStyle owner.
+      // Replace only that barrel; reviewed syntax.js forwards the SyntaxStyle owner.
       return { contents: 'export { generateSyntax } from "./syntax.js";', loader: "js" }
     })
   },

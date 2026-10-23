@@ -749,6 +749,8 @@ const savedHistory = async () => {
     assert.equal(total.safe, 1)
     assert.equal(total.unsafe, 0)
     assert.equal(total.activity.retries, 0)
+    assert.equal(total.activity.manuallyApproved, 0)
+    assert.equal(total.activity.rejected, 0)
     assert.equal(total.activity.timedReviews, 1)
   }
   return { ...value, context, payload, totals }
@@ -2650,6 +2652,8 @@ createInterface({input:process.stdin}).on('line',line=>{
       assert.match(screen, /Safe: 1 \(100\.0%\)/)
       assert.match(screen, /Unsafe: 0 \(0\.0%\)/)
       assert.match(screen, /Auto-approved: 1 \(100\.0%\)/)
+      assert.match(screen, /Manually approved: 0 \(0\.0%\)/)
+      assert.match(screen, /Rejected: 0 \(0\.0%\)/)
       assert.ok(record.statisticsReport?.chunks.some(chunk => chunk.text === "1 (100.0%)" && chunk.safe), "Safe values use the actual success theme color")
       assert.ok(record.statisticsReport?.chunks.some(chunk => chunk.text === "0 (0.0%)" && chunk.unsafe), "Unsafe values use the actual error theme color")
       assert.doesNotMatch(screen, /Analysis history|Permission analysis|Loading recorded usage|statistics unavailable/)
@@ -2753,7 +2757,9 @@ createInterface({input:process.stdin}).on('line',line=>{
      assert.equal(row.outcome, outcome)
      for (const total of [JSON.parse(historyEvidence.meta.totals), ...historyEvidence.conversations.map(item => JSON.parse(item.totals))]) {
        assert.equal(total.safe, 0); assert.equal(total.unsafe, 1)
-       assert.equal(total.activity.reviews, 1); assert.equal(total.activity.autoApproved, 0)
+        assert.equal(total.activity.reviews, 1); assert.equal(total.activity.autoApproved, 0)
+        assert.equal(total.activity.manuallyApproved, manualReply === "always" ? 1 : 0)
+        assert.equal(total.activity.rejected, manualReply === "reject" ? 1 : 0)
        assert.equal(total.input, 23); assert.equal(total.output, 11)
      }
      const opened = await command({ type: "keymap", id: "reviewer.history", dispatch: true })
@@ -2767,9 +2773,40 @@ createInterface({input:process.stdin}).on('line',line=>{
      }
      await until("rendered saved Unsafe history", record => { try { historical(record, capture()); return true } catch { return false } })
      await saveCapture("unsafe-native-decision-history")
-     await negativeWindow("saved Unsafe browsing cannot repeat the native decision or execution", [], (await observations()).replied,
-       allowWrites ? markerLine : null, 1, 1500, historical)
-     await publish(path.join(artifacts, "unsafe-native-decision-history.json"), historyEvidence)
+      await negativeWindow("saved Unsafe browsing cannot repeat the native decision or execution", [], (await observations()).replied,
+        allowWrites ? markerLine : null, 1, 1500, historical)
+      runtime.tmux("send-keys", "-t", "v2-review", "Escape")
+      await until("native decision history closes before statistics", record => record.mode === "base" && !capture().includes("Analysis history"))
+      const statistics = await command({ type: "keymap", id: "reviewer.lifetime", dispatch: true })
+      assert.equal(statistics.registered, true); assert.equal(statistics.enabled, true)
+      const statisticsScreen = (record, screen) => {
+        assert.equal(record.mode, "modal")
+        assert.match(screen, /Reviewer statistics/)
+        assert.match(screen, /Reviews: 1/)
+        assert.match(screen, /Auto-approved: 0 \(0\.0%\)/)
+        assert.ok(screen.includes(manualReply === "always" ? "Manually approved: 1 (100.0%)" : "Manually approved: 0 (0.0%)"))
+        assert.ok(screen.includes(manualReply === "reject" ? "Rejected: 1 (100.0%)" : "Rejected: 0 (0.0%)"))
+        assert.doesNotMatch(screen, /Analysis history|Loading recorded usage|statistics unavailable/)
+      }
+      await until("native decision lifetime statistics rendered", record => {
+        try { statisticsScreen(record, capture()); return true } catch { return false }
+      })
+      await saveCapture("native-decision-statistics-lifetime")
+      const tabs = () => runtime.tmux("capture-pane", "-p", "-e", "-t", "v2-review").split("\n")
+        .find(line => line.includes("Conversation") && line.includes("Lifetime"))
+      const lifetimeTabs = tabs()
+      assert.ok(lifetimeTabs)
+      runtime.tmux("send-keys", "-t", "v2-review", "Tab")
+      await until("native decision statistics switches scope", () => tabs() !== lifetimeTabs)
+      await until("native decision conversation statistics rendered", record => {
+        try { statisticsScreen(record, capture()); return true } catch { return false }
+      })
+      await saveCapture("native-decision-statistics-conversation")
+      await negativeWindow("native decision statistics cannot repeat the decision or execution", [], (await observations()).replied,
+        allowWrites ? markerLine : null, 1, 1500, statisticsScreen)
+      runtime.tmux("send-keys", "-t", "v2-review", "Escape")
+      await until("native decision statistics closes", record => record.mode === "base" && !capture().includes("Reviewer statistics"))
+      await publish(path.join(artifacts, "unsafe-native-decision-history.json"), historyEvidence)
    } else if (scenario === "advisory") {
     const interrupted = (await observations()).interrupted
     assert.equal(interrupted.length, 1)

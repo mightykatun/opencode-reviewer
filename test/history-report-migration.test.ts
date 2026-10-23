@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { HistorySQL, type HistoryDatabase, type HistorySelection } from "../src/history-schema.js"
+import { HistorySQL, type HistoryDatabase, type HistorySelection, type HistoryTotals } from "../src/history-schema.js"
 import { encodeEvent, entryID, reviewID, rootID, sessionID, type HistoryReview } from "../src/history-records.js"
 
 const context: HistoryReview = { scope: "/legacy", root: "root", session: "root", permission: "p", review: "r",
@@ -41,7 +41,7 @@ function fixture(t: TestContext, count = 1) {
 }
 
 test("legacy report migration preserves IDs, bodies, accounting, replay and foreign keys while retaining re-reviews", t => {
-  const f = fixture(t), totals = f.sql.query({ type: "totals" })
+  const f = fixture(t), totals = f.sql.query({ type: "totals" }) as HistoryTotals
   const migrated = f.reopen()
   const original = migrated.query(query) as HistorySelection
   assert.equal(original.entry, entryID(context))
@@ -62,8 +62,11 @@ test("legacy report migration preserves IDs, bodies, accounting, replay and fore
   assert.equal(latest.entry, reviewID(later))
   assert.equal(latest.older, original.entry)
   assert.equal(latest.record?.payload.safe, false)
-  assert.deepEqual(migrated.query({ type: "totals" }), totals)
+  const resolvedTotals = { ...totals, revision: totals.revision + 1,
+    totals: { ...totals.totals, activity: { ...totals.totals.activity, manuallyApproved: 1 } } }
+  assert.deepEqual(migrated.query({ type: "totals" }), resolvedTotals, "the new manual decision counts once without reconstructing old history")
   assert.deepEqual(migrated.apply("new", 1, encodeEvent(event)), { replay: true })
+  assert.deepEqual(migrated.query({ type: "totals" }), resolvedTotals)
   assert.equal((f.reopen().query({ ...query, entry: original.entry }) as HistorySelection).record?.payload.desc, "legacy 0")
   assert.deepEqual(f.db.prepare("PRAGMA foreign_key_check").all(), [])
   assert.equal(f.db.prepare("PRAGMA integrity_check").get()!.integrity_check, "ok")

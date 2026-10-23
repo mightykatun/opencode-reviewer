@@ -80,7 +80,7 @@ test("normal checks aggregate every pure helper while keeping host and built-pac
     assert.match(lock.packages[`node_modules/${name}`].version, /^2\.\d+\.\d+$/)
   }
   assert.equal(lock.packages["node_modules/@opencode/client"].version, lock.packages["node_modules/@opencode/plugin"].version)
-  for (const name of ["@opentui/core", "@opentui/keymap", "@opentui/solid"]) assert.equal(pkg.devDependencies[name], "0.5.17")
+  for (const name of ["@opentui/core", "@opentui/keymap", "@opentui/solid"]) assert.equal(pkg.devDependencies[name], "0.6.6")
   assert.equal(pkg.devDependencies["solid-js"], "1.9.15")
   assert.equal(pkg.overrides.seroval, "1.6.3", "The patched serializer must also override peer-owned installations")
   const serializers = Object.entries(lock.packages).filter(([name]) => name === "node_modules/seroval" || name.endsWith("/node_modules/seroval"))

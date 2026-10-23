@@ -1,6 +1,6 @@
 {
   "name": "opencode-reviewer",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "license": "MIT",
   "publishConfig": {
     "access": "public",
@@ -62,9 +62,9 @@
     "@opencode/client": "^2.0.0",
     "@opencode/plugin": "^2.0.0",
     "@opencode/theme": "^2.0.0",
-    "@opentui/core": "0.5.17",
-    "@opentui/keymap": "0.5.17",
-    "@opentui/solid": "0.5.17",
+    "@opentui/core": "0.6.6",
+    "@opentui/keymap": "0.6.6",
+    "@opentui/solid": "0.6.6",
     "@types/node": "24.12.2",
     "babel-preset-solid": "1.9.10",
     "esbuild": "0.28.2",

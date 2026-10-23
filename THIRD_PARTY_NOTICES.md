@@ -73,18 +73,18 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-# Bundled dependency: @opencode/theme 2.0.31
+# Bundled dependency: @opencode/theme 2.1.3
 
-https://github.com/anomalyco/opencode/tree/v2.0.31/packages/theme
+https://github.com/anomalyco/opencode/tree/v2.1.3/packages/theme
 
 The source-fingerprinted theme syntax helper is bundled in the terminal payload.
-A build-time adapter replaces its public barrel with a syntax-only re-export and
-adapts `generateSyntax` to forward the renderer owner to `SyntaxStyle.fromTheme`
-for OpenTUI 0.6 compatibility. The upstream syntax rules remain unchanged;
+A build-time adapter replaces its public barrel with a syntax-only re-export.
+The upstream helper forwards the renderer owner to `SyntaxStyle.fromTheme`.
+The syntax rules remain unchanged;
 unused theme parsers, schemas and their Effect dependency are not bundled.
 Solid and OpenTUI remain host-provided external dependencies.
 
-License source: https://github.com/anomalyco/opencode/blob/v2.0.31/LICENSE
+License source: https://github.com/anomalyco/opencode/blob/v2.1.3/LICENSE
 
 ```text
 MIT License

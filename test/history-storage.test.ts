@@ -350,6 +350,9 @@ test("two real worker clients concurrently initialize schema and share committed
   assert.equal(totals.totals.requests, 2); assert.equal(totals.totals.cost, 2)
   const marker = "PRIVATE_WORKER_REPORT_TO_ERASE_8b183f"
   await workers[0]!.call({ type: "apply", writer: "worker0", sequence: 2, event: encodeEvent(resolve(context, { ...payload, desc: marker.repeat(1000) })) })
+  const resolvedTotals = { ...totals, revision: totals.revision + 1,
+    totals: { ...totals.totals, activity: { ...totals.totals.activity, manuallyApproved: 1 } } }
+  assert.deepEqual(await workers[1]!.call({ type: "query", query: { type: "totals" } }), resolvedTotals)
   const reader = new DatabaseSync(file)
   try {
     reader.exec("BEGIN"); reader.prepare("SELECT body FROM payloads").get()
@@ -364,7 +367,7 @@ test("two real worker clients concurrently initialize schema and share committed
     }
     assert.equal(reader.prepare("SELECT count(*) n FROM payloads").get()!.n, 0)
     assert.equal(reader.prepare("SELECT count(*) n FROM tombstones").get()!.n, 1)
-    assert.deepEqual(await workers[1]!.call({ type: "query", query: { type: "totals" } }), totals)
+    assert.deepEqual(await workers[1]!.call({ type: "query", query: { type: "totals" } }), resolvedTotals)
   } finally { reader.close() }
 })
 

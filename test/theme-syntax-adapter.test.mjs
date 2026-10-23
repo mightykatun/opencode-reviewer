@@ -6,15 +6,15 @@ import path from "node:path"
 import { adaptThemeSyntax, themeSyntaxOnlyPlugin, verifyThemeSyntaxInputs, verifyThemeSyntaxBuild } from "../scripts/theme-syntax-adapter.mjs"
 
 const manifest = {
-  name: "@opencode/theme", version: "2.0.31",
+  name: "@opencode/theme", version: "2.1.3",
   exports: { "./tui": { import: "./dist/tui/index.js" } },
-  dependencies: { "@opentui/core": "0.5.17", effect: "4.0.1" },
+  dependencies: { "@opentui/core": "0.6.6", effect: "4.0.1" },
 }
 // Independent published-input expectations, not imported adapter constants.
 const digests = {
   "index.js": "70f5649897f56c66ab0cbf095915c68f6ac7a1e2089ff215504d0d77a347e317",
   "schema.js": "d958ce796a79a06449ad6f9083a106b72459c4aa5d37f1727f77936a406e2055",
-  "syntax.js": "bcac1cbfad2dcf80c1010c5ae8befc386ec48a931c4fc8cfef348284a6b6957f",
+  "syntax.js": "d31a110203ddfb4849440522951f82f02de1d5028f9a4174cfb45ee0a6e69358",
 }
 
 test("theme adapter admits only the reviewed package identity and exact public build inputs", () => {
@@ -55,8 +55,10 @@ test("the build adapter hashes actual adjacent sources and rejects changed or mi
   const upstream = await readFile(new URL("./syntax.js", import.meta.resolve("@opencode/theme/tui")), "utf8")
   const adapted = adaptThemeSyntax(upstream)
   assert.match(adapted, /^import \{ SyntaxStyle \} from "@opentui\/core";\nexport function generateSyntax\(theme, owner\) \{/)
-  assert.match(adapted, /\n    \], owner\);\n\}\nfunction rule\(/)
-  assert.throws(() => adaptThemeSyntax(upstream.replace("generateSyntax(theme)", "generateSyntax()")), /Pinned theme syntax source changed/)
+  assert.equal(adapted, upstream)
+  assert.match(adapted, /return SyntaxStyle\.fromTheme\(rules, owner\);/)
+  assert.throws(() => adaptThemeSyntax(upstream.replace("generateSyntax(theme, owner)", "generateSyntax()")), /Pinned theme syntax source changed/)
+  assert.throws(() => adaptThemeSyntax(upstream.replace("fromTheme(rules, owner)", "fromTheme(rules)")), /Pinned theme syntax source changed/)
 })
 
 test("theme adapter checks resolve installed inputs outside the active policy checkout", async t => {

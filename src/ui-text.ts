@@ -114,6 +114,8 @@ export const uiText = {
     dialogUnsafeLabel: "Unsafe: ",
     dialogRating: statisticsRating,
     dialogAutoApproved: (count: number, percentage: string | undefined) => `Auto-approved: ${count} (${percentage === undefined ? "n/a" : `${percentage}%`})`,
+    dialogManuallyApproved: (count: number, percentage: string | undefined) => `Manually approved: ${count} (${percentage === undefined ? "n/a" : `${percentage}%`})`,
+    dialogRejected: (count: number, percentage: string | undefined) => `Rejected: ${count} (${percentage === undefined ? "n/a" : `${percentage}%`})`,
     averageFullReport: (seconds: string | undefined) => `Average time to full report: ${seconds === undefined ? "unavailable" : `${seconds}s`}`,
     averageRating: (seconds: string | undefined) => `Average time to rating: ${seconds === undefined ? "unavailable" : `${seconds}s`}`,
     ratingsSince: (date: string) => `Ratings recorded since: ${date}`,

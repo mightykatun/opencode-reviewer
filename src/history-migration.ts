@@ -1,6 +1,6 @@
 import { add, empty, validate, type LifetimeTotals } from "./lifetime.js"
 import { HISTORY_RECORD_BYTES as bytes, HistoryInvalid, rootID, reviewID, sessionID, validateEvent, validateReview, type HistoryEvent } from "./history-records.js"
-import { historyDelta } from "./history-statistics.js"
+import { historyDelta, replacePermissionStatistic, validatePermissionStatistic } from "./history-statistics.js"
 import type { HistoryDatabase } from "./history-schema.js"
 
 export const HISTORY_BOOTSTRAP_STEPS = 128
@@ -33,7 +33,7 @@ export function bootstrap(db: HistoryDatabase, root: string): { done: boolean; s
   let review = saved?.review ?? "", phase = saved?.phase ?? 0, after = saved?.after ?? ""
   let totals: LifetimeTotals = saved ? validate(JSON.parse(saved.totals)) : empty()
   let partial = saved?.partial ?? Number(!!get("SELECT id FROM roots WHERE id=?", root))
-  if (![0, 1, 2].includes(phase) || ![0, 1].includes(partial) || !/^(?:[a-f0-9]{64})?$/.test(review)
+  if (![0, 1, 2, 3].includes(phase) || ![0, 1].includes(partial) || !/^(?:[a-f0-9]{64})?$/.test(review)
     || !/^(?:[a-f0-9]{64})?$/.test(after)) throw new HistoryInvalid("Invalid bootstrap cursor")
   const include = (event: HistoryEvent) => { validateEvent(event); totals = add(totals, historyDelta(event)) }
   const end = performance.now() + HISTORY_BOOTSTRAP_MS
@@ -44,7 +44,7 @@ export function bootstrap(db: HistoryDatabase, root: string): { done: boolean; s
       const row = get(`SELECT id,CASE WHEN length(CAST(context AS BLOB))<=${bytes.context} THEN context END AS context,
         CASE WHEN length(CAST(accepted AS BLOB))<=${bytes.accepted} THEN accepted END AS accepted,accepted IS NOT NULL AS hasAccepted
         FROM reviews WHERE root=? AND id>? ORDER BY id LIMIT 1`, root, review)
-      if (!row) { done = true; break }
+      if (!row) { phase = 3; after = ""; continue }
       const context = JSON.parse(row.context); validateReview(context)
       if (rootID(context) !== root || reviewID(context) !== row.id) throw new HistoryInvalid("Invalid conversation ownership")
       if (row.hasAccepted) {
@@ -52,6 +52,17 @@ export function bootstrap(db: HistoryDatabase, root: string): { done: boolean; s
         include({ type: "reviewAccepted", context, at: accepted?.completedAt, accepted })
       }
       partial = 1; review = row.id; phase = 1; after = ""
+      continue
+    }
+    if (phase === 3) {
+      // These are recorded accounting facts, not reconstructed lifetime history.
+      // Keep the same bounded cursor even when a permission has many re-reviews.
+      const fact = get("SELECT id,root,outcome,at FROM permission_statistics WHERE root=? AND id>? ORDER BY id LIMIT 1", root, after)
+      if (!fact) { done = true; break }
+      validatePermissionStatistic(fact)
+      if (fact.root !== root) throw new HistoryInvalid("Invalid conversation outcome ownership")
+      totals = replacePermissionStatistic(totals, "other", fact.outcome, fact.at)
+      after = fact.id
       continue
     }
     const row = get(`SELECT CASE WHEN length(CAST(context AS BLOB))<=${bytes.context} THEN context END AS context

@@ -9,11 +9,11 @@ test("pure aggregate helpers retain weighted means and exact compact presentatio
       activity: { ...empty().activity, reviews: 1, timedReviews: 1, meanFullReportMs: full, meanRatingMs: rating, since: 1 } })
   }
   totals = add(totals, { ...empty(), requests: 2, tokenRequests: 1, input: 100, output: 20, priced: 2, cost: 0.15, since: 2,
-    activity: { ...empty().activity, usageRequests: 2, retries: 2, autoApproved: 1, since: 2 } })
+    activity: { ...empty().activity, usageRequests: 2, retries: 2, autoApproved: 1, manuallyApproved: 2, rejected: 1, since: 2 } })
   assert.equal(totals.activity.timedReviews, 4)
   assert.equal(lifetimeReport(totals), [
     "Reviews: 4", "Retries: 2", "Tokens: 100 in 20 out (partial coverage)", "Cost: $0.1500", "",
-    "Safe: 2 (50.0%)", "Unsafe: 2 (50.0%)", "Auto-approved: 1 (25.0%)", "",
+    "Safe: 2 (50.0%)", "Unsafe: 2 (50.0%)", "Auto-approved: 1 (25.0%)", "Manually approved: 2 (50.0%)", "Rejected: 1 (25.0%)", "",
     "Average time to full report: 4.00s", "Average time to rating: 0.55s",
   ].join("\n"))
   assert.equal(totals.since, 2); assert.equal(totals.ratingsSince, 1)
@@ -22,7 +22,7 @@ test("pure aggregate helpers retain weighted means and exact compact presentatio
 test("empty, unpriced, zero cost and independent coverage keep their exact meanings", () => {
   assert.equal(lifetimeCost(empty()), "lifetime: no recorded usage")
   assert.equal(lifetimeReport(empty()), ["Reviews: 0", "Retries: 0", "Tokens: unavailable", "Cost: unavailable", "",
-    "Safe: 0 (n/a)", "Unsafe: 0 (n/a)", "Auto-approved: 0 (n/a)", "",
+    "Safe: 0 (n/a)", "Unsafe: 0 (n/a)", "Auto-approved: 0 (n/a)", "Manually approved: 0 (n/a)", "Rejected: 0 (n/a)", "",
     "Average time to full report: unavailable", "Average time to rating: unavailable"].join("\n"))
   const unpriced = { ...empty(), requests: 1, tokenRequests: 1, input: 10, output: 2, since: 1 }
   assert.equal(lifetimeCost(unpriced), "lifetime: cost unavailable")
@@ -41,11 +41,14 @@ test("invalid aggregate components and overflow fail explicitly", () => {
     { safe: Number.MAX_SAFE_INTEGER, unsafe: 1 }, { requests: 1 }, { cost: Infinity }, { input: 1 }]) {
     assert.throws(() => validate({ ...original, ...change }))
   }
-  for (const change of [{ retries: -1 }, { autoApproved: 0.5 }, { timedReviews: 2 }, { meanRatingMs: 1001 },
+  for (const change of [{ retries: -1 }, { autoApproved: 0.5 }, { manuallyApproved: -1 }, { rejected: 0.5 },
+    { rejected: Infinity }, { timedReviews: 2 }, { meanRatingMs: 1001 },
     { meanFullReportMs: Infinity }, { since: null }, { timedReviews: 0 }, { usageRequests: 1 }]) {
     assert.throws(() => validate({ ...original, activity: { ...original.activity, ...change } }))
   }
   assert.throws(() => add({ ...original, safe: Number.MAX_SAFE_INTEGER }, original))
+  assert.throws(() => add({ ...original, activity: { ...original.activity, manuallyApproved: Number.MAX_SAFE_INTEGER } },
+    { ...original, activity: { ...original.activity, manuallyApproved: 1 } }))
   assert.equal(validate(original), original)
 })
 
