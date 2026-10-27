@@ -1,6 +1,7 @@
 import path from "node:path"
 import { parse } from "shell-quote"
 import { reviewStage } from "./deadline.js"
+import { runtimeOperands } from "./shell-runtimes.js"
 
 const VARIABLE = "\u0000UNRESOLVED_VARIABLE\u0000"
 const python = /^python(?:[23](?:\.\d+)*)?$/
@@ -177,8 +178,8 @@ class DiscoveryState {
 interface Invocation { executable: string; builtins: boolean; builtinOnly: boolean }
 
 /** Unwrap only supported launchers, retaining whether shell builtins can run. */
-function unwrap(args: Words, state: DiscoveryState): Invocation | undefined {
-  let builtins = true, builtinOnly = false, wrappers = 0
+function unwrap(args: Words, state: DiscoveryState, initialBuiltins = true): Invocation | undefined {
+  let builtins = initialBuiltins, builtinOnly = false, wrappers = 0
   while (args.peek() && assignment.test(args.peek()!)) state.observeAssignment(args.take()!)
   while (args.peek()) {
     const name = args.peek()!
@@ -367,7 +368,7 @@ function interpreter(isPython: boolean, args: Words, state: DiscoveryState) {
   }
 }
 
-function visit(args: string[], state: DiscoveryState, next?: string) {
+function visit(args: string[], state: DiscoveryState, next?: string, external = false, forwardDepth = 0) {
   // Negation changes pipeline status, not a builtin's in-process effects. Do
   // not reuse ordinary && success inference or preserve cwd for unknown operands.
   if (args[0] === "!") {
@@ -382,7 +383,7 @@ function visit(args: string[], state: DiscoveryState, next?: string) {
     return
   }
   const words = new Words(args, state.budget)
-  const invocation = unwrap(words, state)
+  const invocation = unwrap(words, state, !external)
   if (!invocation) return
   const { executable, builtins, builtinOnly } = invocation
   if (!literal(executable)) {
@@ -400,6 +401,20 @@ function visit(args: string[], state: DiscoveryState, next?: string) {
   const program = programIdentity(executable)
   if (program === "cat" || program === "head") return reader(program, words, state)
   if (program === "python" || program === "shell") return interpreter(program === "python", words, state)
+  const runtime = runtimeOperands(executable, [...words.values()])
+  if (runtime.handled) {
+    if (state.uncertainWord) {
+      state.note("Unquoted glob or unresolved command word prevents reliable runtime file discovery.")
+      return
+    }
+    runtime.files.forEach(file => state.add(file))
+    runtime.limitations.forEach(text => state.note(text))
+    if (runtime.child) {
+      if (forwardDepth >= 8) state.note("Indirect launcher nesting exceeds the eight-child limit; source was not resolved.")
+      else visit(runtime.child, state, undefined, true, forwardDepth + 1)
+    }
+    return
+  }
   if (executable.includes("/")) state.add(executable, true)
   else if (/\.(py|sh|bash|zsh)$/.test(executable)) state.note(`Executable ${executable} uses PATH lookup; its file was not resolved.`)
   else if (["sudo", "su", "ssh", "docker", "podman", "eval", "xargs", "find", "npm", "npx", "make", "uv", "poetry"].includes(executable)) {
