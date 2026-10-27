@@ -103,6 +103,8 @@ test("file-descriptor redirects are not script operands or readable file targets
   await writeFile(`${dir}/input.txt`, "# input fd\n")
   const input = discover("python main.py 3<input.txt", dir)
   assert.deepEqual(input.references.map(file => file.filename), ["main.py", "input.txt"])
+  const duplication = discover("python main.py 2>&1 < input.txt &> out.log |& cat 0<&3", dir)
+  assert.deepEqual(duplication.references.map(file => file.filename), ["main.py", "input.txt"])
 })
 
 test("a comment ends at a newline while quoted filenames remain one operand", () => {

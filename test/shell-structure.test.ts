@@ -69,6 +69,16 @@ test("redirections bind adjacent IO numbers, preserve targets, and never expose 
     [word("echo"), { kind: "redirect", operator: ">", target: UNRESOLVED, nested: ["printf file"] }])
 })
 
+test("fd duplication and output-only redirects do not expose output targets as inputs", () => {
+  assert.deepEqual(scan("node app.js 2>&1 < data.txt &>> out.log |& head -n 1 0<&3").tokens, [
+    word("node"), word("app.js"), { kind: "redirect", operator: "2>&", target: "1" },
+    { kind: "redirect", operator: "<", target: "data.txt" },
+    { kind: "redirect", operator: "&>", target: "out.log" }, op("|"),
+    word("head"), word("-n"), word("1"), { kind: "redirect", operator: "0<&", target: "3" },
+  ])
+  assert.deepEqual(scan("node app.js 2>&file < data.txt").tokens, [])
+})
+
 test("closed heredocs attach bodies without parsing their shell-looking contents", () => {
   assert.deepEqual(scan("cat <<'EOF' <<-TAB\npython decoy.py; $(run)\nEOF\n\tbad | text\n\tTAB\npython real.py").tokens,
     [word("cat"), { kind: "redirect", operator: "<<", target: "EOF", quoted: true,
@@ -85,7 +95,7 @@ test("closed heredocs attach bodies without parsing their shell-looking contents
 test("ambiguous forms fail closed without partial tokens", () => {
   const commands = ["echo okay; echo $'\\xff'", "echo a\u00a0b", "echo a\\\u00a0b", "echo a[bc]", "echo a{b,c}",
     "echo a#b", "echo okay; echo 'unterminated", "echo $(broken", "echo `broken", "echo $((1+2))",
-    "echo hi & python decoy.py", "echo ok |& cat", "cat <(echo hi)", "cat <<$DELIM\nbody\n",
+    "echo hi & python decoy.py", "cat <(echo hi)", "cat <<$DELIM\nbody\n",
     "echo ${x:-$'\\xff'}"]
   for (const command of commands) {
     const result = scan(command)

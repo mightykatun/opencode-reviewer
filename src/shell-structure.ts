@@ -159,7 +159,19 @@ export function shellStructure(command: string, check: () => void): { tokens: Sh
       // An IO number is only a wholly unquoted, adjacent decimal word.
       if (/^[0-9]+$/.test(raw)) { operator = raw + operator; raw = ""; nested = [] }
       else flush()
+      const adjacent = i
       while (i < command.length && (command[i] === " " || command[i] === "\t")) { tick(); i++ }
+      // Bash fd duplication/closure reads no pathname. Accept only an exact
+      // decimal descriptor or '-', not a dynamic word or a named output file.
+      if (i === adjacent && command[i] === "&" && /^[<>]$/.test(operator.replace(/^\d+/, ""))) {
+        i++
+        const start = i
+        while (i < command.length && /\d/.test(command[i]!)) { tick(); i++ }
+        if (i === start && command[i] === "-") i++
+        if (i === start || !boundary(command[i])) fail(unsupported.syntax)
+        emit({ kind: "redirect", operator: `${operator}&`, target: command.slice(start, i) })
+        return
+      }
       if (i >= command.length || boundary(command[i]) || command[i] === "#") fail(unsupported.syntax)
       const start = tokens.length
       const before = i
@@ -237,10 +249,17 @@ export function shellStructure(command: string, check: () => void): { tokens: Sh
       if (c === "#" && !raw) { while (i < command.length && command[i] !== "\n") { tick(); i++ } continue }
       if (c === "{" && !raw && space(command[i + 1] ?? "")) { emit({ kind: "op", value: "{" }); i++; continue }
       if (c === "}" && !raw && boundary(command[i + 1])) { emit({ kind: "op", value: "}" }); i++; continue }
+      if (c === "&" && command[i + 1] === ">") {
+        flush()
+        i += command[i + 2] === ">" ? 3 : 2
+        redirect("&>")
+        continue
+      }
       if (";&|()".includes(c)) {
         flush()
         const pair = command.slice(i, i + 2)
-        if (c === "&" && pair !== "&&" || c === "|" && pair === "|&" || pair === ";;" || pair === ";&") fail(unsupported.syntax)
+        if (c === "&" && pair !== "&&" || pair === ";;" || pair === ";&") fail(unsupported.syntax)
+        if (pair === "|&") { emit({ kind: "op", value: "|" }); i += 2; continue }
         const op = pair === "&&" || pair === "||" ? pair : c
         emit({ kind: "op", value: op }); i += op.length; continue
       }
