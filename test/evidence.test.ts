@@ -97,7 +97,7 @@ test("interpreter options stay distinct from script operands and preserve option
   }
 })
 
-test("stdin and unsupported interpreter options never capture flag or dash decoys", async (t) => {
+test("stdin and unsupported interpreter options never claim argv candidates as interpreter source", async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), "checker-evidence-"))
   t.after(() => rm(dir, { recursive: true, force: true }))
   for (const filename of ["-", "+W", "-W", "-X", "ignore", "utf8", "main.py", "main.sh"]) {
@@ -108,7 +108,8 @@ test("stdin and unsupported interpreter options never capture flag or dash decoy
     assert.deepEqual(discovered.references, [], command)
     assert.match(discovered.limitations.join("\n"), /reads stdin/, command)
     const result = await collectEvidence({ command, cwd: dir, userPrompt: null }, limits, signal())
-    assert.deepEqual(result.files, [], command)
+    assert.ok(result.files.every(file => file.basis === "literal argument; input role unknown"), command)
+    assert.ok(result.files.every(file => !["-", "-W", "-X"].includes(file.filename)), command)
   }
   for (const command of [
     "bash -W ignore main.sh", "bash -X utf8 main.sh", "sh -Wignore main.sh", "sh -Xutf8 main.sh",
@@ -121,7 +122,8 @@ test("stdin and unsupported interpreter options never capture flag or dash decoy
     assert.match(discovered.limitations.join("\n"), /outside supported script discovery|missing or unresolved argument/, command)
     const result = await collectEvidence({ command, cwd: dir, userPrompt: null }, limits, signal())
     assert.equal(result.command, command)
-    assert.deepEqual(result.files, [], command)
+    assert.ok(result.files.every(file => file.basis === "literal argument; input role unknown"), command)
+    assert.ok(result.files.every(file => !["-", "-W", "-X"].includes(file.filename)), command)
   }
 })
 
@@ -319,7 +321,7 @@ test("program identity recognizes only bare names and exact conventional executa
   }
 })
 
-test("explicit named executables capture their own source rather than operand decoys or builtin effects", async (t) => {
+test("explicit named executables retain their own source before uncertain argument files", async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), "checker-evidence-"))
   t.after(() => rm(dir, { recursive: true, force: true }))
   await writeFile(`${dir}/decoy.py`, "# must not be selected as invoked source\n")
@@ -335,7 +337,9 @@ test("explicit named executables capture their own source rather than operand de
           { filename: "later.py", cwd: dir, executable: false },
         ], command)
         const result = await collectEvidence({ command, cwd: dir, userPrompt: null }, limits, signal())
-        assert.deepEqual(result.files.map((file) => file.contents), [contents, "# later source in the unchanged parent cwd\n"], command)
+        assert.deepEqual(result.files.map((file) => file.contents), [contents, "# later source in the unchanged parent cwd\n",
+          "# must not be selected as invoked source\n"], command)
+        assert.equal(result.files[2]?.basis, "literal argument; input role unknown")
       }
     }
   }

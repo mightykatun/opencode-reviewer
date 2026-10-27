@@ -491,8 +491,9 @@ function shellFiles(value: unknown, options: HostEvidenceOptions, budget: number
   let included = 0
   for (const file of value) {
     reviewStage(signal, "Evidence validation")
-    if (!shape(file, ["filename", "status"], ["path", "aliases", "contents", "excerpt", "warning"])
+    if (!shape(file, ["filename", "status"], ["path", "aliases", "contents", "excerpt", "warning", "basis"])
       || typeof file.filename !== "string" || !file.filename || file.filename.includes("\0")
+      || (Object.hasOwn(file, "basis") && file.basis !== "literal argument; input role unknown")
       || typeof file.status !== "string"
       || (Object.hasOwn(file, "path") && !absolute(file.path))
       || (Object.hasOwn(file, "aliases") && (!strings(file.aliases) || !file.aliases.every(absolute)))

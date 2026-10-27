@@ -526,6 +526,8 @@ const prompt = registeredTool ? "Look up the public account once using fixture_l
 const script = (largeSource ? "# oversized source fixture context\n".repeat(8000) : "")
   + 'from pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write("V2_REVIEW_EXECUTED\\n")\nprint("V2_REVIEW_EXECUTED")\n'
 const description = "V2 local marker report.\n\nThe script writes one isolated marker."
+const literalArgCase = scenario === "normal"
+const candidateContents = "V2_LITERAL_ARGUMENT_DATA\n"
 const instructionsText = 'SESSION_INSTRUCTIONS_LITERAL: keep "quoted" text and {{braces}}.\n\tRoot and descendant share this note.'
 // Only the second keyboard-case response is long. The first genuine report keeps
 // all existing saved-history text/metadata and selected-original assertions intact.
@@ -539,7 +541,8 @@ const toolCall = codeModeTool ? { id: "v2-production-review-code-mode", name: "e
   : registeredTool ? { id: "v2-production-review-registered", name: "fixture_lookup", input: { account: "public" } }
   : skillCase ? { id: "v2-production-review-skill", name: "skill", input: { id: skillID } }
   : editCase ? { id: "v2-production-review-write", name: "write", input: { path: writeTarget, content: afterEdit } }
-  : { id: "v2-production-review-shell", name: "shell", input: { command: "python3 fixture.py", workdir: "inputs" } }
+   : { id: "v2-production-review-shell", name: "shell", input: {
+     command: literalArgCase ? "python3 fixture.py --attachment candidate.txt" : "python3 fixture.py", workdir: "inputs" } }
 const publishers = new Map(), calls = [], errors = [], negativeWindows = []
 let version, modelServer, mainResponse, reviewResponse, sessionID, childSession, request, inspection, handshake, sequence = 0
 let networkProxy, networkBlocked = false, networkEvidence
@@ -1161,6 +1164,7 @@ try {
    else assert.throws(() => smokeGit(temp, initial, ["rev-parse", "--show-toplevel"]),
      "Transition starts outside every Git repository")
   await writeFile(path.join(inputs, "fixture.py"), script)
+  if (literalArgCase) await writeFile(path.join(inputs, "candidate.txt"), candidateContents)
   if (editCase) {
     await mkdir(path.dirname(editTarget), { recursive: true })
     await writeFile(editTarget, beforeEdit)
@@ -1278,7 +1282,11 @@ try {
           assert.equal(evidence.permission.action, "shell")
           assert.deepEqual(evidence.permission.resources, [toolCall.input.command])
           assert.equal(evidence.permission.type, undefined, "No fabricated native permission type")
-          assert.equal(evidence.files.length, 1)
+           assert.equal(evidence.files.length, literalArgCase ? 2 : 1)
+           if (literalArgCase) assert.deepEqual(evidence.files[1], {
+             filename: "candidate.txt", path: path.join(inputs, "candidate.txt"), status: "captured",
+             contents: candidateContents, basis: "literal argument; input role unknown",
+           })
            if (largeSource) {
              const file = evidence.files[0], numbered = file.contents.split("\n")
              assert.equal(file.status, "excerpt")
@@ -1796,7 +1804,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.equal(payload.conversation.current.location.directory, initial)
   assert.equal(payload.conversation.current.projectID, handshake.project.id)
   assert.deepEqual(payload.limitations, ["Optional effective native tool definition is not included; exact captured arguments and pending permission scope are retained.",
-      "Only literal file inputs recognized from command syntax, input redirects and supported program operands are collected. Unknown program options and indirect inputs are not inferred. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected."])
+      "Literal shell inputs and existing files directly named by command arguments are collected. Argument candidates have unknown input roles: they may be outputs or unrelated, so the reviewer must decide relevance. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected."])
   await until("rendered production evaluating panel", () => capture().includes("Permission analysis"))
   await saveCapture("evaluating")
    await negativeWindow("review response held", [request], [], null, 1, 1500, notificationCase ? noAttention : savedCase ? noSavedBody : () => {})

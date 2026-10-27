@@ -20,10 +20,10 @@ test("Jupyter launch, conversion and execution capture only named notebook input
     + "jupyter nbconvert --config config.py --to notebook --execute book.ipynb second.ipynb --output generated.ipynb; "
     + "jupyter execute book.ipynb --output generated.ipynb"
   const result = await collectEvidence({ command, cwd: dir, userPrompt: "Inspect" }, limits, signal())
-  assert.deepEqual(result.files.map(file => file.filename), ["book.ipynb", "settings.json", "second.ipynb", "config.py"])
+  assert.deepEqual(result.files.map(file => file.filename), ["book.ipynb", "settings.json", "second.ipynb", "config.py", "generated.ipynb"])
   assert.equal(result.files[0]?.contents, source)
   assert.ok(result.files.every(file => file.status === "captured"))
-  assert.equal(result.files.find(file => file.filename === "generated.ipynb"), undefined)
+  assert.equal(result.files.find(file => file.filename === "generated.ipynb")?.basis, "literal argument; input role unknown")
 })
 
 test("Jupyter options, indirect notebooks and browser-only launches remain unclaimed", async t => {

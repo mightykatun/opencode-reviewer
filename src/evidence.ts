@@ -3,12 +3,12 @@ import { constants } from "node:fs"
 import type { Evidence, FileEvidence, Limits } from "./types.js"
 import { FileLimit, omittedFile } from "./files.js"
 import { fileAccess, fileFailure, type FileScope } from "./file-access.js"
-import { discover, type Reference } from "./shell-discovery.js"
+import { discoverWithCandidates, type Reference } from "./shell-discovery.js"
 import { ExcerptLines, LineExcerpt, excerptScanBytes, type Excerpt } from "./excerpts.js"
 import { remainingTime, reviewStage } from "./deadline.js"
 import type { FileHandle } from "node:fs/promises"
 
-export { discover } from "./shell-discovery.js"
+export { discover, discoverWithCandidates } from "./shell-discovery.js"
 
 const directSourceExtension = /\.(?:py|sh|bash|zsh|ksh|js|mjs|cjs|jsx|ts|mts|cts|tsx|rb|pl|php|lua)$/i
 const directSourceShebang = /^#!(?:\/(?:usr\/)?bin\/(?:python(?:[23](?:\.\d+)*)?|(?:ba|da|k|z)?sh|node|bun|deno|ruby|perl|php|lua)(?:\s|$)|\/usr\/bin\/env\s+(?:(?:-S\s+)?(?:python(?:[23](?:\.\d+)*)?|(?:ba|da|k|z)?sh|node|bun|deno|ruby|perl|php|lua))(?:\s|$))/
@@ -129,10 +129,10 @@ export async function collectEvidence(
   // Native evidence already owns the launch-path probe. Standalone collectors use the
   // same bounded scope; never replace the declared path with its canonical alias.
   const canonical = input.execution ? input.execution.canonicalCwd : input.cwd ? (await scope.canonical(input.cwd)).path : null
-  const discovery = discover(input.command, { declared: input.cwd, canonical }, 0, signal)
+  const discovery = discoverWithCandidates(input.command, { declared: input.cwd, canonical }, signal)
   const evidence: Evidence = { ...input, kind: "shell", files: [], limitations: [
     ...(input.limitations ?? []),
-    "Only literal file inputs recognized from command syntax, input redirects and supported program operands are collected. Unknown program options and indirect inputs are not inferred. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected.",
+    "Literal shell inputs and existing files directly named by command arguments are collected. Argument candidates have unknown input roles: they may be outputs or unrelated, so the reviewer must decide relevance. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected.",
     ...discovery.limitations,
   ] }
   if (!input.userPrompt) evidence.limitations.push("User prompt unavailable.")
@@ -177,6 +177,62 @@ export async function collectEvidence(
     evidence.files.push(file)
     remaining -= Buffer.byteLength(file.contents ?? "")
   }
+  let unknownCwd = false, incompleteCandidates = false
+  const attempted = new Set<string>()
+  for (const reference of discovery.candidates) {
+    signal.throwIfAborted()
+    const filename = path.isAbsolute(reference.filename) ? reference.filename
+      : reference.cwd ? `${reference.cwd}/${reference.filename}` : null
+    if (!filename) { unknownCwd = true; continue }
+    if (attempted.has(filename) || declared.has(filename)) continue
+    attempted.add(filename)
+    // An incidental argv string must not consume maxFiles. Only a real
+    // filesystem path becomes a possible file; never enumerate directories.
+    const canonical = await scope.canonical(filename)
+    if (!canonical.path) {
+      if (canonical.reason !== "ENOENT") incompleteCandidates = true
+      continue
+    }
+    // Generic argv values have no proven file role. Check regular-file status
+    // before allowing a directory or a vanished path to occupy maxFiles.
+    let regularFile: boolean
+    try {
+      regularFile = await scope.capture(async (signal, io) => {
+        const handle = await io.open(canonical.path!, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
+        try { signal.throwIfAborted(); return (await handle.stat()).isFile() }
+        finally { await handle.close() }
+      })
+    } catch (error) {
+      signal.throwIfAborted()
+      if (fileFailure(error) !== "ENOENT") incompleteCandidates = true
+      continue
+    }
+    if (!regularFile) continue
+    const { key, withinLimit } = await limit.consider(filename, signal)
+    const previous = selected.get(key)
+    if (previous) {
+      if (filename !== previous.filename) previous.aliases.add(filename)
+      // An exact argument can qualify a direct executable previously omitted
+      // under its stricter script-source qualification.
+      if (previous.reference.executable && previous.withinLimit && previous.file.status === unrecognizedDirectSource) {
+        previous.reference.executable = false
+        const file = await captureFile(reference, remaining, signal, scope)
+        Object.assign(previous.file, file)
+        previous.file.basis = "literal argument; input role unknown"
+        if (file.contents !== undefined) { delete previous.file.warning; remaining -= Buffer.byteLength(file.contents) }
+      }
+      continue
+    }
+    const file: FileEvidence = withinLimit ? await captureFile(reference, remaining, signal, scope)
+      : { filename: reference.filename, path: filename, status: "file-count limit reached" }
+    file.basis = "literal argument; input role unknown"
+    if (file.contents === undefined) file.warning = omittedFile(file.path ?? file.filename)
+    selected.set(key, { reference, filename, withinLimit, aliases: new Set(), file })
+    evidence.files.push(file)
+    remaining -= Buffer.byteLength(file.contents ?? "")
+  }
+  if (unknownCwd) evidence.limitations.push("Some relative argument paths have an unresolved working directory; their contents were not provided.")
+  if (incompleteCandidates) evidence.limitations.push("Some literal argument paths could not be checked; their contents were not provided.")
   for (const { file, aliases } of selected.values()) if (aliases.size) file.aliases = [...aliases]
   signal.throwIfAborted()
   evidence.limitations.push(...limit.limitations)

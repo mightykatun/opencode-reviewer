@@ -241,6 +241,19 @@ test("Jupyter notebook snapshots remain exact through companion evidence validat
   assert.equal(readHostOperationEvidence(altered, value, options, signal()), undefined)
 })
 
+test("unclassified tool arguments retain uncertain file provenance across the companion boundary", async () => {
+  const value = shell("custom --input=dataset")
+  const files = io({ [`${location.directory}/dataset`]: "named input\n" })
+  const result = await collectHostOperation(value, options, signal(), files.access)
+  assert.ok(result.status === "ready" && result.evidence.kind === "shell")
+  assert.deepEqual(result.evidence.files.map(file => [file.filename, file.contents, file.basis]),
+    [["dataset", "named input\n", "literal argument; input role unknown"]])
+  assert.deepEqual(readHostOperationEvidence(result.evidence, value, options, signal()), result.evidence)
+  const altered = structuredClone(result.evidence)
+  altered.files[0]!.basis = "verified native input" as typeof altered.files[0]["basis"]
+  assert.equal(readHostOperationEvidence(altered, value, options, signal()), undefined)
+})
+
 test("source excerpts survive the companion boundary, reject false completeness/counts and reach the judge", async () => {
   const call = shell("python source.py"), files = io({ [`${location.directory}/source.py`]:
     "# context\n".repeat(1000) + "def entry():\n    return 1\n" })

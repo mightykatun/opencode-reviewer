@@ -129,13 +129,15 @@ function programIdentity(executable: string): "python" | "shell" | "cat" | "head
 /** One shell string's state; a nested external shell gets its own state. */
 class DiscoveryState {
   readonly references: Reference[] = []
+  readonly candidates: Reference[] = []
   readonly limitations: string[] = []
   uncertainWord = false
   preceded = false
   previousOperator: string | undefined
   conditionalCwd = false
   explicitCdpath = false
-  constructor(public cwd: string | null, readonly depth: number, readonly budget: DiscoveryBudget, readonly logicalCwdKnown: boolean) {}
+  constructor(public cwd: string | null, readonly depth: number, readonly budget: DiscoveryBudget,
+    readonly logicalCwdKnown: boolean, readonly collectCandidates: boolean) {}
 
   note(text: string) { this.budget.notice(text); if (!this.limitations.includes(text)) this.limitations.push(text) }
   invalidateCwd(text: string) { this.cwd = null; this.note(text) }
@@ -161,11 +163,20 @@ class DiscoveryState {
     this.cwd = cwd
     try { this.add(filename) } finally { this.cwd = previous }
   }
+  candidate(filename: string) {
+    if (!this.collectCandidates || !filename || filename === "-" || filename.startsWith("~") || !literal(filename)
+      || /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(filename)) return
+    this.budget.reference()
+    this.qualifySnapshot()
+    this.candidates.push({ filename, cwd: this.cwd, executable: false })
+  }
   nested(command: string, physical: boolean) {
     if (physical) this.note("Physical shell directory mode is outside literal cwd inference; nested relative script targets are unresolved.")
-    const nested = scan(command, this.explicitCdpath || physical ? null : this.cwd, this.depth + 1, this.budget, this.logicalCwdKnown)
-    if (nested.references.length) this.qualifySnapshot()
+    const nested = scan(command, this.explicitCdpath || physical ? null : this.cwd, this.depth + 1,
+      this.budget, this.logicalCwdKnown, this.collectCandidates)
+    if (nested.references.length || nested.candidates.length) this.qualifySnapshot()
     this.references.push(...nested.references)
+    this.candidates.push(...nested.candidates)
     nested.limitations.forEach((text) => this.note(text))
   }
   afterOperator(operator: string) {
@@ -299,6 +310,7 @@ function builtin(executable: string, args: Words, state: DiscoveryState, next?: 
     state.invalidateCwd("Shell control flow is outside literal discovery; script coverage is incomplete.")
     return true
   }
+  if (["echo", "printf", ":", "true", "false", "pwd", "test"].includes(executable)) return true
   return false
 }
 
@@ -374,6 +386,27 @@ function interpreter(isPython: boolean, args: Words, state: DiscoveryState) {
   }
 }
 
+/** These are literal argv values, not alleged inputs. A GNU-style option or
+ * assignment may spell a path after '='; never interpret its option meaning. */
+function argumentCandidates(executable: string, args: Words, state: DiscoveryState) {
+  if (!state.collectCandidates) return
+  const name = /^(?:\/(?:usr\/)?bin\/)?([^/]+)$/.exec(executable)?.[1]
+  let afterOptions = false
+  let first = true
+  for (const argument of args.values()) {
+    if (first && ((name === "jupyter" && ["lab", "notebook", "execute", "nbconvert"].includes(argument))
+      || (["deno", "go", "dotnet", "uv", "bun"].includes(name ?? "") && argument === "run")
+      || (name === "tsx" && argument === "watch"))) { first = false; continue }
+    first = false
+    if (argument === "--" && !afterOptions) { afterOptions = true; continue }
+    if (!afterOptions && argument.startsWith("-") && argument !== "-" && !argument.includes("=")) continue
+    const equals = argument.indexOf("=")
+    const value = !afterOptions && equals > 0 && (/^--?[A-Za-z][\w-]*$/.test(argument.slice(0, equals))
+      || assignment.test(argument)) ? argument.slice(equals + 1) : argument
+    state.candidate(value)
+  }
+}
+
 function visit(args: string[], state: DiscoveryState, next?: string, external = false, forwardDepth = 0) {
   // Negation changes pipeline status, not a builtin's in-process effects. Do
   // not reuse ordinary && success inference or preserve cwd for unknown operands.
@@ -404,6 +437,7 @@ function visit(args: string[], state: DiscoveryState, next?: string, external = 
     state.invalidateCwd(`Unsupported builtin operand ${executable}; source and subsequent working directory were not resolved.`)
     return
   }
+  argumentCandidates(executable, words, state)
   const program = programIdentity(executable)
   if (program === "cat" || program === "head") return reader(program, words, state)
   if (program === "python" || program === "shell") return interpreter(program === "python", words, state)
@@ -490,10 +524,11 @@ function walkStructure(tokens: readonly ShellToken[], state: DiscoveryState, bud
         state.invalidateCwd("Unbalanced or deeply nested shell group; later relative file targets are unresolved.")
         return
       }
-      const branch = new DiscoveryState(state.cwd, state.depth + 1, budget, state.logicalCwdKnown)
+      const branch = new DiscoveryState(state.cwd, state.depth + 1, budget, state.logicalCwdKnown, state.collectCandidates)
       branch.preceded = state.preceded
       walkStructure(tokens.slice(i + 1, end - 1), branch, budget)
       state.references.push(...branch.references)
+      state.candidates.push(...branch.candidates)
       branch.limitations.forEach(text => state.note(text))
       if (opener === "{") state.invalidateCwd("Brace group may change the shell's working directory; later relative targets are unresolved.")
       state.preceded = true
@@ -512,13 +547,23 @@ function walkStructure(tokens: readonly ShellToken[], state: DiscoveryState, bud
 /** Literal discovery only. shell-quote is a tokenizer, not a shell evaluator. */
 export function discover(command: string, cwd: string | null | LaunchCwd, depth = 0, signal?: AbortSignal): { references: Reference[]; limitations: string[] } {
   const launch = typeof cwd === "string" || cwd === null ? { declared: cwd, canonical: cwd } : cwd
-  return scan(command, launch.declared, depth, new DiscoveryBudget(signal),
-    launch.canonical !== null && launch.declared === launch.canonical)
+  const { references, limitations } = scan(command, launch.declared, depth, new DiscoveryBudget(signal),
+    launch.canonical !== null && launch.declared === launch.canonical, false)
+  return { references, limitations }
 }
 
-function scan(command: string, cwd: string | null, depth: number, budget: DiscoveryBudget, logicalCwdKnown: boolean): { references: Reference[]; limitations: string[] } {
-  const state = new DiscoveryState(cwd, depth, budget, logicalCwdKnown)
-  const result = { references: state.references, limitations: state.limitations }
+/** The same syntax traversal exposes uncertain argv values for scoped,
+ * existence-checked capture; ordinary discover() keeps its certain-only API. */
+export function discoverWithCandidates(command: string, cwd: string | null | LaunchCwd, signal?: AbortSignal) {
+  const launch = typeof cwd === "string" || cwd === null ? { declared: cwd, canonical: cwd } : cwd
+  return scan(command, launch.declared, 0, new DiscoveryBudget(signal),
+    launch.canonical !== null && launch.declared === launch.canonical, true)
+}
+
+function scan(command: string, cwd: string | null, depth: number, budget: DiscoveryBudget, logicalCwdKnown: boolean,
+  collectCandidates: boolean): { references: Reference[]; candidates: Reference[]; limitations: string[] } {
+  const state = new DiscoveryState(cwd, depth, budget, logicalCwdKnown, collectCandidates)
+  const result = { references: state.references, candidates: state.candidates, limitations: state.limitations }
   try {
     budget.admit(command)
     if (depth > 4 || command.includes("\u0000")) {

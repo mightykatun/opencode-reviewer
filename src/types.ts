@@ -5,6 +5,8 @@ export interface Limits {
 
 export interface FileEvidence {
   filename: string
+  /** This path was a literal argv value, not a verified program input. */
+  basis?: "literal argument; input role unknown"
   path?: string
   aliases?: string[]
   status: string

@@ -23,10 +23,12 @@ For OpenCode V2 on Linux.
 
 Reviews send request data, the latest user prompt, and selected file snapshots,
 diffs, skill instructions or tool arguments to your configured endpoint **before
-permission approval**. Shell snapshots include literal script and named text
-inputs from supported programs (including Jupyter, awk, jq, Pandoc and psql),
-plus input redirects. Unrecognized options, browser-opened files, generated
-names and files referenced inside scripts are not discovered. Snapshots can follow
+permission approval**. Shell snapshots include literal script inputs, input
+redirects and existing files named directly in any command's arguments, even
+for programs the plugin does not recognize. An argument may name an output or
+an unrelated file; its contents can still be sent for the reviewer to judge.
+Browser-opened files, generated names, imports and files referenced inside
+scripts are not discovered. Snapshots can follow
 symlinks outside the project; denying the command afterward cannot undo that
 disclosure. Use an endpoint you trust, and a local reviewer or a sandbox without
 accessible secrets when working with untrusted repositories.
