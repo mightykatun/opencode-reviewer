@@ -92,6 +92,7 @@ async function monitorSetup(ctx) {
   let statisticsFrames = false
   const save = (painted = false) => {
     record.route = JSON.parse(JSON.stringify(ctx.ui.router.current()))
+    if (fixture.routeWait) record.tabs = ctx.ui.tabs.list().map(tab => ({ sessionID: tab.sessionID, active: tab.active }))
     record.mouse = ctx.renderer.useMouse
     record.mode = ctx.keymap.mode.current()
     record.controlSequence = memory.sequence
@@ -223,7 +224,9 @@ async function monitorSetup(ctx) {
               const other = await ctx.client.session.create({ title: "Unrelated fixture conversation", location,
                 model: { providerID: "fixture", id: "fixture" } }, options())
               await ctx.data.session.sync(other.id)
-              ctx.ui.router.navigate({ type: "session", sessionID: other.id })
+              assert.equal(ctx.ui.tabs.enabled(), true, "Unrelated conversation is a native tab")
+              ctx.ui.tabs.open(command.sessionID)
+              ctx.ui.tabs.focus(other.id)
             }
             value = ctx.ui.router.current()
          } else if (command.type === "pending") value = await ctx.client.permission.list({ sessionID: command.sessionID }, options())
@@ -544,7 +547,7 @@ const eventResponses = new Set()
 const proxySockets = new Set(), proxyRequests = []
 let reviewPOSTs = 0, reviewCompleted = false, allowWrites = false, manualDecision = false
 let allowedReplies = 1, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, notificationSequence = 0
-let projectTransitionEvidence, currentProject
+let projectTransitionEvidence, currentProject, backgroundRoute
 let instructionsEvidence
 const requests = [], inspections = [], reviewerTransactions = []
 const editStages = []
@@ -1138,7 +1141,7 @@ const limits = [
     : skillCase ? "One direct native skill request with full scoped registry main instructions, an unchanged selected definition, one production once reply and actual native tool-result loading. Normal countdown or fast preview/remainder is observed, and read-only SQLite verifies the saved skill category, confirmed approval and usage totals. No supporting-file inspection, catalog-mutation guarantee, ambiguous nested call, live-provider judgment or multi-client acceptance."
       : editCase ? "One actual native write, exact direct source linkage and pending native diff. Outside-project access, when selected, automatically resumes that same write into a distinct edit permission. Each stage holds the real reviewer response, proves no mutation, paints a full normal countdown and receives one production once reply. Read-only SQLite proves per-stage accepted reports, qualifying resolutions, categories and both aggregate scopes. Production history opens through painted palette activation. No native edit/patch variant, formatter, descendant-owned queue, notification, multi-client or live-provider judgment acceptance."
        : projectTransition ? "Four genuine native shell permissions: nongit root, migrated root, migrated descendant and root after local disable/re-enable. Each review uses captured source linkage and the current registered project metadata. Held reviewer responses and disabled-state observation windows prove no execution; exact native once replies, completed tool results and worker-saved reports prove continuation. No claim that filesystem Git changes alone trigger immediate host discovery."
-       : routeWait ? "A started normal countdown survives native home, a public plugin dashboard and an unrelated session route, with no writes past its original deadline. Returning to its root resumes once without a new delay. Saved report and aggregates are verified."
+       : routeWait ? "A started normal countdown waits on native home and a public plugin dashboard, then automatically approves while its tab remains open behind an unrelated active session tab. Saved report and aggregates are verified."
       : decisionCase ? "Actual Right/Left native keyboard input selects Always then Once. Automatic approval waits without cancellation while Always is selected, then resumes with the original delay or fast preview semantics. No persistent native grant is submitted; saved automatic report is verified. Rejection editing is separately source-tested, not host-accepted here."
       : dialogCase ? "Stock command.palette.show owns a real native modal. Normal and fast automatic replies proceed underneath it without closing it; final report and usage are verified in SQLite. No other modal-family acceptance."
       : visibilityLoss ? "One actual normal countdown continues through native sidebar hide or a real 160x8 tmux window. A single native once reply and saved report occur without restoring presentation first. No other geometry-family acceptance."
@@ -1360,7 +1363,7 @@ try {
   })
   await new Promise(resolve => modelServer.listen(0, "127.0.0.1", resolve))
   const origin = `http://127.0.0.1:${modelServer.address().port}`
-   const fixture = { initial, project, projectTransition, instructionsCase, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase, registeredTool, codeModeTool }
+    const fixture = { initial, project, projectTransition, instructionsCase, routeWait, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase, registeredTool, codeModeTool }
   const observer = path.join(temp, "observer"), monitor = path.join(temp, "monitor")
   const reviewer = path.join(temp, "reviewer")
   await mkdir(reviewer)
@@ -2070,20 +2073,31 @@ createInterface({input:process.stdin}).on('line',line=>{
            await negativeWindow("Always selection waits past the original countdown without cancellation", [request], [], null, 1,
              approvalDelaySeconds * 1000 + 1500, record => { assert.equal(record.choices.always, true); assert.doesNotMatch(capture(), /Auto-approval canceled/) })
            assert.match(capture(), /Auto-approval waiting/)
-         } else {
-           for (const destination of ["home", "dashboard", "other"]) {
-             const away = await command({ type: "away", destination })
-             assert.notDeepEqual(away, { type: "session", sessionID })
-             await negativeWindow(`${destination} waits without cancelling the Safe request`, [request], [], null, 1,
-               approvalDelaySeconds * 1000 + 1500, record => assert.deepEqual(record.route, away))
-           }
-         }
-         allowWrites = true
-         const resumed = performance.now()
-         if (decisionCase) runtime.tmux("send-keys", "-t", "v2-review", "Left")
-         else await navigate(sessionID)
-         await until("waiting request resumes with its expired original deadline", async record => record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n")
-         assert.ok(performance.now() - resumed < approvalDelaySeconds * 1000, "Resume must not restart the full countdown")
+          } else {
+            for (const destination of ["home", "dashboard"]) {
+              const away = await command({ type: "away", destination })
+              assert.notDeepEqual(away, { type: "session", sessionID })
+              await negativeWindow(`${destination} waits without cancelling the Safe request`, [request], [], null, 1,
+                approvalDelaySeconds * 1000 + 1500, record => assert.deepEqual(record.route, away))
+            }
+            allowWrites = true
+            const away = await command({ type: "away", destination: "other", sessionID })
+            backgroundRoute = away
+            await until("native background review tab and unrelated active tab", record =>
+              record?.tabs?.some(tab => tab.sessionID === sessionID && !tab.active)
+              && record.tabs.some(tab => tab.sessionID === away.sessionID && tab.active), 5000)
+            await until("background session tab approves without changing the active route", async record => {
+              assert.deepEqual(record?.route, away)
+              return record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n"
+            })
+          }
+          if (decisionCase) {
+            allowWrites = true
+            const resumed = performance.now()
+            runtime.tmux("send-keys", "-t", "v2-review", "Left")
+            await until("waiting request resumes with its expired original deadline", async record => record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n")
+            assert.ok(performance.now() - resumed < approvalDelaySeconds * 1000, "Resume must not restart the full countdown")
+          }
       } else {
          await negativeWindow("normal countdown remains pending", [request], [], null, 1, 1500, savedCase ? noSavedBody : () => {})
         allowWrites = true
@@ -2849,7 +2863,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   const final = await observations()
    assert.equal(final.asked.length, requestCount)
     assert.equal(final.replied.length, allowWrites || manualHistoryCase ? requestCount : 0)
-  assert.deepEqual(final.route, { type: "session", sessionID: fast && descendant ? childSession.id : sessionID })
+   assert.deepEqual(final.route, backgroundRoute ?? { type: "session", sessionID: fast && descendant ? childSession.id : sessionID })
   if (automatic) assert.equal(final.mouse, !mouseOff && !keyboardMouseOffCase)
   if (negative) assert.equal(await executed(), null)
   await saveCapture("final")

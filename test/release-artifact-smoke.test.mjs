@@ -92,6 +92,7 @@ test("the built audio constructor consumes the inspected mapping and actual bund
   const bundle = await readFile("dist/tui.js", "utf8")
   const assets = Object.fromEntries(await Promise.all(["attention", "unsafe", "question", "approved", "error", "ended"]
     .map(async kind => [kind, await readFile(`sounds/${kind}.mp3`)])))
+  assert.deepEqual(assets.unsafe, assets.attention, "The bundled unsafe default is the attention sound")
   const sounds = verifyBundledSounds(bundle, assets)
   // Parse only, without evaluating any package code. Follow the emitted binding
   // to the production constructor default so a detached data banner cannot pass.

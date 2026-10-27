@@ -31,13 +31,13 @@ class Clock implements ApprovalClock {
     this.value = end
   }
 }
-async function fixture(fast = false, heldPreparation = false, heldVerification = false, delay = 2) {
+async function fixture(fast = false, heldPreparation = false, heldVerification = false, delay = 2, ready = true) {
   const clock = new Clock(), assessment = deferred<ReviewResult>(), preparation = deferred<void>()
   const verification = deferred<HostRequest[]>()
   if (!heldPreparation) preparation.resolve()
   if (!heldVerification) verification.resolve([request])
   let publishProgress!: (value: ReviewProgress) => void
-  const state = { ready: true, front: request.id as string | undefined, frontError: false, enabled: true, writes: 0, preparations: 0, listErrors: 0,
+  const state = { ready, front: request.id as string | undefined, frontError: false, enabled: true, writes: 0, preparations: 0, listErrors: 0,
     pending: [request], uncertain: false }
   const facts: ApprovalFact<HostRequest>[] = [], lifecycle: ReviewLifecycleFact<HostRequest>[] = []
   const controller = new Controller<HostRequest>(async (_request, _signal, identified, progress) => {
@@ -141,6 +141,27 @@ test("normal: a never-armed review on another route starts its delay only when t
   f.state.ready = true; f.wake(); f.clock.jump(2199); await settle()
   assert.equal(f.state.writes, 0)
   f.clock.jump(1); await settle(); assert.equal(f.state.writes, 1)
+})
+
+test("normal: a newly eligible background tab starts a full countdown and approves without route focus", async t => {
+  const f = await fixture(); t.after(() => f.dispose())
+  f.state.ready = false
+  await f.complete()
+  assert.equal(f.view()?.autoApproval, undefined)
+  f.state.ready = true; f.wake()
+  assert.deepEqual(f.view()?.autoApproval, { status: "countdown", seconds: 2 })
+  f.clock.jump(1200)
+  assert.deepEqual(f.view()?.autoApproval, { status: "countdown", seconds: 1 })
+  f.clock.jump(1000); await settle()
+  assert.equal(f.state.writes, 1)
+})
+
+test("fast: a background tab allows preview approval without a countdown", async t => {
+  const f = await fixture(true, false, false, 2, false); t.after(() => f.dispose())
+  assert.equal(f.view()?.autoApproval, undefined)
+  assert.equal(f.state.writes, 0)
+  f.state.ready = true; f.wake(); await settle()
+  assert.equal(f.state.writes, 1)
 })
 
 for (const fast of [false, true]) {

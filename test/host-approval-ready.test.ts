@@ -51,3 +51,26 @@ test("automation follows proven root/descendant ancestry, but never dashboard/ho
   sessions.set("deep", { id: "deep", parentID: "missing" })
   assert.equal(hostApprovalReady(request, "root", { type: "session", sessionID: "root" }, session, () => false), false)
 })
+
+test("an open background conversation tab permits approval while unrelated navigation still waits", () => {
+  const sessions = new Map([
+    ["root", { id: "root" }], ["child", { id: "child", parentID: "root" }],
+    ["other", { id: "other" }],
+  ])
+  const session = (id: string) => sessions.get(id)
+  const request = { sessionID: "child" }
+  const away = { type: "session", sessionID: "other" }
+  const tabs = [{ sessionID: "root", active: false }, { sessionID: "other", active: true }]
+  assert.equal(hostApprovalReady(request, "root", away, session, () => false), false)
+  assert.equal(hostApprovalReady(request, "root", away, session, () => false, tabs), true)
+  assert.equal(hostApprovalReady(request, "root", away, session, () => false,
+    [{ sessionID: "child", active: false }, tabs[1]!]), true)
+  assert.equal(hostApprovalReady(request, "root", away, session, () => true, tabs), false)
+  for (const absent of [[], [tabs[1]!], [{ sessionID: "missing", active: false }, tabs[1]!],
+    [{ sessionID: "root", active: true }, { sessionID: "other", active: false }]])
+    assert.equal(hostApprovalReady(request, "root", away, session, () => false, absent), false)
+  for (const route of [{ type: "home" }, { type: "plugin" }, { type: "session", sessionID: "missing" }])
+    assert.equal(hostApprovalReady(request, "root", route, session, () => false, tabs), false)
+  sessions.set("child", { id: "child", parentID: "missing" })
+  assert.equal(hostApprovalReady(request, "root", away, session, () => false, tabs), false)
+})

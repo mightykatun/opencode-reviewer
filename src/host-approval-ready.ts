@@ -39,11 +39,13 @@ export function nativeDecisionPending(tree: NativeDecisionNode, selected: RGBA):
   try { return visit(tree) } catch { return true }
 }
 
-/** UI presentation is deliberately absent. Only a known same-conversation route
- * admits writes; dashboard/home, unrelated routes and unknown ancestry wait. */
+/** UI presentation is deliberately absent. A known open background tab can
+ * approve, but home, unknown routes and unrelated navigation without tabs wait. */
 export function hostApprovalReady(request: Pick<HostRequest, "sessionID">, root: string | undefined,
   route: { type: string; sessionID?: string }, session: (id: string) => SessionLocation | undefined,
-  decisionPending: () => boolean): boolean {
-  return !!root && route.type === "session" && conversationRoot(route.sessionID, session) === root
-    && conversationRoot(request.sessionID, session) === root && !decisionPending()
+  decisionPending: () => boolean, tabs: readonly { sessionID: string; active: boolean }[] = []): boolean {
+  if (!root || route.type !== "session" || conversationRoot(request.sessionID, session) !== root || decisionPending()) return false
+  const active = conversationRoot(route.sessionID, session)
+  return active === root || !!active && tabs.some(tab => tab.active && tab.sessionID === route.sessionID)
+    && tabs.some(tab => !tab.active && conversationRoot(tab.sessionID, session) === root)
 }
