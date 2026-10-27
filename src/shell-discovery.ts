@@ -146,9 +146,9 @@ class DiscoveryState {
   qualifySnapshot() {
     if (this.preceded) this.note("Files are current filesystem snapshots; preceding command statements may change them before execution.")
   }
-  add(filename: string, executable = false) {
-    if (!literal(filename) || this.uncertainWord) {
-      this.note(`Script filename unresolved: ${filename.replaceAll(VARIABLE, "<variable>")}`)
+  add(filename: string, executable = false, validatedOperand = false) {
+    if (!literal(filename) || (this.uncertainWord && !validatedOperand)) {
+      this.note(`File target unresolved: ${filename.replaceAll(VARIABLE, "<variable>")}`)
       return
     }
     this.budget.reference()
@@ -401,13 +401,9 @@ function visit(args: string[], state: DiscoveryState, next?: string, external = 
   const program = programIdentity(executable)
   if (program === "cat" || program === "head") return reader(program, words, state)
   if (program === "python" || program === "shell") return interpreter(program === "python", words, state)
-  const runtime = runtimeOperands(executable, [...words.values()])
+  const runtime = runtimeOperands(executable, [...words.values()], () => state.budget.step())
   if (runtime.handled) {
-    if (state.uncertainWord) {
-      state.note("Unquoted glob or unresolved command word prevents reliable runtime file discovery.")
-      return
-    }
-    runtime.files.forEach(file => state.add(file))
+    runtime.files.forEach(file => state.add(file, false, true))
     runtime.limitations.forEach(text => state.note(text))
     if (runtime.child) {
       if (forwardDepth >= 8) state.note("Indirect launcher nesting exceeds the eight-child limit; source was not resolved.")
@@ -460,7 +456,7 @@ function scan(command: string, cwd: string | null, depth: number, budget: Discov
       budget.step()
       if (typeof token === "string") words.push(token)
       else if ("comment" in token) break
-      else if ("op" in token && token.op === "glob" && "pattern" in token) { words.push(String(token.pattern)); state.uncertainWord = true }
+      else if ("op" in token && token.op === "glob" && "pattern" in token) { words.push(VARIABLE); state.uncertainWord = true }
       else if ("op" in token && typeof token.op === "string") {
         visit(words, state, token.op)
         words = []
