@@ -7,7 +7,7 @@ import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import type { FileIO } from "../src/file-access.js"
 import { withNotificationProcesses } from "../src/plugin.js"
 
-const skillOptions = { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
+const skillOptions = { reviewBash: true, includeShellArgumentFiles: false, reviewEdits: true, reviewExternalDirectories: true,
   reviewSkills: true, reviewTools: true, maxFiles: 6, maxEvidenceBytes: 131072 }
 
 test("skill registry evidence cannot survive a changed pending permission identity", async () => {
@@ -163,7 +163,7 @@ test("evidence abort retains the server file transaction and late descriptor cle
   hooks.get("execute.before")!({ sessionID: "session", messageID: "assistant", id: "call", tool: "shell", input: { command: "python3 fixture.py" } })
   const abort = new AbortController()
   const pending = handlers.evidence({ epoch: handshake.epoch, location: handshake.location, sessionID: "session", requestID: "request",
-    timeoutMs: 5000, options: { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
+    timeoutMs: 5000, options: { reviewBash: true, includeShellArgumentFiles: false, reviewEdits: true, reviewExternalDirectories: true,
       reviewSkills: true, reviewTools: true, maxFiles: 6, maxEvidenceBytes: 131072 } },
     { signal: abort.signal, error: () => { throw Error("unexpected") } })
   await acquiring

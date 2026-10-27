@@ -1,7 +1,7 @@
 import { boundedHostJSON } from "./host-request.js"
 import type { HostEvidenceOptions } from "./host-evidence.js"
 
-const switches = ["reviewBash", "reviewEdits", "reviewExternalDirectories", "reviewSkills", "reviewTools"] as const
+const switches = ["reviewBash", "includeShellArgumentFiles", "reviewEdits", "reviewExternalDirectories", "reviewSkills", "reviewTools"] as const
 export const evidenceOptionsSchema = {
   type: "object", properties: {
     ...Object.fromEntries(switches.map(key => [key, { type: "boolean" }])),
@@ -23,6 +23,7 @@ export function readHostEvidenceOptions(raw: unknown): HostEvidenceOptions | und
 
 export function hostEvidenceOptions(config: HostEvidenceOptions): HostEvidenceOptions {
   return { reviewBash: config.reviewBash, reviewEdits: config.reviewEdits, reviewExternalDirectories: config.reviewExternalDirectories,
+    includeShellArgumentFiles: config.includeShellArgumentFiles,
     reviewSkills: config.reviewSkills, reviewTools: config.reviewTools,
     maxFiles: config.maxFiles, maxEvidenceBytes: config.maxEvidenceBytes }
 }

@@ -10,7 +10,7 @@ import type { JSONObject } from "../src/host-types.js"
 const location = { directory: "/project" }
 const entry = { id: "review", name: "Review", path: "/project/.opencode/skills/review.md", content: "Summarize the requested changes.\n" }
 const catalog = (data: unknown = [entry], scope: unknown = location) => ({ location: scope, data })
-const options: HostEvidenceOptions = { reviewBash: false, reviewEdits: false, reviewExternalDirectories: false,
+const options: HostEvidenceOptions = { reviewBash: false, includeShellArgumentFiles: false, reviewEdits: false, reviewExternalDirectories: false,
   reviewSkills: true, reviewTools: true, maxFiles: 1, maxEvidenceBytes: 131072 }
 function owned() {
   const value = nativeInvocation("skill", { id: entry.id }, undefined, location.directory, [entry.id])

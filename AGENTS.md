@@ -19,7 +19,7 @@
   `scripts/helper-tests.json`; host and built-package checks stay separate.
 - Runtime/UI and host-integration changes need a relevant real-TUI fixture after
   `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  51-case production/foundation selection available in manual extended checks,
+  52-case production/foundation selection available in manual extended checks,
   including session instructions, history, statistics, approval notifications and explicitly classified
   synthetic probes.
   `npm run test:runtime` selects `--profile v2-acceptance`, which currently selects
@@ -86,6 +86,7 @@ All commands below use the installed five-file archive and production runtime.
 | Shared registered-tool review / fast approval (local MCP) | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-tool` / `fast-tool` |
 | Judge-decided Code Mode MCP linkage / fast approval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-code-mode-tool` / `fast-code-mode-tool` |
 | Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
+| Narrow shell inputs / opt-in literal argument files | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal` / `normal-argument-files` |
 | Saved history and statistics | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history` |
 | Session instructions editor / persistence / root and descendant judge requests | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-instructions` |
 | Review after 512 completed Code Mode calls / oversized source excerpts | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-long-session` / `normal-large-source` |
@@ -401,6 +402,10 @@ existing user directories.
   snapshots may follow symlinks outside the project. Edits use pending host diffs,
   not full target reads or fabricated replacement diffs. Filesystem evidence is
   collected only by the scoped server companion, never terminal-local I/O.
+  `includeShellArgumentFiles` defaults false. When true, additional existing
+  regular files named by literal argv values are captured with an uncertain-role
+  basis; outputs and unrelated files may be sent to the reviewer. Certain inputs
+  retain file-budget priority. Do not infer command semantics from existence.
   Directory evidence retains exact declared scope/arguments without inspecting
   target directories or file contents; it is not a complete operation assessment.
 - `reviewSkills` defaults true and reviews native skill loading under the accepted

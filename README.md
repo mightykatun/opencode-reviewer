@@ -23,13 +23,13 @@ For OpenCode V2 on Linux.
 
 Reviews send request data, the latest user prompt, and selected file snapshots,
 diffs, skill instructions or tool arguments to your configured endpoint **before
-permission approval**. Shell snapshots include literal script inputs, input
-redirects and existing files named directly in any command's arguments, even
-for programs the plugin does not recognize. An argument may name an output or
-an unrelated file; its contents can still be sent for the reviewer to judge.
-Browser-opened files, generated names, imports and files referenced inside
-scripts are not discovered. Snapshots can follow
-symlinks outside the project; denying the command afterward cannot undo that
+permission approval**. By default, shell snapshots include supported literal
+script and text inputs, plus input redirects. Set `includeShellArgumentFiles: true`
+to also send existing files named in any command's literal arguments, including
+unknown programs. An argument may name an output or unrelated file; its contents
+can still be sent for the reviewer to judge. Browser-opened files, generated
+names, imports and files referenced inside scripts are not discovered. Snapshots
+can follow symlinks outside the project; denying the command afterward cannot undo that
 disclosure. Use an endpoint you trust, and a local reviewer or a sandbox without
 accessible secrets when working with untrusted repositories.
 
@@ -53,6 +53,7 @@ in `cli.json`.
         "instructions": "/absolute/path/to/reviewer-prompts",
         "stream": false,
         "reviewBash": true,
+        "includeShellArgumentFiles": false,
         "reviewEdits": true,
         "reviewSkills": true,
         "reviewTools": true,
@@ -115,6 +116,7 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `instructions` | string | Unset (built-ins) | Absolute, NUL-free directory path containing category and extra-careful [prompt template](https://github.com/mightykatun/opencode-reviewer/tree/main/prompts) overrides, not inline instructions. Missing named files use built-ins; supplied files must be readable, regular, non-symlink, nonempty UTF-8 text up to 64 KiB. Fixed contracts and the session-instructions precedence wrapper cannot be overridden. |
 | `stream` | boolean | `false` | Request SSE and show provisional rating/text updates. Normal automatic approval waits for a completed, validated report; fast mode can approve on an early Safe rating. Approval rules are described below. |
 | `reviewBash` | boolean | `true` | Review native `shell` permissions. The option keeps its existing name. |
+| `includeShellArgumentFiles` | boolean | `false` | Also send existing regular files named by literal shell arguments, even for unknown programs. Their input role is unverified; outputs and unrelated files may be disclosed. No expansion, dependency search or directory enumeration. Shares `maxFiles`, `maxEvidenceBytes` and the normal evidence deadline. |
 | `reviewEdits` | boolean | `true` | Review native `edit`, `write` and `patch` tools, which use the `edit` permission action. |
 | `reviewSkills` | boolean | `true` | Review native skill loading using the exact requested ID and full currently registered main instructions. Assumes the selected definition stays unchanged while permission is pending. Missing or ambiguous instructions remain manual. |
 | `reviewTools` | boolean | `true` | Review other tools, including MCP and custom tools, using `TOOL-REVIEW-PROMPT.md`. Exact call linkage, arguments and permission scope are required. Descriptions and JSON Schemas are optional; missing evidence is explained to the LLM, which decides Safe/Unsafe. Safe reviews can use normal or fast automatic approval. |

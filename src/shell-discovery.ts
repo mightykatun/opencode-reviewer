@@ -554,10 +554,11 @@ export function discover(command: string, cwd: string | null | LaunchCwd, depth 
 
 /** The same syntax traversal exposes uncertain argv values for scoped,
  * existence-checked capture; ordinary discover() keeps its certain-only API. */
-export function discoverWithCandidates(command: string, cwd: string | null | LaunchCwd, signal?: AbortSignal) {
+export function discoverWithCandidates(command: string, cwd: string | null | LaunchCwd, signal?: AbortSignal,
+  includeCandidates = true) {
   const launch = typeof cwd === "string" || cwd === null ? { declared: cwd, canonical: cwd } : cwd
   return scan(command, launch.declared, 0, new DiscoveryBudget(signal),
-    launch.canonical !== null && launch.declared === launch.canonical, true)
+    launch.canonical !== null && launch.declared === launch.canonical, includeCandidates)
 }
 
 function scan(command: string, cwd: string | null, depth: number, budget: DiscoveryBudget, logicalCwdKnown: boolean,

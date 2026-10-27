@@ -129,10 +129,13 @@ export async function collectEvidence(
   // Native evidence already owns the launch-path probe. Standalone collectors use the
   // same bounded scope; never replace the declared path with its canonical alias.
   const canonical = input.execution ? input.execution.canonicalCwd : input.cwd ? (await scope.canonical(input.cwd)).path : null
-  const discovery = discoverWithCandidates(input.command, { declared: input.cwd, canonical }, signal)
+  const includeShellArgumentFiles = limits.includeShellArgumentFiles === true
+  const discovery = discoverWithCandidates(input.command, { declared: input.cwd, canonical }, signal, includeShellArgumentFiles)
   const evidence: Evidence = { ...input, kind: "shell", files: [], limitations: [
     ...(input.limitations ?? []),
-    "Literal shell inputs and existing files directly named by command arguments are collected. Argument candidates have unknown input roles: they may be outputs or unrelated, so the reviewer must decide relevance. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected.",
+    includeShellArgumentFiles
+      ? "Literal shell inputs and existing files directly named by command arguments are collected. Argument candidates have unknown input roles: they may be outputs or unrelated, so the reviewer must decide relevance. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected."
+      : "Only literal file inputs recognized from command syntax, input redirects and supported program operands are collected. Unknown program options and indirect inputs are not inferred. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected.",
     ...discovery.limitations,
   ] }
   if (!input.userPrompt) evidence.limitations.push("User prompt unavailable.")

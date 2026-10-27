@@ -10,6 +10,7 @@ export interface Config extends Limits, NotificationConfig {
   instructions?: string
   stream: boolean
   reviewBash: boolean
+  includeShellArgumentFiles: boolean
   reviewEdits: boolean
   reviewSkills: boolean
   reviewTools: boolean
@@ -36,7 +37,7 @@ export function configuredEvidenceBytes(options: Readonly<Record<string, unknown
 }
 
 export function parseConfig(options: Record<string, unknown> = {}): Config {
-  const keys = new Set(["baseURL", "model", "apiKey", "apiKeyEnv", "instructions", "stream", "reviewBash", "reviewEdits", "reviewSkills", "reviewTools", "reviewExternalDirectories", "autoApprove", "fastMode", "extraCareful", "autoApproveDelaySeconds", "formatRetries", "timeoutMs", "maxOutputTokens", "maxFiles", "maxEvidenceBytes", "notify", "notifySound", "notificationSoundDirectory", "staleReminderSeconds", "notifications"])
+  const keys = new Set(["baseURL", "model", "apiKey", "apiKeyEnv", "instructions", "stream", "reviewBash", "includeShellArgumentFiles", "reviewEdits", "reviewSkills", "reviewTools", "reviewExternalDirectories", "autoApprove", "fastMode", "extraCareful", "autoApproveDelaySeconds", "formatRetries", "timeoutMs", "maxOutputTokens", "maxFiles", "maxEvidenceBytes", "notify", "notifySound", "notificationSoundDirectory", "staleReminderSeconds", "notifications"])
   for (const key of Object.keys(options)) if (!keys.has(key)) throw new Error(`Unknown opencode-reviewer setting: ${key}`)
   const text = (name: string, optional = false): string | undefined => {
     const value = options[name]
@@ -75,7 +76,8 @@ export function parseConfig(options: Record<string, unknown> = {}): Config {
     apiKey: text("apiKey", true),
     instructions,
     stream: boolean("stream", false),
-    reviewBash: boolean("reviewBash"), reviewEdits: boolean("reviewEdits"),
+    reviewBash: boolean("reviewBash"), includeShellArgumentFiles: boolean("includeShellArgumentFiles", false),
+    reviewEdits: boolean("reviewEdits"),
     reviewSkills: boolean("reviewSkills"),
     reviewTools: boolean("reviewTools"),
     reviewExternalDirectories: boolean("reviewExternalDirectories"),

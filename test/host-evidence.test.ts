@@ -8,7 +8,7 @@ import { withDeadline } from "../src/deadline.js"
 import { review } from "../src/reviewer.js"
 import { parseConfig } from "../src/config.js"
 
-const options: HostEvidenceOptions = { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
+const options: HostEvidenceOptions = { reviewBash: true, includeShellArgumentFiles: false, reviewEdits: true, reviewExternalDirectories: true,
   reviewSkills: true, reviewTools: true, maxFiles: 6, maxEvidenceBytes: 131072 }
 const signal = () => new AbortController().signal
 
@@ -244,14 +244,21 @@ test("Jupyter notebook snapshots remain exact through companion evidence validat
 test("unclassified tool arguments retain uncertain file provenance across the companion boundary", async () => {
   const value = shell("custom --input=dataset")
   const files = io({ [`${location.directory}/dataset`]: "named input\n" })
-  const result = await collectHostOperation(value, options, signal(), files.access)
+  const narrow = await collectHostOperation(value, options, signal(), files.access)
+  assert.ok(narrow.status === "ready" && narrow.evidence.kind === "shell")
+  assert.deepEqual(narrow.evidence.files, [])
+  assert.ok(files.calls.every(call => !call.includes("dataset")), "Narrow mode does not probe argument paths")
+  const broadOptions = { ...options, includeShellArgumentFiles: true }
+  const result = await collectHostOperation(value, broadOptions, signal(), files.access)
   assert.ok(result.status === "ready" && result.evidence.kind === "shell")
   assert.deepEqual(result.evidence.files.map(file => [file.filename, file.contents, file.basis]),
     [["dataset", "named input\n", "literal argument; input role unknown"]])
-  assert.deepEqual(readHostOperationEvidence(result.evidence, value, options, signal()), result.evidence)
+  assert.deepEqual(readHostOperationEvidence(result.evidence, value, broadOptions, signal()), result.evidence)
+  assert.deepEqual(readHostOperationEvidence(result.evidence, value, options, signal()), result.evidence,
+    "A config reload cannot invalidate an already collected review")
   const altered = structuredClone(result.evidence)
   altered.files[0]!.basis = "verified native input" as typeof altered.files[0]["basis"]
-  assert.equal(readHostOperationEvidence(altered, value, options, signal()), undefined)
+  assert.equal(readHostOperationEvidence(altered, value, broadOptions, signal()), undefined)
 })
 
 test("source excerpts survive the companion boundary, reject false completeness/counts and reach the judge", async () => {

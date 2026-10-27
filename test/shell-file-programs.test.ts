@@ -78,9 +78,11 @@ test("capture only named text and SQL snapshots under the existing file and byte
   const result = await collectEvidence({ command, cwd: dir, userPrompt: "Review" },
     { maxEvidenceBytes: 65536, maxFiles: 8 }, new AbortController().signal)
   assert.deepEqual(result.files.map(file => file.filename),
-    ["script.R", "filter.awk", "data.csv", "filter.jq", "rows.json", "query.sql", "notes.md", "generated.sql"])
+    ["script.R", "filter.awk", "data.csv", "filter.jq", "rows.json", "query.sql", "notes.md"])
   assert.equal(result.files.find(file => file.filename === "query.sql")?.contents, source)
-  assert.equal(result.files.find(file => file.filename === "generated.sql")?.basis, "literal argument; input role unknown")
+  const broad = await collectEvidence({ command, cwd: dir, userPrompt: "Review" },
+    { maxEvidenceBytes: 65536, maxFiles: 8, includeShellArgumentFiles: true }, new AbortController().signal)
+  assert.equal(broad.files.find(file => file.filename === "generated.sql")?.basis, "literal argument; input role unknown")
   assert.ok(result.files.every(file => file.status === "captured"))
   await assert.rejects(access(marker))
   const limited = await collectEvidence({ command: "pandoc notes.md data.csv; psql -f query.sql", cwd: dir, userPrompt: "Review" },

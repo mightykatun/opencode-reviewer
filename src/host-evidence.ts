@@ -18,7 +18,7 @@ import { readRegisteredTool, type RegisteredTool, type ToolCatalogRead } from ".
 import { codeModeToolAction, directoryTools, editTools, nativeTools } from "./host-tool-kind.js"
 import { collectCodeModeCandidates, validCodeModeEvidence, type CodeModeEvidence } from "./host-code-mode.js"
 
-export type HostEvidenceOptions = Pick<Config, "reviewBash" | "reviewEdits" | "reviewExternalDirectories"
+export type HostEvidenceOptions = Pick<Config, "reviewBash" | "includeShellArgumentFiles" | "reviewEdits" | "reviewExternalDirectories"
   | "reviewSkills" | "reviewTools"> & Limits
 
 type Permission = Omit<HostRequest, "metadata"> & { metadata?: JSONObject; metadataStatus: string }

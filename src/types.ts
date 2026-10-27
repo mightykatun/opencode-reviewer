@@ -1,6 +1,8 @@
 export interface Limits {
   maxFiles: number
   maxEvidenceBytes: number
+  /** Standalone collectors default to narrow discovery when omitted. */
+  includeShellArgumentFiles?: boolean
 }
 
 export interface FileEvidence {

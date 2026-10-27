@@ -11,7 +11,7 @@ import type { FileIO } from "../src/file-access.js"
 import { TransportOwnership, bindTransportOwnership } from "../src/transport-ownership.js"
 import { withDeadline } from "../src/deadline.js"
 
-const options: HostEvidenceOptions = { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
+const options: HostEvidenceOptions = { reviewBash: true, includeShellArgumentFiles: false, reviewEdits: true, reviewExternalDirectories: true,
   reviewTools: true, reviewSkills: true, maxFiles: 6, maxEvidenceBytes: 131072 }
 const location = { directory: "/server/project" }, project = { id: "project", directory: "/server", canonical: "/server" }
 const source = { type: "tool", messageID: "assistant", id: "call" }
@@ -183,7 +183,10 @@ test("returned evidence cannot change mandatory source/targets or substitute a r
 test("collection options reject unknown paths, overflow, missing switches and getters without invoking them", () => {
   assert.deepEqual(readHostEvidenceOptions(options), options)
   for (const value of [{ ...options, path: "/caller-chosen" }, { ...options, maxFiles: 1001 }, { ...options, maxEvidenceBytes: Infinity },
-    { ...options, reviewBash: undefined }]) assert.equal(readHostEvidenceOptions(value), undefined)
+    { ...options, reviewBash: undefined }, { ...options, includeShellArgumentFiles: undefined },
+    { ...options, includeShellArgumentFiles: "true" }]) assert.equal(readHostEvidenceOptions(value), undefined)
+  assert.deepEqual(readHostEvidenceOptions({ ...options, includeShellArgumentFiles: true }),
+    { ...options, includeShellArgumentFiles: true })
   let read = false
   const value = Object.defineProperty({ ...options }, "maxFiles", { get() { read = true; return 1 } })
   assert.equal(readHostEvidenceOptions(value), undefined)

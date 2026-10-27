@@ -1,7 +1,7 @@
 // Installed five-file production archive: actual controller, UI and reviewer.
 // Scenarios: advisory (nonstream), advisory-history-once/always/reject (Unsafe native decisions),
 // advisory-evidence-timeout (actual pre-model deadline failure remains visible and manual),
-// normal (SSE), fast (held SSE preview/remainder),
+// normal (SSE), normal-argument-files (opt-in literal argv capture), fast (held SSE preview/remainder),
 // normal-mouse-off, normal-cancel, normal-descendant, fast-descendant,
 // normal-hide, normal-dialog, normal-resize, fast-dialog, normal-hidden-complete,
 // normal-route-wait, normal-decision, fast-decision,
@@ -526,7 +526,8 @@ const prompt = registeredTool ? "Look up the public account once using fixture_l
 const script = (largeSource ? "# oversized source fixture context\n".repeat(8000) : "")
   + 'from pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write("V2_REVIEW_EXECUTED\\n")\nprint("V2_REVIEW_EXECUTED")\n'
 const description = "V2 local marker report.\n\nThe script writes one isolated marker."
-const literalArgCase = scenario === "normal"
+const literalArgCase = scenario === "normal" || scenario === "normal-argument-files"
+const broadArgumentFiles = scenario === "normal-argument-files"
 const candidateContents = "V2_LITERAL_ARGUMENT_DATA\n"
 const instructionsText = 'SESSION_INSTRUCTIONS_LITERAL: keep "quoted" text and {{braces}}.\n\tRoot and descendant share this note.'
 // Only the second keyboard-case response is long. The first genuine report keeps
@@ -1282,8 +1283,8 @@ try {
           assert.equal(evidence.permission.action, "shell")
           assert.deepEqual(evidence.permission.resources, [toolCall.input.command])
           assert.equal(evidence.permission.type, undefined, "No fabricated native permission type")
-           assert.equal(evidence.files.length, literalArgCase ? 2 : 1)
-           if (literalArgCase) assert.deepEqual(evidence.files[1], {
+           assert.equal(evidence.files.length, broadArgumentFiles ? 2 : 1)
+           if (broadArgumentFiles) assert.deepEqual(evidence.files[1], {
              filename: "candidate.txt", path: path.join(inputs, "candidate.txt"), status: "captured",
              contents: candidateContents, basis: "literal argument; input role unknown",
            })
@@ -1424,7 +1425,8 @@ createInterface({input:process.stdin}).on('line',line=>{
   const cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, attention: { notifications: false, sound: false },
      ...(automatic ? { mouse: !mouseOff } : {}),
     session: { permissions: "prompt" }, plugins: [{ package: reviewer, options: { baseURL: origin + "/review", model: "v2-production-reviewer",
-       stream: streaming, autoApprove: automatic, fastMode: fast, autoApproveDelaySeconds: approvalDelaySeconds,
+        stream: streaming, autoApprove: automatic, fastMode: fast, autoApproveDelaySeconds: approvalDelaySeconds,
+         ...(broadArgumentFiles ? { includeShellArgumentFiles: true } : {}),
         ...(directoryEditCase ? { reviewExternalDirectories: true } : {}),
          ...(registeredTool ? { reviewTools: true, maxEvidenceBytes: fast ? 131072 : 2048 } : {}),
          ...(largeSource ? { maxEvidenceBytes: 2048 } : {}),
@@ -1803,8 +1805,10 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.equal(payload.conversation.root.id, sessionID)
   assert.equal(payload.conversation.current.location.directory, initial)
   assert.equal(payload.conversation.current.projectID, handshake.project.id)
-  assert.deepEqual(payload.limitations, ["Optional effective native tool definition is not included; exact captured arguments and pending permission scope are retained.",
-      "Literal shell inputs and existing files directly named by command arguments are collected. Argument candidates have unknown input roles: they may be outputs or unrelated, so the reviewer must decide relevance. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected."])
+   assert.deepEqual(payload.limitations, ["Optional effective native tool definition is not included; exact captured arguments and pending permission scope are retained.",
+      broadArgumentFiles
+        ? "Literal shell inputs and existing files directly named by command arguments are collected. Argument candidates have unknown input roles: they may be outputs or unrelated, so the reviewer must decide relevance. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected."
+        : "Only literal file inputs recognized from command syntax, input redirects and supported program operands are collected. Unknown program options and indirect inputs are not inferred. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected."])
   await until("rendered production evaluating panel", () => capture().includes("Permission analysis"))
   await saveCapture("evaluating")
    await negativeWindow("review response held", [request], [], null, 1, 1500, notificationCase ? noAttention : savedCase ? noSavedBody : () => {})

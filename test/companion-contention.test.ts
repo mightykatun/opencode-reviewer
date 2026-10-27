@@ -137,7 +137,7 @@ test("timed-out noncooperative server reads retain both slots across invocation/
   t.after(async () => { f.release(); await f.lifecycle.stop() })
   const query = (i: number) => ({ ...f.scope, sessionID: "session", requestID: f.requests[i]!.id, options: f.config, timeoutMs: 20 })
   // Pass only the exact supported collection option fields, as actual clients do.
-  const options = { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true, reviewSkills: true,
+  const options = { reviewBash: true, includeShellArgumentFiles: false, reviewEdits: true, reviewExternalDirectories: true, reviewSkills: true,
     reviewTools: true, maxFiles: f.config.maxFiles, maxEvidenceBytes: f.config.maxEvidenceBytes }
   const first = f.handlers.evidence({ ...query(0), options }, f.call), second = f.handlers.evidence({ ...query(1), options }, f.call)
   let completed = 0

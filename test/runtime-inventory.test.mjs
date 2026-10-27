@@ -105,10 +105,10 @@ test("session instructions selects one installed production host with the existi
 
 test("V2 acceptance includes each production review case exactly once and retains explicit synthetic classifications", () => {
   const cases = profilePlan("v2-acceptance")
-  assert.equal(cases.length, 51, "Includes Code Mode judge decisions, session instructions and connection recovery")
+  assert.equal(cases.length, 52, "Includes literal argument opt-in, Code Mode decisions, instructions and recovery")
   assert.equal(cases.length, new Set(cases.map(value => value.id)).size)
   const reviews = cases.filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs")
-  const expectedReviews = ["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant",
+  const expectedReviews = ["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "normal-argument-files", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant",
     "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
       "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-code-mode-tool", "fast-code-mode-tool", "normal-project-transition", "normal-long-session", "normal-large-source", "normal-reconnect", "normal-reconnect-visible", "normal-stalled-stream", "normal-instructions"].sort()
   assert.deepEqual(reviews.map(value => value.scenario).sort(), expectedReviews)
