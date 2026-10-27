@@ -132,7 +132,7 @@ export async function collectEvidence(
   const discovery = discover(input.command, { declared: input.cwd, canonical }, 0, signal)
   const evidence: Evidence = { ...input, kind: "shell", files: [], limitations: [
     ...(input.limitations ?? []),
-    "Only literal file inputs recognized from command syntax and supported program operands are collected. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected.",
+    "Only literal file inputs recognized from command syntax, input redirects and supported program operands are collected. Unknown program options and indirect inputs are not inferred. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected.",
     ...discovery.limitations,
   ] }
   if (!input.userPrompt) evidence.limitations.push("User prompt unavailable.")

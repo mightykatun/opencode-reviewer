@@ -27,6 +27,12 @@ test("conventional runtime identities and explicit script operands", () => {
     ["dotnet", ["run", "--project=./app.fsproj"], ["./app.fsproj"]],
     ["node", ["--require", "json", "--import", "./bootstrap.mjs", "main.js"], ["./bootstrap.mjs", "main.js"]],
     ["go", ["run", "-modfile=go.custom.mod", "-overlay=overlay.json", "main.go"], ["go.custom.mod", "overlay.json", "main.go"]],
+    ["jupyter", ["lab", "--no-browser", "notebook.ipynb"], ["notebook.ipynb"]],
+    ["/usr/bin/jupyter-lab", ["./notebook.ipynb"], ["./notebook.ipynb"]],
+    ["jupyter", ["notebook", "--port=8889", "./notebook.ipynb"], ["./notebook.ipynb"]],
+    ["jupyter", ["nbconvert", "--to", "notebook", "--execute", "one.ipynb", "two.ipynb", "--output", "generated.ipynb"], ["one.ipynb", "two.ipynb"]],
+    ["jupyter-execute", ["--allow-errors", "one.ipynb", "two.ipynb", "--output", "generated.ipynb"], ["one.ipynb", "two.ipynb"]],
+    ["jupyter-nbconvert", ["--template-file", "./custom.tpl", "--config", "config.py", "--to=html", "main.ipynb"], ["./custom.tpl", "config.py", "main.ipynb"]],
   ]
   for (const [exe, args, files] of cases) {
     assert.deepEqual(runtimeOperands(exe, args), { handled: true, files, limitations: [] }, `${exe} ${args.join(" ")}`)
@@ -58,6 +64,12 @@ test("module and inline modes do not turn program arguments into script sources"
   }
 })
 
+test("Jupyter can read an explicit config without implying a browser-opened notebook", () => {
+  const found = runtimeOperands("jupyter", ["lab", "--config=config.py"])
+  assert.deepEqual(found.files, ["config.py"])
+  assert.match(found.limitations.join(" "), /browser-opened files were not resolved/)
+})
+
 test("unsupported and missing options fail closed, with explicit limitations", () => {
   const cases: [string, string[]][] = [
     ["node", ["--mystery", "decoy.js", "real.js"]],
@@ -79,6 +91,15 @@ test("unsupported and missing options fail closed, with explicit limitations", (
     ["bun", ["--cwd", "other", "app.ts"]],
     ["deno", ["run", "https://example.test/app.ts"]],
     ["node", ["data:text/javascript,console.log(1)"]],
+    ["jupyter", ["lab", "--notebook-dir", "elsewhere", "notebook.ipynb"]],
+    ["jupyter", ["lab", "notebook.ipynb", "--ServerApp.root_dir=elsewhere"]],
+    ["jupyter", ["lab", "build", "notebook.ipynb"]],
+    ["jupyter", ["lab", "notebook.ipynb", "second.ipynb"]],
+    ["jupyter", ["nbconvert", "--to", "notebook.ipynb", "--mystery", "decoy.ipynb"]],
+    ["jupyter", ["execute", "--output", "generated.ipynb"]],
+    ["jupyter", ["lab", "https://example.test/notebook.ipynb"]],
+    ["jupyter", ["lab", "--to", "html", "notebook.ipynb"]],
+    ["jupyter", ["nbconvert", "*.ipynb"]],
   ]
   for (const [exe, args] of cases) {
     const found = runtimeOperands(exe, args)

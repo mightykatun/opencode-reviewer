@@ -227,6 +227,20 @@ test("companion validation accepts literal redirected inputs alongside unsupport
   assert.deepEqual(readHostOperationEvidence(result.evidence, value, options, signal()), result.evidence)
 })
 
+test("Jupyter notebook snapshots remain exact through companion evidence validation", async () => {
+  const value = shell("jupyter lab notebook.ipynb", "inputs")
+  const source = '{"cells":[{"cell_type":"code","source":["print(7)"]}],"nbformat":4}\n'
+  const files = io({ [`${location.directory}/inputs/notebook.ipynb`]: source })
+  const result = await collectHostOperation(value, options, signal(), files.access)
+  assert.ok(result.status === "ready" && result.evidence.kind === "shell")
+  assert.deepEqual(result.evidence.files.map(file => file.filename), ["notebook.ipynb"])
+  assert.equal(result.evidence.files[0]?.contents, source)
+  assert.deepEqual(readHostOperationEvidence(result.evidence, value, options, signal()), result.evidence)
+  const altered = structuredClone(result.evidence)
+  altered.files[0]!.status = "excerpt"
+  assert.equal(readHostOperationEvidence(altered, value, options, signal()), undefined)
+})
+
 test("source excerpts survive the companion boundary, reject false completeness/counts and reach the judge", async () => {
   const call = shell("python source.py"), files = io({ [`${location.directory}/source.py`]:
     "# context\n".repeat(1000) + "def entry():\n    return 1\n" })

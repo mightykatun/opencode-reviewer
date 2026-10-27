@@ -89,6 +89,164 @@ function script(runtime: string, args: readonly string[], options: Options, chec
   return result([...parsed.files, file])
 }
 
+/** File-oriented tools can accept options after positional inputs. Keep their
+ * arguments in order and publish nothing if any option changes their meaning. */
+interface FileOptions {
+  flags?: readonly string[]
+  values?: readonly string[]
+  inputs?: readonly string[]
+  pairs?: readonly string[]
+  pairedInputs?: readonly string[]
+  attached?: readonly string[] // exact short options whose value may be joined
+  blocked?: readonly string[] // cwd/search-directory or unsupported mode
+  stop?: readonly string[] // subsequent arguments are data, not file inputs
+}
+interface FileArg { word: string; input: boolean }
+function fileArgs(runtime: string, args: readonly string[], options: FileOptions, check?: () => void):
+  | { entries: FileArg[]; stopped: boolean; seen: string[] }
+  | { error: RuntimeOperands } {
+  const entries: FileArg[] = []
+  const seen: string[] = []
+  let positional = false
+  for (let i = 0; i < args.length; i++) {
+    if ((i & 127) === 0) check?.()
+    const arg = args[i]!
+    if (unsafe(arg)) return { error: limit(runtime, "unresolved or nonliteral operand") }
+    if (!positional && arg === "--") { positional = true; continue }
+    if (positional || !arg.startsWith("-") || arg === "-") {
+      entries.push({ word: arg, input: false }); continue
+    }
+    const base = arg.split("=", 1)[0]!
+    const joined = options.attached?.find(flag => arg.startsWith(flag) && arg.length > flag.length)
+    const flag = joined ?? base
+    if (options.blocked?.includes(flag)) return { error: limit(runtime, `unsupported directory or mode option ${flag}`) }
+    if (options.stop?.includes(flag)) return { entries, stopped: true, seen }
+    if (options.flags?.includes(arg)) { seen.push(flag); continue }
+    const count = options.pairs?.includes(flag) || options.pairedInputs?.includes(flag) ? 2
+      : options.values?.includes(flag) || options.inputs?.includes(flag) ? 1 : 0
+    if (!count || (arg !== flag && !joined && !arg.startsWith(`${flag}=`)))
+      return { error: limit(runtime, `unsupported option ${arg}`) }
+    seen.push(flag)
+    // Only short options explicitly listed in attached accept -fFILE; long
+    // options accept --file=FILE. Never treat another flag as a value.
+    const inline = joined ? arg.slice(flag.length) : arg === flag ? undefined : arg.slice(flag.length + 1)
+    for (let n = 0; n < count; n++) {
+      const value = n === 0 && inline !== undefined ? inline : args[++i]
+      if (!value || unsafe(value) || (inline === undefined && value.startsWith("-") && value !== "-"))
+        return { error: limit(runtime, `missing or unresolved value for ${flag}`) }
+      if ((options.inputs?.includes(flag) || options.pairedInputs?.includes(flag) && n === 1) && value !== "-")
+        entries.push({ word: value, input: true })
+    }
+  }
+  return { entries, stopped: false, seen }
+}
+
+function files(runtime: string, args: readonly string[], options: FileOptions,
+  select: (entries: FileArg[], stopped: boolean, seen: readonly string[]) => string[], check?: () => void): RuntimeOperands {
+  const parsed = fileArgs(runtime, args, options, check)
+  if ("error" in parsed) return parsed.error
+  const selected = select(parsed.entries, parsed.stopped, parsed.seen)
+  return selected.length ? result(selected) : limit(runtime, "no supported explicit file inputs")
+}
+
+const inputs = (entries: FileArg[]) => entries.filter(entry => entry.input).map(entry => entry.word)
+const positional = (entries: FileArg[]) => entries.filter(entry => !entry.input).map(entry => entry.word)
+const regular = (word: string) => word !== "-" && !unsafe(word)
+
+function jupyter(name: string, args: readonly string[], check?: () => void): RuntimeOperands {
+  const mode = name === "jupyter" ? args[0] : name.slice("jupyter-".length)
+  if (!mode || !["lab", "notebook", "nbconvert", "execute"].includes(mode))
+    return limit("jupyter", "unsupported subcommand or indirect launcher")
+  const runtime = `jupyter ${mode}`
+  const operands = name === "jupyter" ? args.slice(1) : args
+  const server = mode === "lab" || mode === "notebook"
+  const parsed = fileArgs(runtime, operands, {
+    flags: ["--debug", "--quiet", ...(server ? ["--no-browser"] : mode === "nbconvert"
+      ? ["--execute", "--yes", "-y", "--stdin"] : ["--allow-errors", "--inplace"])],
+    values: server ? ["--port"] : mode === "nbconvert"
+      ? ["--to", "--output", "--output-dir", "--template"]
+      : ["--output", "--kernel_name", "--timeout", "--startup_timeout"],
+    inputs: ["--config", ...(mode === "nbconvert" ? ["--template-file"] : [])],
+    blocked: server ? ["--notebook-dir", "--preferred-dir", "--ServerApp.root_dir", "--ServerApp.notebook_dir", "--LabApp.root_dir"] : [],
+  }, check)
+  if ("error" in parsed) return parsed.error
+  const named = positional(parsed.entries)
+  if (server) {
+    if (!named.length && inputs(parsed.entries).length)
+      return result(inputs(parsed.entries), [`${runtime}: no literal notebook launch operand; browser-opened files were not resolved.`])
+    // The server treats one existing positional path as a file_to_run or a
+    // root directory. Restrict discovery to an explicit notebook filename.
+    if (named.length !== 1 || !/\.ipynb$/i.test(named[0]!) || !regular(named[0]!) || /[*?\[\]]/.test(named[0]!))
+      return limit(runtime, "directory, browser-only launch, or unsupported positional file")
+  } else if (!named.length || named.some(word => !/\.ipynb$/i.test(word) || !regular(word)
+    || /[*?\[\]]/.test(word))) {
+    // nbconvert also expands quoted notebook globs itself; never enumerate them.
+    return limit(runtime, "missing, generated, or nonliteral notebook inputs")
+  }
+  return result([...inputs(parsed.entries), ...named])
+}
+
+function awk(name: string, args: readonly string[], check?: () => void): RuntimeOperands {
+  const gnu = name === "gawk"
+  return files(name, args, {
+    flags: gnu ? ["--posix", "--traditional", "--sandbox"] : [],
+    values: ["-F", "-v", ...(gnu ? ["-e", "--source", "--field-separator", "--assign"] : [])],
+    inputs: ["-f", ...(gnu ? ["--file"] : [])], attached: ["-F", "-v", "-f", ...(gnu ? ["-e"] : [])],
+    blocked: ["-i", "--include", "-l", "--load"],
+  }, (entries, _stopped, seen) => {
+    const names = positional(entries)
+    const programs = inputs(entries)
+    // With -f the first positional is input; otherwise it is awk program text.
+    const data = programs.length || seen.includes("-e") || seen.includes("--source")
+      ? names : names.slice(1)
+    return [...programs, ...data.filter(word => regular(word) && !/^[A-Za-z_][A-Za-z_0-9]*=/.test(word))]
+  }, check)
+}
+
+function sed(args: readonly string[], check?: () => void): RuntimeOperands {
+  return files("sed", args, {
+    flags: ["-n", "--quiet", "--silent", "-E", "-r", "--regexp-extended", "-z", "--null-data"],
+    values: ["-e", "--expression"], inputs: ["-f", "--file"], attached: ["-e", "-f"],
+    blocked: ["-i", "--in-place"],
+  }, (entries, _stopped, seen) => {
+    const program = entries.some(entry => entry.input) || seen.includes("-e") || seen.includes("--expression")
+    return [...inputs(entries), ...(program ? positional(entries) : positional(entries).slice(1)).filter(regular)]
+  }, check)
+}
+
+function jq(args: readonly string[], check?: () => void): RuntimeOperands {
+  return files("jq", args, {
+    flags: ["-R", "--raw-input", "-s", "--slurp", "-c", "--compact-output", "-r", "--raw-output", "-e", "--exit-status", "-S", "--sort-keys"],
+    values: ["--indent"], inputs: ["-f", "--from-file"], attached: ["-f"],
+    pairs: ["--arg", "--argjson"], pairedInputs: ["--slurpfile", "--rawfile"],
+    blocked: ["-L", "-n", "--null-input"], stop: ["--args", "--jsonargs"],
+  }, (entries, stopped, seen) => {
+    const named = positional(entries)
+    const namedFiles = inputs(entries)
+    const fromFile = seen.includes("-f") || seen.includes("--from-file")
+    if (stopped && !namedFiles.length && !named.length) return []
+    return [...namedFiles, ...named.slice(fromFile ? 0 : 1).filter(regular)]
+  }, check)
+}
+
+function pandoc(args: readonly string[], check?: () => void): RuntimeOperands {
+  return files("pandoc", args, {
+    flags: ["-s", "--standalone", "--toc", "--table-of-contents", "--sandbox", "--file-scope", "-C", "--citeproc", "--wrap=none"],
+    values: ["-o", "--output", "-f", "--from", "-t", "--to", "-M", "--metadata", "-V", "--variable"],
+    inputs: ["-d", "--defaults", "--metadata-file", "--template", "-H", "--include-in-header", "-B", "--include-before-body", "-A", "--include-after-body", "--bibliography", "--csl", "-L", "--lua-filter"],
+    attached: ["-o", "-f", "-t", "-M", "-V", "-d", "-H", "-B", "-A", "-L"],
+    blocked: ["--data-dir", "--resource-path", "--extract-media"],
+  }, entries => entries.filter(entry => entry.input || regular(entry.word)).map(entry => entry.word), check)
+}
+
+function psql(args: readonly string[], check?: () => void): RuntimeOperands {
+  return files("psql", args, {
+    flags: ["-X", "--no-psqlrc", "-q", "--quiet", "-1", "--single-transaction", "-A", "--no-align", "-t", "--tuples-only", "-w", "--no-password"],
+    values: ["-c", "--command", "-d", "--dbname", "-h", "--host", "-p", "--port", "-U", "--username", "-v", "--set", "--variable", "-o", "--output"],
+    inputs: ["-f", "--file"], attached: ["-c", "-d", "-h", "-p", "-U", "-v", "-o", "-f"],
+  }, entries => positional(entries).length <= 2 ? inputs(entries) : [], check)
+}
+
 const node: Options = {
   flags: ["--watch", "--watch-preserve-output", "--no-warnings", "--trace-warnings", "--enable-source-maps", "--preserve-symlinks", "--preserve-symlinks-main", "--inspect", "--inspect-brk", "--no-deprecation", "--experimental-strip-types", "--check", "-c"],
   values: ["-r", "--require", "--import", "--loader", "--experimental-loader", "--env-file", "--env-file-if-exists", "--conditions", "--input-type", "--inspect-port", "--max-old-space-size", "--cpu-prof-dir", "--diagnostic-dir"],
@@ -217,6 +375,22 @@ export function runtimeOperands(executable: string, args: readonly string[], che
   if (name === "go") return go(args, check)
   if (name === "java") return java(args, check)
   if (name === "dotnet") return dotnet(args, check)
+  if (name === "jupyter" || ["jupyter-lab", "jupyter-notebook", "jupyter-nbconvert", "jupyter-execute"].includes(name))
+    return jupyter(name, args, check)
+  if (name === "Rscript") return script(name, args, {
+    flags: ["--vanilla", "--no-environ", "--no-init-file", "--no-restore", "--no-save", "--slave"],
+    values: ["--default-packages"], source: ["--file"], inline: ["-e"],
+  }, check)
+  if (name === "julia") return script(name, args, {
+    flags: ["-q", "--quiet", "--startup-file=no", "--startup-file=yes", "--color=yes", "--color=no"],
+    values: ["-t", "--threads"], inputFiles: ["-L", "--load"], attached: ["-L", "-t"],
+    inline: ["-e", "--eval"],
+  }, check)
+  if (name === "awk" || name === "gawk") return awk(name, args, check)
+  if (name === "sed") return sed(args, check)
+  if (name === "jq") return jq(args, check)
+  if (name === "pandoc") return pandoc(args, check)
+  if (name === "psql") return psql(args, check)
   if (/^node(?:js)?$/.test(name)) return script(name, args, node, check)
   if (name === "bun") {
     if (args[0] === "run") {
