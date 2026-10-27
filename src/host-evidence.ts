@@ -482,7 +482,7 @@ const omittedSourceStatuses = new Set([
   "file changed while being read; contents not provided",
   "not valid UTF-8 source; contents not provided",
   "binary content; contents not provided",
-  "direct executable is not identifiable as Python/shell source; contents not provided",
+  "direct executable is not identifiable as supported script source; contents not provided",
   "file-count limit reached",
 ])
 

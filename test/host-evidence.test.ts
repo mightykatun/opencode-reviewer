@@ -214,6 +214,19 @@ test("shell response validation preserves exact arguments, declared cwd, complet
   }
 })
 
+test("companion validation accepts literal redirected inputs alongside unsupported direct executables", async () => {
+  const value = shell("./binary < settings.json", "inputs")
+  const base = `${location.directory}/inputs`
+  const files = io({ [`${base}/./binary`]: "not a script\n", [`${base}/settings.json`]: "{\"enabled\":true}\n" })
+  const result = await collectHostOperation(value, options, signal(), files.access)
+  assert.ok(result.status === "ready" && result.evidence.kind === "shell")
+  assert.deepEqual(result.evidence.files.map(file => file.status), [
+    "direct executable is not identifiable as supported script source; contents not provided", "captured",
+  ])
+  assert.equal(result.evidence.files[1]?.contents, "{\"enabled\":true}\n")
+  assert.deepEqual(readHostOperationEvidence(result.evidence, value, options, signal()), result.evidence)
+})
+
 test("source excerpts survive the companion boundary, reject false completeness/counts and reach the judge", async () => {
   const call = shell("python source.py"), files = io({ [`${location.directory}/source.py`]:
     "# context\n".repeat(1000) + "def entry():\n    return 1\n" })

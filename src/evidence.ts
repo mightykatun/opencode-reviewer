@@ -10,6 +10,14 @@ import type { FileHandle } from "node:fs/promises"
 
 export { discover } from "./shell-discovery.js"
 
+const directSourceExtension = /\.(?:py|sh|bash|zsh|ksh|js|mjs|cjs|jsx|ts|mts|cts|tsx|rb|pl|php|lua)$/i
+const directSourceShebang = /^#!(?:\/(?:usr\/)?bin\/(?:python(?:[23](?:\.\d+)*)?|(?:ba|da|k|z)?sh|node|bun|deno|ruby|perl|php|lua)(?:\s|$)|\/usr\/bin\/env\s+(?:(?:-S\s+)?(?:python(?:[23](?:\.\d+)*)?|(?:ba|da|k|z)?sh|node|bun|deno|ruby|perl|php|lua))(?:\s|$))/
+const unrecognizedDirectSource = "direct executable is not identifiable as supported script source; contents not provided"
+
+function identifiableSource(filename: string, firstLine: string) {
+  return directSourceExtension.test(filename) || directSourceShebang.test(firstLine.split("\n", 1)[0] ?? "")
+}
+
 async function captureExcerpt(handle: FileHandle, budget: number, signal: AbortSignal): Promise<
   { status: string } | { firstLine: string; contents?: string; excerpt?: Excerpt }> {
   const lines = new ExcerptLines(new LineExcerpt(budget, "source"))
@@ -64,9 +72,8 @@ export async function captureFile(reference: Reference, budget: number, signal: 
           if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs)
             return { ...result, status: "file changed while being read; contents not provided" }
           if ("status" in excerpt) return { ...result, status: excerpt.status }
-          if (reference.executable && !/\.(py|sh|bash|zsh|ksh)$/.test(filename)
-            && !/^#![^\n]*(?:\bpython[\d.]*|\b(?:ba|da|k|z)?sh)\b/.test(excerpt.firstLine ?? ""))
-            return { ...result, status: "direct executable is not identifiable as Python/shell source; contents not provided" }
+          if (reference.executable && !identifiableSource(filename, excerpt.firstLine ?? ""))
+            return { ...result, status: unrecognizedDirectSource }
           return excerpt.contents === undefined ? omitted : { ...result, status: "excerpt", contents: excerpt.contents, excerpt: excerpt.excerpt }
         }
         // Keep an overflow-probe byte even for empty or exact-budget files. Stat
@@ -96,9 +103,9 @@ export async function captureFile(reference: Reference, budget: number, signal: 
         try { contents = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, size)) }
         catch { return { ...result, status: "not valid UTF-8 source; contents not provided" } }
         if (contents.includes("\u0000")) return { ...result, status: "binary content; contents not provided" }
-        // Direct executable paths qualify only if extension or shebang identifies Python/shell.
-        if (reference.executable && !/\.(py|sh|bash|zsh|ksh)$/.test(filename) && !/^#![^\n]*(?:\bpython[\d.]*|\b(?:ba|da|k|z)?sh)\b/.test(contents)) {
-          return { ...result, status: "direct executable is not identifiable as Python/shell source; contents not provided" }
+        // Direct executable paths qualify only with a recognized script extension or byte-zero shebang.
+        if (reference.executable && !identifiableSource(filename, contents)) {
+          return { ...result, status: unrecognizedDirectSource }
         }
         return { ...result, status: "captured", contents }
       } finally { await handle.close() }
@@ -125,7 +132,7 @@ export async function collectEvidence(
   const discovery = discover(input.command, { declared: input.cwd, canonical }, 0, signal)
   const evidence: Evidence = { ...input, kind: "shell", files: [], limitations: [
     ...(input.limitations ?? []),
-    "Only literal Python/shell source and supported cat/head file operands are collected. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Imports, dependencies, other runtimes and calls inside source files are not recursively inspected.",
+    "Only literal file inputs recognized from command syntax and supported program operands are collected. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected.",
     ...discovery.limitations,
   ] }
   if (!input.userPrompt) evidence.limitations.push("User prompt unavailable.")
@@ -154,7 +161,7 @@ export async function collectEvidence(
       if (filename && filename !== previous.filename) previous.aliases.add(filename)
       // A different canonical alias used as an interpreter/reader operand can
       // qualify an earlier direct executable. Never retry failed/timed-out I/O.
-      if (promote && previous.withinLimit && previous.file.status === "direct executable is not identifiable as Python/shell source; contents not provided") {
+      if (promote && previous.withinLimit && previous.file.status === unrecognizedDirectSource) {
         const file = await captureFile(previous.reference, remaining, signal, scope)
         Object.assign(previous.file, file)
         if (file.contents !== undefined) { delete previous.file.warning; remaining -= Buffer.byteLength(file.contents) }

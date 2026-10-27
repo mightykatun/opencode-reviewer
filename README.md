@@ -23,10 +23,11 @@ For OpenCode V2 on Linux.
 
 Reviews send request data, the latest user prompt, and selected file snapshots,
 diffs, skill instructions or tool arguments to your configured endpoint **before
-permission approval**. Shell snapshots can follow symlinks outside the project;
-denying the command afterward cannot undo that disclosure. Use an endpoint you
-trust, and a local reviewer or a sandbox without accessible secrets when working
-with untrusted repositories.
+permission approval**. Shell snapshots include supported literal script operands
+and explicitly named text inputs, including input redirects. They can follow
+symlinks outside the project; denying the command afterward cannot undo that
+disclosure. Use an endpoint you trust, and a local reviewer or a sandbox without
+accessible secrets when working with untrusted repositories.
 
 Add this entry to the global `~/.config/opencode/opencode.json`, or
 `$XDG_CONFIG_HOME/opencode/opencode.json` when `XDG_CONFIG_HOME` is set.
@@ -384,9 +385,13 @@ received usage from unsuccessful or interrupted reviews, which do not count as
 completed reviews. Averages include measured reviews only.
 
 Reviews send the pending request, latest user prompt, project context, and relevant
-file snapshots, diffs, registered skill instructions, or tool arguments to your endpoint before approval. Shell
-file snapshots can follow symlinks outside the project. Missing evidence is noted
-in the report; ratings are advice based on the supplied evidence.
+file snapshots, diffs, registered skill instructions, or tool arguments to your
+endpoint before approval. Shell snapshots can include literal redirected inputs
+and follow symlinks outside the project. Missing evidence is noted in the report;
+ratings are advice based on the supplied evidence.
+Shell discovery recognizes supported runtime operands and literal file inputs
+in supported multiline or grouped commands. It does not execute substitutions,
+expand globs, or follow task definitions and imports.
 </details>
 
 <details>

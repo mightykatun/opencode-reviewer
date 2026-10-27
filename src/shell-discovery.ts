@@ -2,6 +2,7 @@ import path from "node:path"
 import { parse } from "shell-quote"
 import { reviewStage } from "./deadline.js"
 import { runtimeOperands } from "./shell-runtimes.js"
+import { shellStructure, type ShellToken } from "./shell-structure.js"
 
 const VARIABLE = "\u0000UNRESOLVED_VARIABLE\u0000"
 const python = /^python(?:[23](?:\.\d+)*)?$/
@@ -154,6 +155,11 @@ class DiscoveryState {
     this.budget.reference()
     this.qualifySnapshot()
     this.references.push({ filename, cwd: this.cwd, executable })
+  }
+  addAt(filename: string, cwd: string | null) {
+    const previous = this.cwd
+    this.cwd = cwd
+    try { this.add(filename) } finally { this.cwd = previous }
   }
   nested(command: string, physical: boolean) {
     if (physical) this.note("Physical shell directory mode is outside literal cwd inference; nested relative script targets are unresolved.")
@@ -412,10 +418,95 @@ function visit(args: string[], state: DiscoveryState, next?: string, external = 
     return
   }
   if (executable.includes("/")) state.add(executable, true)
-  else if (/\.(py|sh|bash|zsh)$/.test(executable)) state.note(`Executable ${executable} uses PATH lookup; its file was not resolved.`)
+  else if (/\.(?:py|sh|bash|zsh|ksh|js|mjs|cjs|jsx|ts|mts|cts|tsx|rb|pl|php|lua)$/.test(executable))
+    state.note(`Executable ${executable} uses PATH lookup; its file was not resolved.`)
   else if (["sudo", "su", "ssh", "docker", "podman", "eval", "xargs", "find", "npm", "npx", "make", "uv", "poetry"].includes(executable)) {
     state.note(`Indirect execution through ${executable}: invoked source is not automatically discovered.`)
   }
+}
+
+function shellStdin(args: readonly string[]): boolean {
+  const name = args[0]
+  if (!name || programIdentity(name) !== "shell") return false
+  // -c and an explicit script operand do not interpret redirected stdin as a shell program.
+  return args.length === 1 || args.length === 2 && /^-[abefhiklmnptuvxBCEHPT]*s[abefhiklmnptuvxBCEHPT]*$/.test(args[1]!)
+}
+
+/** The structural path retains literal operand admission in visit(), never
+ * executing a command, expanding a word, or assuming a group shares cwd. */
+function structured(command: string, state: DiscoveryState, budget: DiscoveryBudget) {
+  const parsed = shellStructure(command, () => budget.step())
+  budget.parsed(parsed.tokens.length)
+  parsed.limitations.forEach(text => state.note(text))
+  if (parsed.limitations.length && !parsed.tokens.length) return
+  walkStructure(parsed.tokens, state, budget)
+}
+
+function walkStructure(tokens: readonly ShellToken[], state: DiscoveryState, budget: DiscoveryBudget) {
+  let words: string[] = []
+  let redirects: Extract<ShellToken, { kind: "redirect" }>[] = []
+  const flush = (next?: string) => {
+    if (!words.length && !redirects.length) return
+    const before = state.cwd
+    const stdinShell = shellStdin(words)
+    // Redirection expansion occurs before invocation; neither an output path
+    // nor a here-document delimiter names an existing input file.
+    for (const redirect of redirects) for (const nested of redirect.nested ?? []) state.nested(nested, false)
+    if (words.length) visit(words, state, next)
+    for (const redirect of redirects) {
+      if (/^(?:\d+)?<$/.test(redirect.operator) && redirect.target) state.addAt(redirect.target, before)
+      if ((redirect.operator === "<<" || redirect.operator === "<<-") && redirect.body !== undefined && stdinShell) {
+        if (!redirect.quoted && /[$`]|\\(?=[$`\\\n])/.test(redirect.body))
+          state.note("Unquoted here-document expansion is unresolved; its shell source was not inspected.")
+        else state.nested(redirect.body, false)
+      }
+    }
+    words = []; redirects = []
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    budget.step()
+    const token = tokens[i]!
+    if (token.kind === "word") {
+      for (const nested of token.nested) state.nested(nested, false)
+      if (token.nested.length) state.note("Command substitution output is unresolved; its result was not used as a filename.")
+      words.push(token.value)
+    } else if (token.kind === "redirect") {
+      redirects.push(token)
+    } else if (token.value === "(" || token.value === "{") {
+      if (words.length || redirects.length) {
+        state.invalidateCwd("Shell function or group adjacent to another command is outside literal discovery; later relative targets are unresolved.")
+        return
+      }
+      const opener = token.value, closer = opener === "(" ? ")" : "}"
+      let level = 1, end = i + 1
+      for (; end < tokens.length && level; end++) {
+        budget.step()
+        const current = tokens[end]
+        if (current?.kind !== "op") continue
+        if (current.value === opener) level++
+        else if (current.value === closer) level--
+      }
+      if (level || state.depth >= 4) {
+        state.invalidateCwd("Unbalanced or deeply nested shell group; later relative file targets are unresolved.")
+        return
+      }
+      const branch = new DiscoveryState(state.cwd, state.depth + 1, budget, state.logicalCwdKnown)
+      branch.preceded = state.preceded
+      walkStructure(tokens.slice(i + 1, end - 1), branch, budget)
+      state.references.push(...branch.references)
+      branch.limitations.forEach(text => state.note(text))
+      if (opener === "{") state.invalidateCwd("Brace group may change the shell's working directory; later relative targets are unresolved.")
+      state.preceded = true
+      i = end - 1
+    } else if (token.value === ")" || token.value === "}") {
+      state.invalidateCwd("Unmatched shell group end; later relative file targets are unresolved.")
+      return
+    } else {
+      flush(token.value)
+      state.afterOperator(token.value)
+    }
+  }
+  flush()
 }
 
 /** Literal discovery only. shell-quote is a tokenizer, not a shell evaluator. */
@@ -430,8 +521,12 @@ function scan(command: string, cwd: string | null, depth: number, budget: Discov
   const result = { references: state.references, limitations: state.limitations }
   try {
     budget.admit(command)
-    if (depth > 4 || command.includes("\u0000") || /[\r\n`]/.test(command)) {
-      state.note("Script discovery unavailable for multiline commands, backticks, NULs, or deeply nested shell strings; inspect command text directly.")
+    if (depth > 4 || command.includes("\u0000")) {
+      state.note("Script discovery unavailable for NULs or deeply nested shell strings; inspect command text directly.")
+      return result
+    }
+    if (/[\r\n`<>(){}]/.test(command) || command.includes("$(")) {
+      structured(command, state, budget)
       return result
     }
     if (!balancedQuotes(command, budget)) {

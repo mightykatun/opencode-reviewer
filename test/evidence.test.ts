@@ -207,7 +207,7 @@ test("unresolved constructs are explicit and never resolve from the plugin envir
   for (const command of [
     "python $SECRET_SCRIPT", 'python "${SCRIPT:-fallback.py}"', "python *.py", "python ~/main.py",
     "python $(touch sentinel)", "python `touch sentinel`", "if true; then python a.py; fi",
-    "python -m application", "uv run python main.py", "python script.py > out.txt",
+    "python -m application",
     "python main.py\nbash other.sh", "python3 -Q main.py",
     "python 'unterminated.py", "env -C elsewhere python x.py", "exec -a newname python x.py",
   ]) assert.ok(discover(command, "/p").limitations.length, command)
@@ -683,6 +683,24 @@ test("direct extensionless Python/shell shebangs and extensionless interpreter o
   assert.ok(shell.files.every((f) => f.contents === "#!/bin/sh\nprintf pear\n"))
 })
 
+test("direct script paths recognize supported runtimes without capturing unrelated executables", async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), "checker-direct-runtimes-"))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  for (const [name, contents] of [
+    ["task.ts", "console.log('literal source')\n"],
+    ["run", "#!/usr/bin/env -S node --no-warnings\nconsole.log('source')\n"],
+    ["worker", "#!/usr/bin/ruby\nputs 'source'\n"],
+    ["binary", "#!/usr/bin/env arbitrary-tool\n# not a supported script\n"],
+    ["fake", "#!/bin/echo node\n# not a node shebang\n"],
+  ] as const) await writeFile(`${dir}/${name}`, contents)
+  const result = await collectEvidence({ command: "./task.ts; ./run; ./worker; ./binary; ./fake", cwd: dir, userPrompt: null },
+    { ...limits, maxFiles: 5 }, signal())
+  assert.deepEqual(result.files.map(file => file.status), ["captured", "captured", "captured",
+    "direct executable is not identifiable as supported script source; contents not provided",
+    "direct executable is not identifiable as supported script source; contents not provided"])
+  assert.equal(result.files[0]?.contents, "console.log('literal source')\n")
+})
+
 test("BOM source stays byte-faithful and does not create a byte-zero extensionless shebang", async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), "checker-evidence-"))
   t.after(() => rm(dir, { recursive: true, force: true }))
@@ -697,7 +715,7 @@ test("BOM source stays byte-faithful and does not create a byte-zero extensionle
       assert.deepEqual(Buffer.from(result.files[0]!.contents!), await readFile(`${dir}/run`), command)
     }
     const direct = await collectEvidence({ command: "./run", cwd: dir, userPrompt: null }, limits, signal())
-    assert.match(direct.files[0]!.status, /not identifiable as Python\/shell source/)
+    assert.match(direct.files[0]!.status, /not identifiable as supported script source/)
     assert.equal(direct.files[0]?.contents, undefined)
     await writeFile(`${dir}/run`, source.slice(1))
     const withoutBom = await collectEvidence({ command: "./run", cwd: dir, userPrompt: null }, limits, signal())

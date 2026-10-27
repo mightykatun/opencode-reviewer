@@ -1796,7 +1796,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.equal(payload.conversation.current.location.directory, initial)
   assert.equal(payload.conversation.current.projectID, handshake.project.id)
   assert.deepEqual(payload.limitations, ["Optional effective native tool definition is not included; exact captured arguments and pending permission scope are retained.",
-     "Only literal Python/shell source and supported cat/head file operands are collected. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Imports, dependencies, other runtimes and calls inside source files are not recursively inspected."])
+     "Only literal file inputs recognized from command syntax and supported program operands are collected. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected."])
   await until("rendered production evaluating panel", () => capture().includes("Permission analysis"))
   await saveCapture("evaluating")
    await negativeWindow("review response held", [request], [], null, 1, 1500, notificationCase ? noAttention : savedCase ? noSavedBody : () => {})

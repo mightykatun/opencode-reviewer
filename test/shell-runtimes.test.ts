@@ -134,6 +134,7 @@ test("runtime operands integrate with shell wrappers without letting indirect ch
   assert.deepEqual(discover("node 'file[12].js'", "/project").references,
     [{ filename: "file[12].js", cwd: "/project", executable: false }])
   assert.deepEqual(discover("node *.js", "/project").references, [])
+  assert.match(discover("app.js", "/project").limitations.join(" "), /PATH lookup/)
 })
 
 test("runtime configuration and entry files share the existing bounded evidence capture", async t => {
