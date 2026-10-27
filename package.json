@@ -1,6 +1,6 @@
 {
   "name": "opencode-reviewer",
-  "version": "2.5.2",
+  "version": "2.5.3",
   "license": "MIT",
   "publishConfig": {
     "access": "public",
