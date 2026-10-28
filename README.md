@@ -510,19 +510,17 @@ Disable overlapping notification plugins to avoid duplicate alerts.
 
 ## Development
 
-Use Node.js 24.15.0+ within 24.x, or 22.22.2+ within 22.x, and npm.
-Run `npm ci --ignore-scripts`, then `npm run check` for typechecking, source tests,
-pure-helper tests and the build. `npm run test:helpers` runs the helper checks
-without building or starting OpenCode. Pushing a version tag runs verification
-and publication in one workflow: source tests, helper tests, reproducible builds
-and archive checks must pass before the exact verified archive is published.
-The manual **Extended host checks** workflow tests Node 22/24 and the real Linux
-TUI on the newest stable OpenCode V2. These timing-sensitive host fixtures are
-not an automatic release prerequisite.
-After building, run `node scripts/test-runtime.mjs --profile v2-acceptance` for that same
-profile. Use `node scripts/test-runtime.mjs --list` for the complete runtime
-inventory or `node scripts/test-runtime.mjs --plan --profile v2-acceptance` for a
-host-independent plan. Profiles select documented scenario/flag combinations;
-interactive desktop checks have separate prerequisites.
-See [AGENTS.md](https://github.com/mightykatun/opencode-reviewer/blob/main/AGENTS.md)
-for runtime tests and the tag-driven release process.
+- **Environment:** Node.js `24.x` (`>=24.15.0`) or `22.x` (`>=22.22.2`) with `npm`.
+- **Install & Verify:**
+  - `npm ci --ignore-scripts` — Install dependencies.
+  - `npm run check` — Run typechecking, source tests, pure-helper tests, and build.
+  - `npm run test:helpers` — Run helper checks only (without building or starting OpenCode).
+- **Runtime Tests** (run after building):
+  - `node scripts/test-runtime.mjs --profile v2-acceptance` — Run the V2 acceptance profile.
+  - `node scripts/test-runtime.mjs --plan --profile v2-acceptance` — View the host-independent test plan.
+  - `node scripts/test-runtime.mjs --list` — View the complete runtime inventory.
+  - *Note:* Profiles select documented scenario/flag combinations; interactive desktop checks have separate prerequisites.
+- **Releases & Workflows:**
+  - **Tag Release Workflow:** Pushing a version tag runs source tests, helper tests, reproducible builds, and archive checks before publishing the exact verified archive.
+  - **Extended Host Checks (Manual):** Tests Node 22/24 and the real Linux TUI on the latest stable OpenCode V2 (timing-sensitive; not an automatic release prerequisite).
+- **Reference:** See `AGENTS.md` for full details on runtime tests and the tag-driven release process.
