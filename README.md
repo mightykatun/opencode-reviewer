@@ -33,7 +33,7 @@ can follow symlinks outside the project; denying the command afterward cannot un
 disclosure. Use an endpoint you trust, and a local reviewer or a sandbox without
 accessible secrets when working with untrusted repositories.
 
-Add this entry to the global `~/.config/opencode/opencode.json`, or
+Add this entry to the `plugins` array in global `~/.config/opencode/opencode.json`, or
 `$XDG_CONFIG_HOME/opencode/opencode.json` when `XDG_CONFIG_HOME` is set.
 OpenCode loads the [npm package](https://www.npmjs.com/package/opencode-reviewer)
 and its terminal component from this single entry. No reviewer entry is needed
@@ -115,11 +115,11 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `apiKeyEnv` | string | Unset | Environment-variable name matching `[A-Za-z_][A-Za-z_0-9]*`. Without an inline key, its value must be set and nonblank when a review runs. Omit both key options for no Authorization header. |
 | `instructions` | string | Unset (built-ins) | Absolute, NUL-free directory path containing category and extra-careful [prompt template](https://github.com/mightykatun/opencode-reviewer/tree/main/prompts) overrides, not inline instructions. Missing named files use built-ins; supplied files must be readable, regular, non-symlink, nonempty UTF-8 text up to 64 KiB. Fixed contracts and the session-instructions precedence wrapper cannot be overridden. |
 | `stream` | boolean | `false` | Request SSE and show provisional rating/text updates. Normal automatic approval waits for a completed, validated report; fast mode can approve on an early Safe rating. Approval rules are described below. |
-| `reviewBash` | boolean | `true` | Review native `shell` permissions. The option keeps its existing name. |
+| `reviewBash` | boolean | `true` | Review native `shell` permissions. |
 | `includeShellArgumentFiles` | boolean | `false` | Also send existing regular files named by literal shell arguments, even for unknown programs. Their input role is unverified; outputs and unrelated files may be disclosed. No expansion, dependency search or directory enumeration. Shares `maxFiles`, `maxEvidenceBytes` and the normal evidence deadline. |
 | `reviewEdits` | boolean | `true` | Review native `edit`, `write` and `patch` tools, which use the `edit` permission action. |
 | `reviewSkills` | boolean | `true` | Review native skill loading using the exact requested ID and full currently registered main instructions. Assumes the selected definition stays unchanged while permission is pending. Missing or ambiguous instructions remain manual. |
-| `reviewTools` | boolean | `true` | Review other tools, including MCP and custom tools, using `TOOL-REVIEW-PROMPT.md`. Exact call linkage, arguments and permission scope are required. Descriptions and JSON Schemas are optional; missing evidence is explained to the LLM, which decides Safe/Unsafe. Safe reviews can use normal or fast automatic approval. |
+| `reviewTools` | boolean | `true` | Review other tools, including MCP and custom tools, using `TOOL-REVIEW-PROMPT.md`. Requires the exact direct call or outer Code Mode invocation and pending permission scope. For Code Mode, the judge receives captured candidate calls and any uncertainty about which inner call owns the permission. Descriptions and JSON Schemas are optional; missing evidence is explained to the LLM, which decides Safe/Unsafe. Safe reviews can use normal or fast automatic approval. |
 | `reviewExternalDirectories` | boolean | `true` | Review directory access independently of operation-review switches. Directory approval can resume the operation without another prompt. |
 | `autoApprove` | boolean | `false` | Allow Safe reviews once automatically. Normally waits for completion, validation and the countdown. Works throughout the current conversation, including subagent browsing and hidden/covered reports. Home, dashboards, unrelated conversations and native permission decision editing wait without cancellation. |
 | `fastMode` | boolean | `false` | Requires `autoApprove: true`. Approve an eligible, front-of-queue request as soon as a Safe rating is parsed, bypassing the countdown. Respects `stream`; with `stream: false`, waits for the complete validated response. Finish the report and save it in the background after approval. |
@@ -139,7 +139,7 @@ inclusive, fractions are invalid, and the maximum safe integer is
 Notification channels are independent: `banner: false, sound: true` is sound-only,
 `banner: true, sound: false` is banner-only, both `false` disable that type.
 `notify` and `notifySound` take precedence. Invalid notification settings disable
-notification.
+notifications.
 
 My LLMs insist on writing a bunch of useless text to my README, so I collapsed them here in case anyone wants to inflict themselves (or more likely their agent) the pain of reading it.
 
@@ -149,8 +149,8 @@ The sidebar shows Safe, Unsafe, or Analysis unavailable. Explanations support
 Markdown and scrolling. If the sidebar is hidden, use OpenCode's Show sidebar
 command.
 
-Evidence lookup failures show Analysis unavailable and leave the native permission
-manual; they do not silently hide the error or start an approval.
+Required evidence lookup failures show Analysis unavailable and leave the native
+permission for you to approve or reject.
 
 The reviewer panel appears only in the main conversation. Opening any subagent,
 including a nested one, hides the panel but does not stop normal or fast auto-approval
@@ -176,7 +176,7 @@ or oversized main instructions remain manual. Supporting files and scripts are n
 inspected; their omission alone does not prevent review. Allowing a skill loads its
 instructions, not a blanket grant for later tool actions.
 
-Tool reviews use the exact effective tool ID, captured arguments and pending
+Direct tool reviews use the exact tool ID, captured arguments and pending
 permission scope. Current server-side registered names, descriptions and input
 JSON Schemas are included when available. Missing, duplicate, oversized,
 unreadable or unsupported definitions are omitted with factual reasons sent to
@@ -193,14 +193,13 @@ receives the exact outer code and permission scope, available captured candidate
 calls and definitions, and explicit uncertainty about which inner call owns the
 permission. It decides Safe or Unsafe even without a unique match. A Safe verdict
 can use normal or fast auto-approval when enabled. Saved reports use the tool
-category. All review categories default to enabled; `autoApprove` still defaults
-to false. `reviewTools` replaces `reviewMcp` and `reviewCustomTools`.
+category. All review categories default to enabled; `autoApprove` defaults to false.
 
 Code Mode and its tool search stay enabled. Candidate observations can include
 completed siblings; later calls are not predicted, and oversized candidates are
 omitted whole with a factual reason. The judge assesses only the pending one-time
 permission, not blanket authorization of the program. Native shell, edit, skill
-and directory permissions still require their existing exact operation evidence.
+and directory permissions require exact operation evidence.
 This assumes other installed plugins don't change what native tools do, replace
 or alias their executors, or rewrite commands after
 the reviewer has captured them.
@@ -268,11 +267,12 @@ companion handshake. Connection waiting and retries for timed-out or not-yet-ava
 handshakes share one 10-second budget. If it remains unavailable, history and notifications still work;
 reload the plugin to try again. Invalid handshake data is not retried.
 
-After a network disconnect, live review resumes automatically when the client and
-native event stream reconnect and a fresh companion handshake succeeds. Pending
+After a network disconnect or event-stream stall, live review resumes automatically
+when the client and native event stream reconnect and a fresh companion handshake succeeds. Pending
 requests are read again without reusing old evidence. Canceled or uncertain approvals
-stay manual, and started countdowns keep their original deadline. A companion replaced
-without a connection change still requires a plugin reload.
+stay manual, and started countdowns keep their original deadline. While review is
+active, health checks also detect a replaced server companion and reconnect to it
+after outstanding approval work settles and a fresh handshake succeeds.
 
 ### Session instructions
 
@@ -312,13 +312,9 @@ invalid reviewer configuration. The history command preserves a hidden sidebar;
 clicking an approval notification reveals it and selects that permission's live or saved report.
 Keyboard browsing also works with mouse tracking off.
 
-Each entry shows the original report, available usage, model, provider and outcome:
-**Auto approved**, **Manually approved**, **Cancelled**, or **Rejected**. Cancelled
-records a linked interruption or removed request after automation was cancelled;
-it does not prove that the tool never ran. Ambiguous outcomes are omitted, including
-native Allow once replies whose submitting client cannot be identified. History
-keeps the latest completed report, which can differ from the report that caused
-approval in another window.
+Each entry shows the original report, available usage, model, provider and permission
+outcome. A saved review can differ from the review that led to approval in another
+window. Cancellation or a disappearing prompt alone does not establish an outcome.
 
 Opening report history does not hold normal or fast auto-approval for eligible live
 requests. Browsing saved reports doesn't itself approve requests or replay notifications.
@@ -328,8 +324,9 @@ approved automatically, or rejected, including Unsafe reviews. Distinct reviews 
 the same permission are retained separately. Pending permissions, cancellation alone,
 partial previews and failed reviews do not save reports. Fast-mode reports that finish
 after approval are saved on completion. An approval whose submitting client cannot
-be identified is labeled **Approved**, without guessing manual or automatic attribution.
-They can contain private text and are kept under OpenCode's local state base:
+be identified is saved without manual or automatic attribution and remains
+unclassified in statistics.
+Saved reports can contain private text and are kept under OpenCode's local state base:
 `$XDG_STATE_HOME`, or `~/.local/state` when unset. Safely accessible history stays
 under `opencode/opencode-reviewer/`. If the host directory is unsuitable for private
 storage, the plugin uses its private, plugin-owned sibling
@@ -393,7 +390,7 @@ completed reviews. Averages include measured reviews only.
 Reviews send the pending request, latest user prompt, project context, and relevant
 file snapshots, diffs, registered skill instructions, or tool arguments to your
 endpoint before approval. Shell snapshots can include literal redirected inputs
-and follow symlinks outside the project. Missing evidence is noted in the report;
+and follow symlinks outside the project. Missing evidence is described to the judge;
 ratings are advice based on the supplied evidence.
 Shell discovery recognizes supported runtime operands and literal file inputs
 in supported multiline or grouped commands. It does not execute substitutions,
@@ -511,18 +508,22 @@ Disable overlapping notification plugins to avoid duplicate alerts.
 ## Development
 
 Use Node.js 24.15.0+ within 24.x, or 22.22.2+ within 22.x, and npm.
-Run `npm ci --ignore-scripts`, then `npm run check` for typechecking, source tests,
-pure-helper tests and the build. `npm run test:helpers` runs the helper checks
-without building or starting OpenCode. Pushing a version tag runs verification
-and publication in one workflow: source tests, helper tests, reproducible builds
-and archive checks must pass before the exact verified archive is published.
-The manual **Extended host checks** workflow tests Node 22/24 and the real Linux
-TUI on the newest stable OpenCode V2. These timing-sensitive host fixtures are
-not an automatic release prerequisite.
-After building, run `node scripts/test-runtime.mjs --profile v2-acceptance` for that same
-profile. Use `node scripts/test-runtime.mjs --list` for the complete runtime
-inventory or `node scripts/test-runtime.mjs --plan --profile v2-acceptance` for a
-host-independent plan. Profiles select documented scenario/flag combinations;
-interactive desktop checks have separate prerequisites.
+From the repository root, run `npm ci --ignore-scripts`, then `npm run check`
+for typechecking, source tests, helper tests and a build. `npm run test:helpers`
+runs only the helper checks, without building or starting OpenCode.
+Use `npm run check:package` to check build reproducibility and the package archive.
+For runtime or UI changes, build first with `npm run build`, then run a relevant
+fixture or `npm run test:runtime` for the full `v2-acceptance` profile. These checks
+require Linux, Git, Python 3, tmux and the latest stable OpenCode V2 on PATH;
+set `OPENCODE_BIN` to use another binary. The runtime runner does not rebuild.
+Use `node scripts/test-runtime.mjs --list` to find individual fixtures and their
+prerequisites, or `node scripts/test-runtime.mjs --plan --profile v2-acceptance`
+to inspect the profile without starting a host. Captures and results go in `.runtime/`.
+The manual **Extended host checks** workflow runs source and package checks on
+Node 22/24 and the runtime profile on Node 24 with the latest stable OpenCode V2.
+Desktop focus and audio playback need separate interactive checks.
+Pushing a `v*` tag starts **Verify and release**. Workflow lint, source and helper
+tests, reproducible builds and archive checks must pass before publication uses
+the verified archive. Extended host checks are separate from release verification.
 See [AGENTS.md](https://github.com/mightykatun/opencode-reviewer/blob/main/AGENTS.md)
 for runtime tests and the tag-driven release process.
