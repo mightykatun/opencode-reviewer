@@ -507,23 +507,19 @@ Disable overlapping notification plugins to avoid duplicate alerts.
 
 ## Development
 
-Use Node.js 24.15.0+ within 24.x, or 22.22.2+ within 22.x, and npm.
-From the repository root, run `npm ci --ignore-scripts`, then `npm run check`
-for typechecking, source tests, helper tests and a build. `npm run test:helpers`
-runs only the helper checks, without building or starting OpenCode.
-Use `npm run check:package` to check build reproducibility and the package archive.
-For runtime or UI changes, build first with `npm run build`, then run a relevant
-fixture or `npm run test:runtime` for the full `v2-acceptance` profile. These checks
-require Linux, Git, Python 3, tmux and the latest stable OpenCode V2 on PATH;
-set `OPENCODE_BIN` to use another binary. The runtime runner does not rebuild.
-Use `node scripts/test-runtime.mjs --list` to find individual fixtures and their
-prerequisites, or `node scripts/test-runtime.mjs --plan --profile v2-acceptance`
-to inspect the profile without starting a host. Captures and results go in `.runtime/`.
-The manual **Extended host checks** workflow runs source and package checks on
-Node 22/24 and the runtime profile on Node 24 with the latest stable OpenCode V2.
-Desktop focus and audio playback need separate interactive checks.
-Pushing a `v*` tag starts **Verify and release**. Workflow lint, source and helper
-tests, reproducible builds and archive checks must pass before publication uses
-the verified archive. Extended host checks are separate from release verification.
-See [AGENTS.md](https://github.com/mightykatun/opencode-reviewer/blob/main/AGENTS.md)
-for runtime tests and the tag-driven release process.
+- **Environment:** Node.js `24.x` (`>=24.15.0`) or `22.x` (`>=22.22.2`) with `npm`.
+- **Install & Verify** (from the repository root):
+  - `npm ci --ignore-scripts`: Install dependencies.
+  - `npm run check`: Run typechecking, source tests, helper tests and a build.
+  - `npm run test:helpers`: Run helper checks without building or starting OpenCode.
+  - `npm run check:package`: Check build reproducibility and the package archive.
+- **Runtime Tests** (build first with `npm run build`):
+  - For runtime or UI changes, run a relevant fixture or `npm run test:runtime` for the full `v2-acceptance` profile. The runtime runner does not rebuild.
+  - Checks require Linux, Git, Python 3, tmux and the latest stable OpenCode V2 on PATH. Set `OPENCODE_BIN` to use another binary.
+  - `node scripts/test-runtime.mjs --plan --profile v2-acceptance`: Inspect the profile without starting a host.
+  - `node scripts/test-runtime.mjs --list`: List individual fixtures and their prerequisites.
+  - Captures and results go in `.runtime/`. Desktop focus and audio playback need separate interactive checks.
+- **Releases & Workflows:**
+  - **Verify and release:** Pushing a `v*` tag runs workflow lint, source and helper tests, reproducible builds and archive checks before publication uses the verified archive.
+  - **Extended host checks (manual):** Runs source and package checks on Node 22/24 and the runtime profile on Node 24 with the latest stable OpenCode V2. These checks are separate from release verification.
+- **Reference:** See [AGENTS.md](https://github.com/mightykatun/opencode-reviewer/blob/main/AGENTS.md) for runtime tests and the tag-driven release process.
