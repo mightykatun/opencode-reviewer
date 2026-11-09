@@ -68,6 +68,7 @@ export function assertWriteEvidence(evidence, { action, target, prompt, initial,
   assert.deepEqual(evidence.location, { directory: initial })
   assert.equal(evidence.project.directory, project)
   assert.equal(evidence.files, undefined, "No full target-file snapshots")
+  assert.deepEqual(evidence.retrieval, { status: "disabled" }, "Retrieval is off outside its dedicated cases")
   if (action === "edit") {
     assert.equal(evidence.partial, false)
     assert.equal(evidence.permission.metadata, undefined, "Raw preview is normalized, not duplicated")

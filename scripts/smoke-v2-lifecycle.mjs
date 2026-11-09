@@ -49,6 +49,16 @@ function handshakeDefinition() {
     }, required: ["request", "invocation", "result"], additionalProperties: false }] },
     errors: { scope: { type: "object", properties: {}, additionalProperties: false },
       capacity_busy: { type: "object", properties: {}, additionalProperties: false } },
+  }, retrieve: {
+    input: { type: "object", properties: { location, epoch: text, sessionID: text, requestID: text, base: text,
+      call: { type: "object", properties: { tool: { enum: ["read", "list", "glob", "grep"] }, arguments: { type: "object" } },
+        required: ["tool", "arguments"], additionalProperties: false },
+      timeoutMs: { type: "number", exclusiveMinimum: 0, maximum: 3600000 },
+      maxBytes: { type: "integer", minimum: 1, maximum: 16777216 } },
+      required: ["location", "epoch", "sessionID", "requestID", "base", "call", "timeoutMs", "maxBytes"], additionalProperties: false },
+    output: { anyOf: [{ type: "null" }, { type: "object" }] },
+    errors: { scope: { type: "object", properties: {}, additionalProperties: false },
+      capacity_busy: { type: "object", properties: {}, additionalProperties: false } },
   } }, events: {} }
 }
 
@@ -193,7 +203,7 @@ async function observedSetup(ctx) {
           if (phase === "response-location") changed.location.directory += "-wrong"
           if (phase === "response-workspace") changed.location.workspaceID = "fixture-wrong-workspace"
           if (phase === "response-version") changed.hostVersion = ""
-          if (phase === "response-protocol") changed.protocol = 2
+          if (phase === "response-protocol") changed.protocol = 3
           return changed
         } }
       }
@@ -253,7 +263,7 @@ async function observedSetup(ctx) {
       if (phase.startsWith("response-") || phase === "no-companion") assert.equal(ready.state.companion, undefined)
       else {
         assert.ok(ready.state.companion, "Expected scoped companion admission for " + phase)
-        assert.equal(ready.state.companion.protocol, 1)
+        assert.equal(ready.state.companion.protocol, 2)
         assert.equal(ready.state.companion.hostVersion, fixture.hostVersion)
         assert.equal(ready.state.companion.location.directory, fixture.project)
       }
@@ -283,7 +293,7 @@ async function observedSetup(ctx) {
         result.events.push(event.data.sessionID); void save()
       }))
     } else {
-      assert.equal(ready.state.protocol, 1)
+      assert.equal(ready.state.protocol, 2)
       assert.equal(ready.state.hostVersion, fixture.hostVersion)
       assert.equal(ready.state.location.directory, fixture.project)
     }
@@ -484,7 +494,7 @@ try {
     const status = await command("status")
     return status.handshake && status
   })
-  assert.equal(initial.handshake.protocol, 1)
+  assert.equal(initial.handshake.protocol, 2)
   assert.equal(initial.handshake.hostVersion, fixture.hostVersion)
   assert.equal(initial.handshake.location.directory, project)
   assert.match(initial.handshake.epoch, /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i)

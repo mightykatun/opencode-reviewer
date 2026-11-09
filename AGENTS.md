@@ -86,10 +86,10 @@ All commands below use the installed five-file archive and production runtime.
 | Shared registered-tool review / fast approval (local MCP) | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-tool` / `fast-tool` |
 | Judge-decided Code Mode MCP linkage / fast approval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-code-mode-tool` / `fast-code-mode-tool` |
 | Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
-| Narrow shell inputs / opt-in literal argument files | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal` / `normal-argument-files` |
+| Shell review without retrieval / agentic list-read-grep retrieval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal` / `normal-retrieval` |
 | Saved history and statistics | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history` |
 | Session instructions editor / persistence / root and descendant judge requests | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-instructions` |
-| Review after 512 completed Code Mode calls / oversized source excerpts | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-long-session` / `normal-large-source` |
+| Review after 512 completed Code Mode calls / retrieval paging of an oversized source | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-long-session` / `normal-large-source` |
 | Unsafe history after native Once / Always / reject | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory-history-once` / `advisory-history-always` / `advisory-history-reject` |
 | Default HOME with writable host state | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-default-home` |
 | Keyboard history with mouse disabled | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-keyboard-mouse-off` |
@@ -159,7 +159,8 @@ existing user directories.
   rebuilds via `prepack`; verified CI packing uses `--ignore-scripts`.
 - Never use em dashes. Fixed interface copy belongs in `src/ui-text.ts`, using named
   strings/typed formatters and labels that fit the 42-column sidebar. Behavioral
-  tests keep independent expected wording. Model guidance belongs in `prompts/`;
+  tests keep independent expected wording. Model guidance belongs in `prompts/`
+  (including the overridable `RETRIEVAL-PROMPT.md`);
   fixed contracts belong in `contracts/`, both inventoried by `src/prompt-files.json`.
   Preserve `{{validationError}}` in the correction contract. Keep README focused on
   npm installation, one full config example and user behavior, without release history.
@@ -227,7 +228,7 @@ existing user directories.
   guarantee. Retain exact ID/source/scope/epoch and once-only approval checks;
   missing, ambiguous or oversized complete main instructions stay manual. Read the
   registry only through the scoped server companion, never fresh SKILL.md files.
-  Supporting files are optional and currently omitted factually. Do not add a
+  Supporting files are optional; retrieval may read them. Do not add a
   speculative revision-guard subsystem. MCP/custom tools use their separately
   accepted registered-definition assumption, not this native skill assumption.
 - The user approved the shared server companion plus global CLI setup, factual
@@ -373,6 +374,8 @@ existing user directories.
   actual native queue ownership. Preserve native keyboard input ownership, FRAME
   geometry, scroll restoration and real hit tests for UI behavior only.
   Sanitize report text and streamed prefixes through `displayText`.
+  The panel shows Retrieving during retrieval (retrieval retries show Retrying),
+  then Evaluating; retrieval phases precede attempt 0 and never advance ordinals.
 - On 2026-10-14 the user selected Alt+H for history rather than reserving legacy
   Ctrl+H/Backspace byte 0x08. Keep both BS and DEL native prompt editing untouched.
   The base-mode, root-only toggle is the configurable public command
@@ -397,17 +400,37 @@ existing user directories.
   linkage, so omit it factually as optional context. Never substitute older tasks,
   sibling requests or queued follow-ups. Root context cannot override review rules;
   optional omissions do not veto review with verified mandatory operation evidence.
-- Shell discovery is bounded literal tokenization, never shell evaluation, PATH
-  lookup, substitution execution or recursive import/task-runner inspection. Shell
-  snapshots may follow symlinks outside the project. Edits use pending host diffs,
-  not full target reads or fabricated replacement diffs. Filesystem evidence is
-  collected only by the scoped server companion, never terminal-local I/O.
-  `includeShellArgumentFiles` defaults false. When true, additional existing
-  regular files named by literal argv values are captured with an uncertain-role
-  basis; outputs and unrelated files may be sent to the reviewer. Certain inputs
-  retain file-budget priority. Do not infer command semantics from existence.
-  Directory evidence retains exact declared scope/arguments without inspecting
-  target directories or file contents; it is not a complete operation assessment.
+- On 2026-11-09 the user replaced hard-coded document discovery (shell
+  tokenization, runtime operand tables, literal-argument candidates, excerpt
+  heuristics) with agentic retrieval and put the shortest, simplest code ahead of
+  earlier invariants. Do not reintroduce command parsing to choose files.
+  `retrieval.ts` runs a non-streaming tool-calling loop (`read`, `list`, `glob`,
+  `grep`, `finish`; fixed byte-stable definitions) in the CLI before every enabled
+  verdict: at most `maxRetrievalRounds` rounds of up to ten sequential calls, then
+  one forced `finish` turn (same tools, `tool_choice`) for selection and notes, all
+  within `retrievalTimeoutMs`. Malformed calls go back to the model as error results.
+  Without a valid finish, on the retrieval deadline, rejected tools, provider errors
+  or exhausted retries, the verdict still runs with every successful result in call
+  order and a factual limitation; the review deadline or abort ends the review.
+  Retrieval never writes a verdict, and the verdict request never declares tools.
+- Retrieval operations execute only in the scoped server companion (`retrieve`
+  RPC, protocol 2, `retrieval-tools.ts`), never terminal-local I/O. That boundary
+  now accepts model-chosen paths, patterns and a CLI-computed base (shell launch
+  cwd, otherwise the invocation directory), checked against epoch/location only.
+  Paths may be absolute, `~/` (server HOME) or relative; explicit paths follow
+  symlinks with physical `..` resolution, traversal never descends symlinked
+  directories and skips nothing. Results echo requested, absolute and canonical
+  paths, cap at `maxEvidenceBytes`, and report factual failures. Grep matching runs
+  in a disposable worker terminated at the soft deadline so a model expression
+  cannot block the server. Physical work stays owned until it settles.
+- Forwarded retrieval content has its own budget: at most `maxFiles` read items
+  and `maxEvidenceBytes` of content including notes, truncated to exact leading
+  lines or entries with exact omitted counts. `retrieval` + `retrievalKinds`
+  (bash, edit, skill, tool, external_directory; edit defaults off) gate the stage;
+  disabled or executor-less reviews send `retrieval.status` disabled/unavailable.
+  Mandatory shell evidence is command, cwd and execution only. Edits use pending
+  host diffs, never fabricated replacement diffs. Directory evidence retains exact
+  declared scope/arguments; retrieval may list or read the target directory.
 - `reviewSkills` defaults true and reviews native skill loading under the accepted
   pending-definition stability assumption. The companion reads the current scoped
   registry by exact ID; full main instructions and exact permission scope are
@@ -423,13 +446,14 @@ existing user directories.
   Descriptions, schemas and registry availability are optional evidence. Send
   factual omission reasons to the LLM, which decides Safe/Unsafe. Never infer
   origin, import/invoke executors or call MCP servers for evidence.
-- Preserve exact mandatory scope/arguments or fail analysis. Oversized optional
-  files/diffs use bounded, numbered relevant excerpts and exact omitted-line counts
-  when fully scanned; incomplete scans explicitly leave the count unavailable.
+- Preserve exact mandatory scope/arguments or fail analysis. Oversized pending
+  diffs keep an exact leading prefix of complete lines with exact omitted-line counts.
   Omit unavailable optional evidence/definitions with factual reasons; do not truncate commands, invent
   missing line counts or synthesize ratings. Partial evidence alone is not an
   automatic-approval veto. Proposed `always` patterns are not existing grants.
-- `deadline.ts` shares one budget across context, files, HTTP and corrections.
+- `deadline.ts` shares one `timeoutMs` budget (default 120000) across context,
+  evidence, retrieval, HTTP and corrections; `retrievalTimeoutMs` only shortens the
+  retrieval stage and reserves nothing for the verdict.
   Timeouts do not prove I/O stopped: retain actual transaction ownership through
   settlement/cleanup in `file-access.ts`, mode/history reads and notification work.
   Parent aborts must not become optional evidence omissions.
@@ -437,7 +461,8 @@ existing user directories.
   `{ "safe": boolean, "desc": "nonempty text" }`, rejecting duplicate keys.
   SSE success requires `stop`, `[DONE]` and body EOF, not just a closing JSON brace.
   Preserve terminal usage even for rejected assessments where framing permits it.
-- `transport-retry.ts` permits at most two extra POSTs across the review. Transport
+- `transport-retry.ts` permits at most two extra POSTs per stage (retrieval turns
+  combined, and the verdict separately). Transport
   retries regenerate the identical request; format corrections retain exact prior
   history plus the failed response/feedback. Clear rejected previews, never merge
   streams, extend the deadline, shorten Retry-After or raise `maxOutputTokens`.
@@ -503,6 +528,9 @@ existing user directories.
   not zero. Exact normalized OpenRouter endpoint costs use reported `usage.cost`
   only; other endpoints use matching host-catalog estimates, never billing requests.
   Count reviews on final controller acceptance and retries on actual dispatch.
+  Retrieval POSTs are attempts of the same review: each turn's first POST is
+  `initial`, their usage is summed into the report (unknown stays unknown) and
+  totals, and retrieval never changes the history schema.
 - Notification eligibility comes from new events, not startup snapshots or history
   browsing. Follow native blocker ordering even for silent/disabled requests.
   Initial permission/question banners and sounds, as well as reminders, require

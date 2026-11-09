@@ -152,6 +152,22 @@ command.
 Required evidence lookup failures show Analysis unavailable and leave the native
 permission for you to approve or reject.
 
+Before each verdict, a retrieval stage lets the reviewer model choose the documents
+it needs, shown as **Retrieving** before **Evaluating**. It can read files (in pages),
+list directories, glob and grep, using paths relative to the shell launch directory
+(otherwise the invocation directory), absolute paths or `~/`. The OpenCode server
+executes these read-only operations; they can reach any file the server can read,
+including outside the project and through symlinks. Each result reports the exact
+path it tried and any failure (for example a missing or unreadable file). After at
+most `maxRetrievalRounds` rounds of up to ten calls, the model calls finish to pick
+the results the verdict sees, plus optional notes. A separate verdict request then
+receives them, limited to `maxFiles` read results and `maxEvidenceBytes` of content;
+larger results keep their exact leading lines and state how many were omitted. If the
+endpoint rejects tools, the model never selects, an error persists or
+`retrievalTimeoutMs` runs out, the verdict still runs with everything gathered so far
+and says why. Retrieval is enabled for every category except edits by default; the
+`retrieval` and `retrievalKinds` options turn it off overall or per category.
+
 The reviewer panel appears only in the main conversation. Opening any subagent,
 including a nested one, hides the panel but does not stop normal or fast auto-approval
 within that conversation. A Safe report need not be displayed before approval.
@@ -173,8 +189,8 @@ skill definition, not a fresh `SKILL.md` read or an invocation-time snapshot. Th
 assumes that the selected definition stays unchanged while its permission is pending.
 The exact skill ID, native call and permission scope must match. Missing, ambiguous
 or oversized main instructions remain manual. Supporting files and scripts are not
-inspected; their omission alone does not prevent review. Allowing a skill loads its
-instructions, not a blanket grant for later tool actions.
+inspected unless retrieval reads them; their omission alone does not prevent review.
+Allowing a skill loads its instructions, not a blanket grant for later tool actions.
 
 Direct tool reviews use the exact tool ID, captured arguments and pending
 permission scope. Current server-side registered names, descriptions and input
@@ -231,7 +247,7 @@ A failed remainder creates no report entry and cannot undo the earlier approval.
 
 Transient connection failures, HTTP 408/429/500/502/503/504 responses, and rejected
 assessment streams share up to two internal retries within `timeoutMs`, honoring
-server cooldowns. Stream protocol failures and output-token truncation regenerate
+server cooldowns. The retrieval stage has its own separate allowance of two. Stream protocol failures and output-token truncation regenerate
 the report from a fresh, identical request; previous previews are cleared and never
 joined to the next response. Socket failures after text starts, provider error/refusal
 events, tool calls, invalid JSON/UTF-8, incomplete SSE framing and resource-limit
@@ -364,7 +380,7 @@ Percentages use recorded completed reviews as their denominator. Each validated
 review counts once, even without usage data; a fresh review after re-enabling counts
 again. Retries count extra API attempts actually dispatched, including format
 corrections and transport recovery.
-Timings run from evaluation start, including evidence and retries, to the accepted
+Timings run from evaluation start, including evidence, retrieval and retries, to the accepted
 attempt's first rating and final validated response, excluding countdown
 time. Non-streaming reviews use the final response time for both measurements.
 Averages use running means and sample counts; stored review details also retain
@@ -380,21 +396,18 @@ deleting report details does not reduce those totals or Lifetime. Storage failur
 show unavailable, not zero.
 
 Tokens describe received provider usage, not just the visible explanation. One
-report may sum several reviewer POSTs, including format corrections and transport
-retries with received usage. Each POST can resend the prompt and evidence;
+report may sum several reviewer POSTs, including retrieval turns, format corrections
+and transport retries with received usage. Each POST can resend the prompt and evidence;
 corrections also include the failed response and feedback. Cached input remains
 part of the provider's input-token count. Lifetime and Conversation also retain
 received usage from unsuccessful or interrupted reviews, which do not count as
 completed reviews. Averages include measured reviews only.
 
-Reviews send the pending request, latest user prompt, project context, and relevant
-file snapshots, diffs, registered skill instructions, or tool arguments to your
-endpoint before approval. Shell snapshots can include literal redirected inputs
-and follow symlinks outside the project. Missing evidence is described to the judge;
-ratings are advice based on the supplied evidence.
-Shell discovery recognizes supported runtime operands and literal file inputs
-in supported multiline or grouped commands. It does not execute substitutions,
-expand globs, or follow task definitions and imports.
+Reviews send the pending request, latest user prompt, project context, diffs,
+registered skill instructions or tool arguments, and every document the retrieval
+stage reads to your endpoint before approval. Text inside files, commands or
+arguments could steer which files the retrieval model asks for. Missing evidence is
+described to the judge; ratings are advice based on the supplied evidence.
 </details>
 
 <details>

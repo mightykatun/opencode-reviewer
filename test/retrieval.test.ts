@@ -57,7 +57,7 @@ test("the agent reads a script, selects it with notes, and the separate verdict 
   assert.deepEqual(second.messages.slice(0, 2), first.messages, "turns append to a byte-stable prefix")
   assert.deepEqual(second.messages[3], { role: "tool", tool_call_id: "t1", content: JSON.stringify({ id: "c1", ...read("run.sh", script) }) })
   assert.equal(last.tools, undefined, "the verdict request declares no tools")
-  assert.doesNotMatch(last.messages[0].content, /retrieval stage/)
+  assert.ok(!last.messages[0].content.includes(BUILTIN_PROMPTS.retrieval), "the verdict never receives retrieval guidance")
   const evidence = verdictEvidence(last)
   assert.equal(evidence.retrieval.status, "completed")
   assert.equal(evidence.retrieval.selection, "agent")

@@ -232,7 +232,7 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
           }
           const timeout = Math.min(3600000, remainingTime(stage))
           if (timeout <= 0) throw new DeadlineError("Retrieval")
-          const result = await deps.executor.execute({ tool: call.name as RetrievalToolName, arguments: args as JSONObject }, base, timeout, stage)
+          const result = await ownership.track(deps.executor.execute({ tool: call.name as RetrievalToolName, arguments: args as JSONObject }, base, timeout, stage))
           stage.throwIfAborted()
           const id = record(rounds, call, args, summary(result))
           if (result.status === "ok") results.set(id, result)

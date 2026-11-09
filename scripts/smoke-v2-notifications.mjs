@@ -494,7 +494,7 @@ try {
     permissions: [{ action: "*", resource: "*", effect: "allow" }, { action: "shell", resource: "*", effect: "ask" }],
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: origin + "/v1", apiKey: "synthetic-only" },
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } }
-  const options = { baseURL: origin + "/review", model: "v2-production-notifications", stream: false, autoApprove: false,
+  const options = { baseURL: origin + "/review", model: "v2-production-notifications", stream: false, autoApprove: false, retrieval: false,
     timeoutMs: 120000, notify: true, notifySound: false, staleReminderSeconds: reminderMs / 1000,
     notifications: Object.fromEntries(["attention", "unsafe", "question", "approved", "ended", "error"].map(kind => [kind,
       { banner: kind === "attention" || kind === "question" || scenario === "execution" && ["ended", "error"].includes(kind), sound: false }])) }
@@ -529,7 +529,7 @@ try {
   assert.equal(productionReady.state.runtime, scenario !== "unavailable-review")
   if (scenario !== "unavailable-review") {
     assert.equal(productionReady.state.config, true)
-    assert.equal(productionReady.state.companion.protocol, 1)
+    assert.equal(productionReady.state.companion.protocol, 2)
     assert.deepEqual(productionReady.state.companion.location, { directory: project })
   }
 
@@ -700,7 +700,7 @@ try {
     // the actual server companion using the documented plugin directive.
     assert.equal(productionReady.state.config, false)
     assert.match(productionReady.state.configError, /Unknown opencode-reviewer setting: fileIO/)
-    assert.equal(productionReady.state.companion.protocol, 1)
+    assert.equal(productionReady.state.companion.protocol, 2)
     for (const targetPhase of ["invalid", "no-companion"]) {
       if (targetPhase === "no-companion") {
         await publish(cliPath, { ...cli, plugins: ["-opencode-reviewer", monitor] })

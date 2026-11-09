@@ -1,7 +1,7 @@
 // Installed five-file production archive: actual controller, UI and reviewer.
 // Scenarios: advisory (nonstream), advisory-history-once/always/reject (Unsafe native decisions),
 // advisory-evidence-timeout (actual pre-model deadline failure remains visible and manual),
-// normal (SSE), normal-argument-files (opt-in literal argv capture), fast (held SSE preview/remainder),
+// normal (SSE), normal-retrieval (agentic list/read/grep retrieval and finish selection), fast (held SSE preview/remainder),
 // normal-mouse-off, normal-cancel, normal-descendant, fast-descendant,
 // normal-hide, normal-dialog, normal-resize, fast-dialog, normal-hidden-complete,
 // normal-route-wait, normal-decision, fast-decision,
@@ -14,7 +14,7 @@
 // normal-tool / fast-tool (real local MCP server, shared registered-tool review).
 // normal-project-transition (nongit to committed Git identity with the original companion still loaded).
 // normal-long-session (512 completed native Code Mode calls before direct review).
-// normal-large-source (oversized source excerpts through the installed companion and judge).
+// normal-large-source (agentic paging through an oversized source via the installed companion).
 // normal-reconnect (real loopback socket loss, same TUI and fresh production generation).
 // normal-reconnect-visible (socket loss during a visible review and its countdown).
 // normal-stalled-stream (silently held SSE bytes, native idle recovery during review).
@@ -526,9 +526,9 @@ const prompt = registeredTool ? "Look up the public account once using fixture_l
 const script = (largeSource ? "# oversized source fixture context\n".repeat(8000) : "")
   + 'from pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write("V2_REVIEW_EXECUTED\\n")\nprint("V2_REVIEW_EXECUTED")\n'
 const description = "V2 local marker report.\n\nThe script writes one isolated marker."
-const literalArgCase = scenario === "normal" || scenario === "normal-argument-files"
-const broadArgumentFiles = scenario === "normal-argument-files"
-const candidateContents = "V2_LITERAL_ARGUMENT_DATA\n"
+// Retrieval runs only in its dedicated cases; history cases keep one POST per review.
+const retrievalCase = scenario === "normal-retrieval" || largeSource
+const retrievalCalls = []
 const instructionsText = 'SESSION_INSTRUCTIONS_LITERAL: keep "quoted" text and {{braces}}.\n\tRoot and descendant share this note.'
 // Only the second keyboard-case response is long. The first genuine report keeps
 // all existing saved-history text/metadata and selected-original assertions intact.
@@ -543,7 +543,7 @@ const toolCall = codeModeTool ? { id: "v2-production-review-code-mode", name: "e
   : skillCase ? { id: "v2-production-review-skill", name: "skill", input: { id: skillID } }
   : editCase ? { id: "v2-production-review-write", name: "write", input: { path: writeTarget, content: afterEdit } }
    : { id: "v2-production-review-shell", name: "shell", input: {
-     command: literalArgCase ? "python3 fixture.py --attachment candidate.txt" : "python3 fixture.py", workdir: "inputs" } }
+     command: "python3 fixture.py", workdir: "inputs" } }
 const publishers = new Map(), calls = [], errors = [], negativeWindows = []
 let version, modelServer, mainResponse, reviewResponse, sessionID, childSession, request, inspection, handshake, sequence = 0
 let networkProxy, networkBlocked = false, networkEvidence
@@ -711,18 +711,70 @@ const recoverPendingConnection = async (label, { silent = false, outageMs = 1500
   await publish(path.join(artifacts, "network-reconnect.json"), networkEvidence)
   await saveCapture(label + "-recovered")
 }
+/** Scripted retrieval turns. The real installed companion executes every call. */
+function retrievalReply(body) {
+  assert.ok(retrievalCase, "Retrieval POSTs only in retrieval cases")
+  retrievalCalls.push(body)
+  assert.equal(body.model, "v2-production-reviewer")
+  assert.equal(body.stream, false, "Retrieval turns are never streamed")
+  assert.deepEqual(body.tools.map(tool => tool.function.name), ["read", "list", "glob", "grep", "finish"])
+  assert.match(body.messages[0].content, /retrieval stage/)
+  const evidence = JSON.parse(body.messages[1].content)
+  assert.equal(evidence.kind, "shell")
+  assert.equal(evidence.relativePathBase, inputs)
+  assert.equal(evidence.retrieval, undefined)
+  const results = body.messages.filter(message => message.role === "tool").map(message => JSON.parse(message.content))
+  const turn = body.messages.filter(message => message.role === "assistant").length
+  const reply = (...requested) => ({ choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: requested.map(([name, args], index) =>
+    ({ id: `retrieval-${turn}-${index}`, type: "function", function: { name, arguments: JSON.stringify(args) } })) }, finish_reason: "tool_calls" }],
+  usage: { prompt_tokens: 0, completion_tokens: 0 } })
+  if (turn === 0) return reply(["list", { path: "." }], ["read", { path: "fixture.py" }])
+  const read = results.find(result => result.tool === "read" && result.status === "ok")
+  assert.ok(read, "The companion read the script from the shell launch directory")
+  assert.equal(read.canonicalPath, path.join(inputs, "fixture.py"))
+  if (largeSource && turn === 1) {
+    assert.equal(read.truncated, true, "An oversized source is cut at the result size limit")
+    return reply(["read", { path: "fixture.py", offset: 8001 }])
+  }
+  if (!largeSource && turn === 1) return reply(["grep", { pattern: "V2_REVIEW_EXECUTED", include: "*.py" }], ["read", { path: "missing.sh" }])
+  const ids = results.filter(result => result.status === "ok").map(result => result.id)
+  return reply(["finish", { items: largeSource ? [ids.at(-1)] : ids.slice(1), notes: "fixture.py appends the isolated marker." }])
+}
+function assertRetrievedEvidence(evidence) {
+  const { retrieval } = evidence
+  assert.equal(retrieval.status, "completed")
+  assert.deepEqual([retrieval.selection, retrieval.endReason, retrieval.base], ["agent", "finish", inputs])
+  assert.equal(retrieval.notes, "fixture.py appends the isolated marker.")
+  if (largeSource) {
+    assert.equal(retrieval.items.length, 1)
+    const [page] = retrieval.items
+    assert.deepEqual([page.tool, page.startLine, page.endLine, page.totalLines], ["read", 8001, 8004, 8004])
+    assert.equal(page.content, script.split("\n").slice(8000).join("\n"))
+    assert.equal(retrieval.trace[1].truncated, true)
+    return
+  }
+  assert.deepEqual(retrieval.items.map(item => item.tool), ["read", "grep"])
+  assert.equal(retrieval.items[0].content, script)
+  assert.deepEqual(retrieval.items[1].matches.map(match => [match.path, match.line]), [[path.join(inputs, "fixture.py"), 3], [path.join(inputs, "fixture.py"), 4]])
+  const missing = retrieval.trace.find(entry => entry.arguments?.path === "missing.sh")
+  assert.deepEqual([missing.status, missing.reason], ["error", "ENOENT"])
+  assert.ok(retrieval.trace[0].size.entries >= 1, "The list result is traced but not selected")
+  assert.equal(retrieval.trace[0].forwarded, "not-selected")
+}
 const savedHistory = async () => {
+  // Retrieval POSTs are separate attempts of the same review, with zero-token usage.
+  const posts = 1 + retrievalCalls.length
   const value = await readHistory()
-  if (!value?.rows.length || !value.meta || !value.conversations.length
-    || !value.attempts[0]?.finalized || !value.reviews[0]?.accepted
+  if (!value?.rows.length || !value.meta || !value.conversations.length || value.attempts.length !== posts
+    || value.attempts.some(attempt => !attempt.finalized) || !value.reviews[0]?.accepted
     || value.approvals[0]?.state !== "confirmed") return undefined
   const totals = [JSON.parse(value.meta.totals), ...value.conversations.map(row => JSON.parse(row.totals))]
-  if (totals.some(total => total.activity.reviews !== 1 || total.activity.autoApproved !== 1 || total.activity.usageRequests !== 1)) return undefined
+  if (totals.some(total => total.activity.reviews !== 1 || total.activity.autoApproved !== 1 || total.activity.usageRequests !== posts)) return undefined
   assert.equal(value.meta.version, 1)
   assert.equal(value.rows.length, 1, "One saved report, not an injected fixture entry")
   assert.equal(value.payloadCount, 1)
   assert.equal(value.reviews.length, 1)
-  assert.equal(value.attempts.length, 1, "One actually dispatched POST")
+  assert.equal(value.attempts.length, posts, "One dispatched POST per retrieval turn plus the verdict")
   assert.equal(value.approvals.length, 1)
   assert.equal(value.conversations.length, 1)
   const row = value.rows[0], context = JSON.parse(row.context), payload = JSON.parse(row.body)
@@ -743,17 +795,18 @@ const savedHistory = async () => {
   assert.equal(payload.safe, true)
   assert.deepEqual(payload.usage, { input: reviewUsage.prompt_tokens, output: reviewUsage.completion_tokens })
   assert.equal(JSON.parse(row.accepted).safe, true)
-  assert.equal(value.attempts[0].review, row.review)
-  assert.equal(JSON.parse(value.attempts[0].dispatched).retry, "initial")
-  assert.deepEqual(JSON.parse(value.attempts[0].finalized).usage, payload.usage)
+  assert.ok(value.attempts.every(attempt => attempt.review === row.review && JSON.parse(attempt.dispatched).retry === "initial"))
+  const verdictAttempts = value.attempts.filter(attempt => JSON.parse(attempt.finalized).usage?.input === reviewUsage.prompt_tokens)
+  assert.equal(verdictAttempts.length, 1)
+  assert.deepEqual(JSON.parse(verdictAttempts[0].finalized).usage, payload.usage)
   assert.equal(value.approvals[0].review, row.review)
    assert.equal(value.approvals[0].entry, row.entry)
   assert.equal(value.approvals[0].automatic, 1)
   assert.equal(value.conversations[0].id, row.root)
   assert.equal(value.conversations[0].partial, 0)
   for (const total of totals) {
-    assert.equal(total.requests, 1)
-    assert.equal(total.tokenRequests, 1)
+    assert.equal(total.requests, posts)
+    assert.equal(total.tokenRequests, posts)
     assert.equal(total.input, reviewUsage.prompt_tokens)
     assert.equal(total.output, reviewUsage.completion_tokens)
     assert.equal(total.safe, 1)
@@ -1165,7 +1218,6 @@ try {
    else assert.throws(() => smokeGit(temp, initial, ["rev-parse", "--show-toplevel"]),
      "Transition starts outside every Git repository")
   await writeFile(path.join(inputs, "fixture.py"), script)
-  if (literalArgCase) await writeFile(path.join(inputs, "candidate.txt"), candidateContents)
   if (editCase) {
     await mkdir(path.dirname(editTarget), { recursive: true })
     await writeFile(editTarget, beforeEdit)
@@ -1216,6 +1268,11 @@ try {
          sse(res, undefined, "tool_calls"); res.end("data: [DONE]\n\n")
          return
        }
+       if (req.url === "/review/chat/completions" && body.tools) {
+         res.writeHead(200, { "Content-Type": "application/json" })
+         res.end(JSON.stringify(retrievalReply(body)))
+         return
+       }
        calls.push({ url: req.url, body })
        if (req.url === "/review/chat/completions") {
          reviewPOSTs++
@@ -1258,7 +1315,7 @@ try {
           } else assert.deepEqual(evidence.skill, { id: skillID, name: "Reviewer fixture", path: skillPath, content: skillContent })
           assert.equal(evidence.userPrompt, prompt)
           if (!registeredTool) assert.deepEqual(evidence.permission.resources, [skillID])
-          assert.equal(evidence.files, undefined, "No supporting-file content inspection")
+          assert.deepEqual(evidence.retrieval, { status: "disabled" }, "Retrieval is off outside its dedicated cases")
         } else if (editCase) {
           const action = editActions[reviewPOSTs - 1]
           assert.match(body.messages[0].content, action === "edit" ? /permission\.action="edit"/ : /external-directory access/)
@@ -1283,29 +1340,8 @@ try {
           assert.equal(evidence.permission.action, "shell")
           assert.deepEqual(evidence.permission.resources, [toolCall.input.command])
           assert.equal(evidence.permission.type, undefined, "No fabricated native permission type")
-           assert.equal(evidence.files.length, broadArgumentFiles ? 2 : 1)
-           if (broadArgumentFiles) assert.deepEqual(evidence.files[1], {
-             filename: "candidate.txt", path: path.join(inputs, "candidate.txt"), status: "captured",
-             contents: candidateContents, basis: "literal argument; input role unknown",
-           })
-           if (largeSource) {
-             const file = evidence.files[0], numbered = file.contents.split("\n")
-             assert.equal(file.status, "excerpt")
-             assert.equal(file.excerpt.totalLines, 8004)
-             assert.equal(numbered.pop(), `missing ${8004 - numbered.length} more lines`)
-             assert.equal(file.excerpt.includedLines, numbered.length)
-             assert.ok(Buffer.byteLength(file.contents) < 2048)
-             assert.match(file.contents, /L8001: from pathlib import Path/)
-             assert.match(file.contents, /L8003:     output.write/)
-             const source = script.split("\n")
-             for (const line of numbered) {
-               const [, index, text] = /^L(\d+): (.*)$/.exec(line)
-               assert.equal(text, source[Number(index) - 1])
-             }
-           } else {
-             assert.equal(evidence.files[0].status, "captured")
-             assert.equal(evidence.files[0].contents, script)
-           }
+           if (retrievalCase) assertRetrievedEvidence(evidence)
+           else assert.deepEqual(evidence.retrieval, { status: "disabled" }, "Retrieval is off outside its dedicated cases")
         }
          reviewCompleted = false
          reviewResponse = res
@@ -1426,7 +1462,7 @@ createInterface({input:process.stdin}).on('line',line=>{
      ...(automatic ? { mouse: !mouseOff } : {}),
     session: { permissions: "prompt" }, plugins: [{ package: reviewer, options: { baseURL: origin + "/review", model: "v2-production-reviewer",
         stream: streaming, autoApprove: automatic, fastMode: fast, autoApproveDelaySeconds: approvalDelaySeconds,
-         ...(broadArgumentFiles ? { includeShellArgumentFiles: true } : {}),
+         retrieval: retrievalCase,
         ...(directoryEditCase ? { reviewExternalDirectories: true } : {}),
          ...(registeredTool ? { reviewTools: true, maxEvidenceBytes: fast ? 131072 : 2048 } : {}),
          ...(largeSource ? { maxEvidenceBytes: 2048 } : {}),
@@ -1499,7 +1535,7 @@ createInterface({input:process.stdin}).on('line',line=>{
    })
   assert.equal(status.plugins.data.find(item => item.id === "opencode-reviewer")?.state.status, "active")
   handshake = status.handshake
-  assert.equal(handshake.protocol, 1)
+  assert.equal(handshake.protocol, 2)
   assert.equal(handshake.hostVersion, version.slice("opencode v".length))
   assert.deepEqual(handshake.location, { directory: initial })
    assert.equal(handshake.project.directory, projectTransition ? initial : project)
@@ -1806,9 +1842,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.equal(payload.conversation.current.location.directory, initial)
   assert.equal(payload.conversation.current.projectID, handshake.project.id)
    assert.deepEqual(payload.limitations, ["Optional effective native tool definition is not included; exact captured arguments and pending permission scope are retained.",
-      broadArgumentFiles
-        ? "Literal shell inputs and existing files directly named by command arguments are collected. Argument candidates have unknown input roles: they may be outputs or unrelated, so the reviewer must decide relevance. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected."
-        : "Only literal file inputs recognized from command syntax, input redirects and supported program operands are collected. Unknown program options and indirect inputs are not inferred. Files are review-time snapshots or explicitly numbered excerpts, not command output. Excerpts favor declarations, imports, entry points and nearby context; omitted code is not assessed. Generated names, task definitions, imports, dependencies and calls inside source files are not recursively inspected."])
+     ...(retrievalCase ? [] : ["Retrieval is disabled for this review category; no files were read."])])
   await until("rendered production evaluating panel", () => capture().includes("Permission analysis"))
   await saveCapture("evaluating")
    await negativeWindow("review response held", [request], [], null, 1, 1500, notificationCase ? noAttention : savedCase ? noSavedBody : () => {})

@@ -454,7 +454,8 @@ try {
         assert.equal(data.permission.type, undefined)
         assert.equal(data.location.directory, initial)
         assert.equal(data.cwd, inputs)
-        assert.equal(data.files[0].contents, await readFile(path.join(inputs, "fixture.py"), "utf8"))
+        assert.equal(data.files, undefined, "Mandatory shell evidence carries no file snapshots")
+        assert.equal(data.execution.canonicalCwd, inputs)
         evidence.advisoryPayload = body
         res.writeHead(200, { "Content-Type": "application/json" })
         res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify({ safe: true, desc: "The isolated fixture appends a marker to a local file." }) }, finish_reason: "stop" }] }))
@@ -529,7 +530,7 @@ try {
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: origin + "/v1", apiKey: "synthetic-only" },
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } }
   const cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, attention: { notifications: false, sound: false }, plugins: [{ package: monitor,
-    options: { baseURL: origin + "/review", model: "phase3-advisory-reviewer", stream: false, autoApprove: false, notify: false, notifySound: false } }] }
+    options: { baseURL: origin + "/review", model: "phase3-advisory-reviewer", stream: false, autoApprove: false, retrieval: false, notify: false, notifySound: false } }] }
   await publish(serverPath, config); await publish(cliPath, cli)
   await publish(path.join(artifacts, "setup.json"), { version, temp, fixture, archive, packed, config, cli, limits,
     socket: runtime.socket, supervisorPID: runtime.supervisorPID })
@@ -539,7 +540,7 @@ try {
     const state = await command({ type: "status" })
     return state.handshake && state.plugins.data.find(item => item.id === "opencode-reviewer")?.state.status === "active" && state
   })
-  assert.equal(status.handshake.protocol, 1)
+  assert.equal(status.handshake.protocol, 2)
   assert.equal(status.handshake.hostVersion, version.slice("opencode v".length))
   assert.equal(status.handshake.location.directory, initial)
   assert.equal(status.handshake.project.directory, project)
@@ -583,9 +584,8 @@ try {
     assert.equal(report.command, expected.find(item => item.id === request.source.id).input.command)
     assert.equal(report.cwd, inputs)
     assert.equal(report.userPrompt, firstPrompt)
-    assert.equal(report.files.length, 1)
-    assert.equal(report.files[0].status, "captured")
-    assert.equal(report.files[0].contents, await readFile(path.join(inputs, "fixture.py"), "utf8"))
+    assert.equal(report.files, undefined, "Mandatory shell evidence carries no file snapshots")
+    assert.equal(report.execution.canonicalCwd, inputs)
     evidence.shellEvidence.push(row)
   }
   evidence.disabledShell = await readEvidence(direct[0], scope, { ...collection, reviewBash: false })
@@ -736,13 +736,14 @@ try {
   evidence.observedServerEvidence = await readEvidence(ioPending[0], observedScope)
   assert.equal(evidence.observedServerEvidence.result.value?.result.status, "ready")
   const report = evidence.observedServerEvidence.result.value.result.evidence
-  assert.equal(report.files[0].contents, await readFile(path.join(inputs, "fixture.py"), "utf8"))
+  assert.equal(report.execution.canonicalCwd, inputs, "The server-owned probe canonicalizes the launch directory")
   const observedIO = await readObservation(fileIOPath)
   assert.equal(observedIO.role, "server")
-  assert.ok(observedIO.open > 0 && observedIO.realpath > 0)
+  assert.ok(observedIO.realpath > 0)
+  assert.equal(observedIO.open, 0, "Mandatory shell evidence never opens files")
   assert.ok(observedIO.calls.every(call => call.origin === "server" && call.consumer.includes("dist/tui.js")))
   evidence.observedFileIO = observedIO
-  await negativeWindow(sessionID, ioPending, "injected server FileIO supplies snapshots without permission writes")
+  await negativeWindow(sessionID, ioPending, "injected server FileIO supplies path probes without permission writes")
   await interrupt(sessionID)
   const rootIntent = "PHASE2 ROOT INTENT: examine native descendant shell requests; the delegation is optional context, not replacement intent."
   await command({ type: "prompt", sessionID, text: rootIntent })
@@ -778,7 +779,7 @@ try {
     assert.ok(value.conversation.limitations.some(text => text.includes("Exact immediate subagent delegation is unavailable")))
     assert.equal(value.result.status, "ready")
     assert.equal(value.result.evidence.userPrompt, rootIntent)
-    assert.equal(value.result.evidence.files[0].contents, await readFile(path.join(inputs, "fixture.py"), "utf8"))
+    assert.equal(value.result.evidence.execution.canonicalCwd, inputs)
     evidence.nativeDescendants.push({ descendant, parent, request, row })
     await negativeWindow(descendant, [request], "native descendant root intent retained with optional delegation omitted")
   }
@@ -842,8 +843,8 @@ try {
   evidence.moved = await readEvidence(movedPending, relocatedScope)
   assert.equal(evidence.moved.result.value?.invocation.location.directory, moved)
   assert.equal(evidence.moved.result.value.result.evidence.cwd, movedInputs)
-  assert.equal(evidence.moved.result.value.result.evidence.files[0].contents, await readFile(path.join(movedInputs, "fixture.py"), "utf8"))
-  assert.notEqual(evidence.moved.result.value.result.evidence.files[0].contents, evidence.shellEvidence[0].result.value.result.evidence.files[0].contents)
+  assert.equal(evidence.moved.result.value.result.evidence.execution.canonicalCwd, movedInputs)
+  assert.notEqual(evidence.moved.result.value.result.evidence.execution.canonicalCwd, evidence.shellEvidence[0].result.value.result.evidence.execution.canonicalCwd)
   assert.equal(evidence.shellEvidence[0].result.value.invocation.location.directory, initial)
   evidence.movedOldScope = await readEvidence(movedPending, observedScope)
   assert.equal(evidence.movedOldScope.result.error?.type, "scope", "An old location/epoch cannot adopt the moved invocation")

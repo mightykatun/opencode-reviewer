@@ -51,9 +51,10 @@ test("native write evidence expectations reject full target snapshots, raw write
   const expected = { action: "edit", target: "target.txt", prompt: "Write the marker", initial: "/project/invocation", project: "/project" }
   const evidence = { kind: "edit", tool: "write", permission: { action: "edit" }, operation: { input: { path: "target.txt" } },
     userPrompt: expected.prompt, location: { directory: expected.initial }, project: { directory: expected.project }, partial: false,
-    changes: [{ file: "target.txt", status: "included", hostStatus: "modified", patch: "-V2_EDIT_BEFORE\n+V2_EDIT_AFTER" }] }
+    changes: [{ file: "target.txt", status: "included", hostStatus: "modified", patch: "-V2_EDIT_BEFORE\n+V2_EDIT_AFTER" }],
+    retrieval: { status: "disabled" } }
   assertWriteEvidence(evidence, expected)
-  for (const corrupt of [copy => { copy.files = [] }, copy => { copy.operation.input.content = "invented" },
+  for (const corrupt of [copy => { copy.files = [] }, copy => { copy.operation.input.content = "invented" }, copy => { copy.retrieval = { status: "completed" } },
     copy => { copy.partial = true }, copy => { copy.changes[0].patch = "invented diff" }]) {
     const copy = structuredClone(evidence); corrupt(copy)
     assert.throws(() => assertWriteEvidence(copy, expected), assert.AssertionError)

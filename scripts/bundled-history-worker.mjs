@@ -46,7 +46,7 @@ function workerConsumer(nodes) {
   assert.equal(parameter.type, "AssignmentPattern")
   assert.equal(parameter.right.name, binding.id.name, "Worker constructor must consume the inspected default")
   const writes = nodes.filter(node => node.type === "NewExpression" && node.start >= constructor.start && node.end <= constructor.end)
-    .filter(node => node.callee.name === "Worker" || node.callee.property?.name === "Worker")
+    .filter(node => /^Worker\d*$/.test(node.callee.name ?? "") || node.callee.property?.name === "Worker")
   assert.equal(writes.length, 1, "Expected one actual worker source consumer")
   assert.equal(writes[0].arguments[0]?.name, parameter.left.name, "Actual worker must receive its source parameter")
   assert.equal(writes[0].arguments[1]?.type, "ObjectExpression")
