@@ -29,7 +29,7 @@ function fixture(child = false) {
     realpath: async () => { assert.fail("Do not rediscover or initialize a project") } })
   const client = {
     rpc: () => ({
-      handshake: async () => ({ protocol: 1, hostVersion: "development", ...scope, epoch: state.epoch, project: startupProject }),
+      handshake: async () => ({ protocol: 2, hostVersion: "development", ...scope, epoch: state.epoch, project: startupProject }),
       invocation: async () => state.missing ? null : { request: raw, invocation },
       evidence: async (query: any, options: { signal: AbortSignal }) => {
         const result = await collectHostOperation({ snapshot, invocation }, query.options, options.signal, files)
@@ -58,7 +58,7 @@ function fixture(child = false) {
     message: { list: async () => ({ data: [{ id: "user", type: "user", text: "Inspect the requested file." }], cursor: {} }) },
     permission: { get: async () => state.permission, reply: () => assert.fail("No permission writes in evaluator tests") },
   }
-  const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", notify: false })
+  const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", notify: false, retrieval: false })
   const evaluate = (identify = () => {}, signal = new AbortController().signal) => evaluateHostReview(client as unknown as OpenCodeClient, snapshot, config,
     BUILTIN_PROMPTS, signal, identify, { fetcher: async (_url, init) => {
       posts.push(JSON.parse(String(init?.body)))

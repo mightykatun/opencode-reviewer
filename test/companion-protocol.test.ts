@@ -14,11 +14,11 @@ test("read RPC methods declare capacity_busy independently from scope errors and
 
 test("companion handshake rejects another host protocol/location/workspace and retains an owned copy", () => {
   const location = { directory: "/server/project", workspaceID: "workspace-a" }
-  const value = { protocol: 1, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location: { ...location },
+  const value = { protocol: 2, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location: { ...location },
     project: { id: "project", directory: "/server", canonical: "/canonical" } }
   const snapshot = readHandshake(value, location)
   assert.deepEqual(snapshot, value)
-  for (const invalid of [null, {}, { ...value, protocol: 2 }, { ...value, hostVersion: "" }, { ...value, epoch: "same-location" },
+  for (const invalid of [null, {}, { ...value, protocol: 3 }, { ...value, protocol: 1 }, { ...value, hostVersion: "" }, { ...value, epoch: "same-location" },
     { ...value, location: { directory: "/terminal/project", workspaceID: "workspace-a" } },
     { ...value, location: { directory: location.directory } }, { ...value, project: { ...value.project, canonical: "" } },
     { ...value, project: { ...value.project, directory: "relative" } },
@@ -33,7 +33,7 @@ test("companion handshake rejects another host protocol/location/workspace and r
 
 test("host version is retained as descriptive metadata, not a runtime allowlist", () => {
   const location = { directory: "/server/project" }
-  const value = { protocol: 1, hostVersion: "2.0.27", epoch: "10000000-1000-4000-8000-100000000000", location,
+  const value = { protocol: 2, hostVersion: "2.0.27", epoch: "10000000-1000-4000-8000-100000000000", location,
     project: { id: "project", directory: "/server", canonical: "/canonical" } }
   for (const hostVersion of ["2.0.26", "2.0.27", "2.0.28", "2.1.0", "2.0.27-beta.1", "development"])
     assert.equal(readHandshake({ ...value, hostVersion }, location)?.hostVersion, hostVersion)

@@ -3,7 +3,7 @@ import { test } from "node:test"
 import { InvocationCapture } from "../src/invocation-capture.js"
 import type { CompanionHandshake } from "../src/companion-protocol.js"
 
-const handshake = (): CompanionHandshake => ({ protocol: 1, hostVersion: "2.0.26",
+const handshake = (): CompanionHandshake => ({ protocol: 2, hostVersion: "2.0.26",
   epoch: "10000000-1000-4000-8000-100000000000", location: { directory: "/invocation", workspaceID: "workspace-a" },
   project: { id: "project-a", directory: "/project", canonical: "/canonical" } })
 const event = (id: string, input = { command: "python3 task.py", workdir: "relative" }) => ({

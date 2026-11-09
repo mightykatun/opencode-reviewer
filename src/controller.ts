@@ -308,6 +308,14 @@ export class Controller<R extends RequestIdentity = HostRequest> {
 
   private progress(entry: Entry<R>, value: ReviewProgress) {
     if (!this.reviewing(entry) || !Number.isSafeInteger(value.attempt) || value.attempt < 0 || value.attempt < entry.attempt) return
+    // Retrieval precedes the first verdict attempt (ordinal -1) and never advances
+    // ordinals; that attempt's ordinary start then replaces the retrieval phase.
+    if (value.phase === "retrieving" || value.phase === "retrieval-retrying") {
+      if (value.attempt !== 0 || entry.attempt !== -1 || entry.view.progress?.phase === value.phase) return
+      entry.view = { ...entry.view, progress: { attempt: 0, phase: value.phase } }
+      this.publish()
+      return
+    }
     if (value.attempt > entry.attempt) {
       // Only an explicit attempt start can advance the generation. Delayed chunks
       // from an old attempt cannot restart it or clear a newer report.

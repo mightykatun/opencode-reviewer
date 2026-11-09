@@ -85,7 +85,7 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
   const state = { stateRoot: "/tmp/opencode/reviewer-history-source", prompts: BUILTIN_PROMPTS,
     dependencies: observeHistoryInput ? { historyProbe: { observe: () => {} } } : {},
     ...(unavailable === "configuration" ? { configError: "Invalid review configuration", companion: {
-      protocol: 1 as const, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location,
+      protocol: 2 as const, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location,
       project: { id: "project", directory: "/server", canonical: "/server" },
     } }
       : { config: config() }) }

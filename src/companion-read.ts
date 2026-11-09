@@ -7,8 +7,8 @@ import { transportOwnership } from "./transport-ownership.js"
  * queue or detached attempt: each physical RPC settles before a bounded pause,
  * and each dispatch rechecks the original transaction's cancellation/deadline.
  * The callback regenerates collection timeoutMs from that same deadline. */
-export async function readCompanion<T>(signal: AbortSignal, dispatch: () => Promise<T>): Promise<T> {
-  const end = performance.now() + Math.min(5000, remainingTime(signal))
+export async function readCompanion<T>(signal: AbortSignal, dispatch: () => Promise<T>, limitMs = 5000): Promise<T> {
+  const end = performance.now() + Math.min(limitMs, remainingTime(signal))
   const guard = () => {
     reviewStage(signal, "Companion evidence lookup")
     if (performance.now() >= end) throw new DeadlineError("Companion evidence lookup")

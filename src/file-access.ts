@@ -1,9 +1,15 @@
 import { open, realpath } from "node:fs/promises"
-import { constants } from "node:fs"
+import { constants, type Dirent, type Stats } from "node:fs"
 import path from "node:path"
 import { DeadlineError, remainingTime, withDeadline } from "./deadline.js"
 
-export interface FileIO { open: typeof open; realpath: (filename: string) => Promise<string> }
+export interface FileIO {
+  open: typeof open
+  realpath: (filename: string) => Promise<string>
+  /** Optional embedding seams for retrieval traversal; default to node:fs. */
+  readdir?: (directory: string) => Promise<Dirent[]>
+  lstat?: (filename: string) => Promise<Stats>
+}
 export interface FileTiming { totalMs: number; pathMs: number; captureMs: number; concurrency: number }
 const defaults: FileTiming = { totalMs: 5000, pathMs: 500, captureMs: 1500, concurrency: 2 }
 
@@ -45,7 +51,7 @@ export interface CanonicalPath { path: string | null; reason?: string }
  * preceding directory physically before taking its parent, within one owned
  * probe. Directory descriptors also reject file/.. instead of selecting a decoy.
  * This inspects paths only, never directory entries or file contents. */
-async function physicalPath(filename: string, io: FileIO, signal: AbortSignal): Promise<string> {
+export async function physicalPath(filename: string, io: FileIO, signal: AbortSignal): Promise<string> {
   let pending = filename
   for (let parents = 0;; parents++) {
     signal.throwIfAborted()

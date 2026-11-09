@@ -106,7 +106,7 @@ test("repeated activity revisions discard stale pending refreshes; a stable revi
 })
 
 test("completed ambiguous calls release capacity while pending duplicates remain unavailable", () => {
-  const captures = new InvocationCapture({ protocol: 1, hostVersion: "2.0.26",
+  const captures = new InvocationCapture({ protocol: 2, hostVersion: "2.0.26",
     epoch: "10000000-1000-4000-8000-100000000000", location: { directory: "/fixture" },
     project: { id: "fixture", directory: "/fixture", canonical: "/fixture" } })
   const event = (id: string) => ({ sessionID: "root", messageID: "assistant", id, tool: "shell", input: { command: "pwd" } })

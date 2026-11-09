@@ -16,7 +16,7 @@ import { setupCli, type CliPluginState } from "../src/cli-plugin.js"
 import type { FormInfo } from "@opencode/client"
 
 const location = { directory: "/server/project" }
-const companion = { protocol: 1 as const, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location,
+const companion = { protocol: 2 as const, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location,
   project: { id: "project", directory: "/server", canonical: "/server" } }
 const pending = (id: string) => ({ id, sessionID: "root", action: "unknown", resources: ["scope"] })
 async function fixture(options: { notify?: boolean; reminderSeconds?: number; formSync?: (id: string) => Promise<void>; sessionSync?: (id: string) => Promise<void>;

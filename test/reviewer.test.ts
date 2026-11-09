@@ -24,7 +24,7 @@ async function review(...args: Parameters<typeof reviewWithMetadata>) {
 import { BUILTIN_PROMPTS, CONTRACT, CORRECTION, loadPrompts } from "../src/prompts.js"
 import { collectHostEvidence } from "../src/host-evidence.js"
 import { FileAccess } from "../src/file-access.js"
-import { shellEvidence, editEvidence, directoryEvidence, nativeInvocation } from "./review-fixtures.js"
+import { shellEvidence, editEvidence, directoryEvidence, nativeInvocation, verdictEvidence } from "./review-fixtures.js"
 import type { ReviewProgress } from "../src/types.js"
 import { usageText, type Usage } from "../src/usage.js"
 import { lifetimeCost } from "../src/lifetime.js"
@@ -461,7 +461,7 @@ test("sends textual source, genuine user prompt, fixed schema and optional beare
   assert.deepEqual(await review(evidence, config, signal(), { fetcher: fetch, environment: { TEST_REVIEW_KEY: "fixture-secret" }, prompts }), { safe: true, desc: "Counts fruits." })
   const body = requests[0]!.body
   assert.equal(requests[0]!.authorization, "Bearer fixture-secret")
-  assert.deepEqual(JSON.parse(body.messages[1].content), evidence)
+  assert.deepEqual(JSON.parse(body.messages[1].content), verdictEvidence(evidence))
   assert.match(body.messages[0].content, /Custom risk guidance/)
   assert.match(body.messages[0].content, /exactly two fields/)
   const contract = (await readFile(new URL("../contracts/PERMISSION-REVIEW-CONTRACT.md", import.meta.url), "utf8")).trim()
@@ -479,7 +479,7 @@ test("inline API key authenticates requests and corrections without entering mod
   assert.equal(requests.length, 2)
   for (const request of requests) {
     assert.equal(request.authorization, "Bearer inline-fixture-key")
-    assert.deepEqual(JSON.parse(request.body.messages[1].content), evidence)
+    assert.deepEqual(JSON.parse(request.body.messages[1].content), verdictEvidence(evidence))
     assert.ok(!JSON.stringify(request.body).includes("inline-fixture-key"))
   }
 })
@@ -494,7 +494,7 @@ test("environment API keys match inline normalization on requests and correction
   assert.deepEqual(requests.map((request) => request.target), Array(4).fill("/v1/chat/completions"))
   for (const request of requests) {
     assert.equal(request.authorization, "Bearer fixture-environment-key")
-    assert.deepEqual(JSON.parse(request.body.messages[1].content), evidence)
+    assert.deepEqual(JSON.parse(request.body.messages[1].content), verdictEvidence(evidence))
     assert.ok(!JSON.stringify(request.body).includes("fixture-environment-key"))
   }
 })
@@ -529,7 +529,7 @@ test("format correction uses validation feedback and configurable retry count", 
   assert.match(correction, /\{\{validationError\}\}/)
   assert.equal(requests[0]!.body.messages[0].content, `${prompt}\n\n${contract}`)
   assert.equal(requests[1]!.body.messages[3].content, correction.replace("{{validationError}}", "Invalid assessment fields or types"))
-  assert.deepEqual(JSON.parse(requests[2]!.body.messages[1].content), evidence)
+  assert.deepEqual(JSON.parse(requests[2]!.body.messages[1].content), verdictEvidence(evidence))
 })
 
 test("zero retries and exhausted retries end with unavailable, not a fabricated rating", async (t) => {
@@ -652,12 +652,12 @@ test("edit evidence uses its own assessment and fixed correction, retaining part
     const result = await review(edit, config, signal(), { fetcher: fetch, environment: {}, prompts })
     assert.equal(result.safe, false)
     assert.equal(requests[index]!.body.messages[0].content, `${prompts.edit.instructions}\n\n${CONTRACT}`)
-    assert.deepEqual(JSON.parse(requests[index]!.body.messages[1].content), edit)
+    assert.deepEqual(JSON.parse(requests[index]!.body.messages[1].content), verdictEvidence(edit))
     assert.ok(!JSON.stringify(requests[index]!.body).includes("raw secret aggregate"))
     assert.ok(!JSON.stringify(requests[index]!.body).includes("omitted secret"))
     assert.ok(!JSON.stringify(requests[index]!.body).includes("Shell-only guidance"))
     assert.equal(requests[index + 1]!.body.messages[3].content, CORRECTION.replace("{{validationError}}", "Invalid assessment fields or types"))
-    assert.deepEqual(JSON.parse(requests[index + 1]!.body.messages[1].content), edit)
+    assert.deepEqual(JSON.parse(requests[index + 1]!.body.messages[1].content), verdictEvidence(edit))
     assert.equal(requests[index]!.body.tools, undefined)
     assert.equal(requests[index]!.body.stream, false)
   }
@@ -680,7 +680,7 @@ test("extra-careful guidance defaults on and can be omitted from native auto rev
     const kind = input.kind === "edit" ? "edit" : "shell"
     for (const request of requests.slice(start)) {
       assert.equal(request.body.messages[0].content, [prompts[kind].instructions, ...(autoApprove && extraCareful !== false ? [prompts.extraCareful] : []), CONTRACT].join("\n\n"))
-      assert.deepEqual(JSON.parse(request.body.messages[1].content), input)
+      assert.deepEqual(JSON.parse(request.body.messages[1].content), verdictEvidence(input))
       assert.equal(request.body.stream, stream)
       assert.equal(request.body.max_tokens, 4096)
       assert.doesNotMatch(JSON.stringify(request.body), /"extraCareful"|autoApprove|countdown|automatic approval/)
@@ -782,7 +782,7 @@ test("native directory reviews select their own instructions and share the fixed
     assert.equal(requests.length - start, 2)
     for (const request of requests.slice(start)) {
       assert.equal(request.body.messages[0].content, [BUILTIN_PROMPTS[kind].instructions, ...(autoApprove && extraCareful !== false ? [BUILTIN_PROMPTS.extraCareful] : []), CONTRACT].join("\n\n"))
-      assert.deepEqual(JSON.parse(request.body.messages[1].content), input)
+      assert.deepEqual(JSON.parse(request.body.messages[1].content), verdictEvidence(input))
       assert.equal(request.body.tools, undefined)
       assert.equal(request.body.stream, stream)
       assert.equal(request.body.max_tokens, 4096)
@@ -801,7 +801,7 @@ test("review usage sums correction requests outside assessment JSON and evidence
     pricing: () => ({ input: 1, output: 2, cache: { read: 0, write: 0 } }) })
   assert.deepEqual(result, { safe: true, desc: "Visible effects.", usage: { input: 201, output: 20, cost: 0.000241 } })
   assert.equal(requests.length, 2)
-  for (const request of requests) assert.deepEqual(JSON.parse(request.body.messages[1].content), evidence)
+  for (const request of requests) assert.deepEqual(JSON.parse(request.body.messages[1].content), verdictEvidence(evidence))
   assert.throws(() => parseAssessment('{"safe":true,"desc":"x","usage":{"prompt_tokens":10}}'))
 })
 

@@ -2,7 +2,9 @@ import { Rpc } from "@opencode/plugin/rpc"
 import path from "node:path"
 import { evidenceOptionsSchema } from "./host-evidence-options.js"
 
-export const companionProtocol = 1
+export const companionProtocol = 2
+/** Model-chosen read-only operations the companion executes for retrieval. */
+export const retrievalToolNames = ["read", "list", "glob", "grep"] as const
 export const companionBusy = "capacity_busy"
 const readErrors = {
   scope: { type: "object", properties: {}, additionalProperties: false },
@@ -15,7 +17,7 @@ const location = {
 
 /** Transport identity only. An epoch is never durable history/deletion authority. */
 export interface CompanionHandshake {
-  protocol: 1
+  protocol: 2
   hostVersion: string
   epoch: string
   location: { directory: string; workspaceID?: string }
@@ -53,6 +55,16 @@ export const companionRpc = Rpc.define({
       output: { anyOf: [{ type: "null" }, { type: "object", properties: {
         request: { type: "object" }, invocation: { type: "object" }, result: { type: "object" },
       }, required: ["request", "invocation", "result"], additionalProperties: false }] },
+      errors: readErrors,
+    },
+    retrieve: {
+      input: { type: "object", properties: { location, epoch: text, sessionID: text, requestID: text, base: text,
+        call: { type: "object", properties: { tool: { enum: [...retrievalToolNames] }, arguments: { type: "object" } },
+          required: ["tool", "arguments"], additionalProperties: false },
+        timeoutMs: { type: "number", exclusiveMinimum: 0, maximum: 3600000 },
+        maxBytes: { type: "integer", minimum: 1, maximum: 16 * 1024 * 1024 } },
+        required: ["location", "epoch", "sessionID", "requestID", "base", "call", "timeoutMs", "maxBytes"], additionalProperties: false },
+      output: { anyOf: [{ type: "null" }, { type: "object" }] },
       errors: readErrors,
     },
   },

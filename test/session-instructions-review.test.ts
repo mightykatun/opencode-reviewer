@@ -7,7 +7,7 @@ import { sessionInstructionsSnapshot } from "../src/session-instructions-snapsho
 import { ownedReview } from "../src/review-admission.js"
 import { evaluateHostReview } from "../src/host-evaluate.js"
 import { FileAccess } from "../src/file-access.js"
-import { shellEvidence, editEvidence, directoryEvidence, skillEvidence, nativeInvocation, nativeClient } from "./review-fixtures.js"
+import { shellEvidence, editEvidence, directoryEvidence, skillEvidence, nativeInvocation, nativeClient, verdictEvidence } from "./review-fixtures.js"
 import type { HostReviewEvidence } from "../src/host-evidence.js"
 
 const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "judge" })
@@ -24,7 +24,7 @@ for (const evidence of [shellEvidence(), editEvidence(), directoryEvidence(), sk
     } })
     assert.equal(body.messages[0].content, [BUILTIN_PROMPTS[evidence.kind].instructions,
       ...(options.autoApprove ? [BUILTIN_PROMPTS.extraCareful] : []), sessionInstructionsPrompt(rules), CONTRACT].join("\n\n"))
-    assert.deepEqual(JSON.parse(body.messages[1].content), evidence)
+    assert.deepEqual(JSON.parse(body.messages[1].content), verdictEvidence(evidence))
     assert.equal(body.messages.length, 2)
   })
 }

@@ -16,7 +16,7 @@ const location = { directory: "/project" }, project = { id: "project", directory
 const input = { code: 'return await Promise.all([tools.account.lookup({account:"A"}), tools.account.lookup({account:"B"})]);' }
 const pending = { id: "permission-A", sessionID: "session", action: "account_lookup", resources: ["*"],
   source: { type: "tool", messageID: "assistant", id: "outer" } }
-const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "judge", stream: false, notify: false })
+const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "judge", stream: false, notify: false, retrieval: false })
 
 async function fixture() {
   const life = new PluginLifecycle(), hooks = new Map<string, (event: any) => void>()

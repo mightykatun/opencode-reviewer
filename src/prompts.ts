@@ -6,7 +6,7 @@ import type { ReviewKind } from "./types.js"
 
 type PromptName = keyof typeof inventory
 
-export type PromptSet = Readonly<Record<ReviewKind, Readonly<{ instructions: string }>>> & Readonly<{ extraCareful: string }>
+export type PromptSet = Readonly<Record<ReviewKind, Readonly<{ instructions: string }>>> & Readonly<{ extraCareful: string; retrieval: string }>
 const kinds = ["shell", "edit", "external-directory", "skill", "tool"] as const
 
 // The build embeds these files; direct source tests read the same Markdown.
@@ -19,6 +19,7 @@ function prompt(name: PromptName): string {
 
 export const BUILTIN_PROMPTS: PromptSet = Object.freeze({
   extraCareful: prompt("extraCareful"),
+  retrieval: prompt("retrieval"),
   shell: Object.freeze({ instructions: prompt("shell") }),
   edit: Object.freeze({ instructions: prompt("edit") }),
   "external-directory": Object.freeze({ instructions: prompt("external-directory") }),
@@ -26,6 +27,7 @@ export const BUILTIN_PROMPTS: PromptSet = Object.freeze({
   tool: Object.freeze({ instructions: prompt("tool") }),
 })
 export const CONTRACT = prompt("contract")
+export const RETRIEVAL_CONTRACT = prompt("retrievalContract")
 export const CORRECTION = prompt("correction")
 
 /** Session text is literal user guidance, never substituted as a template. */
@@ -55,6 +57,7 @@ export async function loadPrompts(directory: string | undefined, signal: AbortSi
     result[kind] = Object.freeze({ instructions })
   }
   result.extraCareful = await override(directory, path.basename(inventory.extraCareful), signal) ?? result.extraCareful
+  result.retrieval = await override(directory, path.basename(inventory.retrieval), signal) ?? result.retrieval
   signal.throwIfAborted()
   return Object.freeze(result)
 }

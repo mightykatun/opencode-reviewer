@@ -12,6 +12,9 @@ class TransientTransportError extends Error {
   constructor(message: string, readonly notBefore = 0) { super(message) }
 }
 
+/** Eligible for the bounded transport retry budget. */
+export function transientFailure(error: unknown): boolean { return error instanceof TransientTransportError }
+
 /** A rejected stream may be regenerated from scratch, never resumed or accepted. */
 export class AssessmentStreamError extends TransientTransportError {}
 

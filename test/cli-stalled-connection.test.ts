@@ -14,7 +14,7 @@ for (const retainedSubscriber of [false, true]) test(retainedSubscriber
   let now = 0, opens = 0, aborted = 0, native!: (event: { id: string }) => void
   t.mock.method(performance, "now", () => now)
   const location = { directory: "/fixture/project" }
-  const companion = { protocol: 1 as const, hostVersion: "development", epoch: "10000000-1000-4000-8000-100000000000",
+  const companion = { protocol: 2 as const, hostVersion: "development", epoch: "10000000-1000-4000-8000-100000000000",
     location, project: { id: "project", directory: location.directory, canonical: location.directory } }
   const api = OpenCode.make({ baseUrl: "http://fixture.invalid", fetch: async (url, init) => {
     assert.equal(new URL(String(url)).pathname, "/api/event")

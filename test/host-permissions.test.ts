@@ -29,7 +29,7 @@ function fixture() {
     onReply: undefined as (() => void) | undefined,
   }
   const client = {
-    rpc: () => ({ handshake: async () => ({ protocol: 1, hostVersion: "2.0.26", epoch: state.epoch, location,
+    rpc: () => ({ handshake: async () => ({ protocol: 2, hostVersion: "2.0.26", epoch: state.epoch, location,
       project: { id: "project", directory: "/project", canonical: "/canonical" } }) }),
     session: { get: async () => ({ id: "session", location: { directory: state.directory } }) },
     permission: {

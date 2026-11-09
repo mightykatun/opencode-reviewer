@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto"
+import { homedir } from "node:os"
+import path from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import { companionBusy, companionProtocol, companionRpc, sameLocation, type CompanionHandshake } from "./companion-protocol.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
@@ -6,12 +8,14 @@ import { InvocationCapture } from "./invocation-capture.js"
 import { readHostInvocation, sameRequest, serverRequestJSON, snapshotRequest } from "./host-request.js"
 import { bindTransportOwnership, TransportOwnership } from "./transport-ownership.js"
 import { withDeadline } from "./deadline.js"
-import { FileAccess, type FileIO } from "./file-access.js"
+import { FileAccess, fileFailure, type FileIO } from "./file-access.js"
 import { collectHostOperation } from "./host-evidence.js"
 import { readHostEvidenceOptions } from "./host-evidence-options.js"
 import { codeModeToolAction } from "./host-tool-kind.js"
+import { runRetrievalTool, type RetrievalCall } from "./retrieval-tools.js"
 
 type Query = { location: CompanionHandshake["location"]; epoch: string; sessionID: string; requestID: string }
+type RetrieveQuery = Query & { base: string; call: RetrievalCall; timeoutMs: number; maxBytes: number }
 type Call = { signal: AbortSignal; error(type: typeof companionBusy, message: string, data: Record<string, never>): unknown }
 
 export async function setupCompanion(context: Plugin.Context, lifecycle: PluginLifecycle, fileIO?: FileIO): Promise<CompanionHandshake> {
@@ -24,7 +28,7 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
   const captures = new InvocationCapture(handshake)
   const files = new FileAccess(fileIO)
   const reads = new TransportOwnership()
-  let activeReads = 0
+  let activeReads = 0, activeRetrievals = 0
   lifecycle.addCleanup(() => reads.settled())
   lifecycle.signal.addEventListener("abort", () => captures.clear(), { once: true })
   const before = await context.tool.hook("execute.before", event => { captures.before(event) })
@@ -88,6 +92,27 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
       void ownership.settled().then(() => { activeReads-- })
     }
   }
+  /** Model-chosen read-only operations. Scope is the handshake epoch/location; the
+   * pending permission is not re-read per call. Physical work is owned until it settles. */
+  const retrieve = async (query: RetrieveQuery, call: Call) => {
+    if (lifecycle.signal.aborted || call.signal.aborted) return null
+    if (!path.isAbsolute(query.base) || query.base.includes("\0")) return null
+    if (activeRetrievals >= 2) return call.error(companionBusy, "Reviewer companion retrieval capacity occupied", {})
+    activeRetrievals++
+    const ownership = new TransportOwnership(reads)
+    const signal = AbortSignal.any([lifecycle.signal, call.signal])
+    // Partial traversal results return slightly before the hard deadline.
+    const softEnd = performance.now() + query.timeoutMs - Math.min(1000, query.timeoutMs / 10)
+    try {
+      return await withDeadline(signal, query.timeoutMs, deadline => ownership.track(runRetrievalTool(query.call,
+        { base: query.base, home: homedir(), maxBytes: query.maxBytes, io: files.io, signal: deadline, softEnd })), "Retrieval")
+    } catch (error) {
+      if (signal.aborted) return null
+      return { tool: query.call.tool, status: "error", reason: fileFailure(error) }
+    } finally {
+      void ownership.settled().then(() => { activeRetrievals-- })
+    }
+  }
   const registration = await context.rpc.register(companionRpc, {
     handshake: async (input, call) => {
       lifecycle.signal.throwIfAborted()
@@ -106,6 +131,12 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
       if (query.epoch !== handshake.epoch || !sameLocation(query.location, location))
         return call.error("scope", "Reviewer companion scope mismatch", {})
       return read(query, call, query)
+    },
+    retrieve: async (input, call) => {
+      const query = input as RetrieveQuery
+      if (query.epoch !== handshake.epoch || !sameLocation(query.location, location))
+        return call.error("scope", "Reviewer companion scope mismatch", {})
+      return retrieve(query, call)
     },
   })
   lifecycle.addCleanup(() => registration.dispose())

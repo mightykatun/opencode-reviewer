@@ -10,6 +10,11 @@ import type { HostRequestSnapshot } from "./host-types.js"
 import type { ReviewObservation, ReviewResult } from "./types.js"
 import { uiText } from "./ui-text.js"
 import { sessionInstructionsSnapshot } from "./session-instructions-snapshot.js"
+import { companionRpc } from "./companion-protocol.js"
+import { readCompanion } from "./companion-read.js"
+import { boundedHostJSON } from "./host-request.js"
+import type { RetrievalExecutor } from "./retrieval.js"
+import type { HostScope, HostRequest, JSONObject } from "./host-types.js"
 
 export interface HostReviewerDependencies extends ReviewerDependencies {
   loadSessionInstructions?: (signal: AbortSignal) => Promise<string>
@@ -40,6 +45,29 @@ export function evaluateHostReview(client: OpenCodeClient, snapshot: HostRequest
     let observation: ReviewObservation | void = undefined
     try { observation = observeEvidence?.(owned.result.evidence) } catch { /* Accounting cannot change review. */ }
     signal.throwIfAborted()
-    return review(owned.result.evidence, config, signal, { ...reviewer, sessionInstructions, ...(observation ? { observation } : {}), prompts })
+    return review(owned.result.evidence, config, signal, { ...reviewer, sessionInstructions, ...(observation ? { observation } : {}), prompts,
+      retrieval: reviewer.retrieval ?? companionRetrieval(client, owned.snapshot.scope, owned.snapshot.request, config.maxEvidenceBytes) })
   })
+}
+
+/** Model-chosen read-only operations run in the scoped server companion. Ordinary
+ * failures become factual tool results; cancellation and deadlines propagate. */
+export function companionRetrieval(client: OpenCodeClient, scope: HostScope, request: HostRequest, maxBytes: number): RetrievalExecutor {
+  return { async execute(call, base, timeoutMs, signal) {
+    let raw: unknown
+    try {
+      raw = await readCompanion(signal, () => client.rpc(companionRpc).retrieve({ ...scope, sessionID: request.sessionID, requestID: request.id,
+        base, call, timeoutMs: Math.max(1, Math.min(3600000, timeoutMs)), maxBytes }, { location: scope.location, signal }), timeoutMs)
+    } catch {
+      signal.throwIfAborted()
+      return { tool: call.tool, status: "error", reason: "companion retrieval unavailable" }
+    }
+    signal.throwIfAborted()
+    const value = boundedHostJSON(raw) as JSONObject | undefined
+    if (!value || typeof value !== "object" || Array.isArray(value) || value.tool !== call.tool
+      || (value.status !== "ok" && value.status !== "error"))
+      return { tool: call.tool, status: "error", reason: "companion returned no usable result" }
+    if (Buffer.byteLength(JSON.stringify(value)) > maxBytes) return { tool: call.tool, status: "error", reason: "result exceeds size limit" }
+    return value
+  } }
 }

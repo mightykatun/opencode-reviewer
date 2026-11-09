@@ -4,8 +4,19 @@ import { readHostInvocation, snapshotRequest } from "../src/host-request.js"
 import type { JSONObject } from "../src/host-types.js"
 import type { OpenCodeClient } from "@opencode/client"
 import { collectHostOperation } from "../src/host-evidence.js"
+import { runRetrievalTool } from "../src/retrieval-tools.js"
 import { hostRequestWire } from "../src/host-request.js"
 import type { FileAccess } from "../src/file-access.js"
+import { parseConfig, retrievalEnabled, type Config } from "../src/config.js"
+
+/** The verdict's evidence record when no retrieval executor ran: a factual
+ * retrieval section and limitation are appended to the operation evidence. */
+export function verdictEvidence<T extends { kind: Parameters<typeof retrievalEnabled>[1]; limitations: string[] }>(evidence: T,
+  config: Pick<Config, "retrieval" | "retrievalKinds"> = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture" })) {
+  const enabled = retrievalEnabled(config, evidence.kind)
+  return { ...evidence, limitations: [...evidence.limitations, enabled ? "Retrieval executor unavailable; no files were read."
+    : "Retrieval is disabled for this review category; no files were read."], retrieval: { status: enabled ? "unavailable" : "disabled" } }
+}
 
 /** Complete native evidence for transport tests that do not exercise collection. */
 export function shellEvidence(overrides: Partial<HostShellEvidence> = {}): HostShellEvidence {
@@ -68,10 +79,12 @@ export function nativeClient(owned: HostInvocationRead, files: FileAccess): Open
   const { scope } = snapshot
   return {
     rpc: () => ({
-      handshake: async () => ({ protocol: 1, hostVersion: "2.0.26", ...scope, project: invocation.project }),
+      handshake: async () => ({ protocol: 2, hostVersion: "2.0.26", ...scope, project: invocation.project }),
       invocation: async () => ({ request, invocation }),
       evidence: async (query: any, options: { signal: AbortSignal }) => ({ request, invocation,
         result: await collectHostOperation(owned, query.options, options.signal, files) }),
+      retrieve: async (query: any, options: { signal: AbortSignal }) => runRetrievalTool(query.call, { base: query.base, home: "/home/fixture",
+        maxBytes: query.maxBytes, io: files.io, signal: options.signal, softEnd: performance.now() + query.timeoutMs }),
     }),
     permission: { get: async () => request },
     session: {

@@ -27,7 +27,7 @@ function fixture() {
       },
       handshake: async () => {
         calls.push("handshake")
-        return { protocol: 1, hostVersion: "2.0.26", epoch: state.epoch, location: scope.location, project: invocation().project }
+        return { protocol: 2, hostVersion: "2.0.26", epoch: state.epoch, location: scope.location, project: invocation().project }
       },
     }),
     permission: { get: async (input: unknown) => {
@@ -182,7 +182,7 @@ test("standalone final reads remain owned through cancellation and cannot yield 
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(settled, false, stage)
     resolve(stage === "permission" ? f.state.current
-      : { protocol: 1, epoch: scope.epoch, location: scope.location, project: invocation().project })
+      : { protocol: 2, epoch: scope.epoch, location: scope.location, project: invocation().project })
     await actual
     assert.deepEqual(f.calls, ["capture", "message", "session", "user", "permission", ...(stage === "handshake" ? ["handshake"] : [])])
   }

@@ -27,6 +27,7 @@ export const uiText = {
     safe: "✓ Safe",
     unsafe: "✗ Unsafe",
     unavailable: "! Analysis unavailable",
+    retrieving: "Retrieving",
     evaluating: "Evaluating",
     retrying: "Retrying",
     staticIndicator: "[⋯]",

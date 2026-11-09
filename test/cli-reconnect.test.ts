@@ -7,7 +7,7 @@ import type { CliPluginState } from "../src/cli-plugin.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 
 const location = { directory: "/server/project", workspaceID: "workspace" }
-const handshake = (epoch = "10000000-1000-4000-8000-100000000000") => ({ protocol: 1 as const, hostVersion: "development", epoch,
+const handshake = (epoch = "10000000-1000-4000-8000-100000000000") => ({ protocol: 2 as const, hostVersion: "development", epoch,
   location, project: { id: "project", directory: "/server", canonical: "/server" } })
 function deferred<T>() {
   let resolve!: (value: T) => void

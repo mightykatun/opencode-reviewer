@@ -8,6 +8,7 @@ import { HostReviewDescription } from "./review-description.js"
 import { HostReviewMetadata } from "./host-review-metadata.js"
 import { ReviewGeometryProof, type ReviewLayout, type ReviewRegion } from "./review-geometry.js"
 import { uiText } from "./ui-text.js"
+import type { ReviewProgress } from "./types.js"
 import { usageText } from "./usage.js"
 import type { HistoryRenderProbe } from "./embedding-types.js"
 
@@ -124,7 +125,7 @@ function highlightingComplete(node: Renderable): boolean {
   return !(node instanceof CodeRenderable && node.isHighlighting) && node.getChildren().every(highlightingComplete)
 }
 
-function HostReviewLoading(props: { context: Plugin.Context; retrying: boolean; animations?: () => boolean }) {
+function HostReviewLoading(props: { context: Plugin.Context; phase?: ReviewProgress["phase"]; animations?: () => boolean }) {
   const [frame, setFrame] = createSignal(0)
   const animated = () => props.animations?.() ?? true
   const cells = createMemo(() => scannerFrame(frame()))
@@ -142,7 +143,8 @@ function HostReviewLoading(props: { context: Plugin.Context; retrying: boolean; 
         })
         return <span style={{ fg: color() }}>{cell().character}</span>
       }}</Index>
-    </Show>{" "}{props.retrying ? uiText.review.retrying : uiText.review.evaluating}
+    </Show>{" "}{props.phase === "retrieving" ? uiText.review.retrieving
+      : props.phase === "retrying" || props.phase === "retrieval-retrying" ? uiText.review.retrying : uiText.review.evaluating}
   </text>
 }
 
@@ -284,7 +286,7 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
         <b>{rating() ? uiText.review.safe : uiText.review.unsafe}</b>
       </text></Show>
       <Show when={view().status === "analyzing" && rating() === undefined}>
-        <HostReviewLoading context={context} retrying={view().progress?.phase === "retrying"} animations={props.animations} />
+        <HostReviewLoading context={context} phase={view().progress?.phase} animations={props.animations} />
       </Show>
       <Show when={unavailable()}><text fg={context.theme.text.feedback.warning.base}><b>{uiText.review.unavailable}</b></text></Show>
     </box>

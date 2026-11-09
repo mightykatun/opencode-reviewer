@@ -69,6 +69,28 @@ test("review timing uses the accepted attempt's first rating and excludes approv
   assert.deepEqual(timings, [{ fullReportMs: 900, ratingMs: 600 }])
 })
 
+test("retrieval phases precede the first verdict attempt without advancing ordinals or reappearing later", async t => {
+  let progress!: (value: ReviewProgress) => void
+  const result = deferred<ReviewResult>()
+  const controller = new Controller((_req, _signal, identify, onProgress) => {
+    identify(); progress = onProgress; return result.promise
+  }, () => {}, { ...options, reviewOptions: { reviewBash: true, reviewEdits: true, stream: true } })
+  t.after(() => { result.resolve(safe); return controller.dispose() })
+  controller.asked(request("a")); await settle()
+  const phase = () => controller.views[0]?.progress?.phase
+  assert.equal(phase(), undefined)
+  progress({ attempt: 0, phase: "retrieving" }); assert.equal(phase(), "retrieving")
+  progress({ attempt: 1, phase: "retrieval-retrying" }); assert.equal(phase(), "retrieving", "retrieval never advances attempts")
+  progress({ attempt: 0, phase: "retrieval-retrying" }); assert.equal(phase(), "retrieval-retrying")
+  progress({ attempt: 0, phase: "retrieving" }); assert.equal(phase(), "retrieving")
+  progress({ attempt: 0, phase: "evaluating" }); assert.equal(phase(), "evaluating")
+  progress({ attempt: 0, phase: "retrieving" }); assert.equal(phase(), "evaluating", "late retrieval progress cannot replace the verdict")
+  progress({ attempt: 0, phase: "streaming", preview: { safe: false } }); assert.equal(phase(), "streaming")
+  progress({ attempt: 1, phase: "retrying" }); assert.equal(phase(), "retrying")
+  assert.equal(controller.views[0]?.progress?.attempt, 1)
+  result.resolve(safe); await settle()
+})
+
 test("nonstream timing records full response latency for both measures", async t => {
   let now = 100
   const timings: ReviewTiming[] = []

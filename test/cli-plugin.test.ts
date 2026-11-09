@@ -44,7 +44,7 @@ test("CLI setup does not restrict activation to an explicit host-version list", 
     const context = { app: { version }, location, data: { on: () => () => {} }, options: { baseURL: "http://localhost:40999/v1", model: "reviewer", notify: false },
       client: { event: connectedEvents, rpc: () => ({ handshake: async () => {
         handshakes++
-        return { protocol: 1, hostVersion: version, epoch: "10000000-1000-4000-8000-100000000000", location,
+        return { protocol: 2, hostVersion: version, epoch: "10000000-1000-4000-8000-100000000000", location,
           project: { id: "project", directory: "/server", canonical: "/server" } }
       } }) } } as unknown as Plugin.Context
     try {
@@ -64,7 +64,7 @@ test("CLI setup binds the connected companion protocol/scope independently of de
     const context = { app: { version: clientVersion }, location, data: { on: () => () => {} }, options: { baseURL: "http://localhost:40999/v1", model: "reviewer", notify: false },
       client: { event: connectedEvents, rpc: () => ({ handshake: async () => {
         handshakes++
-        return { protocol: 1, hostVersion: serverVersion, epoch: "10000000-1000-4000-8000-100000000000", location,
+        return { protocol: 2, hostVersion: serverVersion, epoch: "10000000-1000-4000-8000-100000000000", location,
           project: { id: "project", directory: "/server", canonical: "/server" } }
       } }) } } as unknown as Plugin.Context
     try {
@@ -76,7 +76,7 @@ test("CLI setup binds the connected companion protocol/scope independently of de
 })
 
 const startupLocation = { directory: "/server/project", workspaceID: "workspace" }
-const startupHandshake = () => ({ protocol: 1, hostVersion: "development", epoch: "10000000-1000-4000-8000-100000000000",
+const startupHandshake = () => ({ protocol: 2, hostVersion: "development", epoch: "10000000-1000-4000-8000-100000000000",
   location: { ...startupLocation }, project: { id: "project", directory: "/server", canonical: "/server" } })
 function startup(t: TestContext, handshake: (signal: AbortSignal, attempt: number) => Promise<unknown>, options = {},
   event = connectedEvents as { subscribe(options: { signal: AbortSignal }): AsyncIterable<{ type: string; id?: string }> }) {
@@ -351,7 +351,7 @@ test("a startup connection event fences the previous handshake before fresh admi
 })
 
 test("malformed handshakes and scoped or unexpected errors stay terminal", async t => {
-  for (const response of [{ ...startupHandshake(), protocol: 2 }, { ...startupHandshake(), epoch: "invalid" },
+  for (const response of [{ ...startupHandshake(), protocol: 3 }, { ...startupHandshake(), protocol: 1 }, { ...startupHandshake(), epoch: "invalid" },
     { ...startupHandshake(), location: { directory: "/other" } }, { ...startupHandshake(), location: { ...startupLocation, workspaceID: "other" } },
     { ...startupHandshake(), hostVersion: "" }, { ...startupHandshake(), project: { id: "p", directory: "relative", canonical: "/server" } }]) {
     const f = startup(t, async () => response)

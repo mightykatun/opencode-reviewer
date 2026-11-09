@@ -9,85 +9,16 @@ import { AssessmentFormatError, StreamingAssessment } from "./streaming-assessme
 import { diagnosticAttempt, type DiagnosticObserver } from "./diagnostics.js"
 import { AssessmentStreamError, httpFailure, networkFailure, TransportRetries } from "./transport-retry.js"
 import { TransportOwnership, transportOwnership } from "./transport-ownership.js"
+import { abortable, cancelBody, readBody, responseText } from "./chat-transport.js"
 import type { HostReviewEvidence } from "./host-evidence.js"
+import { retrievalEnabled } from "./config.js"
+import { retrieveDocuments, type RetrievalExecutor, type RetrievalSection } from "./retrieval.js"
 export { withDeadline } from "./deadline.js"
 
 export function parseAssessment(content: string): Assessment {
   const parser = new StreamingAssessment()
   parser.push(content)
   return parser.finish()
-}
-
-/** Each wait removes its listener on settlement; no growing Promise.race listener chain.
- * A fetcher may ignore abort. Own any late response without allowing it back into review.
- */
-function abortable<T>(promise: Promise<T>, signal: AbortSignal, ownership?: TransportOwnership, late?: (value: T) => Promise<void>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    let settled = false
-    const abort = () => {
-      if (settled) return
-      settled = true
-      signal.removeEventListener("abort", abort)
-      reject(signal.reason)
-    }
-    signal.addEventListener("abort", abort, { once: true })
-    const physical = promise.then((value) => {
-      if (settled) return late?.(value)
-      settled = true
-      signal.removeEventListener("abort", abort)
-      resolve(value)
-    }, (error) => {
-      if (settled) return
-      settled = true
-      signal.removeEventListener("abort", abort)
-      reject(error)
-    })
-    // Track the continuation too: late response cancellation is part of the
-    // fetch transaction, with no capacity gap between headers and disposal.
-    ownership?.track(physical)
-    if (signal.aborted) abort()
-  })
-}
-
-async function cancelBody(response: Response): Promise<void> {
-  try { await response.body?.cancel() } catch { /* Cleanup cannot change the outcome. */ }
-}
-
-async function readBody(response: Response, signal: AbortSignal, ownership: TransportOwnership, consume: (bytes: Uint8Array) => void): Promise<void> {
-  if (!response.body) throw new Error("Reviewer returned an empty HTTP response")
-  const reader = response.body.getReader()
-  try {
-    while (true) {
-      reviewStage(signal, "Reviewer response body")
-      let part: ReadableStreamReadResult<Uint8Array>
-      try { part = await abortable(reader.read(), signal, ownership) }
-      catch (error) {
-        signal.throwIfAborted()
-        throw networkFailure(error, "Reviewer response read failed")
-      }
-      signal.throwIfAborted()
-      if (part.done) break
-      consume(part.value)
-    }
-  } finally {
-    // Cancellation can close reads before its underlying cleanup settles. Keep
-    // physical ownership without making the caller wait beyond its deadline.
-    try { ownership.track(reader.cancel()) } catch { /* Cleanup cannot change the outcome. */ }
-    finally { reader.releaseLock() }
-  }
-}
-
-const MAX_RESPONSE_BYTES = 65536
-async function responseText(response: Response, signal: AbortSignal, ownership: TransportOwnership): Promise<string> {
-  let bytes = 0
-  const chunks: Uint8Array[] = []
-  await readBody(response, signal, ownership, (value) => {
-    bytes += value.length
-    if (bytes > MAX_RESPONSE_BYTES) throw new Error("Reviewer HTTP response exceeds 64 KiB")
-    chunks.push(value)
-  })
-  try { return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)) }
-  catch { throw new Error("Reviewer HTTP response contains invalid UTF-8") }
 }
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)
@@ -234,6 +165,9 @@ export interface ReviewerDependencies {
   onDiagnostics?: DiagnosticObserver
   onRetry?: () => unknown
   observation?: ReviewObservation
+  /** Scoped server operations for the retrieval stage. Without one, an enabled
+   * retrieval stage is reported unavailable and the verdict runs alone. */
+  retrieval?: RetrievalExecutor
 }
 
 export async function review(
@@ -241,7 +175,7 @@ export async function review(
   config: Config,
   signal: AbortSignal,
   { fetcher = fetch, environment = process.env, prompts = BUILTIN_PROMPTS,
-    pricing, onUsage, onProgress, onDiagnostics, onRetry, sessionInstructions, observation = { review: randomUUID() } }: ReviewerDependencies = {},
+    pricing, onUsage, onProgress, onDiagnostics, onRetry, sessionInstructions, observation = { review: randomUUID() }, retrieval }: ReviewerDependencies = {},
 ): Promise<ReviewResult> {
   // Production already shares a deadline with evidence collection. Direct
   // callers get the same bound, including all internal backoff and POSTs.
@@ -249,25 +183,43 @@ export async function review(
     let worker: Promise<ReviewResult> | undefined
     try {
       return await withDeadline(signal, config.timeoutMs, (bounded) =>
-        worker = review(evidence, config, bounded, { fetcher, environment, prompts, pricing, onUsage, onProgress, onDiagnostics, onRetry, sessionInstructions, observation }))
+        worker = review(evidence, config, bounded, { fetcher, environment, prompts, pricing, onUsage, onProgress, onDiagnostics, onRetry, sessionInstructions, observation, retrieval }))
     } finally { await worker?.catch(() => {}) }
   }
   const key = config.apiKey ?? (config.apiKeyEnv ? environment[config.apiKeyEnv]?.trim() : undefined)
   if (config.apiKeyEnv && !key) throw new Error(`API key environment variable ${config.apiKeyEnv} is unset or empty`)
+  const observe = (event: ReviewAttemptEvent) => {
+    try { void Promise.resolve(observation.observe?.(event)).catch(() => {}) } catch {}
+  }
+  // Retrieval POSTs precede the verdict and are summed into its report usage.
+  let section: RetrievalSection, extra: string[] = [], prior: { usage?: Usage } | undefined
+  if (!retrievalEnabled(config, evidence.kind)) {
+    section = { status: "disabled" }
+    extra = ["Retrieval is disabled for this review category; no files were read."]
+  } else if (!retrieval) {
+    section = { status: "unavailable" }
+    extra = ["Retrieval executor unavailable; no files were read."]
+  } else {
+    const outcome = await retrieveDocuments(evidence, config, prompts, signal, { fetcher, ...(key ? { key } : {}), pricing, onUsage, onRetry, observe,
+      review: observation.review, executor: retrieval, progress: phase => {
+        if (signal.aborted) return
+        try { void Promise.resolve(onProgress?.({ attempt: 0, phase })).catch(() => {}) } catch {}
+      } })
+    signal.throwIfAborted()
+    section = outcome.section; extra = outcome.limitations
+    if (outcome.posts) prior = { ...(outcome.usage ? { usage: outcome.usage } : {}) }
+  }
   const prompt = prompts[evidence.kind]
   const messages = [
     { role: "system", content: [prompt.instructions, ...(config.autoApprove && config.extraCareful ? [prompts.extraCareful] : []),
       ...(sessionInstructions ? [sessionInstructionsPrompt(sessionInstructions)] : []), CONTRACT].join("\n\n") },
-    { role: "user", content: JSON.stringify(evidence) },
+    { role: "user", content: JSON.stringify({ ...evidence, limitations: [...evidence.limitations, ...extra], retrieval: section }) },
   ]
   let usage: Usage | undefined
   let corrections = 0
   const retries = new TransportRetries()
   let startedAttempt = -1
   let retry: "initial" | "transport" | "format" = "initial"
-  const observe = (event: ReviewAttemptEvent) => {
-    try { void Promise.resolve(observation.observe?.(event)).catch(() => {}) } catch {}
-  }
   for (let attempt = 0; ; attempt++) {
     signal.throwIfAborted()
     const progress = (phase: ReviewProgress["phase"], preview?: Partial<Assessment>, ordinal = attempt) => {
@@ -350,7 +302,8 @@ export async function review(
       }
       reviewStage(signal, "Assessment validation")
       const currentUsage = accounting.current()
-      const reportUsage = attempt === 0 ? currentUsage : sumUsage(usage, currentUsage)
+      const before = attempt === 0 ? prior : { usage }
+      const reportUsage = before ? sumUsage(before.usage, currentUsage) : currentUsage
       try {
         let result: Assessment
         try { result = assessment.finish() } finally { diagnose?.("final-validation") }
@@ -379,7 +332,8 @@ export async function review(
       const currentUsage = accounting.finalize()
       if (dispatched) observe({ type: "finalized", review: observation.review, attempt: attemptID,
         ...(currentUsage ? { usage: { ...currentUsage } } : {}), ...(accounting.model() ? { reportedModel: accounting.model() } : {}) })
-      usage = attempt === 0 ? currentUsage : sumUsage(usage, currentUsage)
+      const before = attempt === 0 ? prior : { usage }
+      usage = before ? sumUsage(before.usage, currentUsage) : currentUsage
     }
     if (failed && !await retries.wait(failure, signal, () => {
       startedAttempt = attempt + 1

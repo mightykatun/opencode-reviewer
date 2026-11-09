@@ -12,7 +12,7 @@ import { BUILTIN_PROMPTS } from "../src/prompts.js"
 
 const location = { directory: "/fixture/project" }
 const scope = { location, epoch: "10000000-1000-4000-8000-100000000000" }
-const handshake = { protocol: 1 as const, hostVersion: "development", ...scope,
+const handshake = { protocol: 2 as const, hostVersion: "development", ...scope,
   project: { id: "project", directory: location.directory, canonical: location.directory } }
 const request = (id: string) => ({ id, sessionID: id, action: "shell", resources: ["pwd"],
   source: { type: "tool", messageID: "assistant", id: "call-" + id } })
@@ -21,7 +21,7 @@ test("missing mandatory evidence remains visible and manual while its native per
   const snapshot = snapshotRequest(request("root"), scope)!
   let reads = 0, posts = 0
   const client = { rpc: () => ({ invocation: async () => { reads++; return null } }) } as unknown as OpenCodeClient
-  const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", notify: false })
+  const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", notify: false, retrieval: false })
   const controller = new Controller((_request, signal, identified) =>
     evaluateHostReview(client, snapshot, config, BUILTIN_PROMPTS, signal, identified, {
       fetcher: async () => { posts++; throw Error("No model call without evidence") },

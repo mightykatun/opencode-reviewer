@@ -198,3 +198,39 @@ test("an unfamiliar host version still requires exact readable invocation eviden
     assert.equal(reads, 1, "Version does not bypass or disable the actual permission read")
   } finally { await lifecycle.stop() }
 })
+
+test("retrieval RPC is scoped, bounded, owns slow operations and returns factual results", async () => {
+  const lifecycle = new PluginLifecycle()
+  let handlers: any, release!: () => void
+  const slow = new Promise<void>(resolve => { release = resolve })
+  const io = { realpath: async (name: string) => { if (name.includes("slow")) await slow; return name },
+    open: async () => { throw Object.assign(Error("denied"), { code: "EACCES" }) } } as unknown as FileIO
+  const context = {
+    app: { version: "2.2.6" }, location: { directory: "/project", project: { id: "project", directory: "/project", canonical: "/project" } },
+    tool: { hook: async () => ({ dispose() {} }) },
+    rpc: { register: async (_definition: unknown, value: unknown) => { handlers = value; return { dispose() {} } } },
+  } as unknown as Plugin.Context
+  const handshake = await setupCompanion(context, lifecycle, io)
+  const call = (abort = new AbortController()) => ({ signal: abort.signal, error: (type: string, message: string, data: unknown) => { throw Object.assign(Error(message), { type, data }) } })
+  const query = { epoch: handshake.epoch, location: handshake.location, sessionID: "session", requestID: "request", base: "/project",
+    timeoutMs: 1000, maxBytes: 4096 }
+  await assert.rejects(handlers.retrieve({ ...query, epoch: "other", call: { tool: "read", arguments: { path: "a" } } }, call()), { type: "scope" })
+  assert.equal(await handlers.retrieve({ ...query, base: "relative", call: { tool: "read", arguments: { path: "a" } } }, call()), null)
+  assert.deepEqual(await handlers.retrieve({ ...query, call: { tool: "read", arguments: { path: "a.txt" } } }, call()),
+    { tool: "read", status: "error", path: "a.txt", absolutePath: "/project/a.txt", canonicalPath: "/project/a.txt", reason: "EACCES" })
+  const first = handlers.retrieve({ ...query, call: { tool: "read", arguments: { path: "slow-1" } } }, call())
+  const second = handlers.retrieve({ ...query, timeoutMs: 50, call: { tool: "read", arguments: { path: "slow-2" } } }, call())
+  await tick()
+  await assert.rejects(handlers.retrieve({ ...query, call: { tool: "read", arguments: { path: "c" } } }, call()), { type: "capacity_busy" })
+  assert.deepEqual(await second, { tool: "read", status: "error", reason: "Retrieval timed out" })
+  await assert.rejects(handlers.retrieve({ ...query, call: { tool: "read", arguments: { path: "c" } } }, call()), { type: "capacity_busy" },
+    "a timed-out operation keeps its slot until it settles")
+  let stopped = false
+  const stopping = lifecycle.stop().then(() => { stopped = true })
+  await tick()
+  assert.equal(stopped, false)
+  release()
+  assert.equal((await first)?.status ?? null, null)
+  await stopping
+  assert.equal(stopped, true)
+})

@@ -5,7 +5,7 @@ export function rpcDefinition() {
     required: ["directory"], additionalProperties: false }
   return { id: "opencode-reviewer", methods: {
     handshake: { input: location, output: { type: "object", properties: {
-      protocol: { const: 1 }, hostVersion: text, epoch: { type: "string", format: "uuid" }, location,
+      protocol: { const: 2 }, hostVersion: text, epoch: { type: "string", format: "uuid" }, location,
       project: { type: "object", properties: { id: text, directory: text, canonical: text },
         required: ["id", "directory", "canonical"], additionalProperties: false },
     }, required: ["protocol", "hostVersion", "epoch", "location", "project"], additionalProperties: false },

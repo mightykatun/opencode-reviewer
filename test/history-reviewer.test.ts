@@ -3,7 +3,7 @@ import { test } from "node:test"
 import { review } from "../src/reviewer.js"
 import { parseConfig } from "../src/config.js"
 import type { ReviewAttemptEvent } from "../src/types.js"
-import { shellEvidence } from "./review-fixtures.js"
+import { shellEvidence, verdictEvidence } from "./review-fixtures.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
 
 const evidence = shellEvidence({ command: "true", cwd: "/target", userPrompt: "check" })
@@ -36,7 +36,7 @@ test("per execution and POST identity, actual retry kind and exactly-once normal
   assert.equal(bodies[0], bodies[1])
   assert.equal(bodies[0], JSON.stringify({ model: config.model, messages: [
     { role: "system", content: [BUILTIN_PROMPTS.shell.instructions, (await import("../src/prompts.js")).CONTRACT].join("\n\n") },
-    { role: "user", content: JSON.stringify(evidence) },
+    { role: "user", content: JSON.stringify(verdictEvidence(evidence)) },
   ], max_tokens: 4096, stream: false }))
   assert.ok(!bodies.some(b => b.includes('"review":"execution"')))
   assert.equal(value.metadata?.reportedModel, "successful-model")

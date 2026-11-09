@@ -25,7 +25,7 @@ async function until(ready: () => boolean) {
 async function fixture(stage: "invocation" | "evidence", synchronize = false) {
   const lifecycle = new PluginLifecycle(), hooks = new Map<string, (event: any) => void>()
   const location = { directory: "/server/project" }, project = { id: "project", directory: "/server", canonical: "/server" }
-  const config = parseConfig({ baseURL: "http://127.0.0.1:40999/v1", model: "reviewer", stream: false, notify: false })
+  const config = parseConfig({ baseURL: "http://127.0.0.1:40999/v1", model: "reviewer", stream: false, notify: false, retrieval: false })
   const requests = Array.from({ length: 4 }, (_, i) => ({ id: `request-${i}`, sessionID: "session", action: "edit", resources: [`target-${i}.txt`],
     source: { type: "tool", messageID: `assistant-${i}`, id: `call-${i}` },
     metadata: { files: [{ file: `target-${i}.txt`, status: "modified", patch: "@@ -1 +1 @@\n-old\n+new\n" }] } }))

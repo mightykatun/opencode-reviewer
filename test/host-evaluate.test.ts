@@ -14,7 +14,7 @@ const project = { id: "project", directory: "/server", canonical: "/server" }
 const raw = { id: "permission", sessionID: "session", action: "edit", resources: ["target.txt"], source: { type: "tool", messageID: "assistant", id: "call" },
   metadata: { files: [{ file: "target.txt", status: "modified", patch: "@@ -1 +1 @@\n-old\n+new\n" }] } }
 const input = { path: "target.txt", content: "new\n" }
-const config = () => parseConfig({ baseURL: "http://127.0.0.1:40999/v1", model: "reviewer", stream: false, notify: false })
+const config = () => parseConfig({ baseURL: "http://127.0.0.1:40999/v1", model: "reviewer", stream: false, notify: false, retrieval: false })
 
 function fixture() {
   const snapshot = snapshotRequest(raw, scope)!
@@ -24,7 +24,7 @@ function fixture() {
   const io = new FileAccess({ open: async () => { throw Error("Edits must not read files") }, realpath: async () => { throw Error("Edits must not resolve files") } } as unknown as FileIO)
   const client = {
     rpc: () => ({
-      handshake: async () => ({ protocol: 1, hostVersion: "2.0.26", ...scope, project }),
+      handshake: async () => ({ protocol: 2, hostVersion: "2.0.26", ...scope, project }),
       invocation: async () => { calls.push("invocation"); return state.missing ? null : { request: raw, invocation } },
       evidence: async (query: any, { signal }: { signal: AbortSignal }) => {
         calls.push("evidence")
