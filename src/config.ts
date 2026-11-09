@@ -1,4 +1,4 @@
-import type { Limits } from "./types.js"
+import type { Limits, ReviewKind } from "./types.js"
 import path from "node:path"
 import { parseNotificationConfig, type NotificationConfig } from "./notification-config.js"
 
@@ -10,11 +10,15 @@ export interface Config extends Limits, NotificationConfig {
   instructions?: string
   stream: boolean
   reviewBash: boolean
-  includeShellArgumentFiles: boolean
   reviewEdits: boolean
   reviewSkills: boolean
   reviewTools: boolean
   reviewExternalDirectories: boolean
+  /** Master switch; retrievalKinds selects categories. */
+  retrieval: boolean
+  retrievalKinds: Record<RetrievalKind, boolean>
+  maxRetrievalRounds: number
+  retrievalTimeoutMs: number
   autoApprove: boolean
   fastMode: boolean
   extraCareful: boolean
@@ -22,6 +26,19 @@ export interface Config extends Limits, NotificationConfig {
   formatRetries: number
   timeoutMs: number
   maxOutputTokens: number
+}
+
+export const retrievalKinds = ["bash", "edit", "skill", "tool", "external_directory"] as const
+export type RetrievalKind = typeof retrievalKinds[number]
+const retrievalDefaults: Record<RetrievalKind, boolean> = { bash: true, edit: false, skill: true, tool: true, external_directory: true }
+
+/** Config keys mirror saved history categories and native action names. */
+export function retrievalKind(kind: ReviewKind): RetrievalKind {
+  return kind === "shell" ? "bash" : kind === "external-directory" ? "external_directory" : kind
+}
+
+export function retrievalEnabled(config: Pick<Config, "retrieval" | "retrievalKinds">, kind: ReviewKind): boolean {
+  return config.retrieval && config.retrievalKinds[retrievalKind(kind)]
 }
 
 export type ReviewOptions = Pick<Config, "reviewBash" | "reviewEdits"> & Partial<Pick<Config,
@@ -37,7 +54,7 @@ export function configuredEvidenceBytes(options: Readonly<Record<string, unknown
 }
 
 export function parseConfig(options: Record<string, unknown> = {}): Config {
-  const keys = new Set(["baseURL", "model", "apiKey", "apiKeyEnv", "instructions", "stream", "reviewBash", "includeShellArgumentFiles", "reviewEdits", "reviewSkills", "reviewTools", "reviewExternalDirectories", "autoApprove", "fastMode", "extraCareful", "autoApproveDelaySeconds", "formatRetries", "timeoutMs", "maxOutputTokens", "maxFiles", "maxEvidenceBytes", "notify", "notifySound", "notificationSoundDirectory", "staleReminderSeconds", "notifications"])
+  const keys = new Set(["baseURL", "model", "apiKey", "apiKeyEnv", "instructions", "stream", "reviewBash", "reviewEdits", "reviewSkills", "reviewTools", "reviewExternalDirectories", "retrieval", "retrievalKinds", "maxRetrievalRounds", "retrievalTimeoutMs", "autoApprove", "fastMode", "extraCareful", "autoApproveDelaySeconds", "formatRetries", "timeoutMs", "maxOutputTokens", "maxFiles", "maxEvidenceBytes", "notify", "notifySound", "notificationSoundDirectory", "staleReminderSeconds", "notifications"])
   for (const key of Object.keys(options)) if (!keys.has(key)) throw new Error(`Unknown opencode-reviewer setting: ${key}`)
   const text = (name: string, optional = false): string | undefined => {
     const value = options[name]
@@ -63,6 +80,18 @@ export function parseConfig(options: Record<string, unknown> = {}): Config {
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || /[?#]/.test(url.href)) {
     throw new Error("baseURL must use HTTP(S) without embedded credentials, query, or fragment")
   }
+  const kinds = options.retrievalKinds === undefined ? {} : options.retrievalKinds
+  if (!kinds || typeof kinds !== "object" || Array.isArray(kinds) || ![Object.prototype, null].includes(Object.getPrototypeOf(kinds))) {
+    throw new Error("retrievalKinds must be an object")
+  }
+  for (const key of Object.keys(kinds)) {
+    if (!retrievalKinds.some(kind => kind === key)) throw new Error(`Unknown retrievalKinds key: ${key}`)
+  }
+  const selected = Object.fromEntries(retrievalKinds.map(kind => {
+    const value = Object.hasOwn(kinds, kind) ? (kinds as Record<string, unknown>)[kind] : retrievalDefaults[kind]
+    if (typeof value !== "boolean") throw new Error(`retrievalKinds.${kind} must be a boolean`)
+    return [kind, value]
+  })) as Record<RetrievalKind, boolean>
   const apiKeyEnv = text("apiKeyEnv", true)
   if (apiKeyEnv && !/^[A-Za-z_][A-Za-z_0-9]*$/.test(apiKeyEnv)) throw new Error("apiKeyEnv must be an environment-variable name")
   const instructions = text("instructions", true)
@@ -76,17 +105,20 @@ export function parseConfig(options: Record<string, unknown> = {}): Config {
     apiKey: text("apiKey", true),
     instructions,
     stream: boolean("stream", false),
-    reviewBash: boolean("reviewBash"), includeShellArgumentFiles: boolean("includeShellArgumentFiles", false),
+    reviewBash: boolean("reviewBash"),
     reviewEdits: boolean("reviewEdits"),
     reviewSkills: boolean("reviewSkills"),
     reviewTools: boolean("reviewTools"),
     reviewExternalDirectories: boolean("reviewExternalDirectories"),
+    retrieval: boolean("retrieval"), retrievalKinds: selected,
+    maxRetrievalRounds: number("maxRetrievalRounds", 3, 1, 50),
+    retrievalTimeoutMs: number("retrievalTimeoutMs", 60000, 1, 3600000),
     autoApprove: boolean("autoApprove", false),
     fastMode: boolean("fastMode", false),
     extraCareful: boolean("extraCareful"),
     autoApproveDelaySeconds: number("autoApproveDelaySeconds", 15, 0, 3600),
     formatRetries: number("formatRetries", 1, 0, 100),
-    timeoutMs: number("timeoutMs", 30000, 1, 3600000),
+    timeoutMs: number("timeoutMs", 120000, 1, 3600000),
     maxOutputTokens: number("maxOutputTokens", 4096, 1, Number.MAX_SAFE_INTEGER),
     maxFiles: number("maxFiles", 6, 1, 1000),
     maxEvidenceBytes: configuredEvidenceBytes(options),

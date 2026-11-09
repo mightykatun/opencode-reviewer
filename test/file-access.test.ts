@@ -8,7 +8,6 @@ import path from "node:path"
 import type { FileHandle } from "node:fs/promises"
 import { FileAccess, type FileIO } from "../src/file-access.js"
 import { withDeadline, reviewStage } from "../src/deadline.js"
-import { collectEvidence, discover } from "../src/evidence.js"
 import { loadHostConversationContext, type HostContextReader } from "../src/host-context.js"
 import { evaluateHostReview } from "../src/host-evaluate.js"
 import { collectHostEvidence } from "../src/host-evidence.js"
@@ -25,24 +24,6 @@ const input = { command: "cat source", cwd: "/virtual", userPrompt: "Inspect sou
   execution: { canonicalCwd: "/virtual" } }
 const signal = () => new AbortController().signal
 
-test("source parent traversal stays physical even with a lexically normalizing host realpath", async t => {
-  const dir = await mkdtemp(path.join(tmpdir(), "review-physical-path-"))
-  t.after(() => rm(dir, { recursive: true, force: true }))
-  await mkdir(`${dir}/project`); await mkdir(`${dir}/outside/deep`, { recursive: true })
-  await symlink(`${dir}/outside/deep`, `${dir}/project/link`)
-  await writeFile(`${dir}/outside/job.py`, "# physical target\n")
-  await writeFile(`${dir}/project/job.py`, "# lexical path decoy\n")
-  await writeFile(`${dir}/project/not-directory`, "# regular file\n")
-  const files = new FileAccess({ open, realpath: name => realpath(path.resolve(name)) })
-  for (const operand of ["link/../job.py", "not-directory/../job.py"]) {
-    const s = signal()
-    const result = await collectEvidence({ command: `python ${operand}`, cwd: `${dir}/project`, userPrompt: null }, limits, s, files.scope(s))
-    if (operand.startsWith("link")) assert.equal(result.files[0]?.contents, "# physical target\n")
-    else { assert.equal(result.files[0]?.contents, undefined); assert.match(result.files[0]!.status, /ENOTDIR/) }
-    assert.doesNotMatch(JSON.stringify(result.files), /lexical path decoy/)
-  }
-  assert.equal(files.outstanding, 0)
-})
 const stat = { isFile: () => true, size: 8, mtimeMs: 1, ctimeMs: 1 }
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -85,45 +66,6 @@ function controlledTime(t: TestContext) {
   return { advance(ms: number) { now += ms; t.mock.timers.tick(ms) } }
 }
 
-test("standalone launch-cwd probes preserve direct capture and own timeout/cancellation through settlement", async t => {
-  for (const cancel of [false, true]) await t.test(cancel ? "cancel" : "timeout", async t => {
-    const clock = controlledTime(t), fixture = fakeIO(), entered = deferred<void>(), held = deferred<string>()
-    const probed: string[] = []
-    const files = new FileAccess({ ...fixture.io, realpath: async filename => {
-      probed.push(filename)
-      if (filename === "/virtual") { entered.resolve(); return held.promise }
-      return filename
-    } }, timing)
-    const abort = new AbortController()
-    const pending = collectEvidence({ command: "cat source; cd .. && python decoy.py", cwd: "/virtual", userPrompt: "Inspect" },
-      limits, abort.signal, files.scope(abort.signal))
-    try {
-      await entered.promise
-      assert.equal(files.outstanding, 1)
-      if (cancel) {
-        abort.abort(new Error("launch lookup cancelled"))
-        await assert.rejects(pending, /launch lookup cancelled/)
-        assert.deepEqual(probed, ["/virtual"])
-        assert.ok(!fixture.calls.includes("open"))
-      } else {
-        clock.advance(timing.pathMs)
-        const result = await pending
-        assert.equal(result.files[0]?.contents, "fixture\n")
-        assert.equal(result.files[1]?.contents, undefined)
-        assert.match(result.files[1]!.status, /working directory unresolved/)
-        assert.match(result.limitations.join(" "), /logical PWD/)
-        assert.deepEqual(probed, ["/virtual", "/virtual/source"])
-        assert.equal(fixture.calls.filter(call => call === "open").length, 1)
-      }
-      assert.equal(files.outstanding, 1, "timed-out or cancelled launch lookup retains its actual slot")
-    } finally {
-      held.resolve("/virtual")
-      await pending.catch(() => {})
-      await nextTurn()
-      assert.equal(files.outstanding, 0)
-    }
-  })
-})
 
 test("physical parent probes own late directory descriptors and cleanup after timeout or cancellation", async t => {
   for (const stage of ["open", "descriptor", "close"]) for (const cancel of [false, true]) await t.test(`${stage} ${cancel ? "cancel" : "timeout"}`, async t => {
@@ -179,164 +121,6 @@ test("physical parent traversal has a fixed probe-work bound", async t => {
   assert.equal(files.outstanding, 0)
 })
 
-for (const stage of ["realpath", "open", "stat", "read", "close"]) {
-  test(`stalled ${stage} becomes an omission before the overall deadline; late completion is owned`, async () => {
-    const fixture = fakeIO(stage)
-    const access = new FileAccess(fixture.io, timing)
-    const start = performance.now()
-    const result = await withDeadline(signal(), 1000, (s) => collectEvidence(input, limits, s, access.scope(s)))
-    assert.ok(performance.now() - start < 800)
-    assert.match(result.files[0]!.status, /timed out/)
-    assert.equal(result.files[0]!.contents, undefined)
-    assert.match(result.files[0]!.warning!, /not included/)
-    assert.equal(access.outstanding, 1, "timeout must not release a still-running probe slot")
-    const before = JSON.stringify(result)
-    fixture.release()
-    await settled(() => access.outstanding === 0)
-    assert.equal(JSON.stringify(result), before, "late results must not mutate the published evidence")
-    assert.equal(fixture.calls.filter((call) => call === "close").length, stage === "realpath" ? 0 : 1)
-    if (stage === "open") assert.deepEqual(fixture.calls, ["realpath", "open", "close"])
-  })
-}
-
-test("probe saturation bounds abandoned work across reviews and recovers after settlement", async () => {
-  const fixture = fakeIO("realpath")
-  const access = new FileAccess(fixture.io, timing)
-  for (let i = 0; i < 2; i++) { const s = signal(); await collectEvidence(input, limits, s, access.scope(s)) }
-  assert.equal(access.outstanding, 2)
-  for (let i = 0; i < 10; i++) {
-    const s = signal()
-    const result = await collectEvidence(input, limits, s, access.scope(s))
-    assert.match(result.files[0]!.status, /probes busy/)
-  }
-  assert.deepEqual(fixture.calls, ["realpath", "realpath"])
-  fixture.release()
-  await settled(() => access.outstanding === 0)
-  const s = signal()
-  const result = await collectEvidence(input, limits, s, access.scope(s))
-  assert.equal(result.files[0]!.contents, "fixture\n")
-})
-
-test("shared budget limits long candidate lists and avoids repeated canonicalization", async (t) => {
-  const clock = controlledTime(t)
-  const fixture = fakeIO()
-  const calls: string[] = []
-  const access = new FileAccess({ ...fixture.io, realpath: async (name) => {
-    calls.push(name)
-    fixture.calls.push(`path:${name}`)
-    if (name === "/virtual/source") { clock.advance(20); return name }
-    if (name === "/virtual/alias") return "/virtual/source"
-    // This later probe consumes the exact 15 ms left after the healthy source.
-    clock.advance(15)
-    return name
-  } }, { ...timing, totalMs: 35, pathMs: 30 })
-  const s = signal()
-  const command = `cat source alias source alias ${Array.from({ length: 30 }, (_, i) => `file${i}`).join(" ")}`
-  const result = await collectEvidence({ ...input, command }, { ...limits, maxEvidenceBytes: Buffer.byteLength(command) + 8 }, s, access.scope(s))
-  assert.deepEqual(calls, ["/virtual/source", "/virtual/alias", "/virtual/file0"], "expiry prevents every subsequent I/O launch, including parent probes")
-  assert.equal(fixture.calls.filter(call => call === "open").length, 1)
-  assert.ok(fixture.calls.indexOf("close") < fixture.calls.indexOf("path:/virtual/alias"), "capture and cleanup precede later canonicalization")
-  assert.equal(result.files.length, 31)
-  assert.equal(result.files[0]?.contents, "fixture\n", "admitted source is captured before later probes spend the allowance")
-  assert.deepEqual(result.files[0]?.aliases, ["/virtual/alias"], "canonical aliases consume neither a second file nor a second byte allowance")
-  assert.match(result.files[1]?.status ?? "", /timed out/)
-  assert.ok(result.files.slice(2, limits.maxFiles).every(file => /budget exhausted/.test(file.status)))
-  assert.ok(result.files.slice(limits.maxFiles).every(file => /file-count limit/.test(file.status)))
-  assert.ok(result.files.slice(1).every((file) => file.contents === undefined))
-  await nextTurn()
-  assert.equal(access.outstanding, 0)
-})
-
-test("later slow or count-rejected paths cannot starve a healthy admitted capture", async (t) => {
-  const clock = controlledTime(t)
-  for (const maxFiles of [1, 6]) {
-    const fixture = fakeIO()
-    const late = deferred<string>()
-    const slowStarted = deferred<void>(), rejectedStarted = deferred<void>()
-    const probed: string[] = []
-    const io = { ...fixture.io, realpath: async (name: string) => {
-      probed.push(name)
-      if (name === "/virtual/source") return name
-      if (name === "/virtual/slow") slowStarted.resolve()
-      if (name === "/virtual/rejected") rejectedStarted.resolve()
-      return late.promise
-    } }
-    const access = new FileAccess(io, timing)
-    const s = signal()
-    const pending = collectEvidence({ ...input, command: "cat source slow rejected source" }, { ...limits, maxFiles }, s, access.scope(s))
-    try {
-      await slowStarted.promise
-      assert.ok(fixture.calls.includes("close"), "first capture and cleanup precede the first later path probe")
-      assert.equal(access.outstanding, 1)
-      clock.advance(timing.pathMs)
-      await rejectedStarted.promise
-      assert.equal(access.outstanding, 2, "the first timed-out transaction retains its slot until actual settlement")
-      clock.advance(timing.pathMs)
-      const result = await pending
-      assert.equal(result.files[0]?.contents, "fixture\n")
-      assert.equal(fixture.calls.filter(call => call === "open").length, 1)
-      assert.deepEqual(probed, ["/virtual/source", "/virtual/slow", "/virtual/rejected"])
-      assert.equal(result.files.length, 3)
-      assert.ok(result.files.slice(1).every(file => (maxFiles === 1 ? /file-count limit/ : /timed out/).test(file.status)))
-      assert.ok(result.files.slice(1).every(file => file.contents === undefined))
-      assert.equal(access.outstanding, 2)
-      const published = JSON.stringify(result)
-      late.resolve("/virtual/late")
-      await nextTurn()
-      assert.equal(access.outstanding, 0)
-      assert.equal(JSON.stringify(result), published)
-    } finally {
-      late.resolve("/virtual/late")
-      await pending.catch(() => {})
-      await nextTurn()
-      assert.equal(access.outstanding, 0)
-    }
-  }
-})
-
-test("alias qualification promotion never retries a failed capture transaction", async (t) => {
-  const clock = controlledTime(t)
-  const fixture = fakeIO("open")
-  const opened = deferred<void>()
-  const access = new FileAccess({ ...fixture.io, realpath: async () => "/virtual/source",
-    open: (...args) => { const pending = fixture.io.open(...args); opened.resolve(); return pending } }, timing)
-  const s = signal()
-  const pending = collectEvidence({ ...input, command: "./source; python alias; cat alias" }, limits, s, access.scope(s))
-  try {
-    await opened.promise
-    clock.advance(timing.captureMs)
-    const result = await pending
-    assert.equal(result.files.length, 1)
-    assert.equal(result.files[0]?.contents, undefined)
-    assert.match(result.files[0]?.status ?? "", /timed out/)
-    assert.deepEqual(result.files[0]?.aliases, ["/virtual/alias"])
-    assert.equal(fixture.calls.filter(call => call === "open").length, 1)
-    assert.equal(access.outstanding, 1)
-  } finally {
-    fixture.release()
-    await pending.catch(() => {})
-    await nextTurn()
-    assert.equal(access.outstanding, 0)
-    assert.equal(fixture.calls.filter(call => call === "close").length, 1)
-  }
-})
-
-test("exact aliases prequalify once while canonical alias promotion captures at most twice and charges bytes once", async (t) => {
-  controlledTime(t)
-  for (const operand of ["./source", "alias"]) {
-    const fixture = fakeIO()
-    const access = new FileAccess({ ...fixture.io, realpath: async () => "/virtual/source" }, timing)
-    const command = `./source; python ${operand}; cat ${operand}`
-    const s = signal()
-    const result = await collectEvidence({ ...input, command }, { ...limits, maxFiles: 1, maxEvidenceBytes: Buffer.byteLength(command) + 8 }, s, access.scope(s))
-    assert.equal(result.files.length, 1)
-    assert.equal(result.files[0]?.contents, "fixture\n")
-    assert.equal(result.files[0]?.warning, undefined)
-    assert.equal(fixture.calls.filter(call => call === "open").length, operand === "./source" ? 1 : 2)
-    assert.equal(access.outstanding, 0)
-  }
-})
-
 test("native edit diffs never launch filesystem probes, even with a stalled filesystem adapter", async () => {
   const fixture = fakeIO("realpath")
   const access = new FileAccess(fixture.io, timing)
@@ -355,34 +139,6 @@ test("native edit diffs never launch filesystem probes, even with a stalled file
   await settled(() => access.outstanding === 0)
 })
 
-test("parent cancellation rejects the review and a late open still closes its handle", async () => {
-  const fixture = fakeIO("open")
-  const access = new FileAccess(fixture.io, timing)
-  const parent = new AbortController()
-  const reason = new Error("native request resolved")
-  const pending = collectEvidence(input, limits, parent.signal, access.scope(parent.signal))
-  await settled(() => fixture.calls.includes("open"))
-  parent.abort(reason)
-  await assert.rejects(pending, (error) => error === reason)
-  assert.equal(access.outstanding, 1)
-  fixture.release()
-  await settled(() => access.outstanding === 0)
-  assert.deepEqual(fixture.calls, ["realpath", "open", "close"])
-})
-
-test("late I/O errors are consumed, exhausted probes never launch, and stage labels identify hard timeouts", async () => {
-  const held = deferred<string>()
-  const access = new FileAccess({ ...fakeIO().io, realpath: () => held.promise }, timing)
-  const s = signal()
-  await collectEvidence(input, limits, s, access.scope(s))
-  held.reject(new Error("private late error"))
-  await settled(() => access.outstanding === 0)
-  let launched = false
-  await assert.rejects(withDeadline(s, 0, async () => { launched = true }), /timed out/)
-  assert.equal(launched, false)
-  await assert.rejects(withDeadline(s, 10, async (child) => { reviewStage(child, "Permission context lookup"); return new Promise(() => {}) }), /Permission context lookup timed out/)
-})
-
 test("a busy event loop cannot turn an expired overall deadline into success or start a later phase", async () => {
   for (const nextPhase of [false, true]) {
     let advanced = false
@@ -394,27 +150,6 @@ test("a busy event loop cannot turn an expired overall deadline into success or 
       return "late result"
     }), /Evidence collection timed out/)
     assert.equal(advanced, false)
-  }
-})
-
-test("ordinary filesystem failures and special files remain factual omissions", async (t) => {
-  const directory = await mkdtemp(path.join(tmpdir(), "review-special-"))
-  t.after(() => rm(directory, { recursive: true, force: true }))
-  await symlink("absent", path.join(directory, "dangling"))
-  execFileSync("mkfifo", [path.join(directory, "pipe")])
-  for (const [name, expected] of [["missing", /ENOENT/], ["dangling", /ENOENT/], ["pipe", /not a regular file/]] as const) {
-    const result = await collectEvidence({ ...input, cwd: directory, command: `cat ${name}` }, limits, signal())
-    assert.match(result.files[0]!.status, expected)
-  }
-  const access = new FileAccess({ ...fakeIO().io, realpath: async () => { throw Object.assign(new Error("private error"), { code: "EACCES" }) } }, timing)
-  const s = signal()
-  const result = await collectEvidence(input, limits, s, access.scope(s))
-  assert.match(result.files[0]!.status, /EACCES/)
-  assert.doesNotMatch(JSON.stringify(result), /private error/)
-  for (const command of ["ssh fixture 'cat /srv/remote.py'", "docker exec fixture python /srv/remote.py"]) {
-    const discovered = discover(command, directory)
-    assert.deepEqual(discovered.references, [])
-    assert.match(discovered.limitations.join(" "), /Indirect execution/)
   }
 })
 
@@ -453,7 +188,7 @@ for (const outcome of ["slow", "timeout", "cancel"] as const) {
     const owned = nativeInvocation("shell", { command: "cat source" }, undefined, "/virtual", ["cat source"])
     const reader = nativeClient(owned, access)
     reader.message.list = async () => { entered.resolve(); return history.promise }
-    const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture" })
+    const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", retrieval: false })
     let evidence: any, posts = 0
     const pending = withDeadline(parent.signal, 1500, s => evaluateHostReview(reader, owned.snapshot, config, BUILTIN_PROMPTS, s, () => {}, {
       observeEvidence: value => { evidence = value }, fetcher: async () => { posts++; return Response.json({ choices: [{ message: { content: '{"safe":true,"desc":"Captured."}' } }] }) },
@@ -482,9 +217,9 @@ for (const outcome of ["slow", "timeout", "cancel"] as const) {
       assert.equal(result?.safe, true)
       assert.equal(posts, 1)
       assert.equal(evidence?.kind, "shell")
-      assert.equal(evidence.files[0]!.contents, "fixture\n")
+      assert.equal(Object.hasOwn(evidence, "files"), false)
       assert.equal(evidence.execution?.canonicalCwd, "/virtual")
-      assert.equal(io.calls.filter(call => call === "open").length, 1)
+      assert.equal(io.calls.filter(call => call === "open").length, 0)
       const snapshot = JSON.stringify(evidence)
       history.resolve({ data: [], cursor: {} })
       await sleep(0)

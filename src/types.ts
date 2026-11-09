@@ -1,34 +1,9 @@
 export interface Limits {
   maxFiles: number
   maxEvidenceBytes: number
-  /** Standalone collectors default to narrow discovery when omitted. */
-  includeShellArgumentFiles?: boolean
-}
-
-export interface FileEvidence {
-  filename: string
-  /** This path was a literal argv value, not a verified program input. */
-  basis?: "literal argument; input role unknown"
-  path?: string
-  aliases?: string[]
-  status: string
-  contents?: string
-  excerpt?: import("./excerpts.js").Excerpt
-  warning?: string
 }
 
 export type ReviewKind = "shell" | "edit" | "external-directory" | "skill" | "tool"
-
-/** Standalone shell collection input/output, not a host invocation contract. */
-export interface Evidence {
-  kind: "shell"
-  command: string
-  cwd: string | null
-  userPrompt: string | null
-  files: FileEvidence[]
-  limitations: string[]
-  execution?: { canonicalCwd: string | null }
-}
 
 export interface PatchOperation {
   operation: "add" | "update" | "delete" | "move"

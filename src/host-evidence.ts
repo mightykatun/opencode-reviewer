@@ -1,24 +1,22 @@
 import path from "node:path"
 import type { Config } from "./config.js"
 import { reviewStage } from "./deadline.js"
-import { collectEvidence } from "./evidence.js"
 import type { FileAccess } from "./file-access.js"
-import { DiffBudget, diffDelta, omittedFile } from "./files.js"
-import { diffExcerpt, validExcerpt, type Excerpt } from "./excerpts.js"
+import { leadingLines, lineCount } from "./truncate.js"
 import { sameLocation } from "./companion-protocol.js"
 import { boundedHostJSON, hostOperationJSONBytes, sameHostJSON } from "./host-request.js"
 import type { HostInvocationRead } from "./host-reader.js"
 import type { HostConversationContext } from "./host-context.js"
 import type { CodeModeCandidates, HostInvocation, HostRequest, JSONObject } from "./host-types.js"
 import { boundedCopy } from "./tool-evidence.js"
-import type { FileEvidence, Limits, PatchOperation } from "./types.js"
+import type { Limits, PatchOperation } from "./types.js"
 import { readRegisteredSkill, requestedSkill, type RegisteredSkill, type SkillCatalogRead } from "./host-skill.js"
 import { transportOwnership } from "./transport-ownership.js"
 import { readRegisteredTool, type RegisteredTool, type ToolCatalogRead } from "./host-tool.js"
 import { codeModeToolAction, directoryTools, editTools, nativeTools } from "./host-tool-kind.js"
 import { collectCodeModeCandidates, validCodeModeEvidence, type CodeModeEvidence } from "./host-code-mode.js"
 
-export type HostEvidenceOptions = Pick<Config, "reviewBash" | "includeShellArgumentFiles" | "reviewEdits" | "reviewExternalDirectories"
+export type HostEvidenceOptions = Pick<Config, "reviewBash" | "reviewEdits" | "reviewExternalDirectories"
   | "reviewSkills" | "reviewTools"> & Limits
 
 type Permission = Omit<HostRequest, "metadata"> & { metadata?: JSONObject; metadataStatus: string }
@@ -43,18 +41,19 @@ export interface HostShellEvidence extends Base {
   cwd: string
   execution: { tool: "shell"; requestedWorkdir: string | null; canonicalCwd: string | null;
     cwdSource: "absolute tool.workdir" | "tool.workdir relative to invocation.location.directory" | "invocation.location.directory" }
-  files: FileEvidence[]
 }
 export interface HostEditChange {
   file: string
   /** Present only when supplied by native preview metadata. */
   hostStatus?: "added" | "deleted" | "modified"
-  status: "included" | "excerpt" | "omitted"
+  status: "included" | "truncated" | "omitted"
   patch?: string
-  excerpt?: Excerpt
+  /** A truncated patch keeps exactly its first includedLines original lines. */
+  truncated?: { includedLines: number; omittedLines: number }
   reason?: string
-  warning?: string
-  delta?: string
+  /** Host-supplied line counts for incomplete entries, when valid. */
+  additions?: number
+  deletions?: number
 }
 export interface HostEditEvidence extends Base {
   kind: "edit"
@@ -261,8 +260,8 @@ function editChanges(request: HostRequest, proposed: Operation, limits: Limits, 
     limitations.push("Pending host per-file diffs unavailable; no target files were read and no replacement diffs were constructed.")
   }
   if (raw.length > 16384) throw new Error("Native edit scope exceeds normalization limit")
-  let remaining = limits.maxEvidenceBytes, measurement = normalizationBytes
-  const countsBudget = new DiffBudget(), selected = new Map<string, boolean>()
+  let remaining = limits.maxEvidenceBytes
+  const selected = new Map<string, boolean>()
   const resources = new Set(request.resources)
   const targets = new Set(resources)
   if (typeof proposed.input.path === "string") targets.add(proposed.input.path)
@@ -279,14 +278,13 @@ function editChanges(request: HostRequest, proposed: Operation, limits: Limits, 
   }
   const previewed = new Set<string>()
   const changes: HostEditChange[] = []
-  // Mandatory per-file identities have a separate normalization ceiling.
-  // Full diffs and numbered excerpts share the same optional-body allowance.
   boundedCopy(raw.map(file => {
     if (!file || typeof file !== "object" || Array.isArray(file)) throw new Error("Native edit file scope unavailable")
     return { file: file.file, status: file.status }
   }), normalizationBytes)
+  const check = () => reviewStage(signal, "Evidence collection")
   for (const entry of raw) {
-    reviewStage(signal, "Evidence collection")
+    check()
     const file = entry as JSONObject
     if (typeof file.file !== "string" || !file.file || file.file.includes("\0")
       || !["added", "deleted", "modified"].includes(String(file.status))) throw new Error("Native edit file scope unavailable")
@@ -295,45 +293,38 @@ function editChanges(request: HostRequest, proposed: Operation, limits: Limits, 
     const change: HostEditChange = { file: file.file, hostStatus: file.status as HostEditChange["hostStatus"], status: "omitted" }
     const diff = file.patch
     if (!selected.get(file.file)) change.reason = "file-count limit reached"
-    else if (typeof diff !== "string" || !diff.length) change.reason = "pending host diff unavailable"
-    else if (diff.length > measurement) change.reason = "shared diff UTF-8 measurement work limit reached"
+    else if (typeof diff !== "string" || !diff.trim()) change.reason = "pending host diff unavailable"
+    else if (diff.length > normalizationBytes) change.reason = "pending host diff exceeds the 16 MiB scan limit"
     else {
-      measurement -= diff.length
       const size = Buffer.byteLength(diff)
-      if (size > remaining) {
+      if (size <= remaining) { change.status = "included"; change.patch = diff; remaining -= size }
+      else {
         change.reason = "complete diff exceeds remaining evidence byte budget"
-        const excerpt = diffExcerpt(diff, remaining, signal)
-        if (excerpt) {
-          change.status = "excerpt"; change.patch = excerpt.contents; change.excerpt = excerpt.excerpt
-          remaining -= Buffer.byteLength(excerpt.contents)
+        const prefix = leadingLines(diff, remaining, check)
+        if (prefix.lines) {
+          change.status = "truncated"; change.patch = prefix.text
+          change.truncated = { includedLines: prefix.lines, omittedLines: lineCount(diff, check) - prefix.lines }
+          remaining -= prefix.bytes
         }
       }
-      else if (!diff.trim()) change.reason = "pending host diff unavailable"
-      else { change.status = "included"; change.patch = diff; remaining -= size }
     }
-    if (change.status !== "included") {
-      if (change.status === "omitted") change.warning = omittedFile(change.file)
-      const counts = Number.isSafeInteger(file.additions) && Number(file.additions) >= 0
-        && Number.isSafeInteger(file.deletions) && Number(file.deletions) >= 0
-        ? { added: Number(file.additions), removed: Number(file.deletions) }
-        : diffDelta(diff, signal, countsBudget)
-      if (counts) change.delta = `[Δ] ${JSON.stringify(change.file)}: +${counts.added} −${counts.removed} lines`
+    if (change.status !== "included" && Number.isSafeInteger(file.additions) && Number(file.additions) >= 0
+      && Number.isSafeInteger(file.deletions) && Number(file.deletions) >= 0) {
+      change.additions = Number(file.additions); change.deletions = Number(file.deletions)
     }
     changes.push(change)
   }
   let missing = false
   for (const target of targets) {
-    reviewStage(signal, "Evidence collection")
+    check()
     if (!target || target.includes("\0")) throw new Error("Native edit target unavailable")
     if (previewed.has(target)) continue
     missing = true
-    changes.push({ file: target, status: "omitted", reason: "pending host preview unavailable for this exact declared target",
-      warning: omittedFile(target) })
+    changes.push({ file: target, status: "omitted", reason: "pending host preview unavailable for this exact declared target" })
   }
   if (missing) {
     limitations.push("Some exact declared edit targets have no pending host preview; their changes and line counts are unavailable.")
   }
-  if (countsBudget.exhausted) limitations.push("Some omitted-diff counts exceeded the bounded counting allowance; valid host counts were used when available.")
   return changes
 }
 
@@ -422,7 +413,7 @@ export async function collectHostOperation(owned: OperationRead, options: HostEv
       "Targets are host-declared; filesystem aliases are not resolved and distinct declared file names count separately.")
     const changes = editChanges(request, proposed, options, signal, base.limitations)
     const partial = !changes.length || changes.some(change => change.status !== "included")
-    if (partial) base.limitations.push("Edit evidence is incomplete; omitted changes are not assessed by the supplied diffs. Numbered excerpts prioritize changed lines, original hunk headers and nearby context; their footer counts omitted diff lines, not target-file lines.")
+    if (partial) base.limitations.push("Edit evidence is incomplete; omitted changes are not assessed by the supplied diffs. A truncated patch contains exactly its first includedLines original diff lines; omittedLines counts the remaining diff lines, not target-file lines.")
     reviewStage(signal, "Evidence collection")
     return { status: "ready", evidence: { ...base, kind, tool: invocation.tool as HostEditEvidence["tool"], operation: mandatory.value.operation,
       permission: { ...mandatory.value.permission, metadataStatus: "Pending metadata.files normalized into changes; duplicate raw metadata and edit bodies omitted." }, changes, partial } }
@@ -436,19 +427,12 @@ export async function collectHostOperation(owned: OperationRead, options: HostEv
   }
   const command = requiredText(invocation.input, "command")
   const { cwd, ...execution } = shellLocation(invocation)
-  const fileScope = files.scope(signal)
-  // Charge the mandatory V2 envelope once; collectEvidence separately charges
-  // command bytes, so restore precisely that amount to its file allowance.
-  const metadataBytes = permission.metadata === undefined ? 0 : boundedCopy(permission.metadata, options.maxEvidenceBytes).bytes
-  const collected = await collectEvidence({ command, cwd, userPrompt: null, limitations: base.limitations },
-    { ...options, maxEvidenceBytes: options.maxEvidenceBytes - mandatory.bytes - metadataBytes + Buffer.byteLength(command) }, signal, fileScope)
-  const canonical = await fileScope.canonical(cwd)
-  if (!canonical.path) collected.limitations.push(`Canonical invocation working directory unavailable (${canonical.reason}); the declared working directory is retained.`)
-  else if (canonical.path !== cwd) collected.limitations.push("Declared invocation directory differs from its canonical path. Inherited shell PWD is unavailable; neither path alone establishes the logical directory after cd.")
+  const canonical = await files.scope(signal).canonical(cwd)
+  if (!canonical.path) base.limitations.push(`Canonical invocation working directory unavailable (${canonical.reason}); the declared working directory is retained.`)
+  else if (canonical.path !== cwd) base.limitations.push("Declared invocation directory differs from its canonical path. Inherited shell PWD is unavailable; neither path alone establishes the logical directory after cd.")
   reviewStage(signal, "Evidence collection")
   return { status: "ready", evidence: { ...base, kind, tool: "shell", permission, operation: mandatory.value.operation,
-    command, cwd, files: collected.files, limitations: collected.limitations.filter(value => value !== "User prompt unavailable."),
-    execution: { tool: "shell", ...execution, canonicalCwd: canonical.path } } }
+    command, cwd, execution: { tool: "shell", ...execution, canonicalCwd: canonical.path } } }
 }
 
 /** Collector for callers already holding both server and CLI reads. */
@@ -474,47 +458,6 @@ function absolute(value: unknown): value is string {
   return typeof value === "string" && !value.includes("\0") && path.isAbsolute(value)
 }
 
-const omittedSourceStatuses = new Set([
-  "working directory unresolved; contents not provided",
-  "not a regular file; contents not provided",
-  "file too large for remaining evidence budget; contents not provided; assess risk accordingly",
-  "file grew beyond evidence budget; contents not provided",
-  "file changed while being read; contents not provided",
-  "not valid UTF-8 source; contents not provided",
-  "binary content; contents not provided",
-  "direct executable is not identifiable as supported script source; contents not provided",
-  "file-count limit reached",
-])
-
-function shellFiles(value: unknown, options: HostEvidenceOptions, budget: number, signal: AbortSignal): boolean {
-  if (!Array.isArray(value)) return false
-  let included = 0
-  for (const file of value) {
-    reviewStage(signal, "Evidence validation")
-    if (!shape(file, ["filename", "status"], ["path", "aliases", "contents", "excerpt", "warning", "basis"])
-      || typeof file.filename !== "string" || !file.filename || file.filename.includes("\0")
-      || (Object.hasOwn(file, "basis") && file.basis !== "literal argument; input role unknown")
-      || typeof file.status !== "string"
-      || (Object.hasOwn(file, "path") && !absolute(file.path))
-      || (Object.hasOwn(file, "aliases") && (!strings(file.aliases) || !file.aliases.every(absolute)))
-      || (Object.hasOwn(file, "warning") && typeof file.warning !== "string")) return false
-    if (file.status === "captured" || file.status === "excerpt") {
-      if (!absolute(file.path) || typeof file.contents !== "string" || file.contents.includes("\0")
-        || Object.hasOwn(file, "warning") || ++included > options.maxFiles) return false
-      if (file.status === "excerpt" ? !validExcerpt(file.excerpt, file.contents) : Object.hasOwn(file, "excerpt")) return false
-      budget -= Buffer.byteLength(file.contents)
-      if (budget < 0) return false
-    } else {
-      if (Object.hasOwn(file, "contents") || Object.hasOwn(file, "excerpt") || typeof file.warning !== "string"
-        || (!omittedSourceStatuses.has(file.status)
-          && !/^cannot read file \([^()\r\n]+\); contents not provided$/.test(file.status))) return false
-    }
-  }
-  // The collector retains whole omitted candidates beyond maxFiles; only
-  // included snapshots consume the file allowance. The JSON bound limits rows.
-  return true
-}
-
 /** Independently copy and validate a server operation response before CLI context
  * attachment. The caller still owns fresh request/epoch checks around this read. */
 export function readHostOperationEvidence(value: unknown, owned: OperationRead, options: HostEvidenceOptions,
@@ -525,7 +468,7 @@ export function readHostOperationEvidence(value: unknown, owned: OperationRead, 
     const copy = boundedHostJSON(value, hostOperationJSONBytes), kind = operationKind(owned)
     if (!kind || !reviewEnabled(kind, options)) return
     const common = ["kind", "tool", "permission", "location", "project", "operation", "limitations"]
-    const fields = kind === "shell" ? ["command", "cwd", "execution", "files"] : kind === "edit" ? ["changes", "partial"]
+    const fields = kind === "shell" ? ["command", "cwd", "execution"] : kind === "edit" ? ["changes", "partial"]
       : kind === "skill" ? ["skill"] : kind === "tool" ? [] : ["partial"]
     if (!shape(copy, [...common, ...fields], kind === "tool" ? owned.invocation.tool === "execute" ? ["codeMode"] : ["definition"] : []) || !strings(copy.limitations)
       || !sameHostJSON(copy.location, owned.invocation.location) || !sameHostJSON(copy.project, owned.invocation.project)
@@ -565,7 +508,7 @@ export function readHostOperationEvidence(value: unknown, owned: OperationRead, 
     if (kind === "edit") {
       // Normalize the independently retained pending preview again, without any
       // file access or a second patch parser. This also checks count/byte limits,
-      // exact resource membership and byte-faithful full diffs or labeled excerpts.
+      // exact resource membership and byte-faithful full or truncated diffs.
       const changes = editChanges(owned.snapshot.request, proposed, options, signal, [])
       if (Object.hasOwn(copy.permission, "metadata") || !sameHostJSON(copy.changes, changes)
         || copy.partial !== (!changes.length || changes.some(change => change.status !== "included"))) return
@@ -580,8 +523,7 @@ export function readHostOperationEvidence(value: unknown, owned: OperationRead, 
         if (copy.command !== owned.invocation.input.command || copy.cwd !== cwd
           || !shape(copy.execution, ["tool", "requestedWorkdir", "canonicalCwd", "cwdSource"])) return
         const { canonicalCwd, ...execution } = copy.execution
-        if ((canonicalCwd !== null && !absolute(canonicalCwd)) || !sameHostJSON(execution, { tool: "shell", ...expected })
-          || !shellFiles(copy.files, options, budget, signal)) return
+        if ((canonicalCwd !== null && !absolute(canonicalCwd)) || !sameHostJSON(execution, { tool: "shell", ...expected })) return
       }
     }
     reviewStage(signal, "Evidence validation")

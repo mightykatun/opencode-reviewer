@@ -69,7 +69,6 @@
     "babel-preset-solid": "1.9.16",
     "esbuild": "0.28.2",
     "mpg123-decoder": "1.0.3",
-    "shell-quote": "1.12.0",
     "solid-js": "1.9.17",
     "string-width": "7.2.0",
     "tsx": "4.23.15",

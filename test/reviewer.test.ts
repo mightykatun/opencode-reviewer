@@ -7,7 +7,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { setTimeout as sleep, setImmediate as settle } from "node:timers/promises"
-import { parseConfig } from "../src/config.js"
+import { parseConfig, retrievalEnabled } from "../src/config.js"
 import { parseAssessment, review as reviewWithMetadata, withDeadline } from "../src/reviewer.js"
 
 // Existing transport assertions stay exact for assessment/usage. Historical
@@ -34,8 +34,7 @@ import { encodeEvent } from "../src/history-records.js"
 import { reviewerClock } from "./reviewer-clock.js"
 
 const evidence = shellEvidence({
-  command: "python fruits.py", cwd: "/external", userPrompt: "Count fruits",
-  files: [{ filename: "fruits.py", status: "captured", contents: "print('pear')" }], limitations: [],
+  command: "python fruits.py", cwd: "/external", userPrompt: "Count fruits", limitations: [],
 })
 const signal = () => new AbortController().signal
 const envelope = (content: string) => JSON.stringify({ choices: [{ message: { content } }] })
@@ -58,7 +57,11 @@ async function endpoint(t: TestContext, handler: (index: number, res: ServerResp
 test("config defaults, URL handling, credentials, and invalid settings", () => {
   const cfg = parseConfig({ baseURL: "http://localhost:1234/v1/", model: "small" })
   assert.equal(cfg.baseURL, "http://localhost:1234/v1")
-  assert.equal(cfg.timeoutMs, 30000)
+  assert.equal(cfg.timeoutMs, 120000)
+  assert.equal(cfg.retrieval, true)
+  assert.deepEqual(cfg.retrievalKinds, { bash: true, edit: false, skill: true, tool: true, external_directory: true })
+  assert.equal(cfg.maxRetrievalRounds, 3)
+  assert.equal(cfg.retrievalTimeoutMs, 60000)
   assert.equal(cfg.maxOutputTokens, 4096)
   assert.equal(cfg.formatRetries, 1)
   assert.equal(cfg.maxFiles, 6)
@@ -73,7 +76,7 @@ test("config defaults, URL handling, credentials, and invalid settings", () => {
   assert.equal(cfg.extraCareful, true)
   assert.equal(cfg.stream, false)
   assert.equal(cfg.autoApproveDelaySeconds, 15)
-  for (const override of [ { baseURL: "file:///tmp" }, { baseURL: "https://secret@example.org" }, { model: "" }, { apiKeyEnv: "bad name" }, { timeoutMs: 0 }, { formatRetries: -1 }, { formatRetries: 1.2 }, { retries: 3 }, { reviewMcp: true }, { reviewCustomTools: true } ]) {
+  for (const override of [ { baseURL: "file:///tmp" }, { baseURL: "https://secret@example.org" }, { model: "" }, { apiKeyEnv: "bad name" }, { timeoutMs: 0 }, { formatRetries: -1 }, { formatRetries: 1.2 }, { retries: 3 }, { reviewMcp: true }, { reviewCustomTools: true }, { includeShellArgumentFiles: false } ]) {
     assert.throws(() => parseConfig({ baseURL: "http://localhost/v1", model: "m", ...override }))
   }
 })
@@ -268,7 +271,9 @@ test("review switches are independent strict booleans with enabled defaults", ()
 test("numeric settings default only on omission and enforce integer boundaries before transport", async (t) => {
   for (const [name, fallback, min, max] of [
     ["formatRetries", 1, 0, 100],
-    ["timeoutMs", 30000, 1, 3600000],
+    ["timeoutMs", 120000, 1, 3600000],
+    ["maxRetrievalRounds", 3, 1, 50],
+    ["retrievalTimeoutMs", 60000, 1, 3600000],
     ["maxOutputTokens", 4096, 1, Number.MAX_SAFE_INTEGER],
     ["maxFiles", 6, 1, 1000],
     ["maxEvidenceBytes", 131072, 1, 16 * 1024 * 1024],
@@ -292,6 +297,22 @@ test("numeric settings default only on omission and enforce integer boundaries b
       }
     })
   }
+})
+
+test("retrieval switches follow notification-style per-kind defaults and reject unknown or non-boolean values", () => {
+  const options = { baseURL: "http://localhost/v1", model: "fixture" }
+  assert.deepEqual(parseConfig({ ...options, retrievalKinds: { edit: true, bash: false } }).retrievalKinds,
+    { bash: false, edit: true, skill: true, tool: true, external_directory: true })
+  assert.equal(parseConfig({ ...options, retrieval: false }).retrieval, false)
+  assert.equal(retrievalEnabled(parseConfig(options), "shell"), true)
+  assert.equal(retrievalEnabled(parseConfig(options), "edit"), false)
+  assert.equal(retrievalEnabled(parseConfig({ ...options, retrieval: false }), "shell"), false)
+  assert.equal(retrievalEnabled(parseConfig({ ...options, retrievalKinds: { external_directory: false } }), "external-directory"), false)
+  for (const [value, message] of [
+    [[], "retrievalKinds must be an object"], [null, "retrievalKinds must be an object"], ["bash", "retrievalKinds must be an object"],
+    [{ shell: true }, "Unknown retrievalKinds key: shell"], [{ bash: "true" }, "retrievalKinds.bash must be a boolean"],
+  ] as const) assert.throws(() => parseConfig({ ...options, retrievalKinds: value }), { message })
+  assert.throws(() => parseConfig({ ...options, retrieval: "yes" }), { message: "retrieval must be a boolean" })
 })
 
 test("strict boolean schema rejects coercion, fences, arrays, blank descriptions and extra keys", () => {

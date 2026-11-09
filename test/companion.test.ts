@@ -7,7 +7,7 @@ import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import type { FileIO } from "../src/file-access.js"
 import { withNotificationProcesses } from "../src/plugin.js"
 
-const skillOptions = { reviewBash: true, includeShellArgumentFiles: false, reviewEdits: true, reviewExternalDirectories: true,
+const skillOptions = { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
   reviewSkills: true, reviewTools: true, maxFiles: 6, maxEvidenceBytes: 131072 }
 
 test("skill registry evidence cannot survive a changed pending permission identity", async () => {
@@ -143,14 +143,16 @@ test("companion read admission retains timed-out operations and unload owns thei
   assert.equal(permissions.length, 3)
 })
 
-test("evidence abort retains the server file transaction and late descriptor cleanup during unload", async () => {
+test("evidence abort retains the server path probe through settlement during unload", async () => {
   const lifecycle = new PluginLifecycle(), hooks = new Map<string, (event: any) => void>()
   let handlers: any, opened!: () => void, resolve!: (value: unknown) => void, closed = false
   const acquiring = new Promise<void>(yes => { opened = yes })
-  const io = { realpath: async (path: string) => path, open: async () => {
+  const io = { realpath: async (path: string) => {
     opened()
-    return new Promise(yes => { resolve = yes })
-  } } as unknown as FileIO
+    await new Promise(yes => { resolve = yes })
+    closed = true
+    return path
+  }, open: async () => { throw Error("mandatory shell evidence never opens files") } } as unknown as FileIO
   const request = { id: "request", sessionID: "session", action: "shell", resources: ["python3 fixture.py"],
     source: { type: "tool", messageID: "assistant", id: "call" } }
   const context = {
@@ -163,7 +165,7 @@ test("evidence abort retains the server file transaction and late descriptor cle
   hooks.get("execute.before")!({ sessionID: "session", messageID: "assistant", id: "call", tool: "shell", input: { command: "python3 fixture.py" } })
   const abort = new AbortController()
   const pending = handlers.evidence({ epoch: handshake.epoch, location: handshake.location, sessionID: "session", requestID: "request",
-    timeoutMs: 5000, options: { reviewBash: true, includeShellArgumentFiles: false, reviewEdits: true, reviewExternalDirectories: true,
+    timeoutMs: 5000, options: { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
       reviewSkills: true, reviewTools: true, maxFiles: 6, maxEvidenceBytes: 131072 } },
     { signal: abort.signal, error: () => { throw Error("unexpected") } })
   await acquiring
@@ -173,7 +175,7 @@ test("evidence abort retains the server file transaction and late descriptor cle
   const stopping = lifecycle.stop().then(() => { stopped = true })
   await tick()
   assert.equal(stopped, false)
-  resolve({ close: async () => { closed = true } })
+  resolve(undefined)
   await stopping
   await lifecycle.settled()
   assert.equal(closed, true)

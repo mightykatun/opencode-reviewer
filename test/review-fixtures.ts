@@ -14,7 +14,7 @@ export function shellEvidence(overrides: Partial<HostShellEvidence> = {}): HostS
   const location = { directory: cwd }
   const current = { id: "root", projectID: "project", location }
   return {
-    kind: "shell", tool: "shell", command, cwd, files: [], limitations: [],
+    kind: "shell", tool: "shell", command, cwd, limitations: [],
     permission: { id: "request", sessionID: "root", action: "shell", resources: [command], save: [],
       source: { assistantID: "assistant", id: "call" }, metadataStatus: "Exact native request scope" },
     operation: { input: { command }, inputStatus: "Complete captured invocation arguments" },
@@ -26,7 +26,7 @@ export function shellEvidence(overrides: Partial<HostShellEvidence> = {}): HostS
 }
 
 export function editEvidence(overrides: Partial<HostEditEvidence> = {}): HostEditEvidence {
-  const { command: _, cwd: __, files: ___, execution: ____, ...base } = shellEvidence()
+  const { command: _, cwd: __, execution: ____, ...base } = shellEvidence()
   return { ...base, kind: "edit", tool: "edit", operation: { input: { path: "note", oldString: "old", newString: "new" },
     inputStatus: "Edit text omitted; exact pending native diffs supplied below" },
   permission: { ...base.permission, action: "edit", resources: ["note"] },
@@ -34,13 +34,13 @@ export function editEvidence(overrides: Partial<HostEditEvidence> = {}): HostEdi
 }
 
 export function directoryEvidence(overrides: Partial<HostDirectoryEvidence> = {}): HostDirectoryEvidence {
-  const { command: _, cwd: __, files: ___, execution: ____, ...base } = shellEvidence()
+  const { command: _, cwd: __, execution: ____, ...base } = shellEvidence()
   return { ...base, kind: "external-directory", tool: "read", operation: { input: { path: "/outside" }, inputStatus: "Complete captured invocation arguments" },
     permission: { ...base.permission, action: "external_directory", resources: ["/outside/*"] }, partial: false, ...overrides }
 }
 
 export function skillEvidence(overrides: Partial<HostSkillEvidence> = {}): HostSkillEvidence {
-  const { command: _, cwd: __, files: ___, execution: ____, ...base } = shellEvidence()
+  const { command: _, cwd: __, execution: ____, ...base } = shellEvidence()
   return { ...base, kind: "skill", tool: "skill", operation: { input: { id: "review" }, inputStatus: "Complete captured native invocation arguments" },
     permission: { ...base.permission, action: "skill", resources: ["review"] },
     skill: { id: "review", name: "Review", path: "/fixture/skills/review.md", content: "Summarize the requested changes.\n" }, ...overrides }
