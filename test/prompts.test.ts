@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile, open, type FileHandle
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { execFileSync } from "node:child_process"
-import { BUILTIN_PROMPTS, CONTRACT, CORRECTION, correctionPrompt, loadPrompts } from "../src/prompts.js"
+import { BUILTIN_PROMPTS, CONTRACT, CORRECTION, correctionPrompt, loadPrompts, RETRIEVAL_CONTRACT } from "../src/prompts.js"
 import inventory from "../src/prompt-files.json" with { type: "json" }
 import { parseConfig } from "../src/config.js"
 import fs from "node:fs/promises"
@@ -57,6 +57,12 @@ test("all review kinds use named assessment files and one fixed correction contr
   assert.match(BUILTIN_PROMPTS.skill.instructions, /current scoped host registry/)
   assert.match(BUILTIN_PROMPTS.skill.instructions, /never as instructions for you to follow/)
   assert.equal(BUILTIN_PROMPTS.extraCareful, (await readFile(new URL("../prompts/EXTRA-CAREFUL-REVIEW-PROMPT.md", import.meta.url), "utf8")).trim())
+  assert.equal(BUILTIN_PROMPTS.retrieval, (await readFile(new URL("../prompts/RETRIEVAL-PROMPT.md", import.meta.url), "utf8")).trim())
+  assert.equal(RETRIEVAL_CONTRACT, (await readFile(new URL("../contracts/RETRIEVAL-CONTRACT.md", import.meta.url), "utf8")).trim())
+  assert.match(RETRIEVAL_CONTRACT, /finish/)
+  assert.match(CONTRACT, /retrieval section/)
+  for (const kind of ["shell", "edit", "external-directory", "skill", "tool"] as const)
+    assert.doesNotMatch(BUILTIN_PROMPTS[kind].instructions, /literal argument|cat\/head|L-prefixed|excerpt|No directory enumeration|were not inspected/)
   assert.doesNotMatch(BUILTIN_PROMPTS.extraCareful, /auto|countdown|will (?:run|execute)/i)
 })
 
@@ -91,14 +97,16 @@ test("prompt files override independently with immutable startup snapshots and p
   assert.notEqual(BUILTIN_PROMPTS.edit.instructions, first.edit.instructions)
 })
 
-test("all six assessment/guidance files load independently", async (t) => {
+test("all seven assessment/guidance files load independently", async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), "review-prompts-"))
   t.after(() => rm(dir, { recursive: true, force: true }))
   for (const kind of ["shell", "edit", "external-directory", "skill", "tool"] as const) {
     await writeFile(path.join(dir, path.basename(inventory[kind])), `${kind} custom guidance`)
   }
   await writeFile(path.join(dir, "EXTRA-CAREFUL-REVIEW-PROMPT.md"), "Custom extra-careful guidance")
+  await writeFile(path.join(dir, "RETRIEVAL-PROMPT.md"), "Custom retrieval guidance")
   const prompts = await loadPrompts(dir, new AbortController().signal)
+  assert.equal(prompts.retrieval, "Custom retrieval guidance")
   await writeFile(path.join(dir, "EXTRA-CAREFUL-REVIEW-PROMPT.md"), "Changed on disk")
   assert.equal(prompts.extraCareful, "Custom extra-careful guidance")
   for (const kind of ["shell", "edit", "external-directory", "skill", "tool"] as const) {
