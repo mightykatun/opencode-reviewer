@@ -5,16 +5,16 @@ import path from "node:path"
 // Reviewed upstream source fingerprints, not an OpenCode version allowlist.
 // Review all three files when newer upstream source changes these inputs.
 const fingerprints = {
-  "index.js": "70f5649897f56c66ab0cbf095915c68f6ac7a1e2089ff215504d0d77a347e317",
-  "schema.js": "d958ce796a79a06449ad6f9083a106b72459c4aa5d37f1727f77936a406e2055",
+  "index.js": "4f9360a53406c11a0c90ad684999ed6fb4a3c18c8ef7340c2f0d7744cad7f694",
+  "schema.js": "d35764264d8de3b8c3a35cdec2750f07f2878525474b08ae59c07ca06d29c77a",
   "syntax.js": "d31a110203ddfb4849440522951f82f02de1d5028f9a4174cfb45ee0a6e69358",
 }
 
 export function verifyThemeSyntaxInputs(manifest, digests) {
   if (manifest?.name !== "@opencode/theme" || !/^2\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(manifest.version)
     || manifest.exports?.["./tui"]?.import !== "./dist/tui/index.js"
-    || manifest.dependencies?.["@opentui/core"] !== "0.6.8"
-    || manifest.dependencies?.effect !== "4.0.1") {
+    || manifest.dependencies?.["@opentui/core"] !== "0.8.1"
+    || manifest.dependencies?.effect !== "4.1.0") {
     throw new Error("Pinned theme package identity or public barrel changed")
   }
   if (!digests || Object.keys(digests).length !== Object.keys(fingerprints).length) {

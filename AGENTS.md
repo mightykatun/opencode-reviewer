@@ -135,7 +135,7 @@ existing user directories.
   incompatible public API data stays manual rather than being guessed. Development
   and CI target the latest stable V2, not a fixed host release. Development uses V2
   ranges for `@opencode/plugin`, `@opencode/client` and
-  `@opencode/theme`. OpenTUI is 0.6.8 and Solid is 1.9.15, matching the host.
+  `@opencode/theme`. OpenTUI is 0.8.1 and Solid is 1.9.17, matching the host.
   Use public APIs/slots, never private UI imports or native approval-dialog patches.
 - Package and plugin ID are `opencode-reviewer`. The build starts at `src/plugin.ts`;
   its shared V2 setup selects companion/CLI lifecycle without eager terminal runtime imports.

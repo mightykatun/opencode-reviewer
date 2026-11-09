@@ -47,12 +47,10 @@ export interface HostReviewPanelProps {
 export interface HostPanelNode extends ReviewRegion {
   num: number
   getChildren(): HostPanelNode[]
-  wrapper?: HostPanelNode
 }
 
 export function hostPanelOwnsHit(node: HostPanelNode | undefined, hit: number): boolean {
   return !!node && node.visible && !node.isDestroyed && (node.num === hit
-    || (!!node.wrapper && hostPanelOwnsHit(node.wrapper, hit))
     || node.getChildren().some(child => hostPanelOwnsHit(child, hit)))
 }
 

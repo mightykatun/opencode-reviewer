@@ -144,12 +144,12 @@ test("footer branch handoff can use only unchanged painted geometry until the ne
   assert.equal(proof.state(value, true).state, "lost", "new frame must prove actual layout")
 })
 
-test("hit ownership traverses scroll wrappers but never hidden or destroyed nodes", () => {
-  const wrapper = node(2, 1, 1), root = { ...node(1, 1, 1), wrapper }
+test("hit ownership traverses children but never hidden or destroyed nodes", () => {
+  const child = node(2, 1, 1), root = { ...node(1, 1, 1), getChildren: () => [child] }
   assert.equal(hostPanelOwnsHit(root, 2), true)
-  wrapper.visible = false
+  child.visible = false
   assert.equal(hostPanelOwnsHit(root, 2), false)
-  wrapper.visible = true; wrapper.isDestroyed = true
+  child.visible = true; child.isDestroyed = true
   assert.equal(hostPanelOwnsHit(root, 2), false)
   assert.equal(hostPanelOwnsHit(undefined, 2), false)
 })
