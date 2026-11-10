@@ -90,6 +90,9 @@ export class HistorySQL {
         CREATE INDEX IF NOT EXISTS history_visible_order ON history(scope,root,completed,tie,id) WHERE outcome IS NOT NULL;`)
       historySchema(db, `CREATE INDEX IF NOT EXISTS history_permission ON history(scope,root,session,permission,completed,tie,id) WHERE outcome IS NOT NULL;`)
       historySchema(db, permissionStatisticsSchema)
+      historySchema(db, `CREATE TABLE IF NOT EXISTS retrieval_calls (
+        id TEXT PRIMARY KEY, review TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE, at INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS retrieval_calls_review ON retrieval_calls(review,id);`)
       db.exec(migrationSchema)
       historySchema(db, browsingSchema)
       privacySchema(db, tables.length > 0)
@@ -221,6 +224,10 @@ export class HistorySQL {
         else this.run("UPDATE attempts SET finalized=COALESCE(finalized,?) WHERE id=?", JSON.stringify({ at: e.at, usage: e.usage, reportedModel: e.reportedModel }), attempt)
       }
       this.contribute(opaque(e.type, attempt), delta, root)
+    } else if (e.type === "toolDispatched") {
+      const call = opaque(review, e.call)
+      if (!deleted) this.run("INSERT OR IGNORE INTO retrieval_calls VALUES (?,?,?)", call, review, e.at)
+      this.contribute(opaque(e.type, call), delta, root)
     } else if (e.type === "reviewAccepted") {
       if (!deleted) this.run("UPDATE reviews SET accepted=COALESCE(accepted,?) WHERE id=?", JSON.stringify(e.accepted), review)
       this.contribute(opaque(e.type, review), delta, root)

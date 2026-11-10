@@ -107,9 +107,10 @@ export function sumUsage(previous: Usage | undefined, next: Usage | undefined): 
   return Object.keys(result).length ? result : undefined
 }
 
-export function usageText(usage: Usage): string {
+export function usageText(usage: Usage, toolCalls?: number): string {
   return [
     ...(count(usage.input) && count(usage.output) ? [uiText.usage.tokens(usage.input, usage.output)] : []),
+    ...(toolCalls === undefined ? [] : [uiText.usage.toolCalls(toolCalls)]),
     ...(usage.cost === undefined ? [] : [uiText.usage.cost(usage.cost.toFixed(4))]),
   ].join("\n")
 }

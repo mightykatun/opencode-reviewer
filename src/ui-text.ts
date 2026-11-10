@@ -47,7 +47,6 @@ export const uiText = {
   },
   commands: {
     history: "Reviewer: Report history",
-    toggleHistory: "Reviewer: Toggle report history",
     category: "Reviewer",
     enable: "Reviewer: Enable for conversation",
     disable: "Reviewer: Disable for conversation",
@@ -84,6 +83,7 @@ export const uiText = {
   },
   usage: {
     tokens: (input: number, output: number) => `tokens: ${input} in ${output} out`,
+    toolCalls: (count: number) => `tool calls: ${count}`,
     cost: (amount: string) => `cost: $${amount}`,
   },
   lifetime: {
@@ -110,6 +110,7 @@ export const uiText = {
     dialogRetries: (count: number) => `Retries: ${count}`,
     dialogTokens: (input: number, output: number, partial: boolean) => `Tokens: ${compactTokens(input)} in ${compactTokens(output)} out${partial ? " (partial coverage)" : ""}`,
     dialogTokensUnavailable: "Tokens: unavailable",
+    dialogToolCalls: (count: number) => `Tool calls: ${count}`,
     dialogCost: (amount: string | undefined, partial: boolean) => amount === undefined ? "Cost: unavailable" : `Cost: $${amount}${partial ? " (partial pricing)" : ""}`,
     dialogSafeLabel: "Safe: ",
     dialogUnsafeLabel: "Unsafe: ",

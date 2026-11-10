@@ -86,7 +86,7 @@ All commands below use the installed five-file archive and production runtime.
 | Shared registered-tool review / fast approval (local MCP) | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-tool` / `fast-tool` |
 | Judge-decided Code Mode MCP linkage / fast approval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-code-mode-tool` / `fast-code-mode-tool` |
 | Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
-| Shell review without retrieval / agentic list-read-grep retrieval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal` / `normal-retrieval` |
+| Shell review without retrieval / agentic retrieval, saved tool-call counts and both statistics scopes | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal` / `normal-retrieval` |
 | Saved history and statistics | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history` |
 | Session instructions editor / persistence / root and descendant judge requests | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-instructions` |
 | Review after 512 completed Code Mode calls / retrieval paging of an oversized source | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-long-session` / `normal-large-source` |
@@ -380,6 +380,9 @@ existing user directories.
   Ctrl+H/Backspace byte 0x08. Keep both BS and DEL native prompt editing untouched.
   The base-mode, root-only toggle is the configurable public command
   `reviewer.history.toggle`; palette/slash opening still selects the newest report.
+  Register the palette-visible binding globally, like Alt+I, so its shortcut stays
+  discoverable while the palette is modal. Keyboard events outside base mode fall
+  through; command dispatch opens the newest report rather than toggling closed.
 - Returning to root must not re-review, restart timers, rearm canceled requests or
   resurrect completed reports. Verify route ancestry and native priority independently
   of panel mounting; never fabricate visible IDs, FRAME events or hit-test proof.
@@ -530,7 +533,16 @@ existing user directories.
   Count reviews on final controller acceptance and retries on actual dispatch.
   Retrieval POSTs are attempts of the same review: each turn's first POST is
   `initial`, their usage is summed into the report (unknown stays unknown) and
-  totals, and retrieval never changes the history schema.
+  totals. Dispatch observations must survive synchronous transport throws too.
+  Retrieval `read`/`list`/`glob`/`grep` dispatches count as tool calls, including
+  failures and interrupted reviews; finish, unexecuted requests and HTTP POSTs do
+  not. `toolDispatched` facts use review-scoped identities and the existing atomic
+  contribution ledger for both scopes. `retrieval_calls` retains bounded paging
+  facts for conversation bootstrap; deletion removes them in bounded slices while
+  preserving accumulated totals and deduplication. Reports carry their own count;
+  history and both statistics scopes display it directly below tokens. Normalize
+  absent older aggregate fields internally, never reset totals or invent old
+  per-report counts. Do not add compatibility notices to the UI.
 - Notification eligibility comes from new events, not startup snapshots or history
   browsing. Follow native blocker ordering even for silent/disabled requests.
   Initial permission/question banners and sounds, as well as reminders, require

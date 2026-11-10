@@ -28,7 +28,7 @@ export type RetrievalSection = { status: "disabled" | "unavailable" } | {
   trace: JSONObject[]
   items: JSONObject[]
 }
-export interface RetrievalOutcome { section: RetrievalSection; limitations: string[]; posts: number; usage?: Usage }
+export interface RetrievalOutcome { section: RetrievalSection; limitations: string[]; posts: number; toolCalls: number; usage?: Usage }
 
 export const maxCallsPerRound = 10
 const OPENROUTER = "https://openrouter.ai/api/v1"
@@ -104,7 +104,7 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
   ]
   const retries = new TransportRetries(), ownership = new TransportOwnership(transportOwnership(signal))
   const results = new Map<string, JSONObject>(), trace: JSONObject[] = []
-  let posts = 0, usage: Usage | undefined, rounds = 0, nextID = 1
+  let posts = 0, usage: Usage | undefined, rounds = 0, nextID = 1, toolCalls = 0
   let selection: { items: string[]; notes?: string } | undefined, endReason: RetrievalEndReason = "no-finish", stopDetail = ""
 
   const post = async (toolChoice: unknown, stage: AbortSignal) => {
@@ -120,11 +120,15 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
         let response: Response
         try {
           dispatched = true
-          const pending = deps.fetcher(`${config.baseURL}/chat/completions`, { method: "POST", redirect: "error",
-            signal: AbortSignal.any([stage, requestAbort.signal]),
-            headers: { "Content-Type": "application/json", ...(deps.key ? { Authorization: `Bearer ${deps.key}` } : {}) }, body })
-          deps.observe({ type: "dispatched", review: deps.review, attempt: attemptID, retry: attempt ? "transport" : "initial" })
-          if (attempt) { try { void Promise.resolve(deps.onRetry?.()).catch(() => {}) } catch {} }
+          let pending: Promise<Response>
+          try {
+            pending = deps.fetcher(`${config.baseURL}/chat/completions`, { method: "POST", redirect: "error",
+              signal: AbortSignal.any([stage, requestAbort.signal]),
+              headers: { "Content-Type": "application/json", ...(deps.key ? { Authorization: `Bearer ${deps.key}` } : {}) }, body })
+          } finally {
+            deps.observe({ type: "dispatched", review: deps.review, attempt: attemptID, retry: attempt ? "transport" : "initial" })
+            if (attempt) { try { void Promise.resolve(deps.onRetry?.()).catch(() => {}) } catch {} }
+          }
           response = await abortable(pending, stage, ownership, cancelBody)
         } catch (error) {
           stage.throwIfAborted()
@@ -232,6 +236,8 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
           }
           const timeout = Math.min(3600000, remainingTime(stage))
           if (timeout <= 0) throw new DeadlineError("Retrieval")
+          stage.throwIfAborted()
+          deps.observe({ type: "toolDispatched", review: deps.review, call: String(++toolCalls) })
           const result = await ownership.track(deps.executor.execute({ tool: call.name as RetrievalToolName, arguments: args as JSONObject }, base, timeout, stage))
           stage.throwIfAborted()
           const id = record(rounds, call, args, summary(result))
@@ -252,7 +258,7 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
   const forwarded = forward(trace, results, selection, config)
   const limitations = [...forwarded.limitations]
   if (!selection) limitations.unshift(`Retrieval ended without a valid finish selection (${endReason}). ${stopDetail} All successful results were forwarded in call order within the forwarding budget.`.replace("  ", " "))
-  return { posts, usage, limitations, section: { status: "completed", selection: selection ? "agent" : "all-in-order", endReason, base,
+  return { posts, toolCalls, usage, limitations, section: { status: "completed", selection: selection ? "agent" : "all-in-order", endReason, base,
     ...(forwarded.notes ? { notes: forwarded.notes } : {}), trace, items: forwarded.items } }
 }
 

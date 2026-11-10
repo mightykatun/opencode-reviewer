@@ -25,11 +25,11 @@ export const HISTORY_RECORD_BYTES = {
   accepted: objectBytes(acceptedFields),
   dispatched: objectBytes({ at: numberBytes, retry: JSON.stringify("transport").length }),
   finalized: objectBytes({ at: numberBytes, usage: usageBytes, reportedModel: textBytes }),
-  payload: objectBytes({ ...acceptedFields, desc: stringBytes(HISTORY_DESCRIPTION_BYTES), usage: usageBytes }),
+  payload: objectBytes({ ...acceptedFields, desc: stringBytes(HISTORY_DESCRIPTION_BYTES), usage: usageBytes, toolCalls: numberBytes }),
   totals: objectBytes({ requests: numberBytes, tokenRequests: numberBytes, input: numberBytes, output: numberBytes,
     priced: numberBytes, cost: numberBytes, since: numberBytes, safe: numberBytes, unsafe: numberBytes, ratingsSince: numberBytes,
     activity: objectBytes({ reviews: numberBytes, usageRequests: numberBytes, retries: numberBytes, autoApproved: numberBytes,
-      manuallyApproved: numberBytes, rejected: numberBytes,
+      manuallyApproved: numberBytes, rejected: numberBytes, toolCalls: numberBytes,
       timedReviews: numberBytes, meanFullReportMs: numberBytes, meanRatingMs: numberBytes, since: numberBytes }) }),
 } as const
 export class HistoryInvalid extends Error {}
@@ -41,11 +41,12 @@ export interface HistoryReview extends HistoryScope {
 /** Notification targets identify a permission; saved reports have distinct review IDs. */
 export type HistoryTarget = Pick<HistoryReview, "session" | "permission">
 export interface HistoryAccepted { safe: boolean; completedAt: number; reportedModel?: string; timing?: ReviewTiming }
-export interface HistoryPayload extends HistoryAccepted { desc: string; usage?: Usage }
+export interface HistoryPayload extends HistoryAccepted { desc: string; usage?: Usage; toolCalls?: number }
 export type HistoryOutcome = "auto" | "manual" | "approved" | "rejected" | "cancelled"
 export type HistoryEvent =
   | { type: "attemptDispatched"; context: HistoryReview; at: number; attempt: string; retry: "initial" | "transport" | "format" }
   | { type: "attemptFinalized"; context: HistoryReview; at: number; attempt: string; usage?: Usage; reportedModel?: string }
+  | { type: "toolDispatched"; context: HistoryReview; at: number; call: string }
   | { type: "reviewAccepted"; context: HistoryReview; at: number; accepted: HistoryAccepted }
   | { type: "approvalDispatched"; context: HistoryReview; at: number; approval: string; automatic: boolean }
   | { type: "approvalSettled"; context: HistoryReview; at: number; approval: string; result: "not-sent" | "uncertain" }
@@ -98,7 +99,7 @@ function usage(v: Usage): void {
   requireValue(v.input !== undefined || v.cost !== undefined)
 }
 function accepted(v: HistoryAccepted, payload = false): void {
-  object(v, ["safe", "completedAt", "reportedModel", "timing", ...(payload ? ["desc", "usage"] : [])])
+  object(v, ["safe", "completedAt", "reportedModel", "timing", ...(payload ? ["desc", "usage", "toolCalls"] : [])])
   requireValue(typeof v.safe === "boolean"); timestamp(v.completedAt)
   if (v.reportedModel !== undefined) text(v.reportedModel)
   if (v.timing !== undefined) {
@@ -112,12 +113,14 @@ export function validatePayload(v: HistoryPayload): HistoryPayload {
   // displayText escapes those controls when either live or stored reports render.
   requireValue(typeof v.desc === "string" && v.desc.trim().length > 0 && Buffer.byteLength(v.desc) <= HISTORY_DESCRIPTION_BYTES)
   if (v.usage !== undefined) usage(v.usage)
+  if (v.toolCalls !== undefined) requireValue(count(v.toolCalls))
   return v
 }
 /** Fixed shallow shapes bound decoding work and reject accidental evidence/credential fields. */
 export function validateEvent(e: HistoryEvent): HistoryEvent {
   const extra: Record<HistoryEvent["type"], string[]> = {
     attemptDispatched: ["attempt", "retry"], attemptFinalized: ["attempt", "usage", "reportedModel"],
+    toolDispatched: ["call"],
     reviewAccepted: ["accepted"], approvalDispatched: ["approval", "automatic"],
     approvalSettled: ["approval", "result"], approvalConfirmed: ["approval", "automatic"],
     permissionResolved: ["outcome", "payload"], permissionOutcome: ["outcome"], sessionDeleted: [],
@@ -129,6 +132,7 @@ export function validateEvent(e: HistoryEvent): HistoryEvent {
   switch (e.type) {
     case "attemptDispatched": text(e.attempt); requireValue(["initial", "transport", "format"].includes(e.retry)); break
     case "attemptFinalized": text(e.attempt); if (e.usage !== undefined) usage(e.usage); if (e.reportedModel !== undefined) text(e.reportedModel); break
+    case "toolDispatched": text(e.call); break
     case "reviewAccepted": accepted(e.accepted); break
     case "approvalDispatched": case "approvalConfirmed": text(e.approval); requireValue(typeof e.automatic === "boolean"); break
     case "approvalSettled": text(e.approval); requireValue(["not-sent", "uncertain"].includes(e.result)); break

@@ -59,6 +59,7 @@ test("failed envelopes finalize model and normalized usage without storing raw e
     usage: { prompt_tokens: 2, completion_tokens: 1, cost: 0.1 }, error: { private: "secret" } }), environment: {},
   observation: { review: "execution", observe: e => events.push(e) } }))
   assert.equal(events.length, 2)
+  assert.ok(events[0]?.type === "dispatched")
   assert.deepEqual(events[1], { type: "finalized", review: "execution", attempt: events[0]!.attempt,
     reportedModel: "failure-model", usage: { input: 2, output: 1, cost: 0.1 } })
   assert.ok(!JSON.stringify(events).includes("secret"))

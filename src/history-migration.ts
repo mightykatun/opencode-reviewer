@@ -33,7 +33,7 @@ export function bootstrap(db: HistoryDatabase, root: string): { done: boolean; s
   let review = saved?.review ?? "", phase = saved?.phase ?? 0, after = saved?.after ?? ""
   let totals: LifetimeTotals = saved ? validate(JSON.parse(saved.totals)) : empty()
   let partial = saved?.partial ?? Number(!!get("SELECT id FROM roots WHERE id=?", root))
-  if (![0, 1, 2, 3].includes(phase) || ![0, 1].includes(partial) || !/^(?:[a-f0-9]{64})?$/.test(review)
+  if (![0, 1, 2, 3, 4].includes(phase) || ![0, 1].includes(partial) || !/^(?:[a-f0-9]{64})?$/.test(review)
     || !/^(?:[a-f0-9]{64})?$/.test(after)) throw new HistoryInvalid("Invalid bootstrap cursor")
   const include = (event: HistoryEvent) => { validateEvent(event); totals = add(totals, historyDelta(event)) }
   const end = performance.now() + HISTORY_BOOTSTRAP_MS
@@ -79,9 +79,15 @@ export function bootstrap(db: HistoryDatabase, root: string): { done: boolean; s
       if (fact.hasDispatched) include({ ...JSON.parse(fact.dispatched), type: "attemptDispatched", context, attempt: fact.id })
       if (fact.hasFinalized) include({ ...JSON.parse(fact.finalized), type: "attemptFinalized", context, attempt: fact.id })
       after = fact.id
+    } else if (phase === 4) {
+      const fact = get("SELECT id,at FROM retrieval_calls WHERE review=? AND id>? ORDER BY id LIMIT 1", review, after)
+      if (!fact) { phase = 0; after = ""; continue }
+      if (!/^[a-f0-9]{64}$/.test(fact.id)) throw new HistoryInvalid("Invalid conversation retrieval call")
+      include({ type: "toolDispatched", context, call: fact.id, at: fact.at })
+      after = fact.id
     } else {
       const fact = get("SELECT id,root,session,at,state,automatic FROM approvals WHERE review=? AND id>? ORDER BY id LIMIT 1", review, after)
-      if (!fact) { phase = 0; after = ""; continue }
+      if (!fact) { phase = 4; after = ""; continue }
       if (!/^[a-f0-9]{64}$/.test(fact.id) || fact.root !== root || fact.session !== sessionID(context) || ![-1, 0, 1].includes(fact.automatic)
         || !["pending", "uncertain", "not-sent", "confirmed"].includes(fact.state)) throw new HistoryInvalid("Invalid conversation approval")
       if (fact.state === "confirmed") {

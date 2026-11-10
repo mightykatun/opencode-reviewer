@@ -42,7 +42,7 @@ for (const stream of [false, true]) test(`${stream ? "streaming" : "non-streamin
   const plainResult = await review(...args, { fetcher })
   const { metadata: measuredMetadata, ...measuredAssessment } = measuredResult
   const { metadata: plainMetadata, ...plainAssessment } = plainResult
-  assert.deepEqual(measuredAssessment, safe)
+  assert.deepEqual(measuredAssessment, { ...safe, toolCalls: 0 })
   assert.deepEqual(measuredAssessment, plainAssessment)
   assert.notEqual(measuredMetadata?.review, plainMetadata?.review)
   assert.equal(measuredMetadata?.reportedModel, "PRIVATE_MODEL")
@@ -86,7 +86,7 @@ test("correction attempts emit separate ordinals and dispatch-relative clocks", 
     const content = ++calls === 1 ? '{"safe":true,"desc":"PRIVATE_DESCRIPTION","extra":1}' : JSON.stringify(safe)
     return new Response(frame(content.slice(0, 13)) + frame(content.slice(13)) + finish, { headers: { "Content-Type": "text/event-stream" } })
   }, environment: {}, onDiagnostics: (event) => { events.push(event) } })
-  assert.deepEqual(result, { ...safe, metadata: result.metadata })
+  assert.deepEqual(result, { ...safe, toolCalls: 0, metadata: result.metadata })
   assert.equal(calls, 2)
   for (const attempt of [0, 1]) {
     const group = events.filter((event) => event.attempt === attempt)
@@ -108,7 +108,7 @@ for (const kind of ["throw", "reject", "mutate"] as const) test(`observer ${kind
     return new Response(frame(JSON.stringify(safe)) + finish, { headers: { "Content-Type": "text/event-stream" } })
   }, environment: {}, onDiagnostics: observer })
   await settle() // Rejected asynchronous observers must also be consumed.
-  assert.deepEqual(result, { ...safe, metadata: result.metadata })
+  assert.deepEqual(result, { ...safe, toolCalls: 0, metadata: result.metadata })
   assert.equal(calls, 1)
 })
 

@@ -47,6 +47,7 @@ test("the agent reads a script, selects it with notes, and the separate verdict 
     { [JSON.stringify({ path: "run.sh" })]: read("run.sh", script) })
   const result = await review(shellEvidence({ command: "./run.sh" }), h.config, signal(), h.deps)
   assert.equal(result.safe, false)
+  assert.equal(result.toolCalls, 1)
   assert.equal(h.bodies.length, 3)
   const [first, second, last] = h.bodies
   assert.deepEqual(first.tools, retrievalTools)
@@ -69,6 +70,7 @@ test("the agent reads a script, selects it with notes, and the separate verdict 
   assert.deepEqual(result.usage, { input: 30, output: 6 })
   assert.deepEqual(h.events.filter(event => event.type === "dispatched").map(event => event.retry), ["initial", "initial", "initial"])
   assert.equal(h.events.filter(event => event.type === "finalized").length, 3)
+  assert.deepEqual(h.events.filter(event => event.type === "toolDispatched"), [{ type: "toolDispatched", review: "review-1", call: "1" }])
   assert.equal(h.retries(), 0)
   assert.deepEqual(h.progress.map(value => value.phase), ["retrieving", "retrieving", "evaluating"])
 })
@@ -92,7 +94,8 @@ test("without a valid finish, every successful result is forwarded in call order
   const h = harness([tools(call("a", "read", { path: "a" }), call("b", "read", { path: "missing" }), call("c", "read", { path: "c" })),
     tools(call("x", "read", { path: "a" })), verdict()],
   { [JSON.stringify({ path: "a" })]: read("a", "one\n"), [JSON.stringify({ path: "c" })]: read("c", "three\n") }, { maxRetrievalRounds: 1 })
-  await review(shellEvidence(), h.config, signal(), h.deps)
+  const result = await review(shellEvidence(), h.config, signal(), h.deps)
+  assert.equal(result.toolCalls, 3, "the missing file counts as a dispatched retrieval operation")
   const evidence = verdictEvidence(h.bodies[2])
   assert.equal(evidence.retrieval.selection, "all-in-order")
   assert.equal(evidence.retrieval.endReason, "no-finish")
@@ -106,7 +109,9 @@ test("malformed calls return errors to the model; extra calls and calls beside f
   const many = Array.from({ length: maxCallsPerRound + 1 }, (_, index) => call(`m${index}`, "read", { path: `f${index}` }))
   const h = harness([tools(call("u", "write", { path: "x" }), call("j", "read", "{not json"), call("i", "finish", { items: "c1" })),
     tools(...many), tools(call("r", "read", { path: "late" }), call("f", "finish", { items: [] })), verdict()])
-  await review(shellEvidence(), h.config, signal(), h.deps)
+  const result = await review(shellEvidence(), h.config, signal(), h.deps)
+  assert.equal(result.toolCalls, maxCallsPerRound)
+  assert.equal(h.events.filter(event => event.type === "toolDispatched").length, maxCallsPerRound)
   const answers = h.bodies[1].messages.slice(3).map((message: any) => JSON.parse(message.content))
   assert.deepEqual(answers.map((answer: any) => answer.reason), ["unknown tool", "invalid arguments: arguments must be a JSON object",
     "invalid arguments: finish requires items (string array) and optional notes (string)"])
@@ -143,6 +148,19 @@ test("retrieval has its own transport retry budget, counted as retries and shown
   assert.deepEqual(h.progress.map(value => value.phase).slice(0, 3), ["retrieving", "retrieval-retrying", "retrieving"])
 })
 
+test("synchronous retrieval transport failures retain every dispatched attempt and retry", async () => {
+  const h = harness([tools(call("f", "finish", { items: [] })), verdict()])
+  let calls = 0
+  await review(shellEvidence(), h.config, signal(), { ...h.deps, fetcher: (url, init) => {
+    if (++calls <= 2) throw Object.assign(Error("socket reset"), { code: "ECONNRESET" })
+    return h.deps.fetcher(url, init)
+  } })
+  const dispatched = h.events.filter(event => event.type === "dispatched")
+  assert.deepEqual(dispatched.map(event => event.retry), ["initial", "transport", "transport", "initial"])
+  assert.deepEqual(h.events.filter(event => event.type === "finalized").map(event => event.attempt), dispatched.map(event => event.attempt))
+  assert.equal(h.retries(), 2)
+})
+
 test("the retrieval budget expires into a fallback while the review deadline still allows a verdict", async () => {
   const h = harness([tools(call("a", "read", { path: "slow" })), verdict()], {}, { retrievalTimeoutMs: 100 })
   const executor: RetrievalExecutor = { execute: (_call, _base, _timeout, stage) => new Promise((_, reject) => {
@@ -160,6 +178,7 @@ test("cancelling the review during retrieval rejects instead of falling back", a
   const executor: RetrievalExecutor = { execute: () => { controller.abort(new Error("review canceled")); return new Promise(() => {}) } }
   await assert.rejects(review(shellEvidence(), h.config, controller.signal, { ...h.deps, retrieval: executor }), /review canceled/)
   assert.equal(h.bodies.length, 1)
+  assert.equal(h.events.filter(event => event.type === "toolDispatched").length, 1, "dispatch is counted even when its operation cancels the review")
 })
 
 test("forwarding honors maxFiles for reads and truncates to exact leading lines or entries within the byte budget", async () => {
@@ -187,21 +206,21 @@ test("forwarding honors maxFiles for reads and truncates to exact leading lines 
 
 test("disabled categories and missing executors run a single verdict POST with a factual section", async () => {
   const disabled = harness([verdict()])
-  await review(editEvidence(), disabled.config, signal(), disabled.deps)
+  assert.equal((await review(editEvidence(), disabled.config, signal(), disabled.deps)).toolCalls, 0)
   assert.equal(disabled.bodies.length, 1)
   assert.deepEqual(verdictEvidence(disabled.bodies[0]).retrieval, { status: "disabled" })
   const off = harness([verdict()], {}, { retrieval: false })
-  await review(shellEvidence(), off.config, signal(), off.deps)
+  assert.equal((await review(shellEvidence(), off.config, signal(), off.deps)).toolCalls, 0)
   assert.deepEqual(verdictEvidence(off.bodies[0]).retrieval, { status: "disabled" })
   const missing = harness([verdict()])
-  await review(shellEvidence(), missing.config, signal(), { ...missing.deps, retrieval: undefined })
+  assert.equal((await review(shellEvidence(), missing.config, signal(), { ...missing.deps, retrieval: undefined })).toolCalls, 0)
   assert.deepEqual(verdictEvidence(missing.bodies[0]).retrieval, { status: "unavailable" })
   assert.deepEqual(missing.progress.map(value => value.phase), ["evaluating"])
 })
 
 test("OpenRouter retrieval requests mark the stable system and evidence prefix for provider caching", async () => {
   const h = harness([tools(call("f", "finish", { items: [] })), verdict()], {}, { baseURL: "https://openrouter.ai/api/v1/" })
-  await review(shellEvidence(), h.config, signal(), h.deps)
+  assert.equal((await review(shellEvidence(), h.config, signal(), h.deps)).toolCalls, 0, "finish is not a retrieval operation")
   for (const message of h.bodies[0].messages)
     assert.deepEqual(Object.keys(message.content[0]), ["type", "text", "cache_control"])
   assert.equal(typeof h.bodies[1].messages[0].content, "string", "the verdict request shape is unchanged")

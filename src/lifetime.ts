@@ -7,12 +7,13 @@ export interface LifetimeActivity {
   autoApproved: number
   manuallyApproved: number
   rejected: number
+  toolCalls: number
   timedReviews: number
   meanFullReportMs: number
   meanRatingMs: number
   since: number | null
 }
-const emptyActivity = (): LifetimeActivity => ({ reviews: 0, usageRequests: 0, retries: 0, autoApproved: 0, manuallyApproved: 0, rejected: 0,
+const emptyActivity = (): LifetimeActivity => ({ reviews: 0, usageRequests: 0, retries: 0, autoApproved: 0, manuallyApproved: 0, rejected: 0, toolCalls: 0,
   timedReviews: 0, meanFullReportMs: 0, meanRatingMs: 0, since: null })
 
 export interface LifetimeTotals {
@@ -47,13 +48,15 @@ export function validate(value: LifetimeTotals): LifetimeTotals {
   // absent pair; malformed or partially written counters remain unavailable.
   if (value.activity && !Object.hasOwn(value.activity, "manuallyApproved") && !Object.hasOwn(value.activity, "rejected"))
     value = { ...value, activity: { ...value.activity, manuallyApproved: 0, rejected: 0 } }
+  if (value.activity && !Object.hasOwn(value.activity, "toolCalls"))
+    value = { ...value, activity: { ...value.activity, toolCalls: 0 } }
   const activity = value.activity
   if (!activity || ![activity.reviews, activity.usageRequests, activity.retries, activity.autoApproved,
-    activity.manuallyApproved, activity.rejected, activity.timedReviews].every(count)
+    activity.manuallyApproved, activity.rejected, activity.toolCalls, activity.timedReviews].every(count)
     || activity.reviews > value.safe + value.unsafe || activity.usageRequests > value.requests || activity.timedReviews > activity.reviews
     || ![activity.meanFullReportMs, activity.meanRatingMs].every(amount) || activity.meanRatingMs > activity.meanFullReportMs
     || (!activity.timedReviews && (activity.meanFullReportMs !== 0 || activity.meanRatingMs !== 0))
-    || (activity.reviews || activity.usageRequests || activity.retries || activity.autoApproved || activity.manuallyApproved || activity.rejected
+    || (activity.reviews || activity.usageRequests || activity.retries || activity.autoApproved || activity.manuallyApproved || activity.rejected || activity.toolCalls
       ? !count(activity.since) || activity.since > 8.64e15 : activity.since !== null)) throw new Error("Invalid lifetime activity totals")
   return value
 }
@@ -80,6 +83,7 @@ export function add(left: LifetimeTotals, right: LifetimeTotals): LifetimeTotals
       autoApproved: left.activity.autoApproved + right.activity.autoApproved,
       manuallyApproved: left.activity.manuallyApproved + right.activity.manuallyApproved,
       rejected: left.activity.rejected + right.activity.rejected,
+      toolCalls: left.activity.toolCalls + right.activity.toolCalls,
       timedReviews: left.activity.timedReviews + right.activity.timedReviews,
       meanFullReportMs: mean(left.activity.meanFullReportMs, left.activity.timedReviews, right.activity.meanFullReportMs, right.activity.timedReviews),
       meanRatingMs: mean(left.activity.meanRatingMs, left.activity.timedReviews, right.activity.meanRatingMs, right.activity.timedReviews),
@@ -104,6 +108,7 @@ export function lifetimeReportParts(totals: LifetimeTotals): LifetimeReportPart[
   const percentage = (count: number) => reviews ? (count / reviews * 100).toFixed(1) : undefined
   return [{ text: [uiText.lifetime.dialogReviews(reviews), uiText.lifetime.dialogRetries(activity.retries),
     totals.tokenRequests ? uiText.lifetime.dialogTokens(totals.input, totals.output, totals.tokenRequests < totals.requests) : uiText.lifetime.dialogTokensUnavailable,
+    uiText.lifetime.dialogToolCalls(activity.toolCalls),
     uiText.lifetime.dialogCost(totals.priced ? totals.cost.toFixed(4) : undefined, totals.priced < totals.requests),
     "", uiText.lifetime.dialogSafeLabel].join("\n") },
     { text: uiText.lifetime.dialogRating(totals.safe, percentage(totals.safe)), rating: "safe" },

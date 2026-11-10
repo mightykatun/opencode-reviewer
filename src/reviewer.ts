@@ -193,6 +193,7 @@ export async function review(
   }
   // Retrieval POSTs precede the verdict and are summed into its report usage.
   let section: RetrievalSection, extra: string[] = [], prior: { usage?: Usage } | undefined
+  let toolCalls = 0
   if (!retrievalEnabled(config, evidence.kind)) {
     section = { status: "disabled" }
     extra = ["Retrieval is disabled for this review category; no files were read."]
@@ -206,7 +207,7 @@ export async function review(
         try { void Promise.resolve(onProgress?.({ attempt: 0, phase })).catch(() => {}) } catch {}
       } })
     signal.throwIfAborted()
-    section = outcome.section; extra = outcome.limitations
+    section = outcome.section; extra = outcome.limitations; toolCalls = outcome.toolCalls
     if (outcome.posts) prior = { ...(outcome.usage ? { usage: outcome.usage } : {}) }
   }
   const prompt = prompts[evidence.kind]
@@ -309,7 +310,7 @@ export async function review(
         try { result = assessment.finish() } finally { diagnose?.("final-validation") }
         if (config.stream) progress("streaming", result)
         signal.throwIfAborted()
-        return { ...result, ...(reportUsage ? { usage: reportUsage } : {}), metadata: {
+        return { ...result, toolCalls, ...(reportUsage ? { usage: reportUsage } : {}), metadata: {
           review: observation.review, kind: evidence.kind, configuredModel: config.model, provider: config.baseURL,
           ...(accounting.model() ? { reportedModel: accounting.model() } : {}),
         } }

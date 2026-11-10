@@ -13,7 +13,8 @@ import { parseAssessment, review as reviewWithMetadata, withDeadline } from "../
 // Existing transport assertions stay exact for assessment/usage. Historical
 // metadata has its own assertions here and detailed correlation tests separately.
 async function review(...args: Parameters<typeof reviewWithMetadata>) {
-  const { metadata, ...result } = await reviewWithMetadata(...args)
+  const { metadata, toolCalls, ...result } = await reviewWithMetadata(...args)
+  assert.equal(toolCalls, 0, "these verdict-only fixtures dispatch no retrieval operations")
   assert.ok(metadata)
   assert.match(metadata.review, /^[0-9a-f-]{36}$/)
   assert.equal(metadata.kind, args[0].kind)

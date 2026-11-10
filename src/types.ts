@@ -37,6 +37,8 @@ export interface ReviewProgress {
 /** Endpoint metadata stays outside the model's strict assessment JSON. */
 export interface ReviewResult extends Assessment {
   usage?: import("./usage.js").Usage
+  /** Dispatched retrieval operations, excluding finish and model requests. */
+  toolCalls?: number
   metadata?: ReviewMetadata
 }
 
@@ -50,6 +52,7 @@ export interface ReviewMetadata {
 export type ReviewAttemptEvent =
   | { type: "dispatched"; review: string; attempt: string; retry: "initial" | "transport" | "format" }
   | { type: "finalized"; review: string; attempt: string; usage?: import("./usage.js").Usage; reportedModel?: string }
+  | { type: "toolDispatched"; review: string; call: string }
 export interface ReviewObservation {
   review: string
   observe?: (event: ReviewAttemptEvent) => unknown

@@ -24,7 +24,7 @@ export function replacePermissionStatistic(totals: LifetimeTotals, previous: Per
   const activity = { ...totals.activity,
     manuallyApproved: totals.activity.manuallyApproved + Number(next === "manual") - Number(previous === "manual"),
     rejected: totals.activity.rejected + Number(next === "rejected") - Number(previous === "rejected") }
-  if (!(activity.reviews || activity.usageRequests || activity.retries || activity.autoApproved || activity.manuallyApproved || activity.rejected))
+  if (!(activity.reviews || activity.usageRequests || activity.retries || activity.autoApproved || activity.manuallyApproved || activity.rejected || activity.toolCalls))
     activity.since = null
   else if (next !== "other") activity.since = activity.since === null ? at : Math.min(activity.since, at)
   return validate({ ...totals, activity })
@@ -36,6 +36,8 @@ export function historyDelta(e: HistoryEvent): LifetimeTotals {
   const delta = empty(), activity = delta.activity
   if (e.type === "attemptDispatched" && e.retry !== "initial") {
     activity.retries = 1; activity.since = e.at
+  } else if (e.type === "toolDispatched") {
+    activity.toolCalls = 1; activity.since = e.at
   } else if (e.type === "attemptFinalized" && e.usage) {
     delta.requests = activity.usageRequests = 1; delta.since = activity.since = e.at
     if (e.usage.input !== undefined) { delta.tokenRequests = 1; delta.input = e.usage.input; delta.output = e.usage.output! }

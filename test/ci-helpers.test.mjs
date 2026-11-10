@@ -140,6 +140,37 @@ test("connection barrier never substitutes snapshots, wrong location, missed del
   }
 })
 
+test("connection barrier replaces a probe whose deletion was missed during observer reload", async () => {
+  let clock = 0, created = 0
+  const removed = [], budgets = [], directory = "/fixture"
+  const value = await connectionProbe({ directory,
+    create: async budget => { budgets.push(budget.timeoutMs); return { id: `probe${++created}` } },
+    remove: async id => { removed.push(id) },
+    observe: async () => ({ connectionBirths: Array.from({ length: created }, (_, index) => ({
+      data: { sessionID: `probe${index + 1}`, location: { directory } }, durable: { aggregateID: `probe${index + 1}` },
+    })), connectionDeletes: [{ data: { sessionID: "sibling" } },
+      ...removed.filter(id => id !== "probe1").map(sessionID => ({ data: { sessionID } }))] }),
+  }, { now: () => clock, pause: async ms => { clock += ms } })
+  assert.deepEqual(value.attempts, ["probe1", "probe2"])
+  assert.equal(value.birth.data.sessionID, "probe2")
+  assert.equal(value.deletion.data.sessionID, "probe2")
+  assert.deepEqual(removed, ["probe1", "probe2"], "No deletion write is replayed")
+  assert.deepEqual(budgets, [60000, 59000], "The second probe consumes the original budget")
+})
+
+test("repeated missing deletions cannot exceed eight owned probes or extend admission", async () => {
+  let clock = 0, created = 0
+  const removed = []
+  await assert.rejects(connectionProbe({ directory: "/fixture",
+    create: async () => ({ id: `probe${++created}` }), remove: async id => { removed.push(id) },
+    observe: async () => ({ connectionBirths: [{ data: { sessionID: `probe${created}`, location: { directory: "/fixture" } },
+      durable: { aggregateID: `probe${created}` } }], connectionDeletes: [] }),
+  }, { now: () => clock, pause: async ms => { clock += ms } }), /Timed out/)
+  assert.equal(clock, 60000)
+  assert.equal(created, 8)
+  assert.deepEqual(removed, Array.from({ length: 8 }, (_, index) => `probe${index + 1}`))
+})
+
 test("connection barrier includes native control calls in its original deadline and keeps late cleanup separate", async () => {
   let clock = 0
   const budgets = [], removed = [], directory = "/fixture"

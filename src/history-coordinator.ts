@@ -59,6 +59,8 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
       if (!context || event.review !== context.review) return
       if (event.type === "dispatched") {
         if (!this.stopped) this.admit({ type: "attemptDispatched", context, at: this.now(), attempt: event.attempt, retry: event.retry })
+      } else if (event.type === "toolDispatched") {
+        if (!this.stopped) this.admit({ type: "toolDispatched", context, at: this.now(), call: event.call })
       } else this.admit({ type: "attemptFinalized", context, at: this.now(), attempt: event.attempt,
         ...(event.usage ? { usage: event.usage } : {}), ...(event.reportedModel ? { reportedModel: event.reportedModel } : {}) })
     } }
@@ -82,6 +84,7 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
         confirmed,
         ...(early?.context.review === fact.review && early.reply ? { reply: early.reply } : {}) }
       candidate.reports.set(fact.review, { context, payload: { ...accepted, desc: fact.result.desc,
+        ...(fact.result.toolCalls !== undefined ? { toolCalls: fact.result.toolCalls } : {}),
         ...(fact.result.usage ? { usage: { ...fact.result.usage } } : {}) } })
       this.candidates.set(id, candidate)
       const resolved = this.resolved.get(id)

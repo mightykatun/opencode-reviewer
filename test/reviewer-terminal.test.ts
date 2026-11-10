@@ -56,6 +56,7 @@ function finalized(f: ReturnType<typeof fixture>, value?: Usage) {
   assert.equal(f.body.locked, false)
   assert.deepEqual(f.observed, value ? [value] : [])
   assert.deepEqual(f.attempts.map(event => event.type), ["dispatched", "finalized"])
+  assert.ok(f.attempts[0]?.type === "dispatched" && f.attempts[1]?.type === "finalized")
   assert.equal(f.attempts[0]!.attempt, f.attempts[1]!.attempt)
   assert.deepEqual(f.attempts[1]!.type === "finalized" ? f.attempts[1]!.usage : undefined, value)
   assert.ok(f.progress.every(value => value.attempt === 0 && value.phase !== "retrying"))

@@ -94,16 +94,22 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
   const selected = () => connected() ? options.rootRoute() : undefined
   context.keymap.layer(() => ({ mode: "global", commands: [{
     id: "reviewer.history", title: uiText.commands.history, group: uiText.commands.category,
-    palette: true, slash: { name: "reviewer-history" }, enabled: () => !!selected(),
+    slash: { name: "reviewer-history" }, enabled: () => !!selected(),
     run: () => { const session = selected(); if (session) browser.open(session) },
   }] }))
-  context.keymap.layer(() => ({ priority: 100, mode: "base", enabled: () => !!selected(), commands: [{
-    id: "reviewer.history.toggle", title: uiText.commands.toggleHistory, group: uiText.commands.category,
-    bind: "alt+h",
-    run: () => {
+  // Like session instructions, remain discoverable in the palette's modal mode.
+  // Keyboard input is base-only; palette selection always opens the newest report.
+  context.keymap.layer(() => ({ priority: 100, mode: "global", enabled: () => !!selected(), commands: [{
+    id: "reviewer.history.toggle", title: uiText.commands.history, group: uiText.commands.category,
+    bind: "alt+h", palette: true,
+    run: (_input, event) => {
+      // Public command dispatch may supply a synthetic KeyEvent with no input
+      // sequence. Only real keyboard input toggles; palette/slash opens newest.
+      const keyboard = !!event?.sequence
+      if (keyboard && context.keymap.mode.current() !== "base") return false
       const session = selected()
-      if (!session || context.keymap.mode.current() !== "base") return
-      if (browser.isCurrent(session)) browser.close()
+      if (!session) return
+      if (keyboard && browser.isCurrent(session)) browser.close()
       else browser.open(session)
     },
   }] }))

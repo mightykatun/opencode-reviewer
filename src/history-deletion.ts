@@ -10,7 +10,8 @@ export const HISTORY_DELETE_MS = 40
  * The tombstone immediately prevents resurrection by other writers. Remaining
  * indexed rows are the durable cursor; replay resumes them without subtracting
  * totals. No writer acknowledgement until the last slice. Explicitly remove
- * attempts before their review so one cascade cannot contain unlimited children.
+ * attempts and retrieval calls before their review so one cascade cannot contain
+ * unlimited children.
  * The time limit is cooperative between rows, not an SQLite I/O deadline.
  */
 export function deleteHistory(db: HistoryDatabase, context: HistoryScope): boolean {
@@ -29,6 +30,8 @@ export function deleteHistory(db: HistoryDatabase, context: HistoryScope): boole
   const removeApproval = db.prepare("DELETE FROM approvals WHERE id=?")
   const removeReview = db.prepare("DELETE FROM reviews WHERE id=?")
   const removeAttempt = db.prepare("DELETE FROM attempts WHERE id=?")
+  const call = db.prepare("SELECT id FROM retrieval_calls WHERE review=? LIMIT 1")
+  const removeCall = db.prepare("DELETE FROM retrieval_calls WHERE id=?")
   const nextSession = db.prepare(isRoot ? "SELECT id FROM sessions WHERE scope=? AND root=? LIMIT 1" : "SELECT id FROM sessions WHERE id=?")
   const removeSession = db.prepare("DELETE FROM sessions WHERE id=?")
   const deleteRow = () => {
@@ -39,7 +42,9 @@ export function deleteHistory(db: HistoryDatabase, context: HistoryScope): boole
     const r = review.get(key)
     if (r) {
       const a = attempt.get(r.id)
+      const tool = !a && call.get(r.id)
       if (a) removeAttempt.run(a.id)
+      else if (tool) removeCall.run(tool.id)
       else removeReview.run(r.id)
       return true
     }

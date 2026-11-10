@@ -32,7 +32,7 @@ import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { connectionProbe } from "./smoke-connection.mjs"
 import { smokeEnvironment, smokeGitInit, smokeGit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
-import { activatePalette, renditionRows } from "./smoke-ui.mjs"
+import { activatePalette, renditionRows, selectedPaletteResult } from "./smoke-ui.mjs"
 import { readProductionHistory, assertWriteInspection, assertWriteEvidence, assertEvidenceRequest,
   savedStageHistory } from "./smoke-v2-review-support.mjs"
 import { rpcDefinition } from "./smoke-v2-rpc.mjs"
@@ -248,14 +248,14 @@ async function monitorSetup(ctx) {
          else if (command.type === "keymap") {
             // Native IDs checked against stock 2.0.26's session-frame.tsx,
             // config/keybind.ts and command-palette.tsx, plus the V2 keybind docs.
-             assert.ok(["reviewer.history", "reviewer.lifetime", "session.sidebar.toggle", "command.palette.show",
+              assert.ok(["reviewer.history", "reviewer.history.toggle", "reviewer.lifetime", "session.sidebar.toggle", "command.palette.show",
                ...(fixture.instructionsCase ? ["reviewer.instructions"] : []),
               ...(fixture.projectTransition ? ["reviewer.disable", "reviewer.enable"] : [])].includes(command.id),
               "Only public production browsing, fixture-scoped mode or native presentation commands")
            const registered = ctx.keymap.commands().find(item => item.id === command.id)
            const enabled = !!registered && (typeof registered.enabled === "function" ? registered.enabled() : registered.enabled !== false)
              value = { id: command.id, title: registered?.title, registered: !!registered, enabled, mode: ctx.keymap.mode.current(),
-               ...(fixture.instructionsCase ? { bind: registered?.bind, slash: registered?.slash } : {}) }
+                ...(fixture.instructionsCase || command.id === "reviewer.history.toggle" ? { bind: registered?.bind, slash: registered?.slash } : {}) }
            if (command.dispatch && enabled) ctx.keymap.dispatch(command.id)
          }
          else if (command.type === "mouse") {
@@ -438,7 +438,7 @@ const { scenario } = runtimeArguments("smoke-v2-review.mjs")
 const manualHistoryCase = scenario.startsWith("advisory-history-"), manualReply = manualHistoryCase ? scenario.split("-").at(-1) : undefined
 const streaming = !scenario.startsWith("advisory"), automatic = streaming, fast = scenario.startsWith("fast")
 const defaultHomeCase = scenario === "normal-history-default-home"
-const historyCase = scenario === "normal-history" || defaultHomeCase
+const historyCase = scenario === "normal-history" || defaultHomeCase || scenario === "normal-retrieval"
 const keyboardMouseOffCase = scenario === "normal-history-keyboard-mouse-off"
 const coverCase = ["normal-history-cover", "fast-history-cover"].includes(scenario) || keyboardMouseOffCase
 const dialogCase = ["normal-dialog", "fast-dialog"].includes(scenario)
@@ -528,6 +528,7 @@ const script = (largeSource ? "# oversized source fixture context\n".repeat(8000
 const description = "V2 local marker report.\n\nThe script writes one isolated marker."
 // Retrieval runs only in its dedicated cases; history cases keep one POST per review.
 const retrievalCase = scenario === "normal-retrieval" || largeSource
+const expectedToolCalls = retrievalCase ? largeSource ? 3 : 4 : 0
 const retrievalCalls = []
 const instructionsText = 'SESSION_INSTRUCTIONS_LITERAL: keep "quoted" text and {{braces}}.\n\tRoot and descendant share this note.'
 // Only the second keyboard-case response is long. The first genuine report keeps
@@ -794,6 +795,7 @@ const savedHistory = async () => {
   assert.equal(payload.desc, description, "Final validated description saved exactly")
   assert.equal(payload.safe, true)
   assert.deepEqual(payload.usage, { input: reviewUsage.prompt_tokens, output: reviewUsage.completion_tokens })
+  assert.equal(payload.toolCalls, expectedToolCalls, "Saved count includes failed reads, but not finish or model POSTs")
   assert.equal(JSON.parse(row.accepted).safe, true)
   assert.ok(value.attempts.every(attempt => attempt.review === row.review && JSON.parse(attempt.dispatched).retry === "initial"))
   const verdictAttempts = value.attempts.filter(attempt => JSON.parse(attempt.finalized).usage?.input === reviewUsage.prompt_tokens)
@@ -812,6 +814,7 @@ const savedHistory = async () => {
     assert.equal(total.safe, 1)
     assert.equal(total.unsafe, 0)
     assert.equal(total.activity.retries, 0)
+    assert.equal(total.activity.toolCalls, expectedToolCalls, "Both persisted scopes count the same dispatched retrieval operations")
     assert.equal(total.activity.manuallyApproved, 0)
     assert.equal(total.activity.rejected, 0)
     assert.equal(total.activity.timedReviews, 1)
@@ -829,10 +832,12 @@ const historyScreen = (record, screen) => {
   assert.match(screen, /1\/1/)
   assert.match(screen, /model: v2-production-reviewer/)
   assert.match(screen, /tokens: 23 in 11 out/)
+  assert.ok(screen.includes(`tool calls: ${expectedToolCalls}`))
   if (historyCase) {
     const metadata = record.metadata["reviewer.history.metadata"]
     assert.ok(metadata, "History metadata is a genuine native text node")
     const rows = metadata.text.split("\n")
+    assert.deepEqual(rows.slice(0, 2), ["tokens: 23 in 11 out", `tool calls: ${expectedToolCalls}`])
     assert.equal(metadata.wrapMode, "none")
     assert.equal(metadata.height, rows.length, "Each metadata field occupies exactly one terminal row")
     assert.ok(rows.every(row => row.length <= metadata.width), "ASCII metadata fits the measured text width")
@@ -940,9 +945,22 @@ const savedPair = async () => {
   return { ...value, totals }
 }
 const openHistory = async () => {
-  const result = await command({ type: "keymap", id: "reviewer.history", dispatch: true })
+  const result = await command({ type: "keymap", id: "reviewer.history.toggle", dispatch: !historyCase })
   assert.equal(result.registered, true, "Actual production history command is registered")
   assert.equal(result.enabled, true)
+  if (historyCase) {
+    assert.equal(result.bind, "alt+h")
+    await activatePalette({ send: (...keys) => runtime.tmux("send-keys", "-t", "v2-review", ...keys), capture: () => {
+      const ansi = runtime.tmux("capture-pane", "-p", "-e", "-t", "v2-review")
+      if (selectedPaletteResult(ansi, result.title)) {
+        assert.ok(renditionRows(ansi).some(row => row.text.includes(result.title) && /alt\+h/i.test(row.text)),
+          "The selected history palette entry paints the actual Alt+H shortcut")
+      }
+      return ansi
+    } }, result.title, async screen => {
+      try { historyScreen(await observations(), screen); return true } catch { return false }
+    })
+  }
   await until("rendered actual production history", record => {
     try { historyScreen(record, capture()); return true } catch { return false }
   }, 15000)
@@ -2725,7 +2743,10 @@ createInterface({input:process.stdin}).on('line',line=>{
       assert.match(screen, /Tab: switch view/)
       assert.match(screen, /Reviews: 1/)
       assert.match(screen, /Retries: 0/)
-      assert.match(screen, /Tokens: 23 in 11 out/)
+       assert.match(screen, /Tokens: 23 in 11 out/)
+       assert.ok(screen.includes(`Tool calls: ${expectedToolCalls}`))
+       assert.ok(record.statisticsReport?.text.includes(`Tokens: 23 in 11 out\nTool calls: ${expectedToolCalls}\n`),
+         "Both statistics scopes render tool calls directly below tokens")
       assert.match(screen, /Safe: 1 \(100\.0%\)/)
       assert.match(screen, /Unsafe: 0 \(0\.0%\)/)
       assert.match(screen, /Auto-approved: 1 \(100\.0%\)/)

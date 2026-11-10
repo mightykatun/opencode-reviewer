@@ -65,7 +65,8 @@ test("bootstrap prepares each fixed statement once per bounded transaction, not 
   for (;;) {
     prepares = 0
     const result = sql.bootstrap(root)
-    assert.ok(prepares <= 9, `fixed SQL preparation must not scale with rows: ${prepares}`)
+    // One additional fixed SELECT pages retrieval calls; the row/time budgets are unchanged.
+    assert.ok(prepares <= 10, `fixed SQL preparation must not scale with rows: ${prepares}`)
     assert.ok(result.steps <= HISTORY_BOOTSTRAP_STEPS)
     slices++
     if (result.done) break
