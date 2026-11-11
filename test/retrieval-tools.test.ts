@@ -48,6 +48,24 @@ test("arguments are strict per tool and paths resolve absolute, relative-to-base
   assert.equal(new RegExp(`^${globSource("[!a]?.md")}$`).test("bx.md"), true)
 })
 
+test("list, glob and grep accept only optional positive integer limits up to 500", () => {
+  for (const tool of ["list", "glob", "grep"] as const) {
+    const required = tool === "list" ? { path: "." } : { pattern: "hit" }
+    for (const limit of [undefined, 1, 75, 500]) {
+      const args = { ...required, ...(limit === undefined ? {} : { limit }) }
+      assert.deepEqual(retrievalArguments(tool, args), { ok: true, args })
+    }
+    for (const limit of [0, -1, 1.5, 501, "3", true, null]) {
+      const result = retrievalArguments(tool, { ...required, limit })
+      assert.ok(!result.ok, `${tool} rejects limit ${JSON.stringify(limit)}`)
+      assert.match(result.reason, limit === 501 ? /at most 500/ : /positive integer/)
+    }
+    const unknown = retrievalArguments(tool, { ...required, limit: 3, offset: 1 })
+    assert.ok(!unknown.ok && /unknown field/.test(unknown.reason), `${tool} still rejects unknown arguments`)
+  }
+  assert.deepEqual(retrievalArguments("read", { path: "a", limit: 501 }), { ok: true, args: { path: "a", limit: 501 } })
+})
+
 test("read returns exact line ranges with canonical paths, paging and factual failures", async t => {
   const dir = await fixture(t), ctx = context(`${dir}/project`, dir)
   const whole = await run({ tool: "read", arguments: { path: "run.sh" } }, ctx)
@@ -69,6 +87,18 @@ test("read returns exact line ranges with canonical paths, paging and factual fa
     assert.equal(result.path, file)
   }
   assert.match(String((await run({ tool: "read", arguments: { path: "run.sh", offset: 9 } }, ctx)).reason), /offset beyond end of file \(3 lines\)/)
+})
+
+test("read without a limit returns the whole file and explicit line limits can exceed 500", async t => {
+  const dir = await fixture(t), lines = Array.from({ length: 600 }, (_, i) => `line ${i + 1}\n`)
+  await writeFile(`${dir}/project/long.txt`, lines.join(""))
+  const whole = await run({ tool: "read", arguments: { path: "long.txt" } }, context(`${dir}/project`, dir))
+  assert.equal(whole.content, lines.join(""))
+  assert.equal(whole.totalLines, 600)
+  assert.equal(whole.truncated, false)
+  const page = await run({ tool: "read", arguments: { path: "long.txt", limit: 501 } }, context(`${dir}/project`, dir))
+  assert.equal(page.content, lines.slice(0, 501).join(""))
+  assert.deepEqual([page.endLine, page.nextOffset, page.truncated], [501, 502, true])
 })
 
 test("read results fit the byte cap, cut at complete lines and reject a single oversized first line", async t => {
@@ -96,6 +126,42 @@ test("list is non-recursive and reports symlinks without following them", async 
   assert.equal((await run({ tool: "list", arguments: { path: "run.sh" } }, context(`${dir}/project`, dir))).reason, "ENOTDIR")
 })
 
+test("list and glob honor limits, default to 500, detect overflow and preserve the byte cap", async t => {
+  const dir = await fixture(t), base = `${dir}/project/entries`
+  await mkdir(base)
+  const names = Array.from({ length: 500 }, (_, i) => `entry-${String(i).padStart(3, "0")}.txt`)
+  await Promise.all(names.map(name => writeFile(`${base}/${name}`, "hit\n")))
+  const calls: RetrievalCall[] = [
+    { tool: "list", arguments: { path: "." } },
+    { tool: "glob", arguments: { pattern: "*.txt", path: "." } },
+  ]
+  for (const call of calls) {
+    const key = call.tool === "list" ? "entries" : "matches"
+    for (const limit of [3, 75, 500, undefined]) {
+      const result = await run({ ...call, arguments: { ...call.arguments, ...(limit === undefined ? {} : { limit }) } }, context(base, dir))
+      assert.equal(result.status, "ok")
+      const returned = call.tool === "list" ? (result.entries as any[]).map(entry => entry.name)
+        : (result.matches as string[]).map(file => path.basename(file))
+      assert.deepEqual(returned, names.slice(0, limit ?? 500), `${call.tool} limit ${limit}`)
+      assert.equal(result.truncated, (limit ?? 500) < 500, `${call.tool} an exact count is not truncated`)
+    }
+    const bounded = await run({ ...call, arguments: { ...call.arguments, limit: 75 } }, context(base, dir, 1500))
+    assert.equal(bounded.status, "ok")
+    assert.equal(bounded.truncated, true)
+    assert.ok((bounded[key] as unknown[]).length > 0 && (bounded[key] as unknown[]).length < 75)
+    assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= 1500, `${call.tool} still obeys the byte cap`)
+  }
+  await writeFile(`${base}/entry-500.txt`, "hit\n")
+  for (const call of calls) {
+    for (const limit of [500, undefined]) {
+      const result = await run({ ...call, arguments: { ...call.arguments, ...(limit === undefined ? {} : { limit }) } }, context(base, dir))
+      const key = call.tool === "list" ? "entries" : "matches"
+      assert.equal((result[key] as unknown[]).length, 500)
+      assert.equal(result.truncated, true, `${call.tool} detects the additional entry`)
+    }
+  }
+})
+
 test("glob walks breadth-first without skipping hidden files or descending symlinked directories", async t => {
   const dir = await fixture(t), ctx = context(`${dir}/project`, dir)
   const all = await run({ tool: "glob", arguments: { pattern: "**/*" } }, ctx)
@@ -109,6 +175,15 @@ test("glob walks breadth-first without skipping hidden files or descending symli
   const rooted = await run({ tool: "glob", arguments: { pattern: "*.txt", path: "linked" } }, ctx)
   assert.deepEqual(rooted.matches, [`${dir}/outside/target.txt`], "an explicit root follows its symlink")
   assert.match(String((await run({ tool: "glob", arguments: { pattern: "/etc/*" } }, ctx)).reason), /relative/)
+})
+
+test("glob counts only matching entries and detects overflow in later directories", async t => {
+  const dir = await fixture(t), files = [`${dir}/project/src/app.ts`, `${dir}/project/src/nested/deep.ts`]
+  for (const limit of [1, 2, 75]) {
+    const result = await run({ tool: "glob", arguments: { pattern: "**/*.ts", limit } }, context(`${dir}/project`, dir))
+    assert.deepEqual(result.matches, files.slice(0, limit))
+    assert.equal(result.truncated, limit < files.length)
+  }
 })
 
 test("grep searches UTF-8 text with include filters, skips binary and invalid files, and caps result size", async t => {
@@ -125,6 +200,63 @@ test("grep searches UTF-8 text with include filters, skips binary and invalid fi
   const capped = await run({ tool: "grep", arguments: { pattern: "hit", path: "many.txt" } }, context(`${dir}/project`, dir, 4000))
   assert.equal(capped.truncated, true)
   assert.ok(Buffer.byteLength(JSON.stringify(capped)) <= 4000)
+})
+
+test("grep shares its requested cap across files and needs an additional matching line for truncation", async t => {
+  const dir = await fixture(t), base = `${dir}/project/grep-limits`
+  await mkdir(base)
+  await writeFile(`${base}/a.txt`, "miss\nhit one\nhit two\n")
+  await writeFile(`${base}/b.txt`, "miss\n")
+  await writeFile(`${base}/c.txt`, "hit three\nmiss\nhit four\n")
+  await writeFile(`${base}/d.log`, "hit ignored\n")
+  await writeFile(`${base}/e.txt`, "miss\n")
+  const expected = [["a.txt", 2, "hit one"], ["a.txt", 3, "hit two"], ["c.txt", 1, "hit three"], ["c.txt", 3, "hit four"]]
+  for (const limit of [1, 2, 3, 4, 75]) {
+    const result = await run({ tool: "grep", arguments: { pattern: "hit", include: "*.txt", limit } }, context(base, dir))
+    assert.equal(result.status, "ok")
+    assert.deepEqual((result.matches as any[]).map(match => [path.basename(match.path), match.line, match.text]), expected.slice(0, limit))
+    assert.equal(result.truncated, limit < expected.length)
+  }
+  for (const limit of [1, 2]) {
+    const single = await run({ tool: "grep", arguments: { pattern: "hit", path: "a.txt", limit } }, context(base, dir))
+    assert.deepEqual((single.matches as any[]).map(match => match.line), [2, 3].slice(0, limit))
+    assert.equal(single.truncated, limit < 2)
+  }
+})
+
+test("grep defaults to 500, accepts larger inspection limits and keeps the byte cap", async t => {
+  const dir = await fixture(t), base = `${dir}/project/grep-many`
+  await mkdir(base)
+  await writeFile(`${base}/a.txt`, "hit\n".repeat(300))
+  await writeFile(`${base}/b.txt`, "hit\n".repeat(200))
+  for (const limit of [75, 350, 500, undefined]) {
+    const result = await run({ tool: "grep", arguments: { pattern: "hit", ...(limit === undefined ? {} : { limit }) } }, context(base, dir))
+    assert.equal((result.matches as any[]).length, limit ?? 500)
+    assert.equal(result.truncated, (limit ?? 500) < 500)
+    const last = (result.matches as any[]).at(-1)
+    assert.equal(last.path, `${base}/${(limit ?? 500) > 300 ? "b" : "a"}.txt`)
+    assert.equal(last.line, (limit ?? 500) > 300 ? (limit ?? 500) - 300 : limit)
+  }
+  const bounded = await run({ tool: "grep", arguments: { pattern: "hit", limit: 75 } }, context(base, dir, 1500))
+  assert.equal(bounded.truncated, true)
+  assert.ok((bounded.matches as any[]).length > 0 && (bounded.matches as any[]).length < 75)
+  assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= 1500)
+  await writeFile(`${base}/b.txt`, "hit\n".repeat(201))
+  for (const limit of [500, undefined]) {
+    const result = await run({ tool: "grep", arguments: { pattern: "hit", ...(limit === undefined ? {} : { limit }) } }, context(base, dir))
+    assert.equal((result.matches as any[]).length, 500)
+    assert.equal(result.truncated, true)
+  }
+})
+
+test("grep worker stops after the requested matches plus one overflow match", async t => {
+  const dir = await fixture(t)
+  await writeFile(`${dir}/project/lookahead.txt`, `hit\nhit\n${"a".repeat(40)}!\n`)
+  const result = await run({ tool: "grep", arguments: { pattern: "hit|^(a+)+$", path: "lookahead.txt", limit: 1 } },
+    context(`${dir}/project`, dir, 131072, 300))
+  assert.deepEqual((result.matches as any[]).map(match => [match.line, match.text]), [[1, "hit"]])
+  assert.equal(result.truncated, true)
+  assert.equal(result.timedOut, undefined, "the worker never reaches the pathological expression after the lookahead match")
 })
 
 test("a pathological expression is stopped at the soft deadline without blocking the event loop", async t => {

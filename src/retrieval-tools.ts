@@ -39,9 +39,9 @@ export function retrievalArguments(tool: string, value: unknown): { ok: true; ar
   const args = value as JSONObject
   const allowed: Record<RetrievalToolName, Record<string, "string" | "integer" | "boolean">> = {
     read: { path: "string", offset: "integer", limit: "integer" },
-    list: { path: "string" },
-    glob: { pattern: "string", path: "string" },
-    grep: { pattern: "string", path: "string", include: "string", ignoreCase: "boolean" },
+    list: { path: "string", limit: "integer" },
+    glob: { pattern: "string", path: "string", limit: "integer" },
+    grep: { pattern: "string", path: "string", include: "string", ignoreCase: "boolean", limit: "integer" },
   }
   const schema = allowed[tool as RetrievalToolName]
   for (const [key, item] of Object.entries(args)) {
@@ -49,6 +49,8 @@ export function retrievalArguments(tool: string, value: unknown): { ok: true; ar
     if (!type) return { ok: false, reason: `invalid arguments: unknown field ${JSON.stringify(key)}` }
     if (type === "integer" ? !Number.isSafeInteger(item) || (item as number) < 1 : typeof item !== type)
       return { ok: false, reason: `invalid arguments: ${key} must be ${type === "integer" ? "a positive integer" : `a ${type}`}` }
+    if (key === "limit" && tool !== "read" && (item as number) > maxEntries)
+      return { ok: false, reason: `invalid arguments: limit must be at most ${maxEntries}` }
     if (type === "string" && (!(item as string) || (item as string).includes("\0") || (item as string).length > 16384))
       return { ok: false, reason: `invalid arguments: ${key} must be a nonempty string without NUL` }
   }
@@ -237,9 +239,10 @@ async function listTool(args: JSONObject, context: RetrievalContext): Promise<Re
   catch (failure) { context.signal.throwIfAborted(); return error("list", fileFailure(failure), paths) }
   entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
   const stat = context.io.lstat ?? lstat
+  const limit = (args.limit as number | undefined) ?? maxEntries
   const listed: JSONObject[] = []
   let timedOut = false
-  for (const entry of entries.slice(0, maxEntries)) {
+  for (const entry of entries.slice(0, limit)) {
     context.signal.throwIfAborted()
     if (performance.now() >= context.softEnd) { timedOut = true; break }
     const item: { [key: string]: JSONValue } = { name: entry.name, type: entryType(entry) }
@@ -258,10 +261,11 @@ async function globTool(args: JSONObject, context: RetrievalContext): Promise<Re
   if ("failure" in target) return target.failure!
   const { paths, canonical } = target
   const matches = globMatcher(pattern, false), found: string[] = []
+  const limit = (args.limit as number | undefined) ?? maxEntries
   let truncated = false
   const walked = await walk(canonical, context, (relative) => {
     if (!matches(relative)) return true
-    if (found.length >= maxEntries) { truncated = true; return false }
+    if (found.length >= limit) { truncated = true; return false }
     found.push(`${canonical}/${relative}`)
     return true
   })
@@ -301,6 +305,7 @@ async function grepTool(args: JSONObject, context: RetrievalContext): Promise<Re
   if ("failure" in target) return target.failure!
   const { paths, canonical } = target
   const matches: JSONObject[] = [], skipped = { binary: 0, invalidUtf8: 0, unreadable: 0, large: 0 }
+  const limit = (args.limit as number | undefined) ?? maxEntries
   let truncated = false, timedOut = false
   const worker = new Worker(matcherSource, { eval: true, env: {}, workerData: { pattern, flags } })
   const exited = new Promise<void>(resolve => worker.once("exit", () => resolve()))
@@ -334,11 +339,11 @@ async function grepTool(args: JSONObject, context: RetrievalContext): Promise<Re
       const failed = (failure: unknown) => { cleanup(); reject(failure) }
       const cleanup = () => { clearTimeout(timer); worker.off("message", message); worker.off("error", failed) }
       worker.on("message", message); worker.on("error", failed)
-      worker.postMessage({ text, limit: maxEntries - matches.length + 1, width: maxMatchText })
+      worker.postMessage({ text, limit: limit - matches.length + 1, width: maxMatchText })
     })
     if (!found) { timedOut = true; return false }
     for (const [line, value] of found) {
-      if (matches.length >= maxEntries) { truncated = true; return false }
+      if (matches.length >= limit) { truncated = true; return false }
       matches.push({ path: file, line, text: value })
     }
     return true

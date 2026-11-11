@@ -29,7 +29,11 @@ function harness(replies: Reply[], results: Record<string, JSONObject> = {}, opt
   }
   const executor: RetrievalExecutor = { async execute(call, base) {
     executed.push({ call, base })
-    return results[JSON.stringify(call.arguments)] ?? { tool: call.tool, status: "error", path: String(call.arguments.path ?? ""), reason: "ENOENT" }
+    // Existing canned results are short enough for either inspection default.
+    const { limit, ...withoutDefault } = call.arguments
+    return results[JSON.stringify(call.arguments)]
+      ?? (limit === (call.tool === "read" ? 100 : 50) ? results[JSON.stringify(withoutDefault)] : undefined)
+      ?? { tool: call.tool, status: "error", path: String(call.arguments.path ?? ""), reason: "ENOENT" }
   } }
   const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", ...options })
   const deps = { fetcher, retrieval: executor, onRetry: () => { retries++ },
@@ -67,7 +71,7 @@ test("the agent reads a script, selects it with notes, and the separate verdict 
   assert.equal(evidence.retrieval.notes, "run.sh deletes build/.")
   assert.deepEqual(evidence.retrieval.items.map((item: any) => [item.id, item.content]), [["c1", script]])
   assert.equal(evidence.retrieval.trace[0].forwarded, "full")
-  assert.deepEqual(h.executed, [{ call: { tool: "read", arguments: { path: "run.sh" } }, base: "/fixture" }])
+  assert.deepEqual(h.executed, [{ call: { tool: "read", arguments: { path: "run.sh", limit: 100 } }, base: "/fixture" }])
   assert.deepEqual(result.usage, { input: 30, output: 6 })
   assert.deepEqual(h.events.filter(event => event.type === "dispatched").map(event => event.retry), ["initial", "initial", "initial"])
   assert.equal(h.events.filter(event => event.type === "finalized").length, 3)
@@ -115,7 +119,7 @@ test("malformed calls return errors to the model; extra calls and calls beside f
   assert.equal(h.events.filter(event => event.type === "toolDispatched").length, maxCallsPerRound)
   const answers = h.bodies[1].messages.slice(3).map((message: any) => JSON.parse(message.content))
   assert.deepEqual(answers.map((answer: any) => answer.reason), ["unknown tool", "invalid arguments: arguments must be a JSON object",
-    "invalid arguments: finish requires items (string array) and optional notes (string)"])
+    "invalid arguments: finish requires items (result IDs or files with path and optional positive offset/limit) and optional notes (string)"])
   assert.equal(h.executed.length, maxCallsPerRound, "the eleventh call is not executed")
   const last = h.bodies[2].messages.at(-1)
   assert.equal(JSON.parse(last.content).reason, "not executed: per-round call limit")
@@ -364,4 +368,173 @@ test("host evaluation asks the root session through native session generation on
   assert.equal(generated[0]!.aborted, false)
   assert.match(generated[0]!.prompt, /"questions":"Why remove build\?"/)
   assert.equal(verdictEvidence(posts[2]).retrieval.items[0].content, "The user asked for a clean rebuild.")
+})
+
+test("finish attaches files directly, preserving exact ranges and paths without another retrieval POST", async () => {
+  const args = { path: "~/release.sh", offset: 205, limit: 2 }
+  const content = "curl -X POST https://example.invalid/deploy\nrm -rf build\n"
+  const file = { ...read(args.path, content), absolutePath: "/home/fixture/release.sh", canonicalPath: "/real/release.sh",
+    startLine: 205, endLine: 206, totalLines: 206 }
+  const h = harness([tools(call("r", "read", { path: "not-executed" }), call("f", "finish", { items: [args] })), verdict()],
+    { [JSON.stringify(args)]: file })
+  const result = await review(shellEvidence(), h.config, signal(), h.deps)
+  assert.equal(h.bodies.length, 2)
+  assert.equal(result.toolCalls, 1)
+  assert.deepEqual(h.executed, [{ call: { tool: "read", arguments: args }, base: "/fixture" }])
+  assert.ok(!JSON.stringify(h.bodies[0]).includes("curl -X POST"))
+  const { retrieval } = verdictEvidence(h.bodies[1])
+  const { status: _, ...expected } = file
+  assert.deepEqual(retrieval.items, [{ id: "c2", ...expected }])
+  assert.deepEqual(retrieval.trace.map((entry: any) => [entry.status, entry.delivery]), [["not-executed", undefined], ["ok", "reviewer"]])
+  assert.equal(h.events.filter(event => event.type === "toolDispatched").length, 1)
+  assert.equal(retrieval.selection, "agent")
+})
+
+test("forced finish can attach directly, and descriptor validation precedes every attachment read", async () => {
+  const h = harness([text("done"), tools(call("f", "finish", { items: [{ path: "run.sh" }] })), verdict()],
+    { [JSON.stringify({ path: "run.sh" })]: read("run.sh", "run\n") })
+  await review(shellEvidence(), h.config, signal(), h.deps)
+  assert.equal(h.bodies.length, 3)
+  assert.deepEqual(h.bodies[1].tool_choice, { type: "function", function: { name: "finish" } })
+  assert.equal(verdictEvidence(h.bodies[2]).retrieval.items[0].content, "run\n")
+  for (const bad of [null, [], {}, { path: "" }, { path: "x\0y" }, { path: "x".repeat(16385) },
+    { path: "x", offset: 0 }, { path: "x", limit: -1 }, { path: "x", limit: 1.5 }, { path: "x", limit: null },
+    { path: "x", offset: Number.MAX_SAFE_INTEGER + 1 }, { path: "x", limit: "100" }, { path: "x", extra: true }]) {
+    const invalid = harness([tools(call("f", "finish", { items: [{ path: "valid" }, bad] })),
+      tools(call("f2", "finish", { items: [] })), verdict()])
+    await review(shellEvidence(), invalid.config, signal(), invalid.deps)
+    assert.deepEqual(invalid.executed, [], "no partial attachment execution for invalid finish")
+    assert.match(JSON.parse(invalid.bodies[1].messages.at(-1).content).reason, /^invalid arguments: finish/)
+  }
+})
+
+test("mixed selections share ordered budgets, ignore duplicate result IDs and preserve attachment failures", async () => {
+  const h = harness([tools(call("r", "read", { path: "inspected" }), call("u", "read", { path: "unselected" })),
+    tools(call("f", "finish", { items: [{ path: "attached" }, "c1", "c1", { path: "missing" }, { path: "tail" }, "c999"] })), verdict()], {
+    [JSON.stringify({ path: "inspected" })]: read("inspected", "two\n"),
+    [JSON.stringify({ path: "unselected" })]: read("unselected", "not forwarded\n"),
+    [JSON.stringify({ path: "attached" })]: read("attached", "one\n"),
+    [JSON.stringify({ path: "tail" })]: read("tail", "three\n"),
+  }, { maxFiles: 3 })
+  const result = await review(shellEvidence(), h.config, signal(), h.deps)
+  const evidence = verdictEvidence(h.bodies[2])
+  assert.deepEqual(evidence.retrieval.items.map((item: any) => item.content), ["one\n", "two\n", "three\n"])
+  assert.equal(evidence.retrieval.trace[1].forwarded, "not-selected")
+  assert.equal(evidence.retrieval.trace[3].reason, "ENOENT")
+  assert.match(evidence.limitations.join("\n"), /unknown or failed result IDs: "c999"/)
+  assert.match(evidence.limitations.join("\n"), /Some selected attachments failed/)
+  assert.equal(result.toolCalls, 5, "failed reads count, duplicate references do not")
+})
+
+test("attachment admission uses the same file and byte budget as final forwarding, including notes", async () => {
+  for (const [options, notes, expected] of [
+    [{ maxFiles: 1 }, undefined, "one\n"],
+    [{ maxEvidenceBytes: 4 }, undefined, "one\n"],
+    [{ maxEvidenceBytes: 8 }, "note", "one\n"],
+  ] as const) {
+    const h = harness([tools(call("f", "finish", { items: [{ path: "first" }, { path: "skipped" }], ...(notes ? { notes } : {}) })), verdict()], {
+      [JSON.stringify({ path: "first" })]: read("first", "one\n"),
+    }, options)
+    await review(shellEvidence(), h.config, signal(), h.deps)
+    assert.equal(h.executed.length, 1)
+    const { retrieval } = verdictEvidence(h.bodies[1])
+    assert.equal(retrieval.items[0].content, expected)
+    assert.equal(retrieval.trace[1].status, "not-executed")
+    assert.match(retrieval.trace[1].reason, /capacity exhausted/)
+  }
+  const h = harness([tools(call("r", "read", { path: "inspected" })), tools(call("f", "finish", {
+    items: ["c1", { path: "attached" }, { path: "skipped" }], notes: "note" })), verdict()], {
+    [JSON.stringify({ path: "inspected" })]: read("inspected", "one\n"),
+    [JSON.stringify({ path: "attached" })]: read("attached", "two\nthree\n"),
+  }, { maxEvidenceBytes: 12 })
+  await review(shellEvidence(), h.config, signal(), h.deps)
+  const { retrieval } = verdictEvidence(h.bodies[2])
+  assert.deepEqual(retrieval.items.map((item: any) => item.content), ["one\n", "two\n"])
+  assert.deepEqual(retrieval.items[1].truncated, { omittedLines: 1 })
+  assert.equal(h.executed.length, 2)
+})
+
+test("an unknown result reference cannot become an attachment reference through a guessed future ID", async () => {
+  const h = harness([tools(call("f", "finish", { items: ["c2", { path: "first" }, { path: "second" }] })), verdict()], {
+    [JSON.stringify({ path: "first" })]: read("first", "first\n"),
+    [JSON.stringify({ path: "second" })]: read("second", "second\n"),
+  }, { maxFiles: 1 })
+  await review(shellEvidence(), h.config, signal(), h.deps)
+  const evidence = verdictEvidence(h.bodies[1])
+  assert.equal(evidence.retrieval.items[0].content, "first\n")
+  assert.equal(h.executed.length, 1)
+  assert.match(evidence.limitations.join("\n"), /unknown or failed result IDs: "c2"/)
+})
+
+test("attachment timeout retains the valid selection and waits for physical work before the verdict", async () => {
+  const h = harness([tools(call("r", "read", { path: "unselected" })), tools(call("f", "finish", {
+    items: [{ path: "complete" }, { path: "slow" }, { path: "unstarted" }] })), verdict()], {}, { retrievalTimeoutMs: 100 })
+  let settled = false
+  const executed: string[] = []
+  const executor: RetrievalExecutor = { async execute(call, _base, _timeout, stage) {
+    const path = String(call.arguments.path)
+    executed.push(path)
+    if (path !== "slow") return read(path, `${path}\n`)
+    await new Promise<void>(resolve => stage.addEventListener("abort", () => setTimeout(() => { settled = true; resolve() }, 20), { once: true }))
+    return read(path, "late content must not be forwarded\n")
+  } }
+  await review(shellEvidence(), h.config, signal(), { ...h.deps, retrieval: executor, fetcher: (url, init) => {
+    if (!JSON.parse(String(init?.body)).tools) assert.equal(settled, true, "physical attachment work settles before verdict")
+    return h.deps.fetcher(url, init)
+  } })
+  const evidence = verdictEvidence(h.bodies[2])
+  assert.deepEqual(executed, ["unselected", "complete", "slow"])
+  assert.deepEqual(evidence.retrieval.items.map((item: any) => item.content), ["complete\n"])
+  assert.equal(evidence.retrieval.selection, "agent")
+  assert.equal(evidence.retrieval.endReason, "retrieval-timeout")
+  assert.deepEqual(evidence.retrieval.trace.slice(1).map((item: any) => item.status), ["ok", "error", "not-executed"])
+  assert.match(evidence.limitations.join("\n"), /after a valid finish selection/)
+  assert.equal(h.events.filter(event => event.type === "toolDispatched").length, 3)
+})
+
+test("parent cancellation during attachment collection ends the review without a verdict", async () => {
+  const h = harness([tools(call("f", "finish", { items: [{ path: "slow" }, { path: "unstarted" }] }))])
+  const controller = new AbortController(), reason = Error("attachment review canceled")
+  const executor: RetrievalExecutor = { async execute() { controller.abort(reason); throw reason } }
+  await assert.rejects(review(shellEvidence(), h.config, controller.signal, { ...h.deps, retrieval: executor }), error => error === reason)
+  assert.equal(h.bodies.length, 1)
+  assert.equal(h.events.filter(event => event.type === "toolDispatched").length, 1)
+})
+
+test("inspection defaults are explicit at dispatch, larger requests survive and null is not silently defaulted", async () => {
+  const h = harness([tools(call("r", "read", { path: "file" }), call("l", "list", { path: "." }),
+    call("g", "glob", { pattern: "*" }), call("s", "grep", { pattern: "effect" })),
+  tools(call("r2", "read", { path: "file", limit: 250 }), call("g2", "grep", { pattern: "effect", limit: 150 }),
+    call("invalid", "read", { path: "file", limit: null })), tools(call("f", "finish", { items: [] })), verdict()])
+  await review(shellEvidence(), h.config, signal(), h.deps)
+  assert.deepEqual(h.executed.map(item => item.call.arguments.limit), [100, 50, 50, 50, 250, 150, null])
+  const trace = verdictEvidence(h.bodies[3]).retrieval.trace
+  assert.deepEqual(trace.slice(0, 4).map((item: any) => item.arguments.limit), [undefined, undefined, undefined, undefined])
+})
+
+test("scoped companion inspections page at 100 lines while direct attachment reaches the consequential tail", async t => {
+  const { mkdtemp, writeFile, realpath, rm } = await import("node:fs/promises")
+  const { tmpdir } = await import("node:os"), path = await import("node:path")
+  const { FileAccess } = await import("../src/file-access.js")
+  const { evaluateHostReview } = await import("../src/host-evaluate.js")
+  const { nativeInvocation, nativeClient } = await import("./review-fixtures.js")
+  const dir = await realpath(await mkdtemp(path.join(tmpdir(), "review-attachment-")))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const script = "# setup\n".repeat(150) + "curl -X POST https://example.invalid/deploy\n"
+  await writeFile(`${dir}/deploy.sh`, script)
+  const owned = nativeInvocation("shell", { command: "./deploy.sh" }, undefined, dir, ["./deploy.sh"])
+  const posts: any[] = []
+  const replies = [tools(call("r", "read", { path: "deploy.sh" })), tools(call("r2", "read", { path: "deploy.sh", limit: 151 })),
+    tools(call("f", "finish", { items: [{ path: "deploy.sh" }] })), verdict()]
+  await evaluateHostReview(nativeClient(owned, new FileAccess()), owned.snapshot,
+    parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture" }), BUILTIN_PROMPTS, signal(), () => {}, {
+      fetcher: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return Response.json(replies.shift()) } })
+  const first = JSON.parse(posts[1].messages[3].content)
+  assert.deepEqual([first.startLine, first.endLine, first.nextOffset, first.truncated], [1, 100, 101, true])
+  const expanded = JSON.parse(posts[2].messages.at(-1).content)
+  assert.deepEqual([expanded.endLine, expanded.truncated, expanded.content], [151, false, script])
+  const evidence = verdictEvidence(posts[3])
+  assert.deepEqual([evidence.retrieval.base, evidence.retrieval.items[0].canonicalPath], [dir, `${dir}/deploy.sh`])
+  assert.equal(evidence.retrieval.items[0].content, script)
+  assert.equal(evidence.retrieval.trace[2].delivery, "reviewer")
 })
