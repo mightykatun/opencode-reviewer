@@ -112,5 +112,3 @@ export class FileScope {
       (signal) => operation(signal, this.access.io))
   }
 }
-
-export const fileAccess = new FileAccess()

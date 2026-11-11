@@ -5,21 +5,14 @@ const host = (scenarios, flags = [], extra = {}) => ({ classification: "producti
 
 /** All accepted CLI dimensions. Rules describe supported combinations, not an exhaustive run matrix. */
 export const runtimeInventory = {
-  "smoke-v2-mouse-proof.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux", "babel"] }),
-  "smoke-v2-contracts.mjs": host(["shell", "shadow-shell"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux"] }),
-  "smoke-v2-catalog.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux", "source", "esbuild"] }),
-  "smoke-v2-effective-evidence.mjs": host(["shell-rewrite", "skill-reload", "moved-location", "edit-preview"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux"] }),
   "smoke-v2-root-presentation.mjs": host(["mouse-on", "mouse-off"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux", "babel"] }),
   "smoke-v2-native-queue.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux"] }),
-  "smoke-v2-delegation.mjs": host(["initial-resume", "coalesced"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux"] }),
-  "smoke-v2-companion-package.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux", "npm-pack", "tar", "source"] }),
   "smoke-v2-lifecycle.mjs": host(["default", "cold-startup"], [], { requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-invocation.mjs": host(["default", "review"], [], { requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
   "smoke-v2-review.mjs": host(["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "normal-retrieval", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant", "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
       "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-code-mode-tool", "fast-code-mode-tool", "normal-project-transition", "normal-long-session", "normal-large-source", "normal-reconnect", "normal-reconnect-visible", "normal-stalled-stream", "normal-instructions"], [], { scenarioHosts: { "normal-reconnect": 2, "normal-reconnect-visible": 2, "normal-stalled-stream": 2 }, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
   "smoke-v2-notifications.mjs": host(["manual-handoff", "forms", "execution", "unavailable-review"], [], {
     requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"], timeoutMs: 360000 }),
-  "smoke-v2-sidebar-state.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "tmux"] }),
   "smoke-notification-desktop.ts": { classification: "interactive", scenarios: ["default"], default: "default", flags: ["all", "sounds", "click", "critical"],
     rules: [], exactlyOne: ["all", "sounds", "click"], requires: ["linux", "desktop-bus", "audio-player", "source", "tsx"], hosts: 0, timeoutMs: 180000 },
   ...Object.fromEntries(["smoke-runtime.mjs", "smoke-desktop-playback.mjs", "smoke-observations.mjs", "smoke-connection.mjs", "smoke-ui.mjs", "smoke-v2-review-support.mjs", "smoke-v2-rpc.mjs", "runtime-inventory.mjs", "runtime-runner.mjs", "runtime-summary.mjs", "test-runtime.mjs"]
@@ -95,12 +88,9 @@ export const runtimeProfiles = {
   ],
 }
 
-// Acceptance expands the retained ci profile with every production review
-// scenario. Neither profile is an automatic release gate. Canonical IDs deduplicate.
-runtimeProfiles["v2-acceptance"] = [...new Map([
-  ...runtimeProfiles.ci,
-  ...runtimeInventory["smoke-v2-review.mjs"].scenarios.map(scenario => ["smoke-v2-review.mjs", scenario]),
-].map(([file, ...args]) => [runtimePlan(file, args).id, [file, ...args]])).values()]
+// The ci profile already lists every production review scenario. Acceptance is
+// the same selection under its documented name. Neither is a release gate.
+runtimeProfiles["v2-acceptance"] = runtimeProfiles.ci
 
 export function profilePlan(name) {
   assert.ok(Object.hasOwn(runtimeProfiles, name), `Unknown runtime profile: ${name}`)

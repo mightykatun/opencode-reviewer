@@ -369,8 +369,9 @@ approval.
 | `/reviewer-stats` | Reviewer: Statistics | Opens usage totals. |
 | `/reviewer-instructions` or Alt+I | Reviewer: Session instructions | Edits review rules for the conversation. |
 
-The enable and disable setting is saved and survives resume. Both commands work
-from a subagent and apply to the whole conversation. They also work when the
+The enable and disable setting is saved and survives resume. Other terminals of
+this user pick up a change within a few seconds. Both commands work from a
+subagent and apply to the whole conversation. They also work when the
 review configuration is invalid.
 
 ### Connection
@@ -404,8 +405,8 @@ override evidence checks, approval safeguards or the response format.
 - Each review reads them when it starts. Later edits don't change running reviews.
 - Surrounding whitespace is trimmed. Applying empty text clears them.
 - The size limit is `maxEvidenceBytes`. Longer text is rejected, not truncated.
-- If the saved file can't be read, the editor opens empty and reviews use
-  ordinary guidance.
+- If the saved file can't be read, the editor shows an error and closes
+  instead of offering an empty draft, and reviews use ordinary guidance.
 - Remap the shortcut with `keybinds["reviewer.instructions"]` in `cli.json`.
 
 ### Report history
@@ -522,7 +523,8 @@ Notifications cover conversations visited in this terminal and their subagents.
 Each type has its own `banner` and `sound` switch. `notify: false` turns
 everything off. `notifySound: false` silences all sounds. Invalid notification
 settings disable notifications but not reviews. Disable other notification
-plugins to avoid duplicates.
+plugins, and OpenCode's own `attention` notifications in `cli.json` if you want
+only these, to avoid duplicates.
 
 Delivery uses `notify-send`, `stdbuf` and `gdbus`. On Ubuntu they come from
 `libnotify-bin`, `coreutils` and `libglib2.0-bin`. Audio plays with `paplay`

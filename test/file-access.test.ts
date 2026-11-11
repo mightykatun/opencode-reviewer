@@ -1,10 +1,7 @@
 import { test, type TestContext } from "node:test"
 import assert from "node:assert/strict"
 import { setImmediate as nextTurn, setTimeout as sleep } from "node:timers/promises"
-import { mkdtemp, symlink, rm, mkdir, writeFile, realpath, open } from "node:fs/promises"
-import { execFileSync } from "node:child_process"
-import { tmpdir } from "node:os"
-import path from "node:path"
+import { open } from "node:fs/promises"
 import type { FileHandle } from "node:fs/promises"
 import { FileAccess, type FileIO } from "../src/file-access.js"
 import { withDeadline, reviewStage } from "../src/deadline.js"
@@ -18,10 +15,6 @@ import { parseConfig } from "../src/config.js"
 
 const timing = { totalMs: 80, pathMs: 15, captureMs: 25, concurrency: 2 }
 const limits = { maxFiles: 6, maxEvidenceBytes: 131072 }
-// Isolate source-capture ownership after the native collector's launch-path probe,
-// as in the production evaluator. Standalone launch probes are tested separately.
-const input = { command: "cat source", cwd: "/virtual", userPrompt: "Inspect source",
-  execution: { canonicalCwd: "/virtual" } }
 const signal = () => new AbortController().signal
 
 const stat = { isFile: () => true, size: 8, mtimeMs: 1, ctimeMs: 1 }

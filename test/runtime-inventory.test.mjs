@@ -117,6 +117,9 @@ test("V2 acceptance includes each production review case exactly once and retain
   assert.ok(cases.every(value => value.hostMajor === 2 && value.hosts <= 2))
   assert.deepEqual(profilePlan("ci").map(value => value.id).sort(), cases.map(value => value.id).sort(),
     "The retained ci profile contains the exact manual acceptance selection")
+  assert.deepEqual([...runtimeInventory["smoke-v2-review.mjs"].scenarios].sort(),
+    profilePlan("ci").filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs").map(value => value.scenario).sort(),
+    "ci lists every production review scenario, so acceptance needs no expansion")
   assert.ok(cases.some(value => value.id === "smoke-v2-lifecycle/cold-startup"), "CI prevents pre-connection handshake regression")
   for (const id of ["smoke-v2-root-presentation/mouse-on", "smoke-v2-root-presentation/mouse-off", "smoke-v2-native-queue/default"])
     assert.equal(cases.find(value => value.id === id)?.classification, "synthetic-host")
@@ -138,7 +141,7 @@ test("fixtures accept stable V2 releases without a host-version allowlist", () =
   for (const version of ["opencode v2.0.28", "opencode v2.99.99"]) assert.doesNotThrow(() => assertRuntimeHostVersion(ci, version))
   for (const version of ["opencode v3.0.0", "opencode v2.0.27-beta.1", "2.0.27"])
     assert.throws(() => assertRuntimeHostVersion(ci, version), /stable OpenCode V2/)
-  const synthetic = runtimePlan("smoke-v2-catalog.mjs")
+  const synthetic = runtimePlan("smoke-v2-native-queue.mjs")
   assert.doesNotThrow(() => assertRuntimeHostVersion([...ci, synthetic], "opencode v2.99.99"))
 })
 

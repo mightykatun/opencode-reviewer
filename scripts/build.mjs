@@ -23,9 +23,23 @@ const historyWorker = await build({
   platform: "node", format: "cjs", target: "es2023", external: ["bun:sqlite", "node:sqlite"],
 })
 
+const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
 const define = {
+  __REVIEWER_VERSION__: JSON.stringify(version),
   __REVIEW_PROMPTS__: JSON.stringify(prompts), __REVIEW_SOUNDS__: "__REVIEWER_BUNDLED_SOUNDS__",
   __HISTORY_WORKER__: "__REVIEWER_HISTORY_WORKER__",
+}
+// Source tests read the manifest; bundles carry only the injected version string.
+const versionPlugin = {
+  name: "reviewer-version-only",
+  setup(builder) {
+    builder.onLoad({ filter: /src\/review-versions\.ts$/ }, async ({ path }) => {
+      const source = await readFile(path, "utf8")
+      const fallback = 'JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version'
+      if (source.split(fallback).length !== 2) throw Error("Source-only version fallback changed")
+      return { contents: source.replace(fallback, '""'), loader: "ts" }
+    })
+  },
 }
 const decoderPlugin = {
   name: "notification-decoder-only",
@@ -79,7 +93,7 @@ const hostModules = ["solid-js", "@opentui/core", "@opentui/solid", "@opencode/p
 const hostRuntime = await build({
   entryPoints: ["src/host-runtime.tsx"], bundle: true, write: false, metafile: true,
   platform: "node", format: "cjs", target: "es2023", external: hostModules,
-  define, plugins: [decoderPlugin, themeSyntaxOnlyPlugin, jsxPlugin, embeddedPromptsPlugin],
+  define, plugins: [versionPlugin, decoderPlugin, themeSyntaxOnlyPlugin, jsxPlugin, embeddedPromptsPlugin],
 })
 verifyThemeSyntaxBuild(hostRuntime.metafile)
 for (const output of Object.values(hostRuntime.metafile.outputs)) {
@@ -106,7 +120,7 @@ const entrypoint = await build({
   banner: { js: `${soundBanner(sounds)}\n${historyWorkerBanner(historyWorker.outputFiles[0].text)}` },
   define: { ...define, __HOST_RUNTIME__: JSON.stringify(Buffer.from(hostRuntime.outputFiles[0].text).toString("base64")) },
   external: ["solid-js", "solid-js/*", "@opentui/*", "@opencode/*"],
-  plugins: [decoderPlugin, jsxPlugin, embeddedPromptsPlugin],
+  plugins: [versionPlugin, decoderPlugin, jsxPlugin, embeddedPromptsPlugin],
 })
 for (const output of Object.values(entrypoint.metafile.outputs)) {
   for (const dependency of output.imports) {
