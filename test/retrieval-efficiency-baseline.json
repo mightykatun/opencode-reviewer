@@ -1,0 +1,111 @@
+{
+  "sourceCommit": "58f0d387a67dc08b5bfce313b2c9754ea243d92c",
+  "method": "Original production review and runRetrievalTool from git archive, fixed synthetic paths and contents, offline scripted model replies. Measured actual fetch request body strings.",
+  "units": "UTF-8 bytes, not provider tokens",
+  "metricDefinitions": {
+    "retrievalRequestBytes": "Byte length of each serialized retrieval HTTP request body, in order.",
+    "retrievalTotalRequestBytes": "Sum of retrievalRequestBytes.",
+    "retrievalSerializedInputBytes": "Sum of serialized messages, tools and any tool_choice per retrieval request, excluding model, max_tokens and stream.",
+    "retrievalFileContentBytes": "Sum of decoded read-result content bytes in every retrieval request, including all cumulative-history deliveries.",
+    "repeatedRetrievalFileContentBytes": "Read-result content bytes beyond the first retrieval-request delivery of each result ID.",
+    "verdictRequestBytes": "Byte length of the serialized final verdict HTTP request body.",
+    "modelPosts": "Retrieval and verdict POSTs combined.",
+    "retrievalPosts": "Retrieval POSTs only.",
+    "toolCalls": "Dispatched filesystem operations, excluding finish.",
+    "requiredEvidenceSHA256": "SHA-256 of serialized ordered reviewer read items, excluding only result ID and tool name.",
+    "retrievalRequestSHA256": "SHA-256 of each original retrieval HTTP request body, in order."
+  },
+  "cases": {
+    "no-files": {
+      "metrics": {
+        "retrievalRequestBytes": [9929],
+        "retrievalTotalRequestBytes": 9929,
+        "retrievalSerializedInputBytes": 9878,
+        "retrievalFileContentBytes": 0,
+        "repeatedRetrievalFileContentBytes": 0,
+        "verdictRequestBytes": 8356,
+        "modelPosts": 2,
+        "retrievalPosts": 1,
+        "toolCalls": 0
+      },
+      "requiredEvidenceSHA256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "retrievalRequestSHA256": ["0d9dd0716045b05c1c48d938f189fc34c3c55e3bbd76035911c2d8a51e2072de"]
+    },
+    "direct-known-script": {
+      "metrics": {
+        "retrievalRequestBytes": [9980, 10780],
+        "retrievalTotalRequestBytes": 20760,
+        "retrievalSerializedInputBytes": 20658,
+        "retrievalFileContentBytes": 235,
+        "repeatedRetrievalFileContentBytes": 0,
+        "verdictRequestBytes": 9374,
+        "modelPosts": 3,
+        "retrievalPosts": 2,
+        "toolCalls": 1
+      },
+      "requiredEvidenceSHA256": "61a60835453b254550aac1703cdb2ba575a6504d517010cb7177de00c14a84e6",
+      "retrievalRequestSHA256": [
+        "e3767a7a88246d1739a7be7f5eb0e83fd21e63545e5b84ede66c3ae2324c9f2e",
+        "5305ace746b0f6c14a61a8a49c3781018ceb0d8e1b1af86da008b42da1335d9a"
+      ]
+    },
+    "task-runner-discovery": {
+      "metrics": {
+        "retrievalRequestBytes": [9965, 10607, 11333],
+        "retrievalTotalRequestBytes": 31905,
+        "retrievalSerializedInputBytes": 31752,
+        "retrievalFileContentBytes": 353,
+        "repeatedRetrievalFileContentBytes": 91,
+        "verdictRequestBytes": 10079,
+        "modelPosts": 4,
+        "retrievalPosts": 3,
+        "toolCalls": 2
+      },
+      "requiredEvidenceSHA256": "379804dfa214b55670738c0cafb37c0914ff25198f8b3cab967b490dc7173786",
+      "retrievalRequestSHA256": [
+        "5b878b918c80e87e3e4f83677fdfd4afb3e0434ee4693b972d5cdf8700847422",
+        "282006c6ead59239fb1cdf6870dda3eec804fd5f77267876056dad9a04dd62b6",
+        "58fc30ae53a3ac8c8d66eeb6f47ff46cbd405a69ba87453093e1ec7abb903b44"
+      ]
+    },
+    "large-file-tail": {
+      "metrics": {
+        "retrievalRequestBytes": [9995, 29876],
+        "retrievalTotalRequestBytes": 39871,
+        "retrievalSerializedInputBytes": 39769,
+        "retrievalFileContentBytes": 18964,
+        "repeatedRetrievalFileContentBytes": 0,
+        "verdictRequestBytes": 28487,
+        "modelPosts": 3,
+        "retrievalPosts": 2,
+        "toolCalls": 1
+      },
+      "requiredEvidenceSHA256": "b6eecd979778db410cbec08ea4d51e40f44223ec2994f745303aaca34d06ccc1",
+      "retrievalRequestSHA256": [
+        "3b45e93d11cd89dd1948af391b98b44a7284ae5ef0849bf2dfa2b98d9cd54fd1",
+        "f539dd39380993ad55419508324a141fbb273c7e75c8f028f1df44170f25fe0e"
+      ]
+    },
+    "multi-round-discovery": {
+      "metrics": {
+        "retrievalRequestBytes": [9977, 10532, 11061, 11730, 12529],
+        "retrievalTotalRequestBytes": 55829,
+        "retrievalSerializedInputBytes": 55574,
+        "retrievalFileContentBytes": 382,
+        "repeatedRetrievalFileContentBytes": 78,
+        "verdictRequestBytes": 10858,
+        "modelPosts": 6,
+        "retrievalPosts": 5,
+        "toolCalls": 4
+      },
+      "requiredEvidenceSHA256": "f7cf24d932eb7e1427d33fe97fc67af643ec1293816cf1e7a5c6f1006028dcb3",
+      "retrievalRequestSHA256": [
+        "d54e1e0f37ac40baa235f4886144bab757dce81865902ab85e60ab91bff3e5e2",
+        "e9cc5ad4d9610dbcb86e5b859a7f2a6d6150357ce48234a71abf5b09ae03898d",
+        "92bde509e2b3de9670fc6c571e2e3d66afb26b33e9e933c844e2329f43ee3946",
+        "7897b5d625d9fd8e265f2068cf126af92f567eb61b24ac90c1cf4c872ba2853a",
+        "65f771766b566010c07ac337e041d9ee9b25e3accbdb8cdf2c4487c0b315d622"
+      ]
+    }
+  }
+}

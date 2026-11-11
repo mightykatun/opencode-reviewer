@@ -2,7 +2,7 @@
 // Scenarios: advisory (nonstream), advisory-history-once/always/reject (Unsafe native decisions),
 // advisory-evidence-timeout (actual pre-model deadline failure remains visible and manual),
 // normal (SSE), normal-retrieval (agentic list/read/grep retrieval, one native ask_context clarification shown as Asking,
-// and finish selection), fast (held SSE preview/remainder),
+// and direct-to-reviewer finish attachments), fast (held SSE preview/remainder),
 // normal-mouse-off, normal-cancel, normal-descendant, fast-descendant,
 // normal-hide, normal-dialog, normal-resize, fast-dialog, normal-hidden-complete,
 // normal-route-wait, normal-decision, fast-decision,
@@ -15,7 +15,7 @@
 // normal-tool / fast-tool (real local MCP server, shared registered-tool review).
 // normal-project-transition (nongit to committed Git identity with the original companion still loaded).
 // normal-long-session (512 completed native Code Mode calls before direct review).
-// normal-large-source (agentic paging through an oversized source via the installed companion).
+// normal-large-source (bounded inspection, then a direct tail attachment via the installed companion).
 // normal-reconnect (real loopback socket loss, same TUI and fresh production generation).
 // normal-reconnect-visible (socket loss during a visible review and its countdown).
 // normal-stalled-stream (silently held SSE bytes, native idle recovery during review).
@@ -526,6 +526,7 @@ const prompt = registeredTool ? "Look up the public account once using fixture_l
   : "Run python3 fixture.py once in inputs. It appends the isolated V2_REVIEW_EXECUTED marker and prints it."
 const script = (largeSource ? "# oversized source fixture context\n".repeat(8000) : "")
   + 'from pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write("V2_REVIEW_EXECUTED\\n")\nprint("V2_REVIEW_EXECUTED")\n'
+  + (scenario === "normal-retrieval" ? "# uninspected attachment context\n".repeat(100) + "# V2_REVIEWER_ONLY_ATTACHMENT_EOF\n" : "")
 const description = "V2 local marker report.\n\nThe script writes one isolated marker."
 // Retrieval runs only in its dedicated cases; history cases keep one POST per review.
 const retrievalCase = scenario === "normal-retrieval" || largeSource
@@ -533,7 +534,7 @@ const retrievalCase = scenario === "normal-retrieval" || largeSource
 const clarificationCase = scenario === "normal-retrieval"
 const clarificationQuestions = "Why does fixture.py need to run, and did the user ask for it?"
 const clarificationAnswer = "The user asked to run python3 fixture.py once in inputs to append the isolated marker."
-const expectedToolCalls = retrievalCase ? largeSource ? 3 : 5 : 0
+const expectedToolCalls = retrievalCase ? largeSource ? 3 : 6 : 0
 const retrievalCalls = []
 let clarificationRequest
 const instructionsText = 'SESSION_INSTRUCTIONS_LITERAL: keep "quoted" text and {{braces}}.\n\tRoot and descendant share this note.'
@@ -718,7 +719,7 @@ const recoverPendingConnection = async (label, { silent = false, outageMs = 1500
   await publish(path.join(artifacts, "network-reconnect.json"), networkEvidence)
   await saveCapture(label + "-recovered")
 }
-/** Scripted retrieval turns. The real installed companion executes every call. */
+/** The scoped companion executes file operations. Finish attachments bypass retriever tool replies. */
 function retrievalReply(body) {
   assert.ok(retrievalCase, "Retrieval POSTs only in retrieval cases")
   retrievalCalls.push(body)
@@ -731,12 +732,17 @@ function retrievalReply(body) {
   assert.equal(evidence.kind, "shell")
   assert.equal(evidence.relativePathBase, inputs)
   assert.equal(evidence.retrieval, undefined)
+  assert.ok(!JSON.stringify(body.messages).includes(largeSource ? "from pathlib import Path" : "V2_REVIEWER_ONLY_ATTACHMENT_EOF"),
+    "Uninspected attachment content never reaches a retriever request")
   const results = body.messages.filter(message => message.role === "tool").map(message => JSON.parse(message.content))
   const turn = body.messages.filter(message => message.role === "assistant").length
+  assert.equal(retrievalCalls.length, turn + 1)
+  assert.ok(turn <= (largeSource ? 1 : 2), "Finish attachments never start another retriever turn")
+  assert.equal(results.length, (largeSource ? [0, 2] : [0, 3, 5])[turn], "Only inspection and clarification tool replies reach the retriever")
   const reply = (...requested) => ({ choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: requested.map(([name, args], index) =>
     ({ id: `retrieval-${turn}-${index}`, type: "function", function: { name, arguments: JSON.stringify(args) } })) }, finish_reason: "tool_calls" }],
   usage: { prompt_tokens: 0, completion_tokens: 0 } })
-  if (turn === 0) return reply(["list", { path: "." }], ["read", { path: "fixture.py" }],
+  if (turn === 0) return reply(["list", { path: "." }], ["read", { path: "fixture.py", ...(largeSource ? {} : { limit: 1 }) }],
     ...(clarificationCase ? [["ask_context", { questions: clarificationQuestions }]] : []))
   if (clarificationCase && turn === 1) {
     const asked = results.find(result => result.tool === "ask_context")
@@ -746,36 +752,65 @@ function retrievalReply(body) {
   const read = results.find(result => result.tool === "read" && result.status === "ok")
   assert.ok(read, "The companion read the script from the shell launch directory")
   assert.equal(read.canonicalPath, path.join(inputs, "fixture.py"))
-  if (largeSource && turn === 1) {
-    assert.equal(read.truncated, true, "An oversized source is cut at the result size limit")
-    return reply(["read", { path: "fixture.py", offset: 8001 }])
+  assert.equal(read.startLine, 1)
+  assert.equal(read.truncated, true, "Initial inspection is bounded, not the whole file")
+  assert.equal(read.nextOffset, read.endLine + 1)
+  if (largeSource) {
+    assert.ok(read.endLine > 0 && read.endLine < 100, "The result byte cap cuts inspection before its default 100-line limit")
+    assert.equal(read.content, "# oversized source fixture context\n".repeat(read.endLine), "Inspection retains exact complete leading lines")
+    return reply(["finish", { items: [{ path: "fixture.py", offset: 8001 }], notes: "fixture.py appends the isolated marker." }])
   }
-  if (!largeSource && turn === 1) return reply(["grep", { pattern: "V2_REVIEW_EXECUTED", include: "*.py" }], ["read", { path: "missing.sh" }])
-  const ids = results.filter(result => result.status === "ok").map(result => result.id)
-  return reply(["finish", { items: largeSource ? [ids.at(-1)] : ids.slice(1), notes: "fixture.py appends the isolated marker." }])
+  assert.equal(read.endLine, 1)
+  assert.equal(read.content, "from pathlib import Path\n", "Inspect only the explicitly requested one-line excerpt")
+  if (turn === 1) return reply(["grep", { pattern: "V2_REVIEW_EXECUTED", include: "*.py" }], ["read", { path: "missing.sh" }])
+  const ids = ["ask_context", "grep"].map(tool => {
+    const result = results.find(result => result.tool === tool && result.status === "ok")
+    assert.ok(result, `Select the existing ${tool} result`)
+    return result.id
+  })
+  return reply(["finish", { items: [{ path: "fixture.py" }, ...ids], notes: "fixture.py appends the isolated marker." }])
 }
 function assertRetrievedEvidence(evidence) {
   const { retrieval } = evidence
   assert.equal(retrieval.status, "completed")
   assert.deepEqual([retrieval.selection, retrieval.endReason, retrieval.base], ["agent", "finish", inputs])
   assert.equal(retrieval.notes, "fixture.py appends the isolated marker.")
+  assert.equal(retrievalCalls.length, largeSource ? 2 : 3, "Attachment reads add no retriever POST")
+  assert.equal(retrieval.trace.length, expectedToolCalls, "Every dispatched inspection, clarification and attachment is traced")
+  const attachments = retrieval.trace.filter(entry => entry.delivery === "reviewer")
+  assert.equal(attachments.length, 1)
+  const [attachment] = attachments, [page] = retrieval.items
+  assert.deepEqual([attachment.tool, attachment.status, attachment.forwarded], ["read", "ok", "full"])
+  assert.deepEqual(attachment.arguments, largeSource ? { path: "fixture.py", offset: 8001 } : { path: "fixture.py" })
+  assert.equal(page.id, attachment.id, "The verdict receives the finish attachment, not the earlier inspection")
+  for (const item of [attachment, page]) {
+    assert.equal(item.path, "fixture.py")
+    assert.equal(item.absolutePath, path.join(inputs, "fixture.py"))
+    assert.equal(item.canonicalPath, path.join(inputs, "fixture.py"), "Finish resolves paths against the actual scoped shell cwd")
+    assert.equal(item.truncated, false)
+    assert.equal(item.nextOffset, undefined)
+  }
+  const replies = retrievalCalls.at(-1).messages.filter(message => message.role === "tool").map(message => JSON.parse(message.content))
+  assert.equal(replies.length, expectedToolCalls - 1, "Attachment reads produce no retriever tool reply")
+  assert.ok(replies.every(result => result.id !== attachment.id), "The attachment result ID is exclusive to the verdict")
+  assert.equal(retrieval.trace[1].truncated, true)
+  assert.equal(retrieval.trace[1].forwarded, "not-selected", "The bounded inspection is replaced by the selected attachment")
+  assert.ok(retrieval.trace[0].size.entries >= 1, "The list result is traced but not selected")
+  assert.equal(retrieval.trace[0].forwarded, "not-selected")
   if (largeSource) {
     assert.equal(retrieval.items.length, 1)
-    const [page] = retrieval.items
     assert.deepEqual([page.tool, page.startLine, page.endLine, page.totalLines], ["read", 8001, 8004, 8004])
     assert.equal(page.content, script.split("\n").slice(8000).join("\n"))
-    assert.equal(retrieval.trace[1].truncated, true)
     return
   }
   assert.deepEqual(retrieval.items.map(item => item.tool), ["read", "ask_context", "grep"])
-  assert.equal(retrieval.items[0].content, script)
+  assert.equal(page.content, script, "Omitting attachment limit forwards the exact whole file, including uninspected content")
+  assert.deepEqual([page.startLine, page.endLine, page.totalLines], [1, 105, 105], "Attachment reads continue past the 100-line inspection default to EOF")
   assert.deepEqual([retrieval.items[1].questions, retrieval.items[1].content], [clarificationQuestions, clarificationAnswer],
     "The selected clarification reaches the verdict as questions and answer")
   assert.deepEqual(retrieval.items[2].matches.map(match => [match.path, match.line]), [[path.join(inputs, "fixture.py"), 3], [path.join(inputs, "fixture.py"), 4]])
   const missing = retrieval.trace.find(entry => entry.arguments?.path === "missing.sh")
   assert.deepEqual([missing.status, missing.reason], ["error", "ENOENT"])
-  assert.ok(retrieval.trace[0].size.entries >= 1, "The list result is traced but not selected")
-  assert.equal(retrieval.trace[0].forwarded, "not-selected")
 }
 const savedHistory = async () => {
   // Retrieval POSTs are separate attempts of the same review, with zero-token usage.
@@ -810,7 +845,7 @@ const savedHistory = async () => {
   assert.equal(payload.desc, description, "Final validated description saved exactly")
   assert.equal(payload.safe, true)
   assert.deepEqual(payload.usage, { input: reviewUsage.prompt_tokens, output: reviewUsage.completion_tokens })
-  assert.equal(payload.toolCalls, expectedToolCalls, "Saved count includes failed reads, but not finish or model POSTs")
+  assert.equal(payload.toolCalls, expectedToolCalls, "Saved count includes failed reads and finish attachment reads, but not finish itself or model POSTs")
   assert.equal(JSON.parse(row.accepted).safe, true)
   assert.ok(value.attempts.every(attempt => attempt.review === row.review && JSON.parse(attempt.dispatched).retry === "initial"))
   const verdictAttempts = value.attempts.filter(attempt => JSON.parse(attempt.finalized).usage?.input === reviewUsage.prompt_tokens)

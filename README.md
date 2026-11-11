@@ -152,8 +152,8 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `retrievalKinds` | object | `bash: true`, `edit: false`, `skill: true`, `tool: true`, `external_directory: true` | Optional boolean fields with exactly these names. Omitted fields retain their defaults; unknown fields and non-booleans are invalid. `bash` selects native shell reviews. `retrieval: false` overrides all categories. These switches control retrieval, not whether the permission is reviewed. |
 | `retrievalClarification` | boolean | `true` | Lets retrieval ask the main conversation's own model once per review (`ask_context`), in the background through OpenCode's `/btw` mechanism. Applies only where retrieval is on, and never to subagent reviews. `false` removes the tool. |
 | `maxRetrievalRounds` | integer | `3` | `1`–`50` retrieval-model rounds, each allowing up to ten sequential tool calls. The model may finish early. After the last round, or an early response without tool calls, one additional forced `finish` turn selects results if needed. Transport retries do not consume rounds. |
-| `retrievalTimeoutMs` | integer | `60000` | `1`–`3600000` milliseconds for the retrieval stage, including model requests, tool operations, retries and the forced `finish` turn. Also bounded by the remaining `timeoutMs`. On expiry, the verdict uses results gathered so far if the review budget remains. Reserves no time for the verdict. |
-| `maxFiles` | integer | `6` | `1`–`1000` retrieval `read` results forwarded to the verdict; separate pages or repeated reads count separately, listings and searches do not. Does not cap how many files retrieval may inspect. Independently limits distinct declared edit targets eligible for diff inclusion. |
+| `retrievalTimeoutMs` | integer | `60000` | `1`–`3600000` milliseconds for the retrieval stage, including model requests, tool operations, retries, the forced `finish` turn and direct attachment reads. Also bounded by the remaining `timeoutMs`. On expiry, the verdict uses completed selected results, or successful results in call order if there was no valid finish, if the review budget remains. Reserves no time for the verdict. |
+| `maxFiles` | integer | `6` | `1`–`1000` retrieval `read` results forwarded to the verdict, shared by selected inspections and direct attachments; separate pages or repeated reads count separately, listings and searches do not. Does not cap how many files retrieval may inspect. Independently limits distinct declared edit targets eligible for diff inclusion. |
 | `maxEvidenceBytes` | integer | `131072` | `1`–`16777216` bytes for category-specific operation evidence or pending edit diffs. Separately caps each retrieval tool result, content plus notes forwarded to the verdict, and trimmed session instructions. Oversized diffs and forwarded content keep exact leading complete lines or entries with omitted counts; optional items may instead be omitted. Oversized mandatory evidence fails analysis. These are separate budgets, not a cap on the full prompt or HTTP request. |
 
 The retriever can immediately call `finish` with `items: []` when no documents are
@@ -255,22 +255,34 @@ evidence supplied.
 
 ### Retrieval
 
-Before the verdict, the reviewer model can look up documents with read, list,
-glob and grep. The OpenCode server runs these read-only operations. They can
-reach any file the server can read, including files outside the project.
+Before the verdict, the retrieval stage chooses documents for the reviewer. It
+can inspect excerpts with read, list, glob and grep to discover relevant files,
+or attach known files directly through `finish`. Direct attachments go only to
+the verdict, avoiding repeated file contents in retrieval-model requests. The
+OpenCode server runs all file operations. They can reach any file the server can
+read, including files outside the project.
 
 - For shell reviews, relative paths start from the shell's working directory.
   For other reviews, they start from the request's directory. Absolute paths and
   `~/` also work.
 - Named paths follow symlinks. Glob and grep never enter symlinked directories.
-- Reads come in pages. Each result is capped at `maxEvidenceBytes`. Listings and
-  searches return at most 500 entries. Grep skips binary files, invalid UTF-8
-  and files over 16 MiB.
+- Inspection reads default to 100 lines. Listings and searches default to 50
+  entries or matches. The retriever can request a larger explicit `limit`, up to
+  500 for listings/searches, or another read page. Each result is capped at
+  `maxEvidenceBytes`. Grep skips binary files, invalid UTF-8 and files over 16 MiB.
 - Each round allows up to ten calls. After `maxRetrievalRounds` rounds, or when
   the model stops calling tools, a final turn picks the results the verdict sees.
-- The verdict gets at most `maxFiles` read results and `maxEvidenceBytes` of
-  retrieved content. Larger content keeps its leading lines and states how much
-  was cut.
+- `finish.items` accepts existing result IDs and file objects such as
+  `{"path":"scripts/deploy.sh"}` or `{"path":"package.json","offset":5,"limit":40}`,
+  in forwarding priority order. An attachment without `limit` requests the file
+  from `offset` (default 1) through EOF, subject to the evidence limits.
+- Selected inspections and attachments share `maxFiles` read results and
+  `maxEvidenceBytes` of forwarded content plus notes. Attachment reads stop when
+  forwarding capacity is exhausted. Cuts retain exact leading lines or entries.
+- Attachments are read within the remaining retrieval deadline, with no further
+  retrieval-model turn. Failed, interrupted and unattempted reads are recorded
+  for the verdict, which keeps completed selected results. Notes do not establish
+  that the retriever inspected an attachment's contents.
 
 Retrieval stops early when the endpoint returns an error that isn't retried, for
 example when it rejects tools. It also stops when `retrievalTimeoutMs` runs out
@@ -446,7 +458,8 @@ average time to rating and to full report.
   retries and failed reviews. Cached input is part of input tokens. Unreported
   usage is shown as partial, never as zero.
 - **Tool calls** count retrieval read, list, glob, grep and ask_context calls
-  that ran, including failed ones.
+  that ran, including failed ones and direct attachment reads. `finish` itself
+  and attachment reads skipped for exhausted capacity do not count.
 - **Cost** uses the charge OpenRouter reports when `baseURL` is
   `https://openrouter.ai/api/v1`. Other endpoints use OpenCode's model catalog
   price when a matching provider and model exist.
