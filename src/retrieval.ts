@@ -82,7 +82,9 @@ function attachment(value: unknown): value is Attachment {
     && Object.keys(value).every(key => key === "path" || ((key === "offset" || key === "limit") && Number.isSafeInteger(value[key]) && (value[key] as number) > 0))
 }
 
-interface ToolCall { id: string; name: string; arguments: string }
+interface ToolCall { id: string; name: string; arguments: string; extra?: Record<string, unknown> }
+/** Provider reasoning continuation fields on an assistant tool-call message. */
+const continuation = ["reasoning_details", "reasoning_content"] as const
 function parseTurn(envelope: unknown): { message: Record<string, unknown>; calls: ToolCall[] } {
   const choices = object(envelope) ? envelope.choices : undefined
   if (!object(envelope) || envelope.error != null || !Array.isArray(choices) || choices.length !== 1)
@@ -99,7 +101,8 @@ function parseTurn(envelope: unknown): { message: Record<string, unknown>; calls
     if (!object(call) || typeof call.id !== "string" || !call.id || (call.type !== undefined && call.type !== "function")
       || !object(fn) || typeof fn.name !== "string" || typeof fn.arguments !== "string")
       throw new RetrievalStop("malformed-response", "Retrieval tool calls are malformed")
-    return { id: call.id, name: fn.name, arguments: fn.arguments }
+    return { id: call.id, name: fn.name, arguments: fn.arguments,
+      ...(object(call.extra_content) ? { extra: call.extra_content } : {}) }
   })
   return { message, calls }
 }
@@ -284,8 +287,13 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
         const { message, calls } = await post(undefined, stage)
         rounds++
         if (!calls.length) return finishTurn()
+        // Echo provider continuation data unchanged: Gemini rejects a later turn
+        // without its thought signatures. It is bounded by the response cap and
+        // never reaches evidence, reports or history.
         messages.push({ role: "assistant", content: typeof message.content === "string" ? message.content : null,
-          tool_calls: calls.map(call => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } })) })
+          ...Object.fromEntries(continuation.filter(key => message[key] != null).map(key => [key, message[key]])),
+          tool_calls: calls.map(call => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments },
+            ...(call.extra ? { extra_content: call.extra } : {}) })) })
         const finish = calls.find(call => call.name === "finish")
         const finished = finish && finishArgs(finish)
         if (finished) {

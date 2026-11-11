@@ -538,3 +538,16 @@ test("scoped companion inspections page at 100 lines while direct attachment rea
   assert.equal(evidence.retrieval.items[0].content, script)
   assert.equal(evidence.retrieval.trace[2].delivery, "reviewer")
 })
+
+test("provider continuation fields of retrieval turns are echoed unchanged and kept out of verdict evidence", async () => {
+  const first = tools({ ...call("t1", "read", { path: "run.sh" }), extra_content: { google: { thought_signature: "sig-a" } } })
+  ;(first.choices[0]!.message as any).reasoning_details = [{ type: "reasoning.encrypted", data: "opaque" }]
+  const h = harness([first, tools(call("t2", "finish", { items: ["c1"] })), verdict()],
+    { [JSON.stringify({ path: "run.sh" })]: read("run.sh", "echo hi\n") })
+  await review(shellEvidence({ command: "./run.sh" }), h.config, signal(), h.deps)
+  const echoed = h.bodies[1].messages[2]
+  assert.deepEqual(echoed.tool_calls[0].extra_content, { google: { thought_signature: "sig-a" } })
+  assert.deepEqual(echoed.reasoning_details, [{ type: "reasoning.encrypted", data: "opaque" }])
+  const verdictBody = JSON.stringify(h.bodies[2])
+  assert.ok(!verdictBody.includes("sig-a") && !verdictBody.includes("opaque"), "continuation data is not evidence")
+})

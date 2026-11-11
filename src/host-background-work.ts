@@ -29,6 +29,16 @@ export async function hostBackgroundIdle(client: OpenCodeClient, location: Locat
     if (!shell.id || !["running", "exited", "timeout", "killed"].includes(shell.status)) return false
     if (shell.status === "running" && members.has(shell.metadata?.sessionID as string)) return false
   }
+  // Background shell, subagent and image jobs outlive the foreground turn. The
+  // native list holds active and unconsumed jobs, whose result will wake the
+  // session again, so any listed family job means the session has not ended.
+  const jobs = await client.experimental.job.list({ sessionID: family[0], descendants: true }, { signal })
+  signal.throwIfAborted()
+  if (!Array.isArray(jobs) || jobs.length > 16384) return false
+  for (const job of jobs) {
+    if (!job || typeof job.id !== "string" || !job.id || typeof job.sessionID !== "string") return false
+    if (members.has(job.sessionID)) return false
+  }
   let count = 0
   for (const sessionID of family) {
     signal.throwIfAborted()

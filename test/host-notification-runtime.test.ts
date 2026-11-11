@@ -57,7 +57,8 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
       if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
     } }, session: { active: async () => Object.fromEntries([...background.active].map(id => [id, { type: "running" }])) },
       shell: { list: async () => ({ location, data: background.shells }) },
-      experimental: { persistentPty: { list: async ({ sessionID }: { sessionID: string }) => background.terminals.filter(value => value.sessionID === sessionID) } } },
+      experimental: { persistentPty: { list: async ({ sessionID }: { sessionID: string }) => background.terminals.filter(value => value.sessionID === sessionID) },
+        job: { list: async () => [] } } },
     data: {
       on: (_type: string, callback: typeof native) => { native = callback; return () => { native = undefined } },
       location: { default: () => location },

@@ -31,7 +31,8 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
   const permissions = new Map<string, HostRequest[] | undefined>()
   const forms = new Map<string, FormInfo[] | undefined>()
   const active = new Set<string>(), shells: ShellInfo[] = [], terminals: PersistentPtyInfo[] = []
-  const work = { active: async () => Object.fromEntries([...active].map(id => [id, { type: "running" }])),
+  const jobs: { id: string; sessionID: string; kind: string; status: string }[] = []
+  const work = { jobs: async () => jobs, active: async () => Object.fromEntries([...active].map(id => [id, { type: "running" }])),
     shells: async () => ({ location: { directory: "/project" }, data: shells }),
     terminals: async (id: string) => terminals.filter(value => value.sessionID === id) }
   const banners: NotificationMessage[] = [], signals: AbortSignal[] = [], navigated: string[] = []
@@ -48,7 +49,8 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
   const context = {
     location: { directory: "/project" },
     client: { session: { active: () => work.active() }, shell: { list: () => work.shells() },
-      experimental: { persistentPty: { list: ({ sessionID }: { sessionID: string }) => work.terminals(sessionID) } } },
+      experimental: { persistentPty: { list: ({ sessionID }: { sessionID: string }) => work.terminals(sessionID) },
+        job: { list: () => work.jobs() } } },
     data: { session: {
       get: (id: string) => sessions.get(id) as SessionInfo | undefined,
       family: (root: string) => root === "root" ? family : [],
@@ -108,7 +110,7 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
     for (const timer of [...timers]) if (timer.at <= now && timers.delete(timer)) timer.callback()
     await settle()
   }
-  return { host, state, context, abort, banners, signals, sessions, permissions, forms, active, shells, terminals, work, opened, navigated, timers,
+  return { host, state, context, abort, banners, signals, sessions, permissions, forms, active, shells, terminals, jobs, work, opened, navigated, timers,
     emit, ask, reply, formBirth, formReply, advance, resume, clicked: () => clicked,
     mode: (value: string) => { mode = value }, route: (value: string) => { current = value; host.routeChanged() },
     family: (ids: string[]) => { family = ids }, native: (value?: string) => { override = true; nativeOverride = value },
@@ -437,20 +439,23 @@ test("terminal execution delivery waits for healthy public permission/form recon
   await f.host.dispose()
 })
 
-test("finished notifications wait for all root-family agents, shells and persistent terminals", async t => {
-  for (const kind of ["agent", "shell", "terminal"] as const) {
+test("finished notifications wait for all root-family agents, shells, persistent terminals and background jobs", async t => {
+  for (const kind of ["agent", "shell", "terminal", "image-job", "subagent-job"] as const) {
     const f = fixture(); t.after(() => f.host.dispose())
     f.host.visit("root"); f.host.snapshot([], true)
     // Already running before this root execution: event-only bookkeeping would miss it.
     if (kind === "agent") f.active.add("deep")
     if (kind === "shell") f.shells.push(runningShell("background", "deep"))
     if (kind === "terminal") f.terminals.push({ id: "terminal", sessionID: "child", status: "running" } as PersistentPtyInfo)
+    // A completed but unconsumed job still wakes its session with the result.
+    if (kind === "image-job") f.jobs.push({ id: "job", sessionID: "root", kind: "image", status: "running" })
+    if (kind === "subagent-job") f.jobs.push({ id: "job", sessionID: "child", kind: "subagent", status: "completed" })
     f.emit("session.execution.started", { sessionID: "root" })
     f.emit("session.execution.succeeded", { sessionID: "root" })
     await settle(); await f.advance(5000)
     f.host.snapshot([], true); await settle()
     assert.equal(f.banners.length, 0, kind)
-    f.active.clear(); f.shells.length = 0; f.terminals.length = 0
+    f.active.clear(); f.shells.length = 0; f.terminals.length = 0; f.jobs.length = 0
     f.host.snapshot([], true); await settle()
     assert.deepEqual(f.banners.map(value => value.kind), ["ended"], kind)
     f.host.snapshot([], true); await settle()
@@ -474,7 +479,7 @@ test("server activity blocks completion even when the native status cache says i
 })
 
 test("unavailable background observations suppress only completion, not manual attention or errors", async t => {
-  for (const kind of ["active", "shells", "terminals"] as const) {
+  for (const kind of ["active", "shells", "terminals", "jobs"] as const) {
     const f = fixture(); t.after(() => f.host.dispose())
     f.work[kind] = async () => { throw Error("Background state unavailable") }
     f.host.visit("root"); f.host.snapshot([], true)
@@ -493,13 +498,14 @@ test("unavailable background observations suppress only completion, not manual a
 })
 
 test("malformed activity, shell scope and terminal ownership cannot prove completion", async t => {
-  for (const change of ["active", "shell-scope", "shell-status", "terminal-owner", "terminal-status"] as const) {
+  for (const change of ["active", "shell-scope", "shell-status", "terminal-owner", "terminal-status", "job-shape"] as const) {
     const f = fixture(); t.after(() => f.host.dispose())
     if (change === "active") f.work.active = async () => ({ deep: { type: "unknown" } })
     if (change === "shell-scope") f.work.shells = async () => ({ location: { directory: "/elsewhere" }, data: [] })
     if (change === "shell-status") f.shells.push({ ...runningShell("bad", "root"), status: "unknown" } as unknown as ShellInfo)
     if (change === "terminal-owner") f.work.terminals = async () => [{ id: "bad", sessionID: "other", status: "exited" } as PersistentPtyInfo]
     if (change === "terminal-status") f.terminals.push({ id: "bad", sessionID: "root", status: "unknown" } as unknown as PersistentPtyInfo)
+    if (change === "job-shape") f.work.jobs = async () => [{ sessionID: "root" }] as never
     f.host.visit("root"); f.host.snapshot([], true)
     f.emit("session.execution.started", { sessionID: "root" })
     f.emit("session.execution.succeeded", { sessionID: "root" })

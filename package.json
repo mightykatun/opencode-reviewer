@@ -63,7 +63,6 @@
     "@opencode/plugin": "^2.0.0",
     "@opencode/theme": "^2.0.0",
     "@opentui/core": "0.8.1",
-    "@opentui/keymap": "0.8.1",
     "@opentui/solid": "0.8.1",
     "@types/node": "24.12.2",
     "babel-preset-solid": "1.9.16",
@@ -79,9 +78,6 @@
     "@opentui/solid": {
       "solid-js": "$solid-js"
     },
-    "@opentui/keymap": {
-      "solid-js": "$solid-js"
-    },
-    "seroval": "1.6.3"
+    "seroval": "1.6.12"
   }
 }

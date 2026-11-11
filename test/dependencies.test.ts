@@ -13,7 +13,7 @@ test("the actual Solid dependency graph resolves patched Seroval after installat
     try { manifest = JSON.parse(await readFile(path.join(directory, "package.json"), "utf8")) }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error }
     if (manifest.name !== "seroval") continue
-    assert.equal(manifest.version, "1.6.3", "Known deserialization fixes must be installed, not merely declared in overrides")
+    assert.equal(manifest.version, "1.6.12", "Known deserialization fixes (>=1.6.11) must be installed, not merely declared in overrides")
     return
   }
   assert.fail("Installed Seroval package metadata unavailable")
