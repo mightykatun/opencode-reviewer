@@ -77,7 +77,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     let maxBytes: number
     try { maxBytes = configuredEvidenceBytes(ctx.options) } catch { return }
     setupHostSessionInstructions(ctx, life, { root, maxBytes,
-      read: (id, signal) => instructions.read(id, maxBytes, signal), write: (id, text) => instructions.write(id, text) })
+      read: (id, signal) => instructions.read(id, maxBytes, signal, true), write: (id, text) => instructions.write(id, text) })
   }
   if (!config || !companion) {
     const standalone = setupHostHistoryOnly(ctx, state, life)
@@ -321,8 +321,18 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   life.addCleanup(() => controller.dispose())
   life.addCleanup(() => { const at = performance.now(); refresh.dispose(); return records.dispose(controller.dispose(), at) }, false)
   life.addCleanup(() => modes.flush())
+  life.addCleanup(() => modes.refreshSettled(), false)
   life.addCleanup(() => notifications?.dispose(), false)
-  const timer = setInterval(() => { void refresh.refresh() }, 2000)
+  const timer = setInterval(() => {
+    void refresh.refresh()
+    // Another terminal may switch a shared conversation mode. Apply it through
+    // the same cancellation path as the local command.
+    void modes.refresh(life.signal).then(roots => {
+      if (!roots.length || life.signal.aborted) return
+      for (const root of roots) controller.modeChanged(root)
+      void refresh.refresh()
+    }, () => {})
+  }, 2000)
   life.addCleanup(() => clearInterval(timer))
   life.addCleanup(ctx.ui.slot({ append: "app", render: () => {
     const selected = createMemo(select)

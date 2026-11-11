@@ -10,6 +10,7 @@ import { withDeadline } from "./deadline.js"
 export interface HostSessionInstructionsOptions {
   root(): string | undefined
   maxBytes: number
+  /** Resolves "" only for a missing record. Unreadable or skipped reads reject. */
   read(root: string, signal: AbortSignal): Promise<string>
   write(root: string, text: string): Promise<void>
 }
@@ -134,16 +135,22 @@ export function setupHostSessionInstructions(context: Plugin.Context,
     }, () => dismissed(draft))
     const signal = AbortSignal.any([lifecycle.signal, draft.abort.signal])
     void work.track(withDeadline(signal, 5000, bounded => {
-      if (reads >= 2) return Promise.resolve("")
+      if (reads >= 2) return Promise.reject(new Error("Session instructions read capacity unavailable"))
       reads++
       const read = Promise.resolve().then(() => { bounded.throwIfAborted(); return options.read(root, bounded) })
       const release = () => { reads-- }
       void read.then(release, release)
       return work.track(read)
-    }, "Session instructions lookup").catch(() => "").then(text => {
+    }, "Session instructions lookup").then(text => {
       if (!current(draft) || signal.aborted) return
       draft.initial = text
       draft.setReady(true)
+    }, () => {
+      // An unread record is not an empty one. Never offer a draft that could
+      // overwrite saved instructions after a failed or skipped read.
+      if (!current(draft) || signal.aborted) return
+      close()
+      context.ui.toast.show({ message: uiText.sessionInstructions.loadFailed, variant: "error" })
     }))
   }
   // Discovery must survive the palette's modal mode. Keyboard dispatch receives

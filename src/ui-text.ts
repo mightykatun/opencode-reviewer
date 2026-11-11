@@ -151,6 +151,7 @@ export const uiText = {
     clear: "Clear",
     apply: "Apply",
     saveFailed: "Session instructions could not be saved.",
+    loadFailed: "Session instructions could not be loaded.",
     tooLarge: (limit: number) => `Session instructions exceed maxEvidenceBytes (${limit} bytes).`,
   },
   history: {

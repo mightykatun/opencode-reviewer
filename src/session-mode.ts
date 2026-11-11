@@ -109,6 +109,35 @@ export class SessionModes implements SessionModeGate {
     if (read.finished && read.settled && this.reads.get(root) === read) this.reads.delete(root)
   }
   enabled(root: string) { return this.values.get(root) === true }
+  /** Records are shared by every terminal of this user. Re-read cached roots one
+   * at a time so another terminal's switch reaches this one. A local switch made
+   * during a read wins. An unreadable record suspends like a disabled one. A
+   * timed-out read keeps this refresh slot until it physically settles. Returns
+   * roots whose effective state changed. */
+  refresh(parent: AbortSignal): Promise<string[]> {
+    return this.refreshing ??= this.refreshRoots(parent).finally(() => { this.refreshing = undefined })
+  }
+  private refreshing?: Promise<string[]>
+  private async refreshRoots(parent: AbortSignal) {
+    const changed: string[] = []
+    for (const root of [...this.values.keys()]) {
+      if (parent.aborted) break
+      const revision = this.changes.get(root), before = this.values.get(root)
+      let physical: Promise<unknown> = Promise.resolve(), value = false
+      try {
+        value = await withDeadline(parent, 5000, signal => {
+          const worker = Promise.resolve().then(() => this.store.read(root, signal))
+          physical = worker.catch(() => {})
+          return worker
+        }, "Session mode refresh")
+      } catch { await physical }
+      if (parent.aborted) break
+      if (this.changes.get(root) !== revision || !this.values.has(root) || this.reads.has(root)) continue
+      this.values.set(root, value)
+      if (value !== before) changed.push(root)
+    }
+    return changed
+  }
   set(root: string, enabled: boolean): Promise<void> {
     this.changes.set(root, (this.changes.get(root) ?? 0) + 1)
     this.values.set(root, enabled)
@@ -116,4 +145,6 @@ export class SessionModes implements SessionModeGate {
   }
   deleted(id: string) { this.ancestry.deleted(id) }
   flush() { return this.store.flush() }
+  /** Optional cross-terminal refresh work, outside critical mode-write drains. */
+  async refreshSettled() { await this.refreshing?.catch(() => {}) }
 }

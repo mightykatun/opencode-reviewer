@@ -112,6 +112,19 @@ test("invalid, corrupt, noncanonical, oversized and non-UTF-8 records are silent
   assert.equal(await store.read("root", 100, signal()), "")
 })
 
+test("strict editor reads distinguish a missing record from an unreadable one", async (t) => {
+  const { store, file, directory } = await fixture(t)
+  assert.equal(await new SessionInstructionsStore(path.join(directory, "absent")).read("root", 100, signal(), true), "")
+  assert.equal(await store.read("root", 100, signal(), true), "")
+  await store.write("root", "original")
+  assert.equal(await store.read("root", 100, signal(), true), "original")
+  await assert.rejects(store.read("root", 3, signal(), true), /Invalid session instructions record/, "oversized is not empty")
+  await writeFile(await file(), "{")
+  await assert.rejects(store.read("root", 100, signal(), true))
+  assert.equal(await store.read("root", 100, signal()), "", "review reads still omit optional guidance")
+  await assert.rejects(store.read("root", 0, signal(), true), /unavailable/)
+})
+
 test("untrusted permissions, record symlinks and hard links fail open without repairing targets", async (t) => {
   const { directory, store, file } = await fixture(t)
   await store.write("root", "private")

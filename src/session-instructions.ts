@@ -34,10 +34,15 @@ export class SessionInstructionsStore {
     return path.join(this.directory, `${key}.json`)
   }
 
-  async read(root: string, maxBytes: number, parent: AbortSignal): Promise<string> {
+  /** Reviews treat any failure as absent optional guidance. The editor passes
+   * strict, so only a missing record reads as empty and failures stay visible. */
+  async read(root: string, maxBytes: number, parent: AbortSignal, strict = false): Promise<string> {
     parent.throwIfAborted()
     if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_BYTES
-      || this.waiting >= MAX_WAITERS) return ""
+      || this.waiting >= MAX_WAITERS) {
+      if (strict) throw new Error("Session instructions unavailable")
+      return ""
+    }
     this.waiting++
     let complete!: () => void
     const transaction = new Promise<void>(resolve => { complete = resolve })
@@ -64,8 +69,9 @@ export class SessionInstructionsStore {
       }, "Session instructions loading")
       parent.throwIfAborted()
       return value
-    } catch {
+    } catch (error) {
       parent.throwIfAborted()
+      if (strict) throw error
       return ""
     } finally {
       if (!started) releaseAdmission()
@@ -76,23 +82,26 @@ export class SessionInstructionsStore {
     if (!await privateRecordDirectory(this.directory, false, "instructions", signal)) { signal.throwIfAborted(); return "" }
     signal.throwIfAborted()
     const file = await open(this.file(root), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+      .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error })
+    if (!file) { signal.throwIfAborted(); return "" }
+    const invalid = () => { throw new Error("Invalid session instructions record") }
     try {
       signal.throwIfAborted()
       const limit = recordLimit(maxBytes)
       const stat = await file.stat()
       signal.throwIfAborted()
-      if (!validPrivateRecord(stat, limit)) return ""
+      if (!validPrivateRecord(stat, limit)) invalid()
       const buffer = await readPrivateRecord(file, Math.min(limit, stat.size) + 1, signal)
-      if (buffer.length !== stat.size || !validPrivateRecord(await file.stat(), limit)) return ""
+      if (buffer.length !== stat.size || !validPrivateRecord(await file.stat(), limit)) invalid()
       signal.throwIfAborted()
       const source = new TextDecoder("utf-8", { fatal: true }).decode(buffer)
       const value = JSON.parse(source)
       if (!value || Array.isArray(value) || Object.keys(value).length !== 3 || value.version !== 1
         || !Number.isInteger(value.bytes) || value.bytes < 0 || value.bytes > maxBytes || typeof value.data !== "string"
-        || value.data.length !== 4 * Math.ceil(value.bytes / 3)) return ""
+        || value.data.length !== 4 * Math.ceil(value.bytes / 3)) invalid()
       const bytes = Buffer.from(value.data, "base64")
       if (bytes.length !== value.bytes || bytes.toString("base64") !== value.data
-        || JSON.stringify({ version: 1, bytes: value.bytes, data: value.data }) !== source) return ""
+        || JSON.stringify({ version: 1, bytes: value.bytes, data: value.data }) !== source) invalid()
       const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim()
       signal.throwIfAborted()
       return text

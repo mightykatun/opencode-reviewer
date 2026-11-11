@@ -69,6 +69,35 @@ test("atomic mode records survive restart, serialize toggles and isolate host/ro
   }
 })
 
+test("refresh applies another terminal's shared switch, suspends unreadable records and lets local switches win", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "reviewer-mode-"))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const ancestry = { root: async (id: string) => id, deleted() {} } as any
+  const a = new SessionModes(new SessionModeStore(directory, "/host"), ancestry)
+  const b = new SessionModes(new SessionModeStore(directory, "/host"), ancestry)
+  await a.load("root", signal()); await b.load("root", signal())
+  await a.set("root", false)
+  assert.equal(b.enabled("root"), true)
+  assert.deepEqual(await b.refresh(signal()), ["root"])
+  assert.equal(b.enabled("root"), false, "terminal B observes terminal A's disable")
+  assert.deepEqual(await b.refresh(signal()), [], "an unchanged record reports nothing")
+  await a.set("root", true)
+  assert.deepEqual(await b.refresh(signal()), ["root"])
+  assert.equal(b.enabled("root"), true)
+  const [name] = await readdir(directory)
+  await writeFile(path.join(directory, name!), "{")
+  assert.deepEqual(await b.refresh(signal()), ["root"])
+  assert.equal(b.enabled("root"), false, "an unreadable shared record suspends review")
+  const held = deferred<boolean>()
+  const slow = new SessionModes({ read: () => held.promise, write: async () => {}, flush: async () => {} }, ancestry)
+  ;(slow as any).values.set("root", true)
+  const refreshing = slow.refresh(signal())
+  await slow.set("root", false)
+  held.resolve(true)
+  assert.deepEqual(await refreshing, [])
+  assert.equal(slow.enabled("root"), false, "a local switch during the read is not overwritten")
+})
+
 test("mode reads reject corrupt, oversized, invalid UTF-8, nonregular and linked records", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "reviewer-mode-"))
   t.after(() => rm(directory, { recursive: true, force: true }))

@@ -166,3 +166,21 @@ for (const fail of [false, true]) test(`dismissed ${fail ? "failed" : "successfu
   assert.deepEqual(host.toasts, [], "late completion has no UI effects")
   host.ui.close(); await host.life.stop()
 })
+
+test("a failed or capacity-skipped read closes the editor instead of offering an overwriting empty draft", async () => {
+  const held: ((text: string) => void)[] = [], writes: string[] = []
+  const host = fixture(() => new Promise(resolve => held.push(resolve)), async (_root, text) => { writes.push(text) })
+  for (let i = 0; i < 2; i++) { host.ui.open(); await settle(); host.ui.close() }
+  host.ui.open(); await settle()
+  host.ui.apply(""); await settle()
+  assert.equal(writes.length, 0, "no save without a successful read")
+  assert.equal(host.toasts.at(-1), "Session instructions could not be loaded.")
+  held.forEach(resolve => resolve("saved"))
+  await settle()
+  const failing = fixture(async (): Promise<string> => { throw Error("corrupt") }, async (_root, text) => { writes.push(text) })
+  failing.ui.open(); await settle()
+  failing.ui.apply("replacement"); await settle()
+  assert.equal(writes.length, 0)
+  assert.equal(failing.clears(), 1)
+  await host.life.stop(); await failing.life.stop()
+})
