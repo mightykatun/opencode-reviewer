@@ -211,6 +211,9 @@ async function readTool(args: JSONObject, context: RetrievalContext): Promise<Re
         content += value; cost += size; endLine = line
       }
       pending = pending.slice(start)
+      // Even an unfinished next line proves the requested window is truncated.
+      // Do not skip an oversized tail and later mistake its EOF for a full read.
+      if (!stopped && pending && limit !== undefined && line + 1 >= offset + limit) stopped = true
       // An unterminated line beyond the budget is either an error (in range) or skipped.
       if (!stopped && Buffer.byteLength(pending) > budget) {
         if (line + 1 >= offset && (limit === undefined || line + 1 < offset + limit)) {

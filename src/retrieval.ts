@@ -18,6 +18,11 @@ export interface RetrievalExecutor {
   execute(call: { tool: RetrievalToolName; arguments: JSONObject }, base: string, timeoutMs: number, signal: AbortSignal): Promise<JSONObject>
 }
 
+/** A lost companion response cannot establish physical server completion. */
+export class RetrievalCompletionError extends Error {
+  constructor() { super("Companion retrieval completion unavailable") }
+}
+
 export type RetrievalEndReason = "finish" | "no-finish" | "retrieval-timeout" | "tools-rejected" | "provider-error"
   | "transport-error" | "malformed-response"
 export type RetrievalSection = { status: "disabled" | "unavailable" } | {
@@ -130,6 +135,14 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
   const tools = asker ? clarifyingRetrievalTools : retrievalTools
   let posts = 0, usage: Usage | undefined, rounds = 0, nextID = 1, toolCalls = 0, asked = false
   let selection: Selection | undefined, endReason: RetrievalEndReason = "no-finish", stopDetail = ""
+  let completionFailure: RetrievalCompletionError | undefined
+  const execute = (call: Parameters<RetrievalExecutor["execute"]>[0], timeout: number, stage: AbortSignal) =>
+    ownership.track(deps.executor.execute(call, base, timeout, stage).catch(error => {
+      // A transport failure can arrive after the stage's visible timeout. Keep
+      // it through the drain instead of treating it as a completed attachment.
+      if (error instanceof RetrievalCompletionError) completionFailure = error
+      throw error
+    }))
 
   const post = async (toolChoice: unknown, stage: AbortSignal) => {
     const body = JSON.stringify({ model: config.model, messages, tools, ...(toolChoice ? { tool_choice: toolChoice } : {}),
@@ -242,7 +255,7 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
       item.entry.status = "error"
       item.entry.reason = "attachment read interrupted before completion"
       deps.observe({ type: "toolDispatched", review: deps.review, call: String(++toolCalls) })
-      const result = await ownership.track(deps.executor.execute({ tool: "read", arguments: item.args }, base, timeout, stage))
+      const result = await execute({ tool: "read", arguments: item.args }, timeout, stage)
       stage.throwIfAborted()
       delete item.entry.reason
       Object.assign(item.entry, summary(result))
@@ -324,7 +337,7 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
           deps.observe({ type: "toolDispatched", review: deps.review, call: String(++toolCalls) })
           const requested = args as JSONObject
           const inspection = { ...requested, limit: requested.limit === undefined ? (call.name === "read" ? 100 : 50) : requested.limit }
-          const result = await ownership.track(deps.executor.execute({ tool: call.name as RetrievalToolName, arguments: inspection }, base, timeout, stage))
+          const result = await execute({ tool: call.name as RetrievalToolName, arguments: inspection }, timeout, stage)
           stage.throwIfAborted()
           const id = record(rounds, call, args, summary(result))
           if (result.status === "ok") results.set(id, result)
@@ -341,6 +354,7 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
   }
   // Never let an unsettled retrieval transaction overlap the verdict request.
   await abortable(ownership.settled(), signal)
+  if (completionFailure) throw completionFailure
   const forwarded = forward(trace, results, selection, config)
   const limitations = [...forwarded.limitations]
   if (!selection) limitations.unshift(`Retrieval ended without a valid finish selection (${endReason}). ${stopDetail} All successful results were forwarded in call order within the forwarding budget.`.replace("  ", " "))

@@ -110,7 +110,10 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
       if (signal.aborted) return null
       return { tool: query.call.tool, status: "error", reason: fileFailure(error) }
     } finally {
-      void ownership.settled().then(() => { activeRetrievals-- })
+      // A response acknowledges this call's physical completion, not only its
+      // deadline-visible result. Other calls retain their independent slots.
+      await ownership.settled()
+      activeRetrievals--
     }
   }
   const registration = await context.rpc.register(companionRpc, {

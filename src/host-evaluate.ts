@@ -10,10 +10,11 @@ import type { HostRequestSnapshot } from "./host-types.js"
 import type { ReviewObservation, ReviewResult } from "./types.js"
 import { uiText } from "./ui-text.js"
 import { sessionInstructionsSnapshot } from "./session-instructions-snapshot.js"
-import { companionRpc } from "./companion-protocol.js"
+import { companionBusy, companionRpc } from "./companion-protocol.js"
 import { readCompanion } from "./companion-read.js"
 import { boundedHostJSON } from "./host-request.js"
-import type { RetrievalExecutor } from "./retrieval.js"
+import { RetrievalCompletionError, type RetrievalExecutor } from "./retrieval.js"
+import { DeadlineError, remainingTime } from "./deadline.js"
 import { sessionContextAsker } from "./clarification.js"
 import type { HostScope, HostRequest, JSONObject } from "./host-types.js"
 
@@ -58,11 +59,29 @@ export function evaluateHostReview(client: OpenCodeClient, snapshot: HostRequest
  * failures become factual tool results; cancellation and deadlines propagate. */
 export function companionRetrieval(client: OpenCodeClient, scope: HostScope, request: HostRequest, maxBytes: number): RetrievalExecutor {
   return { async execute(call, base, timeoutMs, signal) {
-    let raw: unknown
+    const end = performance.now() + Math.min(timeoutMs, remainingTime(signal))
+    let raw: unknown, completionFailed = false
     try {
-      raw = await readCompanion(signal, () => client.rpc(companionRpc).retrieve({ ...scope, sessionID: request.sessionID, requestID: request.id,
-        base, call, timeoutMs: Math.max(1, Math.min(3600000, timeoutMs)), maxBytes }, { location: scope.location, signal }), timeoutMs)
+      raw = await readCompanion(signal, async () => {
+        const remaining = Math.min(3600000, end - performance.now(), remainingTime(signal))
+        if (remaining <= 0) throw new DeadlineError("Retrieval")
+        try {
+          // The caller races its logical deadline and owns this RPC until the
+          // companion responds after draining. Aborting the HTTP wait would
+          // hide still-running server I/O. The server enforces the sent budget.
+          return await client.rpc(companionRpc).retrieve({ ...scope, sessionID: request.sessionID, requestID: request.id,
+            base, call, timeoutMs: remaining, maxBytes }, { location: scope.location, signal: new AbortController().signal })
+        } catch (error) {
+          // Only explicit pre-admission refusals prove no work was started.
+          const refused = error && typeof error === "object" && "type" in error
+            && (error.type === companionBusy || error.type === "scope") && "data" in error
+            && error.data && typeof error.data === "object" && !Array.isArray(error.data) && !Object.keys(error.data).length
+          if (!refused) completionFailed = true
+          throw error
+        }
+      }, timeoutMs)
     } catch {
+      if (completionFailed) throw new RetrievalCompletionError()
       signal.throwIfAborted()
       return { tool: call.tool, status: "error", reason: "companion retrieval unavailable" }
     }
