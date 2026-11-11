@@ -1,4 +1,5 @@
 import stringWidth from "string-width"
+import { uiText } from "./ui-text.js"
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 
@@ -8,11 +9,11 @@ export function metadataText(text: string, width: number): string {
   return text.split("\n").map(line => {
     line = line.replace(/\t/g, " ")
     if (stringWidth(line) <= columns) return line
-    const suffix = "..".slice(0, columns)
+    const suffix = uiText.truncation.slice(0, columns)
     let used = 0, end = 0
     for (const { segment, index } of graphemes.segment(line)) {
       const size = stringWidth(segment)
-      if (used + size > columns - suffix.length) break
+      if (used + size > columns - stringWidth(suffix)) break
       used += size; end = index + segment.length
     }
     return line.slice(0, end) + suffix

@@ -21,8 +21,8 @@ export function historyLayout(label: string | undefined, index: string, width = 
   const available = width - navigation - 3
   if (label.length <= available) return { label, rows: 1 }
   if (available >= 8) {
-    const retained = available - 2
-    return { label: label.slice(0, Math.ceil(retained / 2)) + ".." + label.slice(-Math.floor(retained / 2)), rows: 1 }
+    const marker = uiText.truncation, retained = available - marker.length
+    return { label: label.slice(0, Math.ceil(retained / 2)) + marker + label.slice(-Math.floor(retained / 2)), rows: 1 }
   }
   return { label, rows: navigation <= width ? 2 : 3 }
 }

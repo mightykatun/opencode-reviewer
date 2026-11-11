@@ -124,7 +124,7 @@ async function streamedAssessment(response: Response, signal: AbortSignal, owner
       if (failure instanceof TerminalAssessmentRejection) {
         return
       }
-      if (finish === "length") throw new AssessmentStreamError("Reviewer output token limit reached; increase maxOutputTokens")
+      if (finish === "length") throw new AssessmentStreamError("Reviewer output token limit reached. Increase maxOutputTokens")
       if ((finish != null && finish !== "stop") || (stopped && finish !== "stop")) invalid()
       if (typeof delta.content === "string" && delta.content) {
         firstContent?.()

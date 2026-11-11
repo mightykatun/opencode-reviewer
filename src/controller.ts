@@ -7,7 +7,7 @@ import { withDeadline } from "./deadline.js"
 import type { SessionModeGate } from "./session-mode.js"
 import { SCANNER_INTERVAL_MS } from "./appearance.js"
 import { reviewStage } from "./deadline.js"
-import { uiText } from "./ui-text.js"
+import { reviewFailureText } from "./review-failure-text.js"
 import type { HistoryTarget } from "./history-records.js"
 import { conversationRoot } from "./route-approval.js"
 import { ReviewAdmission, type ReviewEvaluation } from "./review-admission.js"
@@ -711,7 +711,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     }, (error: unknown) => {
       this.clearProgress(entry)
       if (active()) {
-        entry.view = { ...entry.view, status: entry.view.status === "identifying" ? "unidentified" : "unavailable", progress: undefined, error: error instanceof Error ? error.message : uiText.review.failed }
+        entry.view = { ...entry.view, status: entry.view.status === "identifying" ? "unidentified" : "unavailable", progress: undefined, error: reviewFailureText(error) }
         this.pauseRating(entry)
         this.publish()
         this.finishFast(entry)

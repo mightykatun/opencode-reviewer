@@ -1,3 +1,5 @@
+import { uiText } from "./ui-text.js"
+
 export const SCANNER_INTERVAL_MS = 40
 export const SCANNER_FRAME_COUNT = 54
 
@@ -15,7 +17,7 @@ export function scannerFrame(frame: number) {
     const trail = holding ? distance + progress : distance
     const active = trail >= 0 && trail < 6
     return {
-      character: active ? "■" : "⬝",
+      character: active ? uiText.review.scanner.active : uiText.review.scanner.inactive,
       alpha: !active ? inactiveAlpha : trail === 0 ? 1 : trail === 1 ? 0.9 : Math.pow(0.65, trail - 1),
       brightness: active && trail === 1 ? 1.15 : 1,
     }

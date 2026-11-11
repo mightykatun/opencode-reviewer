@@ -746,7 +746,7 @@ test("assessment-stream retries share the transport budget and surface token-lim
       return streamText(event(chunk('{"safe":true,')) + event(chunk("", "length"))
         + event({ choices: [], usage: { cost: 0.01 } }) + done)
     }, environment: {}, prompts: BUILTIN_PROMPTS, onUsage: usage => { observed.push(usage) }, onRetry: () => { retries++ } }),
-    /output token limit reached; increase maxOutputTokens/)
+    /output token limit reached\. Increase maxOutputTokens/)
     assert.equal(calls, 3); assert.equal(retries, 2)
     assert.equal(observed.length, httpFirst ? 2 : 3)
   }

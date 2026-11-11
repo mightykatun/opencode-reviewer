@@ -4,7 +4,7 @@ type State = { end: number; stage: string }
 const states = new WeakMap<AbortSignal, State>()
 
 export class DeadlineError extends Error {
-  constructor(stage: string) { super(`${stage} timed out`); this.name = "DeadlineError" }
+  constructor(readonly stage: string) { super(`${stage} timed out`); this.name = "DeadlineError" }
 }
 
 export function remainingTime(signal: AbortSignal): number {

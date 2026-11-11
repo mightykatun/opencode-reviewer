@@ -1,4 +1,4 @@
-/** Compact display only; stored token counts retain their full precision. */
+/** Compact display only. Stored token counts retain their full precision. */
 function compactTokens(count: number): string {
   const units = [[1e15, "Q"], [1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "k"]] as const
   for (const [scale, suffix] of units) if (count >= scale) {
@@ -17,11 +17,23 @@ function statisticsRating(count: number, percentage: string | undefined): string
  * OpenCode. Keep keys and formatter parameters intact so callers stay typed.
  *
  * This is source-level customization, not a tui.json option or runtime override.
- * Model instructions live in prompts/ and contracts/. Model-written reports,
- * host-owned controls and technical diagnostic details are not interface copy.
+ * Model instructions live in prompts/ and contracts/. Model-written reports and
+ * host-owned controls are not interface copy.
+ *
+ * Review failure lines are copy too, but the errors behind them are not: their
+ * internal messages also reach model limitations and diagnostics, so they stay
+ * fixed in code. review-failure-text.ts maps each one to `review.failures` and
+ * `review.stages` below. Errors raised by the OpenCode host or client have no
+ * entry here and are shown verbatim (sanitized).
+ *
  * Keep labels short: the review sidebar is 42 columns including padding.
+ * Never use em dashes, semicolons or middle dots in text. Only the graphics
+ * `review.staticIndicator` and `review.scanner` are exempt. The test in
+ * test/review-failure-text.test.ts enforces this.
  */
 export const uiText = {
+  /** Marks shortened metadata rows and history outcome labels. */
+  truncation: "..",
   review: {
     heading: "Permission analysis",
     safe: "✓ Safe",
@@ -30,10 +42,73 @@ export const uiText = {
     retrieving: "Retrieving",
     evaluating: "Evaluating",
     retrying: "Retrying",
+    /** Shown instead of the scanner when host animations are off. */
     staticIndicator: "[⋯]",
+    /** Eight single-cell glyphs animate before the progress label. */
+    scanner: { active: "■", inactive: "⬝" },
+    /** Fallback when a review fails without an error message. */
     failed: "Review failed",
     evidenceUnavailable: "Exact operation evidence unavailable. Use native controls.",
+    /** Recorded for an invalid cli.json entry. Not rendered by any current view. */
     invalidConfiguration: "Invalid configuration",
+    /** Detail line under "Analysis unavailable". */
+    failures: {
+      // Reviewer configuration
+      apiKeyMissing: (variable: string) => `API key environment variable ${variable} is unset or empty`,
+      // Reviewer HTTP transport
+      http: (status: number) => `Reviewer HTTP ${status}`,
+      network: "Reviewer network request failed",
+      responseRead: "Reviewer response read failed",
+      emptyResponse: "Reviewer returned an empty HTTP response",
+      responseTooLarge: "Reviewer HTTP response exceeds 64 KiB",
+      responseEncoding: "Reviewer HTTP response contains invalid UTF-8",
+      // Non-streamed responses (stream: false)
+      invalidJson: "Reviewer returned invalid API JSON",
+      completionCount: "Reviewer API must return one completion",
+      noTextAssessment: "Reviewer API did not return a text assessment",
+      // Streamed responses (stream: true)
+      expectedStream: "Reviewer expected an SSE response",
+      noTextStream: "Reviewer API did not return a text assessment stream",
+      invalidStreamJson: "Reviewer returned invalid SSE API JSON",
+      streamIncomplete: "Reviewer stream ended without stop and DONE",
+      streamTooLarge: "Reviewer SSE wire exceeds 4 MiB",
+      streamEventTooLarge: "Reviewer SSE event exceeds 64 KiB",
+      streamEventCount: "Reviewer SSE exceeds 65536 events",
+      streamEndedMidEvent: "Reviewer SSE ended mid-event",
+      streamEncoding: "Reviewer SSE contains invalid UTF-8",
+      streamParserEnded: "Reviewer SSE parser already ended",
+      outputLimit: "Reviewer output token limit reached. Increase maxOutputTokens",
+      // Assessment validation
+      assessmentTooLarge: "Reviewer assessment exceeds 64 KiB",
+      formatInvalid: "Reviewer response format invalid after configured attempts",
+      // Conversation context and evidence binding
+      conversationScope: "Captured conversation scope unavailable",
+      conversationSession: "Conversation session unavailable or mismatched",
+      conversationLocation: "Conversation location differs from captured invocation scope",
+      conversationAncestry: "Conversation ancestry incomplete: cycle or 16-edge limit",
+      rootHistory: "Root-user history response unavailable or invalid",
+      rootMessage: "Root-user history message invalid",
+      project: "Registered invocation project metadata unavailable or ambiguous",
+      invocationScope: "Evidence request or invocation scope mismatch",
+      conversationMismatch: "Evidence conversation scope mismatch",
+      operationScope: "Evidence operation or conversation scope mismatch",
+      // Deadlines. `stage` is one of `review.stages`
+      timedOut: (stage: string) => `${stage} timed out`,
+    },
+    /** Stage names used by `failures.timedOut`. */
+    stages: {
+      review: "Review",
+      hostEvidence: "Host evidence lookup",
+      companionEvidence: "Companion evidence lookup",
+      conversationContext: "Conversation context lookup",
+      evidenceCollection: "Evidence collection",
+      evidenceValidation: "Evidence validation",
+      retrieval: "Retrieval",
+      retrievalResponse: "Retrieval response",
+      reviewerResponse: "Reviewer response",
+      reviewerResponseBody: "Reviewer response body",
+      assessmentValidation: "Assessment validation",
+    },
   },
   autoApproval: {
     countdown: (seconds: number) => `Allowed in ${seconds}s`,
@@ -41,7 +116,7 @@ export const uiText = {
     waiting: "Auto-approval waiting",
     cancel: "Cancel",
     allowing: "Allowing…",
-    finishing: "Auto-approved; finishing report…",
+    finishing: "Auto-approved. Finishing report…",
     cancelled: "Auto-approval canceled",
     unavailable: "! Auto-approval unavailable. Use native controls.",
   },

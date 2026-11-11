@@ -979,7 +979,7 @@ const cancelledRoot = (record, screen) => {
 const hiddenDescendant = (record, screen) => {
   assert.deepEqual(record.route, { type: "session", sessionID: childSession.id })
   assert.equal(record.mouse, true)
-  assert.doesNotMatch(screen, /Permission analysis|V2 local marker report\.|Allowed in|Auto-approved; finishing report/,
+  assert.doesNotMatch(screen, /Permission analysis|V2 local marker report\.|Allowed in|Auto-approved\. Finishing report/,
     "The entire reviewer panel is absent on the real descendant route")
 }
 const nativePresentationCommand = async id => {
@@ -1922,7 +1922,7 @@ createInterface({input:process.stdin}).on('line',line=>{
        if (!descendant) await until("rendered retained fast report", () => {
         const screen = capture()
         return screen.includes("Permission analysis") && screen.includes("✓ Safe") && screen.includes("V2 local marker report.")
-          && screen.includes("Auto-approved; finishing report") && !screen.includes("Allowed in")
+          && screen.includes("Auto-approved. Finishing report") && !screen.includes("Allowed in")
       })
        await saveCapture("fast-retained")
        if (descendant) hiddenDescendant(await observations(), capture())
@@ -1958,13 +1958,13 @@ createInterface({input:process.stdin}).on('line',line=>{
           })
         await clickNotification(notificationEvidence.id)
         await until("retained approval click reveals the actual absent native sidebar", record =>
-          record?.sidebarCommand?.title === "Hide sidebar" && capture().includes("Auto-approved; finishing report"))
+          record?.sidebarCommand?.title === "Hide sidebar" && capture().includes("Auto-approved. Finishing report"))
       }
       await negativeWindow("fast retained response has no duplicate reply or execution", [], (await observations()).replied, "V2_REVIEW_EXECUTED\n", 1,
         1500, notificationCase ? async (record, screen) => {
           assert.equal(reviewCompleted, false)
           assert.deepEqual(record.route, { type: "session", sessionID })
-          assert.match(screen, /Auto-approved; finishing report/)
+          assert.match(screen, /Auto-approved\. Finishing report/)
           assert.doesNotMatch(screen, /Analysis history|Loading history/)
           const value = await notificationObservations()
           assert.equal(value.events.filter(event => event.event === "show").length, 1)
