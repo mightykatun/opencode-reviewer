@@ -1,616 +1,236 @@
 # Maintainer guide
 
-## Setup and verification
+`opencode-reviewer` is an OpenCode V2 plugin for Linux. It reviews pending permission requests with a separate LLM. It can answer them with native Allow once. It keeps report history, statistics and desktop notifications.
 
-- Use Node.js 24.15.0+ within 24.x (recommended), or 22.22.2+ within 22.x, and npm.
-  These development floors differ from the distributed package's Node engine.
-  Run commands from the repository root:
+## Setup and checks
 
-  ```sh
-  npm ci --ignore-scripts
-  npm run check          # typecheck -> TS tests -> pure .mjs helpers -> build
-  npm run test:helpers   # no build, tmux or OpenCode
-  npm run check:package  # two builds, reproducibility and actual archive checks
-  ```
+Use Node.js 24.x with npm. This major version is recommended and starts at 24.15.0. Node.js 22.x works from 22.22.2 or newer. These floors apply to development. The published package declares `node >=22`. Run commands from the repository root:
 
-- Focus a source test with `npx tsx --test test/host-context.test.ts`; filter with
-  `npx tsx --test --test-name-pattern='latest empty/attachment user' test/host-context.test.ts`.
-  `npm test` covers only `test/*.test.ts`. Add pure `.mjs` tests to
-  `scripts/helper-tests.json`; host and built-package checks stay separate.
-- Runtime/UI and host-integration changes need a relevant real-TUI fixture after
-  `npm run build`. `node scripts/test-runtime.mjs --profile ci` runs the current V2
-  52-case production/foundation selection available in manual extended checks,
-  including session instructions, history, statistics, approval notifications and explicitly classified
-  synthetic probes.
-  `npm run test:runtime` selects `--profile v2-acceptance`, which currently selects
-  the same cases. These profiles do not prove real desktop/audio acceptance.
-  `npm run test:runtime-permissions` selects `--profile v2-permissions` for V2
-  invocation/evidence and native edit/outside-directory continuation cases.
-  All runtime commands require a prior build; none implicitly rebuilds.
-  Documentation-only changes need reference/format review, not runtime tests.
-- Host fixtures require Linux, Git, Python 3, tmux and `opencode` on PATH;
-  `OPENCODE_BIN` selects another binary. Limit concurrent hosts to two to avoid
-  highlighting timeouts. Captures and requests go in ignored `.runtime/`.
-- Fixtures use isolated HOME/XDG/project directories and local HTTP model servers.
-  Create/restart tmux sessions through `scripts/smoke-runtime.mjs`'s supervisor;
-  never kill shared/default tmux servers or clean up by broad process-name matching.
-  `npm run test:runtime-cleanup` checks interruption/isolation without a build or model.
-- `node scripts/test-runtime.mjs --list` lists all runtime entrypoints, scenarios,
-  flags, valid-combination rules, prerequisites, and classifications.
-  `node scripts/test-runtime.mjs --plan --profile ci` plans without OpenCode,
-  tmux, a bundle, or fixture creation. Select one case with
-  `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history`.
-  The runner executes serially and reserves a repository-local runner lock;
-  some fixtures themselves use two hosts. Do not run another host alongside it.
-  An interrupted runner removes its lock; after SIGKILL, verify the recorded owner
-  and its supervised hosts have exited before removing a stale runner lock.
-- `scripts/runtime-inventory.mjs` is the authoritative CLI inventory. New fixture
-  entrypoints/scenarios/flags must be registered and consume `runtimeArguments`.
-  Normal helper checks enforce discovery and flag completeness. Profiles select
-  exact combinations, not the Cartesian product of flags. Synthetic host probes,
-  interactive desktop checks and helpers are separately classified.
-- Use `smoke-observations.mjs` for fixture snapshot/control JSON: one serialized,
-  coalesced atomic publisher per destination, explicit final flush/close, and
-  `readObservation` for useful cross-process errors. Give concurrent hosts distinct
-  observation destinations. Use `smoke-ui.mjs` for palette activation: selected
-  result rendition must be painted and the caller must supply a postcondition.
-  Preserve negative-observation windows that prove no execution or notification.
-- Pure-helper additions are covered automatically by the release workflow's full
-  active-policy checkout. Keep privileged publication's policy checkout restricted.
-  Runtime results and exact invocation logs are under `.runtime/runtime-run-*/`;
-  fixture captures stay in their documented `.runtime/` locations. Manual extended
-  checks upload those synthetic artifacts.
+```sh
+npm ci --ignore-scripts
+npm run check          # typecheck, source tests, helper tests, build
+npm run test:helpers   # pure .mjs helpers, no build, tmux or OpenCode
+npm run check:package  # two builds, reproducibility, archive and lockfile checks
+```
 
-- Source tests run through `scripts/test-source.mjs`, which discovers every
-  `test/*.test.ts` once. The real history-bootstrap watchdog runs in an exclusive
-  phase before the two-concurrent-file pool, away from competing large SQLite
-  fixtures. Keep that bound and preserve actual budgets and assertions rather
-  than increasing time limits. Failed phases stop the check; never retry to green.
+- Focus one source test with `npx tsx --test test/host-context.test.ts`. Filter it with `--test-name-pattern='latest empty/attachment user'`.
+- `npm test` runs `scripts/test-source.mjs`. It runs `test/history-bootstrap.test.ts` alone first. Then it runs the other `test/*.test.ts` files two at a time. Keep that split. Keep real budgets and assertions. Never raise time limits or retry failing tests until they pass.
+- Add pure `.mjs` tests to `scripts/helper-tests.json`. Host and built-package tests stay out of it.
+- Documentation-only changes need a reference and format review, not runtime tests.
+- Runtime, UI and host-integration changes need a relevant runtime fixture after `npm run build`.
 
-### Focused V2 host checks (build first)
+## Runtime fixtures
 
-Always develop and verify against the latest stable OpenCode V2 (`2.x`) release.
-Do not pin OpenCode to a particular patch/minor release or add a host-version
-allowlist. CI resolves the newest stable V2 once per run, verifies npm archive
-integrity, and records the exact resolved version. Set `OPENCODE_BIN` to that
-stock release for local checks. Keep lockfiles for reproducible dependency installs,
-but refresh OpenCode dependencies to the latest stable V2 when doing development.
-All commands below use the installed five-file archive and production runtime.
+Fixtures drive real OpenCode terminals in tmux against local HTTP model servers. Each fixture uses isolated HOME, XDG and project directories.
 
-| Area | Command |
+- Prerequisites: Linux, Git, Python 3, tmux, `opencode` 2.x on PATH and a built `dist/tui.js`. `OPENCODE_BIN` selects another binary. Some fixtures also need npm, tar and `node:sqlite`. CI runs `mkdir -p /tmp/opencode` first. A fresh machine may need the same.
+- Develop and test against the latest stable OpenCode 2.x. Never pin a host patch or minor release.
+- `node scripts/test-runtime.mjs --list` shows every entrypoint, scenario, flag, prerequisite and classification. `--plan --profile <name>` plans without starting anything.
+- Profiles are `ci`, `v2-acceptance` and `v2-permissions`. `v2-acceptance` is `ci` plus every `smoke-v2-review.mjs` scenario. `npm run test:runtime` runs `v2-acceptance`. The manual extended workflow runs the same profile. `npm run test:runtime-permissions` runs `v2-permissions`.
+- Run one case with `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history`.
+- The runner never rebuilds. It runs cases serially and stops at the first failure. It writes `results.json` and per-case logs to `.runtime/runtime-run-*/`. Review fixtures write captures to `.runtime/v2-review-<scenario>-*`.
+- The runner holds `.runtime/runtime-runner.lock`, whose `owner.json` records the pid. It removes the lock on SIGINT or SIGTERM. After SIGKILL, check that the owner and its hosts have exited before removing it.
+- Run at most two hosts at once. Only `normal-reconnect`, `normal-reconnect-visible` and `normal-stalled-stream` use two. Never run another host beside the runner.
+- Create and restart tmux sessions only through the supervisor in `scripts/smoke-runtime.mjs`. Never kill shared or default tmux servers. Never clean up by process name. `npm run test:runtime-cleanup` checks interruption and isolation without a build or model.
+- Register new entrypoints, scenarios and flags in `scripts/runtime-inventory.mjs` and read them from `runtimeArguments`. Helper tests enforce this. Profiles list exact combinations, not every flag product.
+- Use `smoke-observations.mjs` for snapshot and control JSON. Each destination gets one atomic publisher with an explicit final flush. Read with `readObservation`. Concurrent hosts need distinct destinations.
+- Use `smoke-ui.mjs` for palette activation. The selected row must be painted. The caller supplies a postcondition. Keep negative observation windows that prove nothing ran or notified.
+- Review and notification fixtures start with `"-opencode-reviewer"` in `cli.json`. They wait for an owned probe session to be created and deleted on the connected event stream. Then they publish the real `cli.json`. They don't prove startup before connection. The lifecycle fixture covers startup.
+- History fixtures use a fresh private state directory under `/tmp`. Never weaken SQLite ancestor checks or chmod existing user directories.
+- Fixtures don't prove real audio, GNOME focus, live provider judgment or latency. The runner refuses interactive cases. Run `npx tsx scripts/smoke-notification-desktop.ts` with one of `--all`, `--sounds` or `--click` (optionally `--critical`) for a real desktop check.
+- Report the exact fixture runs you did, never full-matrix coverage.
+
+Focused checks are `smoke-v2-review.mjs` scenarios unless another file is named:
+
+| Area | Scenarios |
 | --- | --- |
-| Initial connection / delayed native marker echo | `node scripts/test-runtime.mjs smoke-v2-lifecycle.mjs cold-startup` |
-| Real network disconnect / fresh live-review admission | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-reconnect` |
-| Disconnect during visible review/countdown / silent event-stream stall | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-reconnect-visible` / `normal-stalled-stream` |
-| Native skill loading / fast skill approval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-skill` / `fast-skill` |
-| Shared registered-tool review / fast approval (local MCP) | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-tool` / `fast-tool` |
-| Judge-decided Code Mode MCP linkage / fast approval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-code-mode-tool` / `fast-code-mode-tool` |
-| Advisory / normal / fast review | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory` / `normal` / `fast` |
-| Shell review without retrieval / agentic retrieval, saved tool-call counts and both statistics scopes | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal` / `normal-retrieval` |
-| Saved history and statistics | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history` |
-| Session instructions editor / persistence / root and descendant judge requests | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-instructions` |
-| Review after 512 completed Code Mode calls / retrieval paging of an oversized source | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-long-session` / `normal-large-source` |
-| Unsafe history after native Once / Always / reject | `node scripts/test-runtime.mjs smoke-v2-review.mjs advisory-history-once` / `advisory-history-always` / `advisory-history-reject` |
-| Default HOME with writable host state | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-default-home` |
-| Keyboard history with mouse disabled | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-keyboard-mouse-off` |
-| Automatic native write / outside-directory continuation | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-edit` / `normal-directory-edit` |
-| Manual attention handoff and reminders | `node scripts/test-runtime.mjs smoke-v2-notifications.mjs manual-handoff` |
-| Native question form / terminal execution distinctions | `node scripts/test-runtime.mjs smoke-v2-notifications.mjs forms` / `execution` |
-| Invalid review and unavailable companion notification-only fallback | `node scripts/test-runtime.mjs smoke-v2-notifications.mjs unavailable-review` |
-| Normal/fast approval behind history | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-history-cover` / `fast-history-cover` |
-| Approval notification and exact history click | `node scripts/test-runtime.mjs smoke-v2-review.mjs fast-notifications` |
-| Descendant background approval | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-descendant` / `fast-descendant` |
-| Mouse-disabled approval / explicit Cancel | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-mouse-off` / `normal-cancel` |
-| Home/dashboard/unrelated route waiting | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-route-wait` |
-| Native decision waiting without cancellation | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-decision` / `fast-decision` |
-| Live Git-project identity migration / visible evidence failures | `node scripts/test-runtime.mjs smoke-v2-review.mjs normal-project-transition` / `advisory-evidence-timeout` |
+| Startup connection | `smoke-v2-lifecycle.mjs cold-startup` |
+| Reconnect and stalls | `normal-reconnect`, `normal-reconnect-visible`, `normal-stalled-stream` |
+| Review modes | `advisory`, `normal`, `fast` |
+| Retrieval | `normal-retrieval`, `normal-large-source`, `normal-long-session` |
+| Skills | `normal-skill`, `fast-skill` |
+| Registered tools and Code Mode | `normal-tool`, `fast-tool`, `normal-code-mode-tool`, `fast-code-mode-tool` |
+| Edits and directories | `normal-edit`, `normal-directory-edit` |
+| History and statistics | `normal-history`, `normal-history-default-home`, `normal-history-keyboard-mouse-off`, `normal-history-cover`, `fast-history-cover` |
+| Native replies in history | `advisory-history-once`, `advisory-history-always`, `advisory-history-reject` |
+| Session instructions | `normal-instructions` |
+| Subagents | `normal-descendant`, `fast-descendant` |
+| Routes, dialogs and decisions | `normal-route-wait`, `normal-decision`, `fast-decision`, `normal-dialog`, `fast-dialog`, `normal-hide`, `normal-resize`, `normal-hidden-complete` |
+| Mouse and Cancel | `normal-mouse-off`, `normal-cancel` |
+| Project identity and evidence failure | `normal-project-transition`, `advisory-evidence-timeout` |
+| Approval notification clicks | `fast-notifications` |
+| Notifications | `smoke-v2-notifications.mjs` `manual-handoff`, `forms`, `execution`, `unavailable-review` |
 
-Notification fixtures isolate process I/O and inject the desktop backend. They do
-not prove actual audio playback, GNOME focus, live-provider judgment or provider
-latency. Behavioral review/notification fixtures activate through public CLI
-configuration after observing an owned prompt-free probe's exact native birth and
-deletion on the connected event stream. They do not prove pre-connection startup;
-the separate lifecycle fixture checks startup using an independently observed
-public connection marker. Native echoes may precede observer registration; any
-delivered echo must match that actual admitted marker. Reconnect still revokes an active
-generation, including notification-only fallback. Fixture-owned public memory
-retains actual observations and consumed controls across CLI plugin reloads; it
-cannot supply events or override production behavior.
-Connection barriers may retire missed prompt-free startup probes and create fresh
-owned probes within the same 60-second budget. Admission still requires the exact
-chosen probe's real native birth and deletion; snapshots or sibling events never
-substitute for either observation.
-`npx tsx scripts/smoke-notification-desktop.ts --sounds` is an actual local
-playback check. Report exact fixture runs rather than full-matrix coverage.
-History fixtures use a new private state directory under sticky `/tmp` because
-`/tmp/opencode` can be group writable; never weaken SQLite ancestor checks or chmod
-existing user directories.
+## Configuration and package
 
-## Host and build boundaries
+- The package and plugin ID is `opencode-reviewer`. The exports `.`, `./server` and `./tui` all point to `dist/tui.js`. `src/plugin.ts` selects the role. The CLI role applies when the context has `ui`. Otherwise the role is the server companion.
+- Users list the package in both global config files:
+  - `opencode.json` loads the server companion. That entry takes no options and ignores any. Permission rules, providers and MCP servers also live in this file.
+  - `cli.json` loads the terminal role. Every reviewer option and `keybinds` go in this entry. `cli-plugin.ts` parses `context.options` and rejects unknown keys.
+  - Without the `cli.json` entry nothing is reviewed. Without the `opencode.json` entry the companion handshake fails.
+- Defaults and validation live in `src/config.ts`. Notification options live in `notification-config.ts`. All `review*` categories default on. `retrievalKinds.edit`, `autoApprove`, `fastMode` and `stream` default off.
+- Source or built-in prompt changes need a build and a host restart. Config or custom prompt changes need a restart.
+- The archive holds exactly five files: `dist/tui.js`, `package.json`, `README.md`, `LICENSE` and `THIRD_PARTY_NOTICES.md`. `files` lists three. npm adds the other two. `dist/` is generated and ignored. `npm pack` rebuilds through `prepack`. Verified CI packing uses `--ignore-scripts`.
+- Development dependencies use V2 ranges for `@opencode/plugin`, `@opencode/client` and `@opencode/theme`. Pin OpenTUI and Solid to the host's exact versions. Keep the lockfile. Refresh OpenCode dependencies to the latest stable V2 when developing.
+- Never gate activation, companion admission or evidence reads on host version numbers. Keep protocol, location, epoch, evidence and eligibility checks. Incompatible API data stays manual and is never guessed.
+- Use only public APIs and slots. Never import private UI modules or patch the native approval dialog.
 
-- The shared V2 lifecycle entrypoint targets local Linux OpenCode V2.
-  On 2026-10-13 the user explicitly rejected a runtime host-version allowlist.
-  Do not gate activation, companion admission or evidence reads on version numbers.
-  Preserve protocol/location/epoch, mandatory evidence and approval eligibility checks;
-  incompatible public API data stays manual rather than being guessed. Development
-  and CI target the latest stable V2, not a fixed host release. Development uses V2
-  ranges for `@opencode/plugin`, `@opencode/client` and
-  `@opencode/theme`. OpenTUI is 0.8.1 and Solid is 1.9.17, matching the host.
-  Use public APIs/slots, never private UI imports or native approval-dialog patches.
-- Package and plugin ID are `opencode-reviewer`. The build starts at `src/plugin.ts`;
-  its shared V2 setup selects companion/CLI lifecycle without eager terminal runtime imports.
-  Package exports `.`, `./server` and `./tui` all point to `dist/tui.js`.
-  V2 setup uses server `opencode.json` plus global `cli.json`, with permission rules
-  only in `opencode.json`. Source/built-in prompt changes require build plus host
-  restart; config/custom prompt changes require restart.
-- `scripts/build.mjs` uses Solid's **universal OpenTUI** JSX transform, not React or
-  Solid DOM. TypeScript only checks types. The ESM bundle leaves Solid/OpenTUI/OpenCode
-  external and embeds prompts, sounds, the MP3 decoder, the reviewed theme helper
-  and a CJS history worker. Terminal code is an opaque base64 CJS payload loaded
-  only in the CLI role, with fixed public-module mappings. Sounds and worker source
-  are single fixed outer mappings injected into the payload; the Linux/audio backend
-  is bundled only there. The notification-process embedding factory is forwarded
-  as a dependency and constructed only by that CLI backend, never by the server.
-  `bundled-history-worker.mjs` inspects AST/data to prove both actual worker
-  consumers and the fixed loader reference the same source. Its helper tests and
-  dependencies must remain in active release-policy validation's sparse checkout.
-- Preserve exactly five package files: `dist/tui.js`, `package.json`, `README.md`,
-  `LICENSE`, `THIRD_PARTY_NOTICES.md`. `dist/` is generated and ignored. `npm pack`
-  rebuilds via `prepack`; verified CI packing uses `--ignore-scripts`.
-- Never use em dashes. Fixed interface copy belongs in `src/ui-text.ts`, using named
-  strings/typed formatters and labels that fit the 42-column sidebar. Behavioral
-  tests keep independent expected wording. Model guidance belongs in `prompts/`
-  (including the overridable `RETRIEVAL-PROMPT.md`);
-  fixed contracts belong in `contracts/`, both inventoried by `src/prompt-files.json`.
-  Preserve `{{validationError}}` in the correction contract. Keep README focused on
-  npm installation, one full config example and user behavior, without release history.
-- Never add UI warnings or disclaimers about version upgrades, history save-format
-  changes, or missing pre-feature history, even after a breaking history-storage
-  change. Handle migration and compatibility internally without such UI notices.
+## Build
 
-## Execution flow and invariants
+`scripts/build.mjs`:
 
-### Same-conversation automation
+- Uses Solid's universal OpenTUI JSX transform, not React or Solid DOM. TypeScript only checks types.
+- Keeps Solid, OpenTUI and OpenCode external in the ESM bundle. The build fails if the shared entry eagerly imports `solid-js`, `@opentui/*` or `@opencode/theme`.
+- Ships terminal code as an opaque base64 CJS payload. `host-runtime-loader.ts` loads it only in the CLI role. Its only externals are `solid-js`, `@opentui/core`, `@opentui/solid` and `@opencode/plugin/rpc`. Any other unmapped import fails the build.
+- Embeds prompts and contracts, six sounds, the MP3 decoder, the theme syntax helper and the CJS history worker. Sounds and the worker are single fixed mappings injected into the payload. The Linux notification and audio backend exists only in the payload. The server never constructs it.
+- `scripts/bundled-history-worker.mjs` proves from the AST that both worker consumers and the loader use the same source. Its tests run in `npm run test:helpers` and `check:package`.
 
-- On 2026-10-13 the user replaced V2 visible-root approval with same-conversation
-  automation, without an additional opt-in. Panel display remains root-only, but
-  normal and fast approval need no report paint, hit ownership, mouse or sidebar.
-  Known same-root descendants, selectors/dialogs, session panels and history do not
-  gate approval. Home/dashboard/unrelated or unknown routes wait, never cancel.
-- Stock V2's root native queue includes the full descendant family, root first and
-  then public family order. Use actual native ownership, not event-arrival order.
-  Reconcile native permission caches after interruption; fresh server reads alone
-  do not refresh a stale native prompt.
-- Started normal countdowns retain their original monotonic deadline through UI,
-  native-priority and pre-write read/cache waits. Expired waits resume without a
-  fresh delay. Never-armed requests start a full countdown when their conversation
-  first becomes eligible, including while the report is hidden. Only explicit
-  Cancel/disable/native stop actions cancel; remount/re-enable cannot erase those
-  tombstones. Changed evidence and uncertain writes stay failed/manual, never retried.
-- Hold approval while native Always/reject choices or rejection editing are active.
-  Observe bounded public renderable IDs and choice colors, not private host state,
-  dialog patches or text matching. Partial/ambiguous decision observations wait
-  closed. Recheck same-conversation ancestry, native priority and decision state
-  synchronously immediately before the once write. Ordinary modal mode is not a hold.
-- Preserve fast preview/full-response behavior, no countdown, fresh identity/native
-  priority checks and once-only writes. Retained responses may finish while hidden.
-  Hidden reports save through ordinary qualifying history resolution, with no UI
-  dependency. Browsing production history does not gate approval.
-  Do not force mouse/sidebar visibility or fabricate presentation proof. Additional
-  native fullscreen/family/multi-terminal permutations remain separate acceptance.
+## Module map
 
-### Evidence admission
+Roles and connection:
 
-- The user selected native Code Mode on 2026-10-12. Do not ship the investigated
-  direct-tool transform or remove native Code Mode search. Exact direct-call
-  linkage is usable. On 2026-10-23 the user delegated uncertain inner MCP/registered
-  tool linkage to the judge: provide the exact pending permission and captured
-  outer execute input, bounded candidate observations/definitions and explicit
-  uncertainty. Safe may authorize that exact once permission without a unique
-  candidate match. Never claim exact inner identity from arrival order, JavaScript
-  parsing or forced serialization. Native operation categories retain their exact
-  evidence requirements. Candidate observations may include completed siblings;
-  later calls are not predicted, and omitted candidates have factual reasons.
-  Invocation capture counts live executions sharing each identity. Release the
-  group only after every matching after-hook settles; completed Code
-  Mode calls must not consume the live-call capacity for the rest of the session.
-- The user accepted a trusted native-tool installation: installed plugins preserve
-  native tool meanings, do not replace/alias native executors, and do not rewrite
-  commands after evidence capture. This is an installation assumption, not public
-  host provenance or an enforceable registry seal. Preserve exact scope, source,
-  native-priority, same-conversation eligibility and once-only write checks. Do not
-  extend this native-tool assumption to unavailable skill/MCP/custom origin or
-  catalog evidence; registered tools use the separate accepted assumption below.
-- On 2026-10-14 the user explicitly selected automatic native skill review using
-  the current scoped registered main instructions, accepting that the selected
-  definition stays unchanged while its permission is pending. This bounded
-  installation assumption is not global catalog immutability or an API snapshot
-  guarantee. Retain exact ID/source/scope/epoch and once-only approval checks;
-  missing, ambiguous or oversized complete main instructions stay manual. Read the
-  registry only through the scoped server companion, never fresh SKILL.md files.
-  Supporting files are optional; retrieval may read them. Do not add a
-  speculative revision-guard subsystem. MCP/custom tools use their separately
-  accepted registered-definition assumption, not this native skill assumption.
-- The user approved the shared server companion plus global CLI setup, factual
-  omission of unavailable optional immediate delegation, and retention of history
-  when offline deletion ownership is unproven. Preserve root intent and mandatory
-  operation evidence. Exact live deletion events require proven connection/scope;
-  a random storage token, pathname or bare 404 is never deletion authority.
+- `plugin.ts`: shared entry and role selection. Its `with*` exports are fixture and embedding seams, never options.
+- `companion.ts`: server role. Captures invocations through hooks (`invocation-capture.ts`) and serves the handshake, invocation, evidence and `retrieve` RPCs. `companion-protocol.ts` defines the schema (protocol 2). `companion-read.ts` wraps reads.
+- `cli-plugin.ts`: CLI setup. Parses options, loads prompts, waits for the connection marker and runs the first handshake (`companion-handshake.ts`).
+- `cli-reconnect.ts`: owns the connection after startup. `setupHostRecovery` in `host-runtime.tsx` wraps it. `connection-marker.ts` handles the delayed echo of the startup marker.
+- `host-runtime.tsx`: connects the controller to native queues, slots, polling and approval gates.
 
-### Current V2 runtime
+Review:
 
-- Start at `src/plugin.ts`: the server companion captures exact direct/outer invocation
-  evidence; `cli-plugin.ts` validates options and the companion handshake;
-  `host-runtime.tsx` connects the generic controller to native queues and slots.
-  `host-evaluate.ts` uses `host-evidence-reader.ts` and `host-reader.ts` to bind exact
-  requests/invocations, `host-evidence.ts` for server-only operation collection and
-  `host-context.ts` for public conversation context.
-  Full evidence reads prepare and bind before collection, then finalize native
-  identity/companion epoch once after validation; standalone invocation reads also
-  finalize. Strict host JSON copying shares bounded traversal with collector copies
-  while retaining its descriptor/proxy policy and independent RPC component caps.
-  A session can acquire a Git project ID while the companion's captured setup
-  project stays `global`. `host-project.ts` resolves mismatched attribution using
-  only the connected server's registered project/checkout inventory. Keep that
-  attribution separate from the immutable invocation; never discover a tool-target
-  location or change its source, arguments, workspace, epoch or captured directory.
-  Missing/ambiguous/foreign inventory stays manual, and finalization rechecks the
-  exact session project and registered attribution after collection. Canonical
-  metadata alone never establishes registered checkout membership. Thrown evidence
-  failures remain visible as Analysis unavailable without model calls or replies.
-- `controller.ts` owns V2 request lifecycle, evaluation, cancellation and approval;
-  `session-ancestry.ts` owns bounded metadata traversal and actual read settlement;
-  review and history share a scope-pinned instance without sharing saved-mode admission.
-  `session-mode.ts` gates work before enrichment, and `host-mode-commands.ts`
-  registers local native palette/slash commands. `reviewer.ts` owns model transport.
-  Defaults/validation live in `config.ts`; `host-types.ts` defines native requests,
-  invocation snapshots and scope, and `types.ts` defines shared review data.
-  `embedding-types.ts` defines opt-in UI observations and notification backend seams,
-  never approval overrides or configuration options.
-- `host-permissions.ts` allows only scoped native `once` replies. Dispatch,
-  acknowledgement and matching native resolution are distinct facts. Confirmation
-  requires both the native acknowledgement and exact scoped resolution, not a keypress,
-  vanished prompt or successful submission alone. Uncertain writes stay manual and
-  are never retried. Reconnect closes the old controller. On 2026-10-16 the user
-  requested automatic recovery after network disconnects: admit a fresh composition
-  only when the public client and native connection markers agree and a fresh scoped
-  handshake finishes. Drain the old composition first; never mix clients, caches,
-  evidence or approval leases. Critical native-cache/write work must settle before
-  replacement; aborted optional notification/history cleanup remains physically
-  owned but does not gate admission. Carry only manual tombstones and identity-bound
-  monotonic countdown deadlines for review, not assessments. Notification continuity
-  carries only observed births, visits and announcement attempts for the identical
-  public client and location; fresh native family health must precede reminders,
-  with no startup-snapshot replay, old timers, backend handles or approval leases.
-  Own the live subscriber through failure, resubscription and cleanup. Invalid
-  handshakes stay manual.
-  `setupHostRecovery` is the single production connection owner; child runtimes
-  retire through their lifecycle signal. Startup and reconnection share
-  `companion-handshake.ts` while retaining their own marker-admission checks.
-- CLI startup consumes the public client's current `server.connected` marker before
-  dispatching the first companion RPC, including when setup begins after connection.
-  Ignore the native data bridge's delayed echo only for that exact public event ID;
-  a distinct marker still fences startup and permanently revokes an active generation.
-  Own subscriber abort/return settlement; it never substitutes for scope/protocol/epoch
-  checks or replays business events. Connection waiting and startup handshakes recover
-  within one 10-second budget: 1.5-second
-  attempts, 250 ms backoff, timeout/`rpc.unavailable` and recognized transient
-  transport failures only. Own physical settlement
-  before retry; fence pre-admission connection changes. Invalid replies stay manual.
-  Choose runtime/fallback once per connection; never promote fallback on a duplicate
-  marker or revive an old generation. Fresh reconnection admission may replace either.
-  Release an idle reviewer event subscriber at the native 45-second activity boundary
-  so it cannot pin a stalled shared source; replay of that source's old marker is
-  not fresh admission. Read-only active-companion health checks may replace a changed
-  epoch only after critical drain and a new scoped handshake, without plugin reload.
-- `host-history-runtime.tsx` owns the indexed worker, history, totals and shutdown.
-  History/statistics also initialize when review configuration or the companion is
-  unavailable. The absolute V2 namespace is an index, not deletion authority.
-  Known live deletions invalidate volatile facts only; persistent deletion is not
-  enabled. Keep old rows/totals untouched; offline absence without ownership proof
-  never authorizes deletion.
-- `host-notifications.ts` uses the generic policy and Linux backend. Event births,
-  native family/form ordering and confirmed automatic success govern delivery.
-  Snapshot reconciliation is silent. Clicks carry the original request identity,
-  suppress history while its fast report remains unfinished and select only its
-  exact saved entry. Only an explicit click may reveal an actually absent sidebar.
-  `host-notification-runtime.ts` keeps manual attention active when review configuration
-  or the companion is unavailable, without a second UI surface, model calls or replies.
-  Optional form reads must stay outside permission admission; own their complete
-  transactions through abort/settlement, and fail notification health closed on errors.
-- `host-native-observations.ts` refreshes roots/seeds before reading native family
-  rosters, then all member metadata before ancestry validation. Permission and form
-  callers retain separate budgets and per-conversation health. Settled failures in
-  one conversation cannot silence another; an incomplete member still excludes its
-  entire family, and aborts retain actual transaction ownership. `host-queue.ts`
-  keeps early native priority separate from complete unknown/empty/front notification observations.
-  Native reactive caches supply public identities, never mandatory operation evidence.
-- `host-sidebar.tsx` measures native FRAME geometry; `host-review-panel.tsx` and
-  `host-history-view.tsx` prove actual hit ownership for UI/fixture observations,
-  not V2 approval eligibility. `host-approval-ready.ts` owns the public native
-  decision/same-conversation gates. One stable app surface contains live/history siblings.
+- `controller.ts`: request lifecycle, countdowns, cancellation tombstones and approval policy. `review-admission.ts` limits concurrent evaluators and orders them per root with native-front priority. `approval-transaction.ts` is the once-only write state machine. `host-permissions.ts` sends scoped `once` replies.
+- `host-evaluate.ts`: runs one review. It reads evidence through `host-evidence-reader.ts`, runs retrieval through the companion and calls the reviewer.
+- `host-reader.ts`, `host-invocation.ts` and `host-request.ts`: bind the pending permission to its captured invocation and copy host JSON within bounds.
+- `host-evidence.ts`: operation evidence. `collectHostOperation` runs in the companion. Validation runs in the CLI. Category helpers are `host-skill.ts`, `host-tool.ts`, `host-catalog.ts`, `host-tool-kind.ts`, `host-code-mode.ts` and `tool-evidence.ts`.
+- `host-context.ts`: root user prompt. `host-project.ts`: project attribution.
+- `retrieval.ts`: CLI retrieval loop. `retrieval-tools.ts`: companion `read`, `list`, `glob` and `grep`.
+- `reviewer.ts`: verdict stage. Transport is in `chat-transport.ts`, `sse.ts`, `transport-retry.ts`, `streaming-assessment.ts` and `transport-ownership.ts`. `deadline.ts` holds the budget.
+- `session-ancestry.ts` and `route-approval.ts`: bounded ancestry and conversation roots. `session-mode.ts` and `host-mode-commands.ts`: per-conversation enable and disable. `session-instructions*.ts` and `host-session-instructions.tsx`: session instructions.
+- `host-approval-ready.ts`: route and native decision gates. `host-native-observations.ts` and `host-queue.ts`: native family rosters and queue priority. `pending-refresh.ts`: revision guards for pending reads.
 
-### Review lifecycle and UI
+UI, history and notifications:
 
-- The plugin is advisory unless `autoApprove` is enabled. Approval exposes only
-  native `once` in the captured invocation host scope, never the tool workdir. Do not add
-  `always`/`reject`, permission-rule writes, command execution or edit application.
-- Deduplicate by permission-request ID, not tool call. Directory and operation
-  permissions are separate reviews; directory approval can resume an operation
-  without another prompt. Native-looking permission names do not prove origin:
-  custom tools can request native-looking actions, and MCP identity must not be
-  guessed by splitting names. Disabled kinds still block native ordering while
-  skipping review work.
-- The live request follows the root's native front-of-queue permission, including
-  its full descendant family, unless an already-approved fast report is still
-  finishing. Conversation mode covers **all** descendants within the host scope.
-  Unknown ancestry/unreadable saved mode suspends work. Local enable/disable commands
-  must not create messages or model calls. Re-enable uses a fresh pending snapshot
-  and must preserve canceled/uncertain-approval tombstones until native resolution.
-- Normal auto-approval needs a completed, validated Safe assessment. Final Markdown
-  highlighting and painted frames are UI observations only. Only opt-in `fastMode`
-  with `autoApprove` may approve a parsed Safe preview. Fast mode retains native queue
-  priority, no countdown and respects `stream: false`. Recheck fresh permission
-  identity/scope, native priority, same-conversation ancestry and native decision
-  state before the single-flight write. Positive normal countdowns include one
-  200 ms initial grace; zero skips the delay without skipping approval checks.
-  Never retry approval writes; uncertain outcomes remain manual.
-- Explicit cancellation permanently makes that request manual for the running
-  controller, including across remounts/re-enable. UI visibility, scrolling and
-  navigation do not cancel it. Native resolution removes ordinary views immediately.
-  Dispatched fast reviews retain the response through confirmation, then continue
-  despite mode disable or navigation until completion/failure; deletion/disposal
-  still aborts them.
-  Use `pendingViews` for notifications/order so retained reports are not native blockers.
-  Retain revision guards in `pending-refresh.ts`.
-- Observe `sidebar.content`, render via `app`, and retain one stable slot root with
-  live/history siblings; key the live panel by request ID. Changing fragments/view-object
-  keys can remount Markdown and reset scrolling. Reveal a hidden sidebar
-  only for an explicit approval-notification click, using the public native command.
-  Render the entire reviewer side panel, including live, retained and history views,
-  only on the top-level conversation route. Direct and nested descendant routes must
-  show no reviewer side panel at any terminal width. Keep physical presentation and
-  native queue selection separate; descendant navigation cannot substitute for
-  actual native queue ownership. Preserve native keyboard input ownership, FRAME
-  geometry, scroll restoration and real hit tests for UI behavior only.
-  Sanitize report text and streamed prefixes through `displayText`.
-  The panel shows Retrieving during retrieval (retrieval retries show Retrying),
-  then Evaluating; retrieval phases precede attempt 0 and never advance ordinals.
-- On 2026-10-14 the user selected Alt+H for history rather than reserving legacy
-  Ctrl+H/Backspace byte 0x08. Keep both BS and DEL native prompt editing untouched.
-  The base-mode, root-only toggle is the configurable public command
-  `reviewer.history.toggle`; palette/slash opening still selects the newest report.
-  Register the palette-visible binding globally, like Alt+I, so its shortcut stays
-  discoverable while the palette is modal. Keyboard events outside base mode fall
-  through; command dispatch opens the newest report rather than toggling closed.
-- Returning to root must not re-review, restart timers, rearm canceled requests or
-  resurrect completed reports. Verify route ancestry and native priority independently
-  of panel mounting; never fabricate visible IDs, FRAME events or hit-test proof.
-  Route changes cannot erase a cancellation or uncertain-write tombstone.
+- `host-sidebar.tsx`, `host-review-panel.tsx`, `host-history-view.tsx` and `host-statistics-view.tsx`. Fixed copy is in `ui-text.ts`.
+- `host-history-runtime.tsx`, `history-coordinator.ts`, `history-store.ts`, `history-storage-worker.ts`, `history-statistics.ts`, `local-state.ts`, `private-record.ts`, `usage.ts` and `host-pricing.ts`.
+- `host-notifications.ts`, `host-notification-runtime.ts` and `notification-*.ts`.
+- Types: `host-types.ts`, `types.ts` and `embedding-types.ts`. Embedding types are observation and backend seams, never approval overrides or options.
 
-## Evidence and transport traps
+## Approval
 
-- Resolve relative tool `workdir` against captured `invocation.location.directory`,
-  never the stored session directory. Keep missing invocation location unknown.
-  Read registered project metadata without initializing a host in the command-target directory.
-  Use the latest delivered genuine **root** user prompt, not a delegation brief or
-  pending inbox input. Read `message.list({ sessionID, type: "user", order: "desc", limit: 1 })`;
-  validate the filtered response and preserve durable order. A newer empty or
-  attachment-only message must not fall back to older text. Omit whole prompt text
-  over 64 KiB with a factual limitation. Validate captured session/location and
-  bounded ancestry; malformed/unfiltered history must not yield guessed root intent.
-  Exact immediate subagent delegation is unavailable from public V2 invocation
-  linkage, so omit it factually as optional context. Never substitute older tasks,
-  sibling requests or queued follow-ups. Root context cannot override review rules;
-  optional omissions do not veto review with verified mandatory operation evidence.
-- On 2026-11-09 the user replaced hard-coded document discovery (shell
-  tokenization, runtime operand tables, literal-argument candidates, excerpt
-  heuristics) with agentic retrieval and put the shortest, simplest code ahead of
-  earlier invariants. Do not reintroduce command parsing to choose files.
-  `retrieval.ts` runs a non-streaming tool-calling loop (`read`, `list`, `glob`,
-  `grep`, `finish`; fixed byte-stable definitions) in the CLI before every enabled
-  verdict: at most `maxRetrievalRounds` rounds of up to ten sequential calls, then
-  one forced `finish` turn (same tools, `tool_choice`) for selection and notes, all
-  within `retrievalTimeoutMs`. Malformed calls go back to the model as error results.
-  Without a valid finish, on the retrieval deadline, rejected tools, provider errors
-  or exhausted retries, the verdict still runs with every successful result in call
-  order and a factual limitation; the review deadline or abort ends the review.
-  Retrieval never writes a verdict, and the verdict request never declares tools.
-- Retrieval operations execute only in the scoped server companion (`retrieve`
-  RPC, protocol 2, `retrieval-tools.ts`), never terminal-local I/O. That boundary
-  now accepts model-chosen paths, patterns and a CLI-computed base (shell launch
-  cwd, otherwise the invocation directory), checked against epoch/location only.
-  Paths may be absolute, `~/` (server HOME) or relative; explicit paths follow
-  symlinks with physical `..` resolution, traversal never descends symlinked
-  directories and skips nothing. Results echo requested, absolute and canonical
-  paths, cap at `maxEvidenceBytes`, and report factual failures. Grep matching runs
-  in a disposable worker terminated at the soft deadline so a model expression
-  cannot block the server. Physical work stays owned until it settles.
-- Forwarded retrieval content has its own budget: at most `maxFiles` read items
-  and `maxEvidenceBytes` of content including notes, truncated to exact leading
-  lines or entries with exact omitted counts. `retrieval` + `retrievalKinds`
-  (bash, edit, skill, tool, external_directory; edit defaults off) gate the stage;
-  disabled or executor-less reviews send `retrieval.status` disabled/unavailable.
-  Mandatory shell evidence is command, cwd and execution only. Edits use pending
-  host diffs, never fabricated replacement diffs. Directory evidence retains exact
-  declared scope/arguments; retrieval may list or read the target directory.
-- `reviewSkills` defaults true and reviews native skill loading under the accepted
-  pending-definition stability assumption. The companion reads the current scoped
-  registry by exact ID; full main instructions and exact permission scope are
-  mandatory. No fresh file reads, registry mutations or catalog revision system.
-  On 2026-10-14 the user accepted shared registered-tool review for MCP/custom
-  calls, assuming current scoped registered definitions remain unchanged while
-  approval is pending and accurately describe behavior. The user subsequently
-  selected category `tool`, prompt `TOOL-REVIEW-PROMPT.md` and `reviewTools`,
-  replacing reviewMcp/reviewCustomTools without aliases. All review categories
-  default enabled. Exact direct or outer Code Mode linkage, scope and arguments remain mandatory;
-  `host-code-mode.ts` supplies bounded inner candidates with unverified linkage for
-  the judge's decision, including Safe despite uncertainty as selected above.
-  Descriptions, schemas and registry availability are optional evidence. Send
-  factual omission reasons to the LLM, which decides Safe/Unsafe. Never infer
-  origin, import/invoke executors or call MCP servers for evidence.
-- Preserve exact mandatory scope/arguments or fail analysis. Oversized pending
-  diffs keep an exact leading prefix of complete lines with exact omitted-line counts.
-  Omit unavailable optional evidence/definitions with factual reasons; do not truncate commands, invent
-  missing line counts or synthesize ratings. Partial evidence alone is not an
-  automatic-approval veto. Proposed `always` patterns are not existing grants.
-- `deadline.ts` shares one `timeoutMs` budget (default 120000) across context,
-  evidence, retrieval, HTTP and corrections; `retrievalTimeoutMs` only shortens the
-  retrieval stage and reserves nothing for the verdict.
-  Timeouts do not prove I/O stopped: retain actual transaction ownership through
-  settlement/cleanup in `file-access.ts`, mode/history reads and notification work.
-  Parent aborts must not become optional evidence omissions.
-- `streaming-assessment.ts` validates both transport modes against exactly
-  `{ "safe": boolean, "desc": "nonempty text" }`, rejecting duplicate keys.
-  SSE success requires `stop`, `[DONE]` and body EOF, not just a closing JSON brace.
-  Preserve terminal usage even for rejected assessments where framing permits it.
-- `transport-retry.ts` permits at most two extra POSTs per stage (retrieval turns
-  combined, and the verdict separately). Transport
-  retries regenerate the identical request; format corrections retain exact prior
-  history plus the failed response/feedback. Clear rejected previews, never merge
-  streams, extend the deadline, shorten Retry-After or raise `maxOutputTokens`.
-  Keep evidence as data, not instructions; do not add automation metadata/notices
-  to either model's conversation.
+- The plugin is advisory unless `autoApprove` is on. It only sends native `once` in the captured invocation's host scope, never the tool workdir. Never add `always`, `reject`, permission-rule writes, command execution or edit application.
+- Normal approval needs a completed, validated Safe assessment. Then it starts a countdown. Positive countdowns add a 200 ms grace. Zero skips the delay, not the checks.
+- Fast mode (`fastMode` with `autoApprove`) may approve on a parsed Safe preview with no countdown. With `stream: false` it waits for the full response. After confirmation, the report keeps running through hiding, navigation and mode disable. Deletion or disposal still aborts it. Use `pendingViews` for order and notifications so finishing reports don't block anything.
+- Immediately before the single write, recheck synchronously: fresh permission identity and scope, native queue priority, same-conversation ancestry and native decision state.
+- The active route must be the request's conversation or a descendant. With tabs, an open background tab of that conversation also qualifies. Home, dashboard, unknown and unrelated routes wait and never cancel. The root also needs fresh native family health (`permissionRoots`). Panel paint, hit tests, mouse and sidebar never gate approval.
+- The root's native queue holds its whole descendant family, root first. Follow actual native ownership, not event order. Reconcile native permission caches after interruption. A fresh server read alone doesn't refresh a stale native prompt.
+- Hold without cancelling while native Always or Reject is selected or a rejection is being edited. Observe public renderable IDs and choice colors only. Ambiguous observations hold. Ordinary modal mode is not a hold.
+- A started countdown keeps its monotonic deadline through every wait, including reconnection. An expired countdown resumes without a new delay. A never-armed request starts a full countdown when it first becomes eligible, even with the report hidden.
+- Only Cancel, mode disable and native stop actions cancel. Tombstones survive remount, route changes, re-enable and reconnection until native resolution. Disabling the mode cancels armed countdowns unless a fast approval was already dispatched.
+- Dispatch, acknowledgement and native resolution are separate facts. Confirmation needs the native acknowledgement and the matching scoped resolution, not a keypress or a vanished prompt. Never retry an approval write. Uncertain writes stay manual.
+- Deduplicate by permission-request ID. Directory and operation permissions are separate reviews. Disabled categories still block native ordering while skipping review work.
+- Conversation mode covers every descendant in the host scope. Unknown ancestry or an unreadable saved mode suspends work. Enable and disable commands create no messages or model calls. Re-enable takes a fresh pending snapshot.
 
-## Persistence, accounting and notifications
+## Evidence
 
-- `history-coordinator.ts` joins reviewer attempts and controller facts. Unresolved
-  report text stays in memory. Save every completed validated review tied to a
-  permission when it is approved manually, approved automatically or rejected,
-  including Unsafe reports and distinct re-reviews of the same permission. Native
-  `once` proves approval but lacks submitting-client identity: save as `approved`
-  without guessing manual/automatic attribution, then refine on exact confirmation.
-  Cancellation, interruption and prompt disappearance alone do not save reports.
-  Fast approval records identity/confirmation before final assessment; only final
-  validated text is saved. Keep retries/deadline unchanged and close the retained
-  panel on completion, allowing saves to finish in the background. Failed remainders
-  produce no report entry; received usage and confirmed approvals still count.
-  Review-specific history IDs are separate from permission-level approval identities.
-  Preserve legacy entry IDs and totals internally; notification targets select only
-  the exact permission's newest saved review, never the conversation's newest entry.
-- `history-v1.sqlite` uses the embedded worker with Bun SQLite in the host and Node
-  SQLite in tests. Lifetime reads use precomputed totals only; leave `usage-v1/`
-  through `usage-v4/` untouched. `history-statistics.ts` applies deduplicated deltas
-  to lifetime/conversation totals transactionally. Conversation baselines may use
-  attributable old rows; lifetime must never be reconstructed from detail rows.
-  Deleting details must not reduce accumulated totals. Manual approvals and rejections
-  count once per permission through the opaque `permission_statistics` ledger;
-  attribution corrections update both scopes atomically. Native Once without proven
-  attribution stays unclassified. Preserve the ledger through detail deletion and
-  keep its conversation bootstrap bounded; normalize older aggregate fields internally.
-- Preserve private ownership and nonreplaceable paths for saved modes and history.
-  `private-record.ts` shares mode/instruction file mechanics, with each caller
-  retaining its own format, limits and post-commit failure policy. SQLite pathname
-  validation remains separate.
-  Validate existing SQLite database/sidecar metadata with lstat inside the trusted
-  namespace, never open/close them for inspection: close can release another
-  worker's process-wide SQLite locks, and journals may disappear during commits.
-  `local-state.ts` keeps safely accessible history in place, or uses a private
-  plugin-owned sibling without chmod of host/user directories. An existing safe
-  sibling database stays selected across restarts. Mode files stay in the original
-  state root; unsafe/unreadable modes suspend review rather than enabling by default.
-  Storage failures show unavailable, never zero, and must not gate review/approval.
-- History/statistics resolve ancestry through `HistoryCoordinator.root`, not the
-  review-mode load gate, so disabled/invalid review can still browse. Use indexed
-  selection and `HistoryRefresh`, retaining `HistoryRead.settled` ownership after
-  caller timeout. Drain usage finalizers/storage within 3.5 seconds of lifecycle abort.
-- Approval-notification clicks carry the original permission/session identity. Wait
-  for native dialogs to close, then recheck for its unfinished fast report before
-  selecting the exact scoped history entry, not newest. Confirmed approval notifies
-  immediately, not after report completion; never replay attention for retained reports.
-  Keep the five-second save wait hidden; missing/deleted reports leave only the
-  conversation open. New clicks, route changes and disposal invalidate late work.
-- The V2 runtime does not enable persistent deletion. Any persistent deletion would
-  require proven server connection/location ownership for the exact live deletion
-  event and scoped history. List omissions, bare 404s, read failures, random storage
-  tokens and pathnames are not deletion authority. Keep offline history when
-  ownership is unproven; invalidating volatile session/ancestry facts must not delete
-  saved rows or totals.
-- Usage is per POST, including failed/interrupted attempts. Cumulative frames replace
-  values rather than add them. Token and cost coverage are independent; unknown is
-  not zero. Exact normalized OpenRouter endpoint costs use reported `usage.cost`
-  only; other endpoints use matching host-catalog estimates, never billing requests.
-  Count reviews on final controller acceptance and retries on actual dispatch.
-  Retrieval POSTs are attempts of the same review: each turn's first POST is
-  `initial`, their usage is summed into the report (unknown stays unknown) and
-  totals. Dispatch observations must survive synchronous transport throws too.
-  Retrieval `read`/`list`/`glob`/`grep` dispatches count as tool calls, including
-  failures and interrupted reviews; finish, unexecuted requests and HTTP POSTs do
-  not. `toolDispatched` facts use review-scoped identities and the existing atomic
-  contribution ledger for both scopes. `retrieval_calls` retains bounded paging
-  facts for conversation bootstrap; deletion removes them in bounded slices while
-  preserving accumulated totals and deduplication. Reports carry their own count;
-  history and both statistics scopes display it directly below tokens. Normalize
-  absent older aggregate fields internally, never reset totals or invent old
-  per-report counts. Do not add compatibility notices to the UI.
-- Notification eligibility comes from new events, not startup snapshots or history
-  browsing. Follow native blocker ordering even for silent/disabled requests.
-  Initial permission/question banners and sounds, as well as reminders, require
-  front-of-queue ownership. Queue loss aborts pending delivery; queued resolution
-  must never replay an alert. Handoff sends the eligible initial notification,
-  then waits a full reminder interval.
-  Safe auto-enabled requests awaiting conversation/native priority/countdown stay silent;
-  elapsed time is not proof they need manual attention. Countdowns are silent and
-  approval sounds require confirmed automatic success. Keep delivery off approval
-  critical paths and use owned fixed-purpose processes, never a shell.
-- Observer, accounting and persistence failures must not change review/approval.
-  `withDiagnostics` and other `with*` exports are fixture/embedding seams, not config
-  options. Diagnostics contain fixed phase labels, timings and local numeric
-  correlations only, never prompts, IDs, paths, credentials or model output.
+Mandatory evidence must be exact. Otherwise the review shows Analysis unavailable, with no model call and no reply. Optional evidence may be omitted with a factual reason sent to the model. Missing optional evidence never vetoes approval by itself.
+
+- Shell: command, cwd and execution. Resolve a relative `workdir` against the captured `invocation.location.directory`, never the stored session directory. `~`, `~/` and NUL in `workdir` fail analysis. A missing invocation location stays unknown.
+- Edits: pending host diffs only, never fabricated ones. Oversized diffs keep a leading prefix of complete lines and an exact omitted-line count.
+- Directories: exact declared scope and arguments.
+- Skills (`reviewSkills`): full main instructions, read by exact ID from the scoped registry through the companion. Never read SKILL.md from disk. Missing, ambiguous or oversized instructions stay manual. This assumes the definition doesn't change while pending. Don't add a revision-guard system.
+- Registered tools, MCP and custom tools (category `tool`, `reviewTools`, `TOOL-REVIEW-PROMPT.md`, no legacy aliases): the exact direct call, or the exact outer Code Mode `execute` input, plus scope and arguments are mandatory. Descriptions and schemas are optional. This assumes registered definitions don't change while pending and describe behavior accurately. Never infer origin by splitting names, import or invoke executors, or call MCP servers.
+- Code Mode: keep native Code Mode and its tool search. Don't add a direct-tool transform. When inner linkage is uncertain, `host-code-mode.ts` gives the judge bounded candidate calls, including completed siblings, and states the uncertainty. Safe may approve that exact once permission without a unique match. Never claim inner identity from arrival order, JavaScript parsing or forced serialization. `invocation-capture.ts` counts live executions per identity and releases a group only after every matching after-hook settles. Completed calls must not use up live capacity.
+- Native tools: assume installed plugins keep native tool meanings and don't rewrite commands after capture. Don't extend this assumption to skills, MCP or custom tools.
+- Root context: read the latest root user prompt with `message.list({ sessionID, type: "user", order: "desc", limit: 1 })`. Validate the filtered response. A newer empty or attachment-only message must not fall back to older text. Omit prompts over 64 KiB with a note. Malformed history fails the review. The immediate subagent task isn't available through public V2 linkage, so omit it factually. Never substitute older tasks, siblings or queued input. Context never overrides review rules.
+- Project attribution: a session can gain a Git project ID while the companion's setup project stays `global`. `host-project.ts` resolves this only from the connected server's registered project and checkout inventory. Never change the invocation's location, source, arguments, workspace or epoch. Missing or ambiguous inventory stays manual.
+- Evidence reads prepare and bind before collection. They finalize native identity and companion epoch once, after validation.
+
+## Retrieval
+
+Only the agentic retrieval loop chooses files. Never parse commands to pick files. Keep this code short and simple.
+
+- `retrieval.ts` runs in the CLI before every enabled verdict. It uses non-streaming tool calls with fixed byte-stable definitions: `read`, `list`, `glob`, `grep` and `finish`. It runs up to `maxRetrievalRounds` rounds. Calls past ten in one round get a `not-executed` error result. A forced `finish` turn (`tool_choice`) follows the last round or a round without tool calls. All of it runs within `retrievalTimeoutMs` and the shared deadline.
+- Invalid individual calls return error results to the model. A malformed `tool_calls` envelope ends retrieval.
+- Without a valid finish, the verdict still runs with every successful result in call order and a factual limitation. This covers timeouts, rejected tools, provider errors, exhausted retries and malformed responses. The review deadline or an abort ends the whole review.
+- Retrieval never writes a verdict. The verdict request never declares tools.
+- Operations run only in the companion (`retrieve` RPC, `retrieval-tools.ts`), never in the terminal, at most two at once. The CLI computes the base: the shell launch cwd, otherwise the invocation directory. Paths may be absolute, `~/` (server HOME) or relative. Named paths follow symlinks. Traversal never enters symlinked directories and has no ignore list. Results echo requested, absolute and canonical paths and are capped at `maxEvidenceBytes`. Listings return at most 500 entries. Grep skips files over 16 MiB, binary files and invalid UTF-8. It runs in a worker that is terminated at the soft deadline.
+- Content forwarded to the verdict is capped at `maxFiles` read items and `maxEvidenceBytes` including notes. It is cut to exact leading lines or entries with omitted counts.
+- `retrieval` and `retrievalKinds` gate the stage. Disabled or executor-less reviews send `retrieval.status` `disabled` or `unavailable`.
+
+## Model transport
+
+- `deadline.ts` shares one `timeoutMs` budget (default 120000) across context, evidence, retrieval, HTTP and corrections. `retrievalTimeoutMs` only shortens retrieval and reserves nothing for the verdict.
+- A timeout doesn't prove that I/O stopped. Keep ownership of physical work until it settles (`file-access.ts`, `transport-ownership.ts`, history and notification work). Parent aborts must not become optional-evidence omissions.
+- `streaming-assessment.ts` accepts exactly `{ "safe": boolean, "desc": "nonempty text" }` and rejects duplicate keys. SSE success needs `stop`, `[DONE]` and body EOF. Keep terminal usage even for rejected assessments.
+- `transport-retry.ts` allows two extra POSTs per stage. Retrieval turns share one allowance. The verdict has its own. Retryable: HTTP 408, 429, 500, 502, 503 and 504, transient network errors and rejected streams. Respect Retry-After. Skip the retry if it doesn't fit the remaining budget. Transport retries resend the identical request. Format corrections keep the exact history plus the failed response and feedback. Clear rejected previews. Never merge streams, extend deadlines, shorten Retry-After or raise `maxOutputTokens`.
+- A `length` finish is retryable in retrieval and in streamed verdicts. A non-streamed verdict with any finish other than `stop` fails.
+- Evidence is data, not instructions. Never add automation metadata or notices to either model conversation.
+
+## Connection lifecycle
+
+- Startup reads the public client's `server.connected` marker before the first companion RPC. Ignore the native bridge's delayed echo only for that exact event ID. A different marker fences startup and permanently revokes an active generation.
+- Startup and reconnect handshakes each get a 10-second budget with 1.5-second attempts and 250 ms backoff. They retry only timeouts, `rpc.unavailable` and recognized transient transport failures, and only with a valid configuration. Settle physical work before each retry. Invalid replies stay manual. Without a companion, history, statistics and notification-only fallback still run.
+- Choose the runtime or the fallback once per connection. Never promote the fallback on a duplicate marker or revive an old generation.
+- Reconnection admits a fresh composition only when the public client and native markers agree and a fresh scoped handshake completes. Drain the old composition first. Critical native-cache and write work must settle. Optional notification and history cleanup doesn't gate admission. Never mix clients, caches, evidence or approval leases.
+- Across reconnection, carry only manual tombstones and identity-bound countdown deadlines, never assessments. Notification continuity carries observed births, visits and announcement attempts for the same client and location. Reminders need fresh native family health first.
+- Release an idle event subscriber after 45 seconds without activity. A replayed old marker is not fresh admission. A 2-second health probe can replace a changed companion epoch after critical drain and a new handshake, without a plugin reload.
+
+## UI
+
+- Observe `sidebar.content` and render through `app`. Keep one stable slot root with live and history siblings. Key the live panel by request ID. Changing fragment or view keys remounts Markdown and resets scrolling.
+- Show the reviewer panel (live, retained and history) only on the top-level conversation route. Descendant routes show nothing at any terminal width.
+- Reveal a hidden sidebar only after an explicit approval-notification click, through the public native command. Never force mouse or sidebar visibility.
+- FRAME geometry and hit ownership serve UI behavior and fixture observations only. Never fabricate visible IDs, FRAME events or hit-test proof.
+- Sanitize report text and streamed prefixes through `displayText`.
+- The panel shows Retrieving, then Evaluating. Retries show Retrying. Retrieval phases come before attempt 0 and never advance attempt ordinals.
+- Returning to the root never re-reviews, restarts timers, re-arms canceled requests or brings back finished reports.
+- Alt+H (`reviewer.history.toggle`) and Alt+I (`reviewer.instructions`) are registered in global layers so the palette shows them. Alt+H toggles history in base mode on the root route. The palette and `/reviewer-history` (`reviewer.history`) always open the newest report. Never bind Ctrl+H. Leave BS and DEL prompt editing alone.
+- Fixed copy lives in `src/ui-text.ts` as named strings or typed formatters that fit the 42-column sidebar. Tests keep their own expected wording.
+
+## History and statistics
+
+- `history-coordinator.ts` joins reviewer attempts with controller facts. Unresolved report text stays in memory.
+- Save every completed validated review whose permission is approved or rejected, including Unsafe reports and repeated reviews. Cancellation, interruption or a vanished prompt alone saves nothing. Native `once` without proven attribution is saved as `approved` and refined on exact confirmation. Native `always` is saved as `manual`. A failed fast remainder saves no entry. Its usage and confirmed approval still count.
+- History IDs are per review. Approval identities are per permission. Notification targets select that permission's newest saved review, never the conversation's newest entry.
+- Storage is `history-v1.sqlite` through the embedded worker, using Bun SQLite in the host and Node SQLite in tests. Never touch the legacy `usage-v1/` to `usage-v4/` directories.
+- `local-state.ts` keeps history under the state root when it is safely accessible. Otherwise it uses the private sibling `opencode-reviewer-state`, which stays selected once it exists. Mode and instruction files stay in the state root and share `private-record.ts`. Unsafe or unreadable modes suspend review. Validate the database and its sidecar files with lstat only. Never open them to inspect, because closing can drop another worker's SQLite locks.
+- Storage failures show unavailable, never zero. They never gate review or approval.
+- `history-statistics.ts` applies deduplicated deltas to lifetime and conversation totals in one transaction. Lifetime reads only precomputed totals and is never rebuilt from detail rows. Deleting details never reduces totals. Manual approvals and rejections count once per permission through the `permission_statistics` ledger. Unattributed `once` stays unclassified.
+- Usage is counted per POST, including failed and interrupted ones. Cumulative frames replace earlier values. Token and cost coverage are independent. Unknown is not zero. OpenRouter (exactly `https://openrouter.ai/api/v1`) uses the reported `usage.cost`. Other endpoints use matching host-catalog estimates. Never call billing APIs.
+- Count reviews on final controller acceptance and retries on actual non-initial dispatch. Each retrieval turn's first POST is `initial`. Retrieval tool calls count once dispatched to the companion, whatever the result. Invalid calls, `finish` and POSTs never count. `retrieval_calls` keeps bounded paging facts for the conversation bootstrap.
+- History and statistics resolve ancestry through `HistoryCoordinator.root`, not the review-mode gate, so they work with review disabled. Keep `HistoryRead.settled` ownership after caller timeouts. Drain within 3.5 seconds of lifecycle abort.
+- Persistent deletion is off. Live deletion events only invalidate volatile facts. List omissions, 404s, read failures, storage tokens and paths are never deletion authority.
+- Normalize older formats internally. Never show UI notices about upgrades, format changes or missing old history.
+
+## Notifications
+
+- Eligibility comes from new events, never startup snapshots or history browsing. Snapshot reconciliation is silent.
+- Only the native front-of-queue blocker of each root notifies or reminds. Losing queue position aborts pending delivery. A request resolved while queued never alerts. Handoff sends the next initial notification. Then it waits a full reminder interval.
+- Safe requests waiting for eligibility, queue priority or a countdown stay silent. Countdowns are silent. Approval notifications need confirmed automatic success.
+- Manual attention keeps working when the review config or the companion is unavailable, without a second UI, model calls or replies.
+- Clicks carry the original permission and session identity. Wait for native dialogs to close. Check again for an unfinished fast report. Then select the exact saved entry within a hidden five-second wait. A missing report opens only the conversation. New clicks, route changes and disposal cancel late work.
+- `host-native-observations.ts` refreshes roots and seeds, then family rosters, then member metadata, before ancestry checks. An incomplete member excludes its whole family. A failure in one conversation never silences another. Permission and form reads keep separate budgets. Optional form reads stay outside permission admission and fail health closed.
+- Delivery stays off approval critical paths. Use owned fixed-purpose processes, never a shell.
+- Notification fixtures inject the desktop backend. They don't prove audio, focus or real delivery.
+
+## Diagnostics
+
+Observer, accounting and persistence failures never change review or approval. Diagnostics carry only fixed phase labels, timings and local numeric correlations. Never include prompts, IDs, paths, credentials or model output.
+
+## Writing rules
+
+- Never use em dashes.
+- Model guidance lives in `prompts/`, including the overridable `RETRIEVAL-PROMPT.md`. Fixed contracts live in `contracts/`. Both are listed in `src/prompt-files.json`. Keep `{{validationError}}` in the correction contract.
+- The README covers npm installation, one full config example and user behavior, with no release history.
 
 ## Releases
 
-- On 2026-10-14 the user replaced the separate branch-CI/release gate with a simple
-  tag-triggered verification/publication workflow, following Speedometer. The
-  read-only validation job runs workflow lint, source/helper tests, reproducible
-  builds and archive checks for the exact tag before publication can run. There
-  is no branch-CI lookup, automatic main/PR workflow or real-TUI release prerequisite.
-  The manual extended workflow retains Node 22/24 and newest-stable-V2 host checks;
-  its failures cannot authorize or veto publication. Node major ranges select
-  maintained patches, and Ubuntu 24.04 avoids surprise runner-image migrations.
-  Runtime job summaries expose measured case durations without changing fixture
-  budgets or host concurrency.
-  Run `bash scripts/lint-workflows.sh` after workflow edits. Its sole syntax
-  exception is actionlint 1.7.12's missing support for GitHub's `queue: max`, which
-  the release-policy helper tests enforce independently.
-- Update both manifests with `npm version X.Y.Z --no-git-tag-version`. The release
-  workflow runs on pushed `v*` tags or manual dispatch from the default branch with
-  an existing tag. Tag commit and canonical version must match the manifests;
-  build metadata is rejected. Creating a GitHub release is not a trigger.
-  Package-wide concurrency uses `queue: max` with cancellation disabled, retaining
-  up to 100 pending runs. Overflow is canceled; channel safety still uses SemVer.
-- Keep the read-only validation and privileged publication jobs separate. Publish
-  the exact verified archive, using policy helpers from `github.workflow_sha`;
-  never build/install project dependencies or run package code in the publish job.
-  npm 12.2.0 uses OIDC with optional `NPM_TOKEN` fallback and a private job cache.
-  Explicit provenance binds archive SHA-512 and tag source separately from policy
-  commit and validation/signing attempts. Its pinned npm Sigstore toolchain signs
-  in a 120-second child, then npm verifies `--provenance-file` before upload.
-  `runDetails.metadata.invocationId` must name the actual signing attempt to match
-  the certificate's RunInvocationURI; retain validation ownership separately.
-  Signing failures expose only fixed stages, allowlisted error codes and HTTP
-  status numbers, never dependency messages, stacks, URLs or OIDC token values.
-  npm's certificate checks require the actual workflow-policy source as the first
-  resolved dependency; keep the independently validated release tag/commit as the
-  separately named release-source input. Test both tag pushes and manual dispatch.
-  Never substitute GitHub trigger identity or fall back to unsigned publication.
-  Keep signing bundles outside the artifact directory and TUF's `XDG_DATA_HOME`
-  inside the private job cache. Offline tests replace signing/crypto/network
-  boundaries; they must never request real OIDC tokens or transparency-log writes.
-  Uploads never retry. Existing versions verify immutable bytes without retagging;
-  channel advancement follows SemVer in `scripts/npm-publication.mjs`.
-- npm can accept an upload long before registry availability. Read-only publication
-  verification waits up to 60 minutes; keep the publish job's 75-minute timeout
-  above that budget. Never bypass archive verification or republish to fix a delay.
-- GitHub release creation attaches the CI-verified archive before npm publication,
-  independently of npm upload/processing outcomes. Only npm's completed structured
-  HTTP 422 provenance rejection fails promptly without a processing wait. Other
-  failed uploads remain uncertain: verify the exact bytes read-only within the
-  existing budget, never retry the PUT or mutate dist-tags. Unverified npm
-  availability still fails the workflow.
-- Release policy tests are in `npm run test:helpers`. After a build, run
-  `node --test test/release-artifact-smoke.test.mjs`; with npm 12.2.0, also run
-  `node --test test/npm-cli-smoke.test.mjs`. Neither publishes. Keep workflow actions
-  pinned to verified commit SHAs. Validation uses a complete active-policy checkout
-  so helper additions need no path-list maintenance; publication keeps only its
-  fixed policy helpers.
+- Bump with `npm version X.Y.Z --no-git-tag-version`, which updates `package.json` and `package-lock.json`. Commit, tag `vX.Y.Z` on that commit and push the tag. Tag, commit and manifests must match. Build metadata is rejected.
+- `release.yml` runs on `v*` tag pushes, or on manual dispatch from the default branch with an existing tag. Creating a GitHub release doesn't trigger it. Concurrency uses `queue: max` with cancellation disabled.
+- The read-only validation job type-checks and tests the tag. It runs `check:package`. It then runs workflow lint, helper tests and the release smoke tests from a complete policy checkout at `github.workflow_sha`.
+- The privileged publish job publishes the exact validated archive. It uses only the fixed policy helpers from a sparse checkout at `github.workflow_sha`. Never build, install dependencies or run package code there.
+- Provenance is signed in a time-limited child with pinned npm and Sigstore. `runDetails.metadata.invocationId` names the signing attempt. The workflow-policy source is the first resolved dependency. The release tag and commit are a separate input. Signing errors expose only fixed stages, allowlisted codes and HTTP status numbers. Keep signing bundles outside the artifact directory and TUF's `XDG_DATA_HOME` in the private job cache. Never use trigger identity as a substitute or fall back to unsigned publication.
+- Provenance requires the `mightykatun/opencode-reviewer` repository and a GitHub-hosted runner.
+- The GitHub release with the verified archive is created before npm publication. Uploads never retry. Only npm's structured HTTP 422 provenance rejection fails at once. Other failures are verified read-only within the wait budget, which must stay below the publish job timeout. Existing versions verify immutable bytes without retagging. Channels follow SemVer in `scripts/npm-publication.mjs`. Never bypass archive verification or republish to fix a delay.
+- `ci.yml` is manual. It runs Node 22 and 24 and the `v2-acceptance` profile on the latest V2. Its result never gates or vetoes publication.
+- After workflow edits, run `bash scripts/lint-workflows.sh`, which downloads actionlint. Its only ignore covers actionlint's missing support for `queue: max`, which helper tests check separately. Keep actions pinned to verified commit SHAs.
+- Offline tests replace signing, crypto and network boundaries. They never request OIDC tokens or write transparency logs. After a build, run `node --test test/release-artifact-smoke.test.mjs`. With the npm version that `test/npm-cli-smoke.test.mjs` requires, run that test too. Neither publishes.
