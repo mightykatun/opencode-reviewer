@@ -50,8 +50,101 @@ test("V2 root reads delivered projection in durable order, not timestamp or ID o
   assert.equal(result.delegation, undefined)
   assert.deepEqual(result.limitations, [])
   assert.deepEqual(f.gets, ["ses_root"])
-  assert.deepEqual(f.lists, [{ sessionID: "ses_root", type: "user", limit: 1, order: "desc" }])
+  assert.deepEqual(f.lists, [{ sessionID: "ses_root", type: "user", limit: 100, order: "desc" }])
   assert.deepEqual(result.current, { id: "ses_root", projectID: "project", location: { directory: "/project" } })
+  assert.deepEqual(result.earlierUserPrompts, [])
+})
+
+test("earlier root prompts follow cursor.next and arrive oldest first, separate from the latest", async () => {
+  const f = fixture([session()], [
+    { data: [user("u4", "latest ask"), user("u3", "  third  ")], cursor: { next: "c1" } },
+    { data: [user("u2", ""), user("u1", "first ask")], cursor: { next: null } },
+  ])
+  const result = await loadHostConversationContext(scope, f.reader, signal())
+  assert.equal(result.userPrompt, "latest ask")
+  assert.equal(result.rootMessageID, "u4")
+  assert.deepEqual(result.earlierUserPrompts, [{ text: "first ask" },
+    { text: null, reason: "No nonempty text (empty or attachment-only message)." }, { text: "third" }])
+  assert.deepEqual(result.limitations, [])
+  assert.deepEqual(f.lists, [{ sessionID: "ses_root", type: "user", limit: 100, order: "desc" },
+    { sessionID: "ses_root", type: "user", limit: 100, cursor: "c1" }])
+})
+
+test("an empty latest message keeps earlier prompts as history, never as the latest request", async () => {
+  const f = fixture([session()], [page(user("latest", ""), user("older", "older task"))])
+  const result = await loadHostConversationContext(scope, f.reader, signal())
+  assert.equal(result.userPrompt, null)
+  assert.deepEqual(result.earlierUserPrompts, [{ text: "older task" }])
+  assert.match(result.limitations[0]!, /no nonempty text; no older prompt was substituted/)
+})
+
+test("earlier prompts keep exact leading lines per prompt and drop the oldest past the total budget", async () => {
+  const long = Array.from({ length: 200 }, (_, i) => `line ${i} ${"x".repeat(60)}`).join("\n")
+  const f = fixture([session()], [page(user("latest", "now"), user("long", long), user("single", "y".repeat(9000)),
+    ...Array.from({ length: 12 }, (_, i) => user(`filler${i}`, "z".repeat(6000))), user("oldest", "original task"))])
+  const result = await loadHostConversationContext(scope, f.reader, signal())
+  const prompts = result.earlierUserPrompts
+  const newest = prompts.at(-1)!
+  assert.ok(newest.truncated && newest.text && Buffer.byteLength(newest.text) <= 8192)
+  assert.ok(long.startsWith(newest.text))
+  assert.equal(newest.truncated.includedLines + newest.truncated.omittedLines, 200)
+  assert.deepEqual(prompts.at(-2), { text: null, reason: "Omitted whole: its first line exceeds the 8 KiB per-prompt limit." })
+  assert.ok(!prompts.some(prompt => prompt.text === "original task"))
+  const kept = prompts.reduce((sum, prompt) => sum + Buffer.byteLength(prompt.text ?? ""), 0)
+  assert.ok(kept <= 65536)
+  assert.ok(result.limitations.some(note => /keep exact leading lines/.test(note)))
+  assert.ok(result.limitations.some(note => /oldest earlier root user prompts that were read are omitted/.test(note)))
+})
+
+test("history reads stop after four pages and state that older messages exist", async () => {
+  const pages = Array.from({ length: 5 }, (_, n) => ({ data: [user(`m${n}`, `ask ${n}`)], cursor: { next: `c${n}` } }))
+  const f = fixture([session()], pages)
+  const result = await loadHostConversationContext(scope, f.reader, signal())
+  assert.equal(f.lists.length, 4)
+  assert.equal(result.userPrompt, "ask 0")
+  assert.deepEqual(result.earlierUserPrompts.map(prompt => prompt.text), ["ask 3", "ask 2", "ask 1"])
+  assert.deepEqual(result.limitations, ["Only the latest 4 delivered root user messages were read; older ones exist and are not included."])
+})
+
+test("a failed earlier page is a factual omission, while invalid or repeated history fails", async () => {
+  const failing = fixture([session()], [{ data: [user("latest", "now"), user("b", "before")], cursor: { next: "c1" } }])
+  const list = failing.reader.message.list
+  failing.reader.message.list = async (input, options) => {
+    if (input.cursor) { failing.lists.push(input); throw new Error("transport reset") }
+    return list(input, options)
+  }
+  const result = await loadHostConversationContext(scope, failing.reader, signal())
+  assert.deepEqual(result.earlierUserPrompts, [{ text: "before" }])
+  assert.deepEqual(result.limitations, ["Older root user messages beyond the latest 2 could not be read and are not included."])
+  for (const second of [{ data: [{ id: "x", type: "synthetic", text: "bg", time: { created: 1 } }], cursor: {} },
+    { data: [user("latest", "again")], cursor: {} }, { data: [], cursor: { next: 7 } }]) {
+    const f = fixture([session()], [{ data: [user("latest", "now")], cursor: { next: "c1" } }, second as SessionMessagesResponse])
+    await assert.rejects(loadHostConversationContext(scope, f.reader, signal()), /history (message|cursor) invalid|repeats a message/)
+  }
+})
+
+test("a stalled earlier page is omitted within its share of the context deadline", async () => {
+  const f = fixture([session()], [{ data: [user("latest", "now")], cursor: { next: "c1" } }])
+  const list = f.reader.message.list
+  f.reader.message.list = (input, options) => input.cursor ? new Promise(() => {}) : list(input, options)
+  const result = await withDeadline(signal(), 300, (bounded) => loadHostConversationContext(scope, f.reader, bounded))
+  assert.equal(result.userPrompt, "now")
+  assert.deepEqual(result.limitations, ["Older root user messages beyond the latest 1 could not be read and are not included."])
+})
+
+test("a parent abort during an earlier page rejects instead of omitting", async () => {
+  const controller = new AbortController(), started = deferred<void>(), reason = new Error("stop")
+  const f = fixture([session()], [{ data: [user("latest", "now")], cursor: { next: "c1" } }])
+  const list = f.reader.message.list
+  f.reader.message.list = (input, options) => {
+    if (!input.cursor) return list(input, options)
+    started.resolve()
+    return new Promise((_, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal!.reason)))
+  }
+  const pending = loadHostConversationContext(scope, f.reader, controller.signal)
+  await started.promise
+  controller.abort(reason)
+  await assert.rejects(pending, (error) => error === reason)
 })
 
 for (const text of ["", "   "]) test(`latest empty/attachment user blocks older text: ${JSON.stringify(text)}`, async () => {
@@ -135,19 +228,14 @@ test("16 ancestry edges are accepted and a seventeenth is rejected", async () =>
   }
 })
 
-test("the latest filtered user does not traverse older users", async () => {
-  const f = fixture([session()], [{ data: [user("root-request", "task")], cursor: { next: "older:opaque" } }])
-  assert.equal((await loadHostConversationContext(scope, f.reader, signal())).userPrompt, "task")
-  assert.equal(f.lists.length, 1)
-})
-
 test("malformed and unfiltered responses fail without falling back to older intent", async () => {
-  for (const response of [null, { data: [user("a", "latest"), user("b", "older")], cursor: {} },
+  const oversized = { data: Array.from({ length: 101 }, (_, i) => user(`m${i}`, "x")), cursor: {} }
+  for (const response of [null, oversized, { data: [user("a", "latest"), user("a", "repeat")], cursor: {} },
     { data: [], cursor: null }, { data: [], cursor: [] }, { data: [{}], cursor: {} },
     { data: [{ id: "latest", type: "user" }], cursor: {} }]) {
     const f = fixture([session()], [response as SessionMessagesResponse])
     f.reader.message.list = async input => { f.lists.push(input); return response as SessionMessagesResponse }
-    await assert.rejects(loadHostConversationContext(scope, f.reader, signal()), /history response|message invalid/)
+    await assert.rejects(loadHostConversationContext(scope, f.reader, signal()), /history response|message invalid|repeats a message/)
     assert.equal(f.lists.length, 1)
   }
 })

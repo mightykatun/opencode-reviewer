@@ -17,6 +17,8 @@ export interface Config extends Limits, NotificationConfig {
   /** Master switch; retrievalKinds selects categories. */
   retrieval: boolean
   retrievalKinds: Record<RetrievalKind, boolean>
+  /** Lets the retriever ask the root conversation's own model once per review. */
+  retrievalClarification: boolean
   maxRetrievalRounds: number
   retrievalTimeoutMs: number
   autoApprove: boolean
@@ -54,7 +56,7 @@ export function configuredEvidenceBytes(options: Readonly<Record<string, unknown
 }
 
 export function parseConfig(options: Record<string, unknown> = {}): Config {
-  const keys = new Set(["baseURL", "model", "apiKey", "apiKeyEnv", "instructions", "stream", "reviewBash", "reviewEdits", "reviewSkills", "reviewTools", "reviewExternalDirectories", "retrieval", "retrievalKinds", "maxRetrievalRounds", "retrievalTimeoutMs", "autoApprove", "fastMode", "extraCareful", "autoApproveDelaySeconds", "formatRetries", "timeoutMs", "maxOutputTokens", "maxFiles", "maxEvidenceBytes", "notify", "notifySound", "notificationSoundDirectory", "staleReminderSeconds", "notifications"])
+  const keys = new Set(["baseURL", "model", "apiKey", "apiKeyEnv", "instructions", "stream", "reviewBash", "reviewEdits", "reviewSkills", "reviewTools", "reviewExternalDirectories", "retrieval", "retrievalKinds", "retrievalClarification", "maxRetrievalRounds", "retrievalTimeoutMs", "autoApprove", "fastMode", "extraCareful", "autoApproveDelaySeconds", "formatRetries", "timeoutMs", "maxOutputTokens", "maxFiles", "maxEvidenceBytes", "notify", "notifySound", "notificationSoundDirectory", "staleReminderSeconds", "notifications"])
   for (const key of Object.keys(options)) if (!keys.has(key)) throw new Error(`Unknown opencode-reviewer setting: ${key}`)
   const text = (name: string, optional = false): string | undefined => {
     const value = options[name]
@@ -111,6 +113,7 @@ export function parseConfig(options: Record<string, unknown> = {}): Config {
     reviewTools: boolean("reviewTools"),
     reviewExternalDirectories: boolean("reviewExternalDirectories"),
     retrieval: boolean("retrieval"), retrievalKinds: selected,
+    retrievalClarification: boolean("retrievalClarification"),
     maxRetrievalRounds: number("maxRetrievalRounds", 3, 1, 50),
     retrievalTimeoutMs: number("retrievalTimeoutMs", 60000, 1, 3600000),
     autoApprove: boolean("autoApprove", false),

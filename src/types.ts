@@ -29,8 +29,10 @@ export interface ReviewTiming {
  */
 export interface ReviewProgress {
   attempt: number
-  /** Retrieval phases precede verdict attempts and never advance attempt ordinals. */
-  phase: "retrieving" | "retrieval-retrying" | "evaluating" | "retrying" | "streaming"
+  /** Retrieval phases (retrieving, retrieval-retrying, asking) precede verdict
+   * attempts and never advance attempt ordinals. thinking marks reasoning in a
+   * streamed attempt before its answer text starts. */
+  phase: "retrieving" | "retrieval-retrying" | "asking" | "evaluating" | "retrying" | "thinking" | "streaming"
   preview?: Partial<Assessment>
 }
 

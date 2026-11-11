@@ -43,8 +43,8 @@ test("missing tool evidence reaches the LLM, whose Safe or Unsafe decision is pr
       const response = await review(result.evidence, parseConfig({ baseURL: "http://localhost/v1", model: "reviewer" }), signal(), {
         fetcher: async (_url, init) => {
           const body = JSON.parse(String(init?.body))
-          assert.match(body.messages[0].content, /Missing descriptions or schemas do not automatically mean Unsafe/)
-          assert.match(body.messages[0].content, /Always produce a safety assessment, even when no registered tool data is available/)
+          assert.match(body.messages[0].content, /Missing descriptions or schemas do not predetermine the verdict/)
+          assert.match(body.messages[0].content, /Always produce an assessment, even without registered tool data/)
           const evidence = JSON.parse(body.messages[1].content)
           assert.deepEqual(evidence.operation.input, call.invocation.input)
           assert.deepEqual(evidence.permission.resources, ["*"])
@@ -135,7 +135,7 @@ function owned(tool = "write", input: object = nativeInput, request: object = na
   assert.ok(invocation)
   const current = { id: invocation.sessionID, projectID: project.id, location }
   return { snapshot, invocation, conversation: { current, root: current,
-    userPrompt: "Run the isolated W3 evidence probe. Use w3-evidence only if requested by the fixture.", rootMessageID: "root-user", limitations: [] } }
+    userPrompt: "Run the isolated W3 evidence probe. Use w3-evidence only if requested by the fixture.", earlierUserPrompts: [], rootMessageID: "root-user", limitations: [] } }
 }
 
 function shell(command: string, workdir?: string): HostInvocationRead {
@@ -480,10 +480,13 @@ test("root intent and factual unavailable immediate delegation survive evidence 
   value.conversation.current = { ...value.conversation.current, parentID: "parent" }
   value.conversation.root = { ...value.conversation.root, id: "root" }
   value.conversation.userPrompt = "Preserve this root request exactly."
+  value.conversation.earlierUserPrompts = [{ text: "Never touch production." }, { text: null, reason: "No nonempty text (empty or attachment-only message)." }]
   value.conversation.delegation = { sessionID: value.invocation.sessionID, parentSessionID: "parent", messageID: null, prompt: null }
   value.conversation.limitations = ["Exact immediate subagent delegation is unavailable from the public V2 invocation linkage; delegation text is omitted."]
   const evidence = await ready(value)
   assert.equal(evidence.userPrompt, "Preserve this root request exactly.")
+  assert.deepEqual(evidence.earlierUserPrompts, value.conversation.earlierUserPrompts)
+  assert.equal(Object.hasOwn(evidence.conversation, "earlierUserPrompts"), false)
   assert.deepEqual(evidence.delegation, value.conversation.delegation)
   assert.equal(evidence.conversation.rootMessageID, "root-user")
   assert.ok(evidence.limitations.includes(value.conversation.limitations[0]!))

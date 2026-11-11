@@ -30,7 +30,7 @@ export function shellEvidence(overrides: Partial<HostShellEvidence> = {}): HostS
       source: { assistantID: "assistant", id: "call" }, metadataStatus: "Exact native request scope" },
     operation: { input: { command }, inputStatus: "Complete captured invocation arguments" },
     location, project: { id: "project", directory: cwd, canonical: cwd },
-    conversation: { current, root: current, rootMessageID: "user" }, userPrompt: "Show cwd",
+    conversation: { current, root: current, rootMessageID: "user" }, earlierUserPrompts: [], userPrompt: "Show cwd",
     execution: { tool: "shell", requestedWorkdir: null, canonicalCwd: cwd, cwdSource: "invocation.location.directory" },
     ...overrides,
   }
@@ -69,11 +69,15 @@ export function nativeInvocation(tool: string, input: JSONObject, metadata?: JSO
     ...scope, project: { id: "project", directory, canonical: directory } })
   if (!snapshot || !invocation) throw Error("Invalid native test fixture")
   const current = { id: "root", projectID: "project", location: scope.location }
-  return { snapshot, invocation, conversation: { current, root: current, userPrompt: "Inspect the fixture", rootMessageID: "user", limitations: [] } }
+  return { snapshot, invocation, conversation: { current, root: current, userPrompt: "Inspect the fixture", earlierUserPrompts: [], rootMessageID: "user", limitations: [] } }
 }
 
-/** Offline public-client seam with the real server operation collector. */
-export function nativeClient(owned: HostInvocationRead, files: FileAccess): OpenCodeClient {
+type SessionGenerate = (input: { sessionID: string; prompt: string }, options: { signal: AbortSignal }) => Promise<{ text: string }>
+
+/** Offline public-client seam with the real server operation collector.
+ * Session generation (the /btw backend) is unavailable unless supplied. */
+export function nativeClient(owned: HostInvocationRead, files: FileAccess,
+  generate: SessionGenerate = async () => { throw Error("Session generation unavailable") }): OpenCodeClient {
   const { snapshot, invocation, conversation } = owned
   const request = hostRequestWire(snapshot)
   const { scope } = snapshot
@@ -89,6 +93,7 @@ export function nativeClient(owned: HostInvocationRead, files: FileAccess): Open
     permission: { get: async () => request },
     session: {
       get: async () => conversation.current,
+      generate,
       message: { get: async () => ({ id: invocation.assistantID, type: "assistant", content: [
         { id: invocation.callID, type: "tool", name: invocation.tool, state: { status: "running", input: invocation.input } },
       ] }) },

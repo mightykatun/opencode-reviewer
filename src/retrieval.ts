@@ -11,6 +11,7 @@ import { leadingLines, lineCount } from "./truncate.js"
 import { sumUsage, usageAttempt, type PricingLookup, type Usage } from "./usage.js"
 import type { ReviewAttemptEvent } from "./types.js"
 import type { RetrievalToolName } from "./retrieval-tools.js"
+import { askContext, askContextTool, clarificationEnabled, clarificationQuestions, invalidQuestions, type ContextAsker } from "./clarification.js"
 
 /** One read-only operation executed by the scoped server companion. */
 export interface RetrievalExecutor {
@@ -48,6 +49,13 @@ export const retrievalTools = [
     { pattern: { type: "string" }, path, include: { type: "string" }, ignoreCase: { type: "boolean" } }, ["pattern"]),
   definition("finish", "End retrieval. items lists result IDs to forward to the reviewer, most important first. notes is optional context for the reviewer.",
     { items: { type: "array", items: { type: "string" } }, notes: { type: "string" } }, ["items"]),
+]
+/** Root-conversation reviews add the single clarification call before finish. */
+export const clarifyingRetrievalTools = [
+  ...retrievalTools.slice(0, -1),
+  definition(askContextTool, "Ask the conversation's own model about this pending operation. It answers from the session context, not from files. Allowed once per review, so put every question in this one call. The answer is an unverified explanation.",
+    { questions: { type: "string", description: "Every question, in one text." } }, ["questions"]),
+  retrievalTools.at(-1)!,
 ]
 
 /** Retrieval ends early for a factual reason; gathered results are still forwarded. */
@@ -87,8 +95,10 @@ interface Dependencies {
   onRetry?: () => unknown
   observe: (event: ReviewAttemptEvent) => void
   review: string
-  progress: (phase: "retrieving" | "retrieval-retrying") => void
+  progress: (phase: "retrieving" | "retrieval-retrying" | "asking") => void
   executor: RetrievalExecutor
+  /** Offered only when clarificationEnabled holds for this review. */
+  asker?: ContextAsker
 }
 
 /** The retrieval stage: a tool-calling loop that chooses documents, then a
@@ -104,11 +114,13 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
   ]
   const retries = new TransportRetries(), ownership = new TransportOwnership(transportOwnership(signal))
   const results = new Map<string, JSONObject>(), trace: JSONObject[] = []
-  let posts = 0, usage: Usage | undefined, rounds = 0, nextID = 1, toolCalls = 0
+  const asker = deps.asker && clarificationEnabled(config, evidence) ? deps.asker : undefined
+  const tools = asker ? clarifyingRetrievalTools : retrievalTools
+  let posts = 0, usage: Usage | undefined, rounds = 0, nextID = 1, toolCalls = 0, asked = false
   let selection: { items: string[]; notes?: string } | undefined, endReason: RetrievalEndReason = "no-finish", stopDetail = ""
 
   const post = async (toolChoice: unknown, stage: AbortSignal) => {
-    const body = JSON.stringify({ model: config.model, messages, tools: retrievalTools, ...(toolChoice ? { tool_choice: toolChoice } : {}),
+    const body = JSON.stringify({ model: config.model, messages, tools, ...(toolChoice ? { tool_choice: toolChoice } : {}),
       max_tokens: config.maxOutputTokens, stream: false })
     for (let attempt = 0; ; attempt++) {
       reviewStage(stage, "Retrieval response")
@@ -228,6 +240,26 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
             answer(call, { id, status: "error", reason: "invalid arguments: finish requires items (string array) and optional notes (string)" })
             continue
           }
+          if (asker && call.name === askContextTool) {
+            const questions = clarificationQuestions(args)
+            if (!questions || asked) {
+              const [status, reason] = questions ? ["not-executed", `not executed: ${askContextTool} is allowed once per review`] : ["error", invalidQuestions]
+              const id = record(rounds, call, args, { status, reason })
+              answer(call, { id, tool: call.name, status: "error", reason })
+              continue
+            }
+            asked = true
+            stage.throwIfAborted()
+            deps.observe({ type: "toolDispatched", review: deps.review, call: String(++toolCalls) })
+            deps.progress("asking")
+            const result = await ownership.track(askContext(asker, prompts.clarification, evidence, questions, config.maxEvidenceBytes, stage))
+            stage.throwIfAborted()
+            deps.progress("retrieving")
+            const id = record(rounds, call, args, summary(result))
+            if (result.status === "ok") results.set(id, result)
+            answer(call, { id, ...result })
+            continue
+          }
           if (!toolNames.includes(call.name as RetrievalToolName) || typeof args !== "object" || args === null || Array.isArray(args)) {
             const reason = toolNames.includes(call.name as RetrievalToolName) ? "invalid arguments: arguments must be a JSON object" : "unknown tool"
             const id = record(rounds, call, args, { status: "error", reason })
@@ -262,9 +294,10 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
     ...(forwarded.notes ? { notes: forwarded.notes } : {}), trace, items: forwarded.items } }
 }
 
-/** Trace metadata for one executed call, without content. */
+/** Trace metadata for one executed call, without content or echoed questions,
+ * which the trace already holds as the call's arguments. */
 function summary(result: JSONObject): Partial<JSONObject> {
-  const { tool: _, content, entries, matches, ...rest } = result
+  const { tool: _, content, entries, matches, questions: __, ...rest } = result
   const size: Record<string, number> = {}
   if (typeof content === "string") { size.bytes = Buffer.byteLength(content); size.lines = lineCount(content) }
   if (Array.isArray(entries)) size.entries = entries.length
@@ -305,13 +338,15 @@ function forward(trace: JSONObject[], results: Map<string, JSONObject>, selectio
         const prefix = leadingLines(content, budget)
         if (!prefix.lines) { mark(id, "omitted", "forwarded byte budget exhausted"); omitted = true; continue }
         item.content = prefix.text
-        item.endLine = Number(rest.startLine) + prefix.lines - 1
-        item.truncated = { omittedLines: lineCount(content) - prefix.lines }
+        if (typeof rest.startLine === "number") item.endLine = rest.startLine + prefix.lines - 1
+        // A clarification answer may already have been cut to the result size limit.
+        const earlier = object(rest.truncated) && typeof rest.truncated.omittedLines === "number" ? rest.truncated.omittedLines : 0
+        item.truncated = { omittedLines: lineCount(content) - prefix.lines + earlier }
         delete item.totalLines; delete item.nextOffset
         budget -= prefix.bytes; omitted = true
         mark(id, "truncated")
       }
-      files++
+      if (tool === "read") files++
     } else {
       const key = Array.isArray(entries) ? "entries" : "matches", list = (Array.isArray(entries) ? entries : matches) as JSONValue[] ?? []
       const kept: JSONValue[] = []

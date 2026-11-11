@@ -69,6 +69,7 @@ entry, the plugin does not review anything. Options in `opencode.json` are ignor
           "tool": true,
           "external_directory": true
         },
+        "retrievalClarification": true,
         "maxRetrievalRounds": 3,
         "retrievalTimeoutMs": 60000,
         "maxFiles": 6,
@@ -127,7 +128,7 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `model` | string | Required | Nonempty model identifier accepted by the configured endpoint. Used for both retrieval and the verdict. |
 | `apiKey` | string | Unset | Nonempty Bearer token. Takes precedence over `apiKeyEnv`. |
 | `apiKeyEnv` | string | Unset | Environment-variable name matching `[A-Za-z_][A-Za-z_0-9]*`. Without an inline key, its value must be set and nonblank when a review runs. Omit both key options for no Authorization header. |
-| `instructions` | string | Unset (built-ins) | Absolute, NUL-free directory path containing category, extra-careful and retrieval (`RETRIEVAL-PROMPT.md`) [prompt template](https://github.com/mightykatun/opencode-reviewer/tree/main/prompts) overrides, not inline instructions. Missing named files use built-ins; supplied files must be readable, regular, non-symlink, nonempty UTF-8 text up to 64 KiB. Fixed contracts and the session-instructions precedence wrapper cannot be overridden. |
+| `instructions` | string | Unset (built-ins) | Absolute, NUL-free directory path containing category, extra-careful, retrieval (`RETRIEVAL-PROMPT.md`) and clarification (`CLARIFICATION-PROMPT.md`) [prompt template](https://github.com/mightykatun/opencode-reviewer/tree/main/prompts) overrides, not inline instructions. Missing named files use built-ins; supplied files must be readable, regular, non-symlink, nonempty UTF-8 text up to 64 KiB. Fixed contracts and the session-instructions precedence wrapper cannot be overridden. |
 | `stream` | boolean | `false` | Request SSE for the verdict and show provisional rating/text updates. Retrieval is always non-streaming. Normal automatic approval waits for a completed, validated report; fast mode can approve on an early Safe rating. Approval rules are described below. |
 | `formatRetries` | integer | `1` | `0`–`100` additional verdict-format correction attempts. Does not control retrieval turns. `0` disables format corrections, not independent transport recovery. |
 | `maxOutputTokens` | integer | `4096` | `1` through the maximum safe integer. Sent as `max_tokens` on every retrieval and verdict POST, including retries/corrections. Your provider/model enforces its supported output limit. |
@@ -149,6 +150,7 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | --- | --- | --- | --- |
 | `retrieval` | boolean | `true` | Master switch for the retrieval stage before enabled reviews. `false` skips retrieval-model requests and file operations, while the verdict still runs. |
 | `retrievalKinds` | object | `bash: true`, `edit: false`, `skill: true`, `tool: true`, `external_directory: true` | Optional boolean fields with exactly these names. Omitted fields retain their defaults; unknown fields and non-booleans are invalid. `bash` selects native shell reviews. `retrieval: false` overrides all categories. These switches control retrieval, not whether the permission is reviewed. |
+| `retrievalClarification` | boolean | `true` | Lets retrieval ask the main conversation's own model once per review (`ask_context`), in the background through OpenCode's `/btw` mechanism. Applies only where retrieval is on, and never to subagent reviews. `false` removes the tool. |
 | `maxRetrievalRounds` | integer | `3` | `1`–`50` retrieval-model rounds, each allowing up to ten sequential tool calls. The model may finish early. After the last round, or an early response without tool calls, one additional forced `finish` turn selects results if needed. Transport retries do not consume rounds. |
 | `retrievalTimeoutMs` | integer | `60000` | `1`–`3600000` milliseconds for the retrieval stage, including model requests, tool operations, retries and the forced `finish` turn. Also bounded by the remaining `timeoutMs`. On expiry, the verdict uses results gathered so far if the review budget remains. Reserves no time for the verdict. |
 | `maxFiles` | integer | `6` | `1`–`1000` retrieval `read` results forwarded to the verdict; separate pages or repeated reads count separately, listings and searches do not. Does not cap how many files retrieval may inspect. Independently limits distinct declared edit targets eligible for diff inclusion. |
@@ -199,7 +201,9 @@ My LLMs insist on writing a bunch of useless text to my README, so I collapsed t
 
 The panel appears in the sidebar of the main conversation only. It is titled
 **Permission analysis** and shows ✓ Safe, ✗ Unsafe or ! Analysis unavailable.
-While a review runs, the panel shows Retrieving, then Evaluating. A retry shows
+While a review runs, the panel shows Retrieving, then Evaluating. It shows Asking
+while retrieval waits for an answer from the conversation's model, and Thinking
+while a streamed verdict reasons before its report starts. A retry shows
 Retrying. Reports support Markdown and scrolling. If the sidebar is hidden, open
 it with OpenCode's sidebar command.
 
@@ -212,10 +216,19 @@ Unsafe counts.
 
 ### What the reviewer sees
 
-Every review includes the pending permission, its exact scope and the latest user
-prompt of the main conversation. A prompt over 64 KiB is left out with a note.
-The task a subagent received is not available, so the reviewer never guesses it
-from older tasks or queued messages.
+Every review includes the pending permission, its exact scope and your prompts in
+the main conversation. The latest prompt is sent on its own. A latest prompt over
+64 KiB is left out with a note. Your earlier prompts, up to the 400 most recent
+messages, are sent oldest first. Each one is capped at 8 KiB and they share a
+64 KiB budget. Long prompts keep their leading lines, and the oldest prompts are
+dropped first when the budget runs out. The reviewer is told to follow the
+direction you have been taking and to track the limits and requirements still in
+force after your latest prompt. Your latest prompt wins any conflict. An
+operation that clearly breaks a limit you stated explicitly is rated Unsafe.
+Limits the reviewer only infers are weighed against the actual risk. Earlier
+prompts never approve an operation on their own. The task a subagent received is
+not available, so the reviewer never guesses it from older tasks or queued
+messages.
 
 - **Shell:** the command and its working directory.
 - **Edits:** the pending diff. An oversized diff keeps its leading complete lines
@@ -266,6 +279,21 @@ is told why retrieval stopped. By default, retrieval is on for every category
 except edits. Use `retrieval` and `retrievalKinds` to turn it off.
 
 Text inside files, commands or arguments can steer what the retrieval model reads.
+
+#### Asking the conversation
+
+When the evidence leaves the purpose of an operation unclear, retrieval can ask
+the main conversation's own model once per review, with every question in one
+call. It works like `/btw` but runs in the background, so no dialog opens and
+nothing is added to the conversation. The question goes with the exact pending
+operation, and the answer comes from the conversation so far. Retrieval decides
+whether the verdict sees the answer. The verdict treats it as an explanation, not
+as proof or as your permission.
+
+Subagent reviews never get this tool, and it needs retrieval to be on. A failed
+or empty answer doesn't stop the review. The conversation model's own tokens and
+cost appear in OpenCode's session totals, not in the reviewer's. Set
+`retrievalClarification: false` to turn it off.
 
 ### Streaming and retries
 
@@ -352,7 +380,11 @@ saves and closes. **Clear** empties the draft. **Close** or Escape discards
 changes.
 
 The text goes only to the verdict model, for every review in the conversation and
-its subagents. It overrides ordinary and extra-careful review guidance. It can't
+its subagents. Use it to allow or restrict specific things. It overrides ordinary
+and extra-careful review guidance only for what it mentions. Everything else is
+reviewed as if there were no instructions, so an unrelated rule never makes an
+operation Unsafe. A restriction in either these instructions or your prompts in
+the conversation still holds when the other allows the operation. It can't
 override evidence checks, approval safeguards or the response format.
 
 - Instructions are saved per conversation and shared by all terminals of this
@@ -413,8 +445,8 @@ average time to rating and to full report.
 - **Tokens** count all usage the provider reports, including retrieval turns,
   retries and failed reviews. Cached input is part of input tokens. Unreported
   usage is shown as partial, never as zero.
-- **Tool calls** count retrieval read, list, glob and grep calls that ran,
-  including failed ones.
+- **Tool calls** count retrieval read, list, glob, grep and ask_context calls
+  that ran, including failed ones.
 - **Cost** uses the charge OpenRouter reports when `baseURL` is
   `https://openrouter.ai/api/v1`. Other endpoints use OpenCode's model catalog
   price when a matching provider and model exist.
@@ -428,8 +460,9 @@ conversation baseline. Storage errors show unavailable, not zero.
 ### Privacy
 
 Before approval, reviews send this data to your endpoint: the pending request,
-the latest user prompt, diffs, skill instructions, tool arguments, session
-instructions and every document retrieval reads.
+your prompts in the main conversation, diffs, skill instructions, tool arguments, session
+instructions and every document retrieval reads. A retrieval question also goes,
+with the pending operation, to the main conversation's own model.
 </details>
 
 <details>
@@ -489,7 +522,7 @@ one conversation never overlap. Notification work never delays approval.
 
 ## Development
 
-Requires Node.js 24 (24.15.0 or newer) or 22 (22.22.2 or newer) and npm. Run
+Requires Node.js 24 (>=24.15.0) or 22 (>=22.22.2) and npm. Run
 these from the repository root:
 
 - `npm ci --ignore-scripts` installs dependencies.

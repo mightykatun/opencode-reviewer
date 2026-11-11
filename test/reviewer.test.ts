@@ -965,6 +965,28 @@ function streamingResponse(parts: readonly Uint8Array[]): Response {
 }
 const streamText = (text: string) => streamingResponse([Buffer.from(text)])
 
+test("streamed reasoning before answer text reports thinking once, and empty or later reasoning does not", async () => {
+  const reasoningChunk = (delta: Record<string, unknown>) => ({ id: "fixture-id", model: "fixture", object: "chat.completion.chunk",
+    choices: [{ index: 0, delta, finish_reason: null }] })
+  const text = JSON.stringify({ safe: true, desc: "Routine." })
+  for (const delta of [{ reasoning: "plan" }, { reasoning_content: "plan" }, { reasoning_details: [{ type: "reasoning.text", text: "plan" }] }]) {
+    const phases: ReviewProgress["phase"][] = []
+    const result = await review(shellEvidence(), streamConfig(), signal(), { environment: {}, prompts: BUILTIN_PROMPTS,
+      onProgress: value => { phases.push(value.phase) },
+      fetcher: async () => streamText(event(reasoningChunk({ reasoning: "", reasoning_details: [] })) + event(reasoningChunk(delta))
+        + event(reasoningChunk(delta)) + event(chunk(text.slice(0, 12))) + event(reasoningChunk(delta)) + event(chunk(text.slice(12), "stop")) + done) })
+    assert.equal(result.safe, true)
+    assert.equal(phases.filter(phase => phase === "thinking").length, 1)
+    assert.deepEqual(phases.slice(0, 2), ["evaluating", "thinking"])
+    assert.ok(phases.slice(2).every(phase => phase === "streaming"))
+  }
+  const phases: ReviewProgress["phase"][] = []
+  await review(shellEvidence(), streamConfig(), signal(), { environment: {}, prompts: BUILTIN_PROMPTS, onProgress: value => { phases.push(value.phase) },
+    fetcher: async () => streamText(event(chunk(text.slice(0, 12))) + event({ id: "fixture-id", model: "fixture", object: "chat.completion.chunk",
+      choices: [{ index: 0, delta: { reasoning: "afterthought" }, finish_reason: null }] }) + event(chunk(text.slice(12), "stop")) + done) })
+  assert.ok(!phases.includes("thinking"), "reasoning after answer text starts is not thinking")
+})
+
 test("SSE review survives every byte split, including UTF-8 and escaped assessment Unicode", async () => {
   const desc = 'Café 🍐 **effects**\n"quoted"'
   const text = JSON.stringify({ safe: false, desc }).replace("🍐", "\\uD83C\\uDF50")

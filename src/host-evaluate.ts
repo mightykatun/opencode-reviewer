@@ -14,6 +14,7 @@ import { companionRpc } from "./companion-protocol.js"
 import { readCompanion } from "./companion-read.js"
 import { boundedHostJSON } from "./host-request.js"
 import type { RetrievalExecutor } from "./retrieval.js"
+import { sessionContextAsker } from "./clarification.js"
 import type { HostScope, HostRequest, JSONObject } from "./host-types.js"
 
 export interface HostReviewerDependencies extends ReviewerDependencies {
@@ -45,8 +46,11 @@ export function evaluateHostReview(client: OpenCodeClient, snapshot: HostRequest
     let observation: ReviewObservation | void = undefined
     try { observation = observeEvidence?.(owned.result.evidence) } catch { /* Accounting cannot change review. */ }
     signal.throwIfAborted()
-    return review(owned.result.evidence, config, signal, { ...reviewer, sessionInstructions, ...(observation ? { observation } : {}), prompts,
-      retrieval: reviewer.retrieval ?? companionRetrieval(client, owned.snapshot.scope, owned.snapshot.request, config.maxEvidenceBytes) })
+    const evidence = owned.result.evidence
+    return review(evidence, config, signal, { ...reviewer, sessionInstructions, ...(observation ? { observation } : {}), prompts,
+      retrieval: reviewer.retrieval ?? companionRetrieval(client, owned.snapshot.scope, owned.snapshot.request, config.maxEvidenceBytes),
+      // Retrieval offers it only for root conversations (clarificationEnabled).
+      clarification: reviewer.clarification ?? sessionContextAsker(client, evidence.conversation.current.id) })
   })
 }
 

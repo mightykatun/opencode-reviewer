@@ -54,7 +54,7 @@ test("skill collector retains whole main instructions as mandatory evidence and 
   assert.deepEqual(evidence.skill, entry)
   assert.deepEqual(evidence.operation.input, { id: entry.id })
   assert.match(evidence.limitations.join("\n"), /current scoped host registry, not an invocation-time snapshot/)
-  const { conversation: _, userPrompt: __, delegation: ___, ...operation } = evidence
+  const { conversation: _, userPrompt: __, earlierUserPrompts: ____, delegation: ___, ...operation } = evidence
   assert.ok(readHostOperationEvidence(operation, current, options, signal()))
   for (const changed of [{ ...operation, skill: { ...entry, id: "other" } },
     { ...operation, skill: { ...entry, content: "" } }, { ...operation, skill: { ...entry, content: "x".repeat(131073) } },

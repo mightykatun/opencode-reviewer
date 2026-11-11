@@ -40,7 +40,11 @@ export const uiText = {
     unsafe: "✗ Unsafe",
     unavailable: "! Analysis unavailable",
     retrieving: "Retrieving",
+    /** The retriever is asking the conversation's own model a question. */
+    asking: "Asking",
     evaluating: "Evaluating",
+    /** The streamed verdict is reasoning before its report starts. */
+    thinking: "Thinking",
     retrying: "Retrying",
     /** Shown instead of the scanner when host animations are off. */
     staticIndicator: "[⋯]",
@@ -88,6 +92,8 @@ export const uiText = {
       conversationAncestry: "Conversation ancestry incomplete: cycle or 16-edge limit",
       rootHistory: "Root-user history response unavailable or invalid",
       rootMessage: "Root-user history message invalid",
+      rootHistoryCursor: "Root-user history cursor invalid",
+      rootHistoryRepeat: "Root-user history repeats a message",
       project: "Registered invocation project metadata unavailable or ambiguous",
       invocationScope: "Evidence request or invocation scope mismatch",
       conversationMismatch: "Evidence conversation scope mismatch",
@@ -101,6 +107,7 @@ export const uiText = {
       hostEvidence: "Host evidence lookup",
       companionEvidence: "Companion evidence lookup",
       conversationContext: "Conversation context lookup",
+      conversationHistory: "Conversation history lookup",
       evidenceCollection: "Evidence collection",
       evidenceValidation: "Evidence validation",
       retrieval: "Retrieval",

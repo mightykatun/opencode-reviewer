@@ -208,6 +208,40 @@ test("disabled streaming still reports evaluating/retrying but cannot display pr
   await f.dispose()
 })
 
+test("asking is a retrieval phase, and thinking holds only until its attempt's first preview", async () => {
+  const f = await fixture()
+  const progress = f.workers[0]!.progress
+  progress({ attempt: 0, phase: "retrieving" })
+  progress({ attempt: 0, phase: "asking" })
+  assert.deepEqual(f.view()?.progress, { attempt: 0, phase: "asking" })
+  progress({ attempt: 0, phase: "thinking" })
+  assert.deepEqual(f.view()?.progress, { attempt: 0, phase: "asking" }, "no verdict attempt has started")
+  progress({ attempt: 0, phase: "retrieving" })
+  progress({ attempt: 0, phase: "evaluating" })
+  progress({ attempt: 0, phase: "asking" })
+  assert.deepEqual(f.view()?.progress, { attempt: 0, phase: "evaluating" }, "retrieval phases end with the first attempt")
+  progress({ attempt: 0, phase: "thinking" })
+  assert.deepEqual(f.view()?.progress, { attempt: 0, phase: "thinking" })
+  progress({ attempt: 0, phase: "streaming", preview: { safe: true } })
+  progress({ attempt: 0, phase: "thinking" })
+  assert.deepEqual(f.view()?.progress, { attempt: 0, phase: "streaming", preview: { safe: true } }, "late reasoning never hides a report")
+  progress({ attempt: 1, phase: "retrying" })
+  progress({ attempt: 0, phase: "thinking" })
+  assert.deepEqual(f.view()?.progress, { attempt: 1, phase: "retrying" }, "an old attempt cannot report thinking")
+  progress({ attempt: 1, phase: "thinking" })
+  assert.deepEqual(f.view()?.progress, { attempt: 1, phase: "thinking" })
+  await f.dispose()
+})
+
+test("thinking is ignored when streaming is disabled", async () => {
+  const f = await fixture({ stream: false })
+  const progress = f.workers[0]!.progress
+  progress({ attempt: 0, phase: "evaluating" })
+  progress({ attempt: 0, phase: "thinking" })
+  assert.deepEqual(f.view()?.progress, { attempt: 0, phase: "evaluating" })
+  await f.dispose()
+})
+
 test("progress cannot identify a permission or create a newer attempt without its start", async () => {
   const f = await fixture({ identify: false })
   const worker = f.workers[0]!

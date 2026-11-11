@@ -1,0 +1,3 @@
+A separate permission reviewer is checking an operation from this conversation before it runs and has questions about it. The JSON after this text holds pendingOperation, the exact operation awaiting approval, and questions.
+Answer every question briefly from this conversation's context: why the operation is needed, how it relates to the user's requests, and relevant facts already established in the conversation. Keep established facts apart from assumptions, and name the user instructions or observations that support them. Say plainly when the conversation does not answer a question.
+Do not invent authorization, do not call tools and do not ask follow-up questions. Reply in plain text only.

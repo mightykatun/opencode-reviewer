@@ -6,7 +6,8 @@ import type { ReviewKind } from "./types.js"
 
 type PromptName = keyof typeof inventory
 
-export type PromptSet = Readonly<Record<ReviewKind, Readonly<{ instructions: string }>>> & Readonly<{ extraCareful: string; retrieval: string }>
+export type PromptSet = Readonly<Record<ReviewKind, Readonly<{ instructions: string }>>>
+  & Readonly<{ extraCareful: string; retrieval: string; clarification: string }>
 const kinds = ["shell", "edit", "external-directory", "skill", "tool"] as const
 
 // The build embeds these files; direct source tests read the same Markdown.
@@ -20,6 +21,7 @@ function prompt(name: PromptName): string {
 export const BUILTIN_PROMPTS: PromptSet = Object.freeze({
   extraCareful: prompt("extraCareful"),
   retrieval: prompt("retrieval"),
+  clarification: prompt("clarification"),
   shell: Object.freeze({ instructions: prompt("shell") }),
   edit: Object.freeze({ instructions: prompt("edit") }),
   "external-directory": Object.freeze({ instructions: prompt("external-directory") }),
@@ -58,6 +60,7 @@ export async function loadPrompts(directory: string | undefined, signal: AbortSi
   }
   result.extraCareful = await override(directory, path.basename(inventory.extraCareful), signal) ?? result.extraCareful
   result.retrieval = await override(directory, path.basename(inventory.retrieval), signal) ?? result.retrieval
+  result.clarification = await override(directory, path.basename(inventory.clarification), signal) ?? result.clarification
   signal.throwIfAborted()
   return Object.freeze(result)
 }

@@ -13,6 +13,7 @@ import { abortable, cancelBody, readBody, responseText } from "./chat-transport.
 import type { HostReviewEvidence } from "./host-evidence.js"
 import { retrievalEnabled } from "./config.js"
 import { retrieveDocuments, type RetrievalExecutor, type RetrievalSection } from "./retrieval.js"
+import type { ContextAsker } from "./clarification.js"
 export { withDeadline } from "./deadline.js"
 
 export function parseAssessment(content: string): Assessment {
@@ -34,9 +35,21 @@ const validMetadata = (delta: Record<string, unknown>) => (delta.role === undefi
   && (delta.tool_calls == null || (Array.isArray(delta.tool_calls) && delta.tool_calls.every(object)))
   && (delta.refusal == null || typeof delta.refusal === "string")
 class TerminalAssessmentRejection extends Error {}
+const present = (value: unknown) => value != null && value !== "" && !(Array.isArray(value) && value.length === 0)
+const reasoning = (delta: Record<string, unknown>) => [delta.reasoning, delta.reasoning_content, delta.reasoning_details].some(present)
+
+/** Observations of one streamed attempt. firstReasoning fires once, only when
+ * reasoning arrives before any answer text. */
+interface StreamEvents {
+  progress(preview?: Partial<Assessment>): void
+  content(): void
+  firstReasoning(): void
+}
 
 async function streamedAssessment(response: Response, signal: AbortSignal, ownership: TransportOwnership, accounting: ReturnType<typeof usageAttempt>,
-  progress: (preview?: Partial<Assessment>) => void, firstContent?: () => void): Promise<StreamingAssessment> {
+  events: StreamEvents): Promise<StreamingAssessment> {
+  const progress = events.progress
+  let answering = false, thinking = false
   if (response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "text/event-stream") {
     ownership.track(cancelBody(response))
     throw new Error("Reviewer expected an SSE response")
@@ -115,8 +128,7 @@ async function streamedAssessment(response: Response, signal: AbortSignal, owner
       // been accepted, only an identical empty finish or usage-only frames may
       // follow. Check before the rejection drain can discard further deltas.
       if (finished !== undefined && (finish !== finished || !textMetadata(delta)
-        || [delta.content, delta.reasoning, delta.reasoning_content, delta.reasoning_details]
-          .some(value => value != null && value !== "" && !(Array.isArray(value) && value.length === 0)))) invalid(!nonText)
+        || present(delta.content) || reasoning(delta))) invalid(!nonText)
       if (typeof finish === "string") finished = finish
       if (nonText) { rejected(); return }
       // Keep validating framing/identity/metadata, but never parse or publish more
@@ -126,8 +138,10 @@ async function streamedAssessment(response: Response, signal: AbortSignal, owner
       }
       if (finish === "length") throw new AssessmentStreamError("Reviewer output token limit reached. Increase maxOutputTokens")
       if ((finish != null && finish !== "stop") || (stopped && finish !== "stop")) invalid()
+      if (!answering && !thinking && reasoning(delta)) { thinking = true; events.firstReasoning() }
       if (typeof delta.content === "string" && delta.content) {
-        firstContent?.()
+        answering = true
+        events.content()
         assessment.push(delta.content)
         const preview = assessment.preview()
         if (preview?.safe !== last?.safe || preview?.desc !== last?.desc) {
@@ -168,6 +182,8 @@ export interface ReviewerDependencies {
   /** Scoped server operations for the retrieval stage. Without one, an enabled
    * retrieval stage is reported unavailable and the verdict runs alone. */
   retrieval?: RetrievalExecutor
+  /** The root conversation's own model, offered to retrieval as ask_context. */
+  clarification?: ContextAsker
 }
 
 export async function review(
@@ -175,7 +191,7 @@ export async function review(
   config: Config,
   signal: AbortSignal,
   { fetcher = fetch, environment = process.env, prompts = BUILTIN_PROMPTS,
-    pricing, onUsage, onProgress, onDiagnostics, onRetry, sessionInstructions, observation = { review: randomUUID() }, retrieval }: ReviewerDependencies = {},
+    pricing, onUsage, onProgress, onDiagnostics, onRetry, sessionInstructions, observation = { review: randomUUID() }, retrieval, clarification }: ReviewerDependencies = {},
 ): Promise<ReviewResult> {
   // Production already shares a deadline with evidence collection. Direct
   // callers get the same bound, including all internal backoff and POSTs.
@@ -183,7 +199,8 @@ export async function review(
     let worker: Promise<ReviewResult> | undefined
     try {
       return await withDeadline(signal, config.timeoutMs, (bounded) =>
-        worker = review(evidence, config, bounded, { fetcher, environment, prompts, pricing, onUsage, onProgress, onDiagnostics, onRetry, sessionInstructions, observation, retrieval }))
+        worker = review(evidence, config, bounded, { fetcher, environment, prompts, pricing, onUsage, onProgress, onDiagnostics, onRetry,
+          sessionInstructions, observation, retrieval, clarification }))
     } finally { await worker?.catch(() => {}) }
   }
   const key = config.apiKey ?? (config.apiKeyEnv ? environment[config.apiKeyEnv]?.trim() : undefined)
@@ -202,7 +219,7 @@ export async function review(
     extra = ["Retrieval executor unavailable; no files were read."]
   } else {
     const outcome = await retrieveDocuments(evidence, config, prompts, signal, { fetcher, ...(key ? { key } : {}), pricing, onUsage, onRetry, observe,
-      review: observation.review, executor: retrieval, progress: phase => {
+      review: observation.review, executor: retrieval, ...(clarification ? { asker: clarification } : {}), progress: phase => {
         if (signal.aborted) return
         try { void Promise.resolve(onProgress?.({ attempt: 0, phase })).catch(() => {}) } catch {}
       } })
@@ -271,10 +288,14 @@ export async function review(
         throw httpFailure(response)
       }
       let assessment: StreamingAssessment
-      if (config.stream) assessment = await streamedAssessment(response, signal, ownership, accounting, (preview) => {
-        if (typeof preview?.safe === "boolean") diagnose?.("first-rating")
-        progress("streaming", preview)
-      }, () => { contentStarted = true; diagnose?.("first-content") })
+      if (config.stream) assessment = await streamedAssessment(response, signal, ownership, accounting, {
+        progress: preview => {
+          if (typeof preview?.safe === "boolean") diagnose?.("first-rating")
+          progress("streaming", preview)
+        },
+        content: () => { contentStarted = true; diagnose?.("first-content") },
+        firstReasoning: () => progress("thinking"),
+      })
       else {
         let envelope: unknown
         try { envelope = JSON.parse(await responseText(response, signal, ownership)) }

@@ -310,9 +310,19 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     if (!this.reviewing(entry) || !Number.isSafeInteger(value.attempt) || value.attempt < 0 || value.attempt < entry.attempt) return
     // Retrieval precedes the first verdict attempt (ordinal -1) and never advances
     // ordinals; that attempt's ordinary start then replaces the retrieval phase.
-    if (value.phase === "retrieving" || value.phase === "retrieval-retrying") {
+    if (value.phase === "retrieving" || value.phase === "retrieval-retrying" || value.phase === "asking") {
       if (value.attempt !== 0 || entry.attempt !== -1 || entry.view.progress?.phase === value.phase) return
       entry.view = { ...entry.view, progress: { attempt: 0, phase: value.phase } }
+      this.publish()
+      return
+    }
+    // Reasoning before any answer text of the current streamed attempt. The first
+    // report preview of that attempt replaces it.
+    if (value.phase === "thinking") {
+      const current = entry.view.progress
+      if (this.options.stream !== true || value.attempt !== entry.attempt || current?.attempt !== value.attempt
+        || (current.phase !== "evaluating" && current.phase !== "retrying")) return
+      entry.view = { ...entry.view, progress: { attempt: value.attempt, phase: "thinking" } }
       this.publish()
       return
     }

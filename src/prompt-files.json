@@ -6,6 +6,7 @@
   "tool": "prompts/TOOL-REVIEW-PROMPT.md",
   "extraCareful": "prompts/EXTRA-CAREFUL-REVIEW-PROMPT.md",
   "retrieval": "prompts/RETRIEVAL-PROMPT.md",
+  "clarification": "prompts/CLARIFICATION-PROMPT.md",
   "sessionInstructions": "prompts/SESSION-INSTRUCTIONS-PROMPT.md",
   "contract": "contracts/PERMISSION-REVIEW-CONTRACT.md",
   "retrievalContract": "contracts/RETRIEVAL-CONTRACT.md",

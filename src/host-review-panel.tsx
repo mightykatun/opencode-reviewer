@@ -143,9 +143,18 @@ function HostReviewLoading(props: { context: Plugin.Context; phase?: ReviewProgr
         })
         return <span style={{ fg: color() }}>{cell().character}</span>
       }}</Index>
-    </Show>{" "}{props.phase === "retrieving" ? uiText.review.retrieving
-      : props.phase === "retrying" || props.phase === "retrieval-retrying" ? uiText.review.retrying : uiText.review.evaluating}
+    </Show>{" "}{progressLabels[props.phase ?? "evaluating"]}
   </text>
+}
+
+const progressLabels: Record<ReviewProgress["phase"], string> = {
+  retrieving: uiText.review.retrieving,
+  "retrieval-retrying": uiText.review.retrying,
+  asking: uiText.review.asking,
+  evaluating: uiText.review.evaluating,
+  retrying: uiText.review.retrying,
+  thinking: uiText.review.thinking,
+  streaming: uiText.review.evaluating,
 }
 
 function HostReviewButton(props: { context: Plugin.Context; label: string; selected?: boolean; disabled?: boolean; onHover?: () => void; onClick(): void }) {

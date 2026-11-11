@@ -4,7 +4,7 @@
 
 ## Setup and checks
 
-Use Node.js 24.x with npm. This major version is recommended and starts at 24.15.0. Node.js 22.x works from 22.22.2 or newer. These floors apply to development. The published package declares `node >=22`. Run commands from the repository root:
+Use Node.js 24.x with npm. This major version is recommended (>=24.15.0). Node.js 22.x also works (>=22.22.2). These floors apply to development. The published package declares `node >=22`. Run commands from the repository root:
 
 ```sh
 npm ci --ignore-scripts
@@ -47,7 +47,7 @@ Focused checks are `smoke-v2-review.mjs` scenarios unless another file is named:
 | Startup connection | `smoke-v2-lifecycle.mjs cold-startup` |
 | Reconnect and stalls | `normal-reconnect`, `normal-reconnect-visible`, `normal-stalled-stream` |
 | Review modes | `advisory`, `normal`, `fast` |
-| Retrieval | `normal-retrieval`, `normal-large-source`, `normal-long-session` |
+| Retrieval | `normal-retrieval` (also the native `ask_context` clarification and Asking), `normal-large-source`, `normal-long-session` |
 | Skills | `normal-skill`, `fast-skill` |
 | Registered tools and Code Mode | `normal-tool`, `fast-tool`, `normal-code-mode-tool`, `fast-code-mode-tool` |
 | Edits and directories | `normal-edit`, `normal-directory-edit` |
@@ -68,7 +68,7 @@ Focused checks are `smoke-v2-review.mjs` scenarios unless another file is named:
   - `opencode.json` loads the server companion. That entry takes no options and ignores any. Permission rules, providers and MCP servers also live in this file.
   - `cli.json` loads the terminal role. Every reviewer option and `keybinds` go in this entry. `cli-plugin.ts` parses `context.options` and rejects unknown keys.
   - Without the `cli.json` entry nothing is reviewed. Without the `opencode.json` entry the companion handshake fails.
-- Defaults and validation live in `src/config.ts`. Notification options live in `notification-config.ts`. All `review*` categories default on. `retrievalKinds.edit`, `autoApprove`, `fastMode` and `stream` default off.
+- Defaults and validation live in `src/config.ts`. Notification options live in `notification-config.ts`. All `review*` categories and `retrievalClarification` default on. `retrievalKinds.edit`, `autoApprove`, `fastMode` and `stream` default off.
 - Source or built-in prompt changes need a build and a host restart. Config or custom prompt changes need a restart.
 - The archive holds exactly five files: `dist/tui.js`, `package.json`, `README.md`, `LICENSE` and `THIRD_PARTY_NOTICES.md`. `files` lists three. npm adds the other two. `dist/` is generated and ignored. `npm pack` rebuilds through `prepack`. Verified CI packing uses `--ignore-scripts`.
 - Development dependencies use V2 ranges for `@opencode/plugin`, `@opencode/client` and `@opencode/theme`. Pin OpenTUI and Solid to the host's exact versions. Keep the lockfile. Refresh OpenCode dependencies to the latest stable V2 when developing.
@@ -101,8 +101,8 @@ Review:
 - `host-evaluate.ts`: runs one review. It reads evidence through `host-evidence-reader.ts`, runs retrieval through the companion and calls the reviewer.
 - `host-reader.ts`, `host-invocation.ts` and `host-request.ts`: bind the pending permission to its captured invocation and copy host JSON within bounds.
 - `host-evidence.ts`: operation evidence. `collectHostOperation` runs in the companion. Validation runs in the CLI. Category helpers are `host-skill.ts`, `host-tool.ts`, `host-catalog.ts`, `host-tool-kind.ts`, `host-code-mode.ts` and `tool-evidence.ts`.
-- `host-context.ts`: root user prompt. `host-project.ts`: project attribution.
-- `retrieval.ts`: CLI retrieval loop. `retrieval-tools.ts`: companion `read`, `list`, `glob` and `grep`.
+- `host-context.ts`: latest and earlier root user prompts. `host-project.ts`: project attribution.
+- `retrieval.ts`: CLI retrieval loop. `retrieval-tools.ts`: companion `read`, `list`, `glob` and `grep`. `clarification.ts`: the `ask_context` tool, its eligibility and native session generation.
 - `reviewer.ts`: verdict stage. Transport is in `chat-transport.ts`, `sse.ts`, `transport-retry.ts`, `streaming-assessment.ts` and `transport-ownership.ts`. `deadline.ts` holds the budget.
 - `session-ancestry.ts` and `route-approval.ts`: bounded ancestry and conversation roots. `session-mode.ts` and `host-mode-commands.ts`: per-conversation enable and disable. `session-instructions*.ts` and `host-session-instructions.tsx`: session instructions.
 - `host-approval-ready.ts`: route and native decision gates. `host-native-observations.ts` and `host-queue.ts`: native family rosters and queue priority. `pending-refresh.ts`: revision guards for pending reads.
@@ -140,7 +140,7 @@ Mandatory evidence must be exact. Otherwise the review shows Analysis unavailabl
 - Registered tools, MCP and custom tools (category `tool`, `reviewTools`, `TOOL-REVIEW-PROMPT.md`, no legacy aliases): the exact direct call, or the exact outer Code Mode `execute` input, plus scope and arguments are mandatory. Descriptions and schemas are optional. This assumes registered definitions don't change while pending and describe behavior accurately. Never infer origin by splitting names, import or invoke executors, or call MCP servers.
 - Code Mode: keep native Code Mode and its tool search. Don't add a direct-tool transform. When inner linkage is uncertain, `host-code-mode.ts` gives the judge bounded candidate calls, including completed siblings, and states the uncertainty. Safe may approve that exact once permission without a unique match. Never claim inner identity from arrival order, JavaScript parsing or forced serialization. `invocation-capture.ts` counts live executions per identity and releases a group only after every matching after-hook settles. Completed calls must not use up live capacity.
 - Native tools: assume installed plugins keep native tool meanings and don't rewrite commands after capture. Don't extend this assumption to skills, MCP or custom tools.
-- Root context: read the latest root user prompt with `message.list({ sessionID, type: "user", order: "desc", limit: 1 })`. Validate the filtered response. A newer empty or attachment-only message must not fall back to older text. Omit prompts over 64 KiB with a note. Malformed history fails the review. The immediate subagent task isn't available through public V2 linkage, so omit it factually. Never substitute older tasks, siblings or queued input. Context never overrides review rules.
+- Root context: read delivered root user messages newest first with `message.list({ sessionID, type: "user", order: "desc", limit: 100 })`, then follow `cursor.next` with the same type and no `order`, up to four pages. The newest is `userPrompt`. Omit it over 64 KiB with a note. A newer empty or attachment-only message stays the latest request and must not fall back to older text. The others are `earlierUserPrompts`, oldest first, within 8 KiB each and 64 KiB in total, filled newest first. Oversized ones keep exact leading lines with omitted counts. Past the total budget the oldest are dropped with a count. Validate every page. Malformed or repeated history fails the review. A later page that stalls or fails is an optional omission with a note. A parent abort still fails. The contract tells the judge to extrapolate the user's direction across these prompts and keep a private, up-to-date list of standing boundaries, with the latest prompt winning conflicts. Only a clear breach of an explicitly stated boundary forces Unsafe. Inferred boundaries are weighed with actual risk. The immediate subagent task isn't available through public V2 linkage, so omit it factually. Never substitute older tasks, siblings or queued input. Context never overrides review rules.
 - Project attribution: a session can gain a Git project ID while the companion's setup project stays `global`. `host-project.ts` resolves this only from the connected server's registered project and checkout inventory. Never change the invocation's location, source, arguments, workspace or epoch. Missing or ambiguous inventory stays manual.
 - Evidence reads prepare and bind before collection. They finalize native identity and companion epoch once, after validation.
 
@@ -148,10 +148,11 @@ Mandatory evidence must be exact. Otherwise the review shows Analysis unavailabl
 
 Only the agentic retrieval loop chooses files. Never parse commands to pick files. Keep this code short and simple.
 
-- `retrieval.ts` runs in the CLI before every enabled verdict. It uses non-streaming tool calls with fixed byte-stable definitions: `read`, `list`, `glob`, `grep` and `finish`. It runs up to `maxRetrievalRounds` rounds. Calls past ten in one round get a `not-executed` error result. A forced `finish` turn (`tool_choice`) follows the last round or a round without tool calls. All of it runs within `retrievalTimeoutMs` and the shared deadline.
+- `retrieval.ts` runs in the CLI before every enabled verdict. It uses non-streaming tool calls with fixed byte-stable definitions: `read`, `list`, `glob`, `grep` and `finish`, plus `ask_context` before `finish` when clarification is offered. It runs up to `maxRetrievalRounds` rounds. Calls past ten in one round get a `not-executed` error result. A forced `finish` turn (`tool_choice`) follows the last round or a round without tool calls. All of it runs within `retrievalTimeoutMs` and the shared deadline.
 - Invalid individual calls return error results to the model. A malformed `tool_calls` envelope ends retrieval.
 - Without a valid finish, the verdict still runs with every successful result in call order and a factual limitation. This covers timeouts, rejected tools, provider errors, exhausted retries and malformed responses. The review deadline or an abort ends the whole review.
 - Retrieval never writes a verdict. The verdict request never declares tools.
+- Clarification (`ask_context`, `clarification.ts`) is offered only when `retrievalClarification` is on, retrieval is enabled for the category and the review belongs to a root conversation. Subagent reviews never get the tool. One executed call per review holds every question. Invalid calls don't use the allowance, and later calls are `not-executed`. It uses OpenCode's public `session.generate`, the `/btw` backend, on the captured client and the root session. Never drive the TUI `/btw` command or rebuild session context. The request is the clarification prompt followed by JSON with `pendingOperation` (the evidence without conversation fields or limitations) and `questions`. Generation adds no history, doesn't see the in-flight tool call and doesn't execute tool calls. A tool-call answer arrives as empty text, which counts as no answer. Failures and empty answers are factual error results. Cancellation propagates. The answer is a `content` result capped at `maxEvidenceBytes`. The retriever selects it like any other result, and it never counts toward `maxFiles`. Its generation usage stays in OpenCode's session totals.
 - Operations run only in the companion (`retrieve` RPC, `retrieval-tools.ts`), never in the terminal, at most two at once. The CLI computes the base: the shell launch cwd, otherwise the invocation directory. Paths may be absolute, `~/` (server HOME) or relative. Named paths follow symlinks. Traversal never enters symlinked directories and has no ignore list. Results echo requested, absolute and canonical paths and are capped at `maxEvidenceBytes`. Listings return at most 500 entries. Grep skips files over 16 MiB, binary files and invalid UTF-8. It runs in a worker that is terminated at the soft deadline.
 - Content forwarded to the verdict is capped at `maxFiles` read items and `maxEvidenceBytes` including notes. It is cut to exact leading lines or entries with omitted counts.
 - `retrieval` and `retrievalKinds` gate the stage. Disabled or executor-less reviews send `retrieval.status` `disabled` or `unavailable`.
@@ -181,7 +182,7 @@ Only the agentic retrieval loop chooses files. Never parse commands to pick file
 - Reveal a hidden sidebar only after an explicit approval-notification click, through the public native command. Never force mouse or sidebar visibility.
 - FRAME geometry and hit ownership serve UI behavior and fixture observations only. Never fabricate visible IDs, FRAME events or hit-test proof.
 - Sanitize report text and streamed prefixes through `displayText`.
-- The panel shows Retrieving, then Evaluating. Retries show Retrying. Retrieval phases come before attempt 0 and never advance attempt ordinals.
+- The panel shows Retrieving, then Evaluating. Retries show Retrying. Asking covers an `ask_context` call. Retrieval phases, including Asking, come before attempt 0 and never advance attempt ordinals. Thinking appears only for streamed verdicts, from the first real reasoning delta before any answer text of the current attempt until its first preview. It never uses a timer and never shows or stores reasoning text. Labels come from `uiText.review` through one table keyed by phase.
 - Returning to the root never re-reviews, restarts timers, re-arms canceled requests or brings back finished reports.
 - Alt+H (`reviewer.history.toggle`) and Alt+I (`reviewer.instructions`) are registered in global layers so the palette shows them. Alt+H toggles history in base mode on the root route. The palette and `/reviewer-history` (`reviewer.history`) always open the newest report. Never bind Ctrl+H. Leave BS and DEL prompt editing alone.
 - Fixed copy lives in `src/ui-text.ts` as named strings or typed formatters that fit the 42-column sidebar. Tests keep their own expected wording.
@@ -196,7 +197,7 @@ Only the agentic retrieval loop chooses files. Never parse commands to pick file
 - Storage failures show unavailable, never zero. They never gate review or approval.
 - `history-statistics.ts` applies deduplicated deltas to lifetime and conversation totals in one transaction. Lifetime reads only precomputed totals and is never rebuilt from detail rows. Deleting details never reduces totals. Manual approvals and rejections count once per permission through the `permission_statistics` ledger. Unattributed `once` stays unclassified.
 - Usage is counted per POST, including failed and interrupted ones. Cumulative frames replace earlier values. Token and cost coverage are independent. Unknown is not zero. OpenRouter (exactly `https://openrouter.ai/api/v1`) uses the reported `usage.cost`. Other endpoints use matching host-catalog estimates. Never call billing APIs.
-- Count reviews on final controller acceptance and retries on actual non-initial dispatch. Each retrieval turn's first POST is `initial`. Retrieval tool calls count once dispatched to the companion, whatever the result. Invalid calls, `finish` and POSTs never count. `retrieval_calls` keeps bounded paging facts for the conversation bootstrap.
+- Count reviews on final controller acceptance and retries on actual non-initial dispatch. Each retrieval turn's first POST is `initial`. Retrieval tool calls count once dispatched to the companion or, for `ask_context`, to session generation, whatever the result. Invalid calls, `finish` and POSTs never count. `retrieval_calls` keeps bounded paging facts for the conversation bootstrap.
 - History and statistics resolve ancestry through `HistoryCoordinator.root`, not the review-mode gate, so they work with review disabled. Keep `HistoryRead.settled` ownership after caller timeouts. Drain within 3.5 seconds of lifecycle abort.
 - Persistent deletion is off. Live deletion events only invalidate volatile facts. List omissions, 404s, read failures, storage tokens and paths are never deletion authority.
 - Normalize older formats internally. Never show UI notices about upgrades, format changes or missing old history.
@@ -219,7 +220,8 @@ Observer, accounting and persistence failures never change review or approval. D
 ## Writing rules
 
 - Never use em dashes.
-- Model guidance lives in `prompts/`, including the overridable `RETRIEVAL-PROMPT.md`. Fixed contracts live in `contracts/`. Both are listed in `src/prompt-files.json`. Keep `{{validationError}}` in the correction contract.
+- Files in `prompts/` and `contracts/` also never use semicolons or middle dots. The review contract tells the judge the same for desc.
+- Model guidance lives in `prompts/`, including the overridable `RETRIEVAL-PROMPT.md` and `CLARIFICATION-PROMPT.md`. Fixed contracts live in `contracts/`. Both are listed in `src/prompt-files.json`. Keep `{{validationError}}` in the correction contract.
 - The README covers npm installation, one full config example and user behavior, with no release history.
 
 ## Releases

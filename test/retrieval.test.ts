@@ -3,7 +3,8 @@ import assert from "node:assert/strict"
 import { review } from "../src/reviewer.js"
 import { parseConfig } from "../src/config.js"
 import { BUILTIN_PROMPTS, RETRIEVAL_CONTRACT } from "../src/prompts.js"
-import { maxCallsPerRound, retrievalTools, type RetrievalExecutor } from "../src/retrieval.js"
+import { clarifyingRetrievalTools, maxCallsPerRound, retrievalTools, type RetrievalExecutor } from "../src/retrieval.js"
+import type { ContextAsker } from "../src/clarification.js"
 import type { JSONObject } from "../src/host-types.js"
 import type { ReviewAttemptEvent, ReviewProgress } from "../src/types.js"
 import { editEvidence, shellEvidence } from "./review-fixtures.js"
@@ -256,4 +257,111 @@ test("host evaluation runs the agent's reads through the scoped companion agains
   const evidence = verdictEvidence(posts[2])
   assert.equal(evidence.retrieval.base, `${dir}/scripts`)
   assert.match(evidence.retrieval.items[0].content, /curl -X POST/)
+})
+
+function asking(answer: ContextAsker["ask"] = async () => "The user asked to clear build output.") {
+  const prompts: string[] = []
+  const asker: ContextAsker = { ask: (prompt, signal) => { prompts.push(prompt); return answer(prompt, signal) } }
+  return { asker, prompts }
+}
+const subagentShell = () => {
+  const location = { directory: "/fixture" }
+  return shellEvidence({ conversation: { current: { id: "child", parentID: "root", projectID: "project", location },
+    root: { id: "root", projectID: "project", location }, rootMessageID: "user" } })
+}
+
+test("a root review asks the conversation once, and the answer is selectable evidence that is not a file", async () => {
+  const context = asking(async () => "  The user asked to clear build output.\n")
+  const questions = "Why delete build/? Did the user ask for it?"
+  const h = harness([tools(call("q", "ask_context", { questions }), call("r", "read", { path: "run.sh" })),
+    tools(call("q2", "ask_context", { questions: "One more?" })), tools(call("f", "finish", { items: ["c1", "c2"] })), verdict(true)],
+  { [JSON.stringify({ path: "run.sh" })]: read("run.sh", "rm -rf build\n") }, { maxFiles: 1 })
+  const result = await review(shellEvidence({ command: "./run.sh" }), h.config, signal(), { ...h.deps, clarification: context.asker })
+  assert.equal(result.safe, true)
+  assert.deepEqual(h.bodies[0].tools, clarifyingRetrievalTools)
+  assert.equal(context.prompts.length, 1, "a second call is never executed")
+  const [template, payload] = [context.prompts[0]!.slice(0, BUILTIN_PROMPTS.clarification.length), context.prompts[0]!.slice(BUILTIN_PROMPTS.clarification.length + 2)]
+  assert.equal(template, BUILTIN_PROMPTS.clarification)
+  const sent = JSON.parse(payload)
+  assert.equal(sent.questions, questions)
+  assert.equal(sent.pendingOperation.command, "./run.sh")
+  for (const key of ["conversation", "userPrompt", "earlierUserPrompts", "delegation", "limitations"]) assert.equal(Object.hasOwn(sent.pendingOperation, key), false)
+  assert.deepEqual(JSON.parse(h.bodies[1].messages[3].content),
+    { id: "c1", tool: "ask_context", questions, status: "ok", content: "The user asked to clear build output." })
+  assert.equal(JSON.parse(h.bodies[2].messages.at(-1).content).reason, "not executed: ask_context is allowed once per review")
+  const evidence = verdictEvidence(h.bodies[3])
+  assert.deepEqual(evidence.retrieval.items.map((item: any) => [item.id, item.tool]), [["c1", "ask_context"], ["c2", "read"]],
+    "the answer does not use the single maxFiles read slot")
+  assert.equal(evidence.retrieval.items[0].questions, questions)
+  assert.deepEqual(evidence.retrieval.trace[0].arguments, { questions })
+  assert.equal(Object.hasOwn(evidence.retrieval.trace[0], "questions"), false, "the trace keeps questions once, as arguments")
+  assert.equal(evidence.retrieval.trace[2].status, "not-executed")
+  assert.equal(result.toolCalls, 2)
+  assert.deepEqual(h.progress.map(value => value.phase), ["retrieving", "asking", "retrieving", "retrieving", "retrieving", "evaluating"])
+})
+
+test("subagent reviews and a disabled setting never offer or run ask_context", async () => {
+  for (const [evidence, options] of [[subagentShell(), {}], [shellEvidence(), { retrievalClarification: false }]] as const) {
+    const context = asking()
+    const h = harness([tools(call("q", "ask_context", { questions: "Why?" })), tools(call("f", "finish", { items: [] })), verdict()], {}, options)
+    await review(evidence, h.config, signal(), { ...h.deps, clarification: context.asker })
+    assert.deepEqual(h.bodies[0].tools, retrievalTools)
+    assert.equal(JSON.parse(h.bodies[1].messages[3].content).reason, "unknown tool")
+    assert.deepEqual(context.prompts, [])
+    assert.ok(!h.progress.some(value => value.phase === "asking"))
+  }
+})
+
+test("clarification failures and invalid questions are factual results, and cancellation ends the review", async () => {
+  for (const [answer, reason] of [[async () => { throw Error("session busy") }, "session context answer unavailable"],
+    [async () => " \n ", "the session model returned no answer text"]] as const) {
+    const h = harness([tools(call("q", "ask_context", { questions: "Why?" })), tools(call("f", "finish", { items: ["c1"] })), verdict()])
+    const result = await review(shellEvidence(), h.config, signal(), { ...h.deps, clarification: asking(answer).asker })
+    const evidence = verdictEvidence(h.bodies[2])
+    assert.deepEqual([evidence.retrieval.trace[0].status, evidence.retrieval.trace[0].reason], ["error", reason])
+    assert.deepEqual(evidence.retrieval.items, [])
+    assert.equal(result.toolCalls, 1)
+  }
+  for (const args of [{}, { questions: "" }, { questions: 7 }, { questions: "Why?", extra: true }, { questions: "x".repeat(8193) }]) {
+    const context = asking()
+    const h = harness([tools(call("q", "ask_context", args)), tools(call("q2", "ask_context", { questions: "Valid?" })),
+      tools(call("f", "finish", { items: [] })), verdict()])
+    await review(shellEvidence(), h.config, signal(), { ...h.deps, clarification: context.asker })
+    assert.match(JSON.parse(h.bodies[1].messages[3].content).reason, /^invalid arguments: ask_context requires questions/)
+    assert.equal(context.prompts.length, 1, "an invalid call does not use the single allowance")
+  }
+  const controller = new AbortController(), reason = Error("review canceled")
+  const h = harness([tools(call("q", "ask_context", { questions: "Why?" }))])
+  const pending = review(shellEvidence(), h.config, controller.signal, { ...h.deps, clarification: asking((_, abort) => new Promise((_, reject) => {
+    abort.addEventListener("abort", () => reject(abort.reason), { once: true })
+    queueMicrotask(() => controller.abort(reason))
+  })).asker })
+  await assert.rejects(pending, error => error === reason)
+  assert.equal(h.bodies.length, 1, "no verdict follows a canceled clarification")
+})
+
+test("host evaluation asks the root session through native session generation on the captured client", async t => {
+  const { mkdtemp, realpath, rm } = await import("node:fs/promises")
+  const { tmpdir } = await import("node:os"), path = await import("node:path")
+  const { FileAccess } = await import("../src/file-access.js")
+  const { evaluateHostReview } = await import("../src/host-evaluate.js")
+  const { nativeInvocation, nativeClient } = await import("./review-fixtures.js")
+  const dir = await realpath(await mkdtemp(path.join(tmpdir(), "review-host-clarification-")))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const owned = nativeInvocation("shell", { command: "rm -rf build" }, undefined, dir, ["rm -rf build"])
+  const generated: { sessionID: string; prompt: string; aborted: boolean }[] = [], posts: any[] = []
+  const replies = [tools(call("q", "ask_context", { questions: "Why remove build?" })), tools(call("f", "finish", { items: ["c1"] })), verdict(true)]
+  const client = nativeClient(owned, new FileAccess(), async (input, options) => {
+    generated.push({ ...input, aborted: options.signal.aborted })
+    return { text: "The user asked for a clean rebuild." }
+  })
+  const result = await evaluateHostReview(client, owned.snapshot, parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture" }),
+    BUILTIN_PROMPTS, new AbortController().signal, () => {}, {
+      fetcher: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return Response.json(replies.shift()) } })
+  assert.equal(result?.safe, true)
+  assert.equal(generated.length, 1)
+  assert.equal(generated[0]!.sessionID, owned.conversation.current.id)
+  assert.equal(generated[0]!.aborted, false)
+  assert.match(generated[0]!.prompt, /"questions":"Why remove build\?"/)
+  assert.equal(verdictEvidence(posts[2]).retrieval.items[0].content, "The user asked for a clean rebuild.")
 })

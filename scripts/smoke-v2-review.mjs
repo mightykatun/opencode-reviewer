@@ -1,7 +1,8 @@
 // Installed five-file production archive: actual controller, UI and reviewer.
 // Scenarios: advisory (nonstream), advisory-history-once/always/reject (Unsafe native decisions),
 // advisory-evidence-timeout (actual pre-model deadline failure remains visible and manual),
-// normal (SSE), normal-retrieval (agentic list/read/grep retrieval and finish selection), fast (held SSE preview/remainder),
+// normal (SSE), normal-retrieval (agentic list/read/grep retrieval, one native ask_context clarification shown as Asking,
+// and finish selection), fast (held SSE preview/remainder),
 // normal-mouse-off, normal-cancel, normal-descendant, fast-descendant,
 // normal-hide, normal-dialog, normal-resize, fast-dialog, normal-hidden-complete,
 // normal-route-wait, normal-decision, fast-decision,
@@ -528,8 +529,13 @@ const script = (largeSource ? "# oversized source fixture context\n".repeat(8000
 const description = "V2 local marker report.\n\nThe script writes one isolated marker."
 // Retrieval runs only in its dedicated cases; history cases keep one POST per review.
 const retrievalCase = scenario === "normal-retrieval" || largeSource
-const expectedToolCalls = retrievalCase ? largeSource ? 3 : 4 : 0
+// normal-retrieval also asks the root conversation once through native session generation.
+const clarificationCase = scenario === "normal-retrieval"
+const clarificationQuestions = "Why does fixture.py need to run, and did the user ask for it?"
+const clarificationAnswer = "The user asked to run python3 fixture.py once in inputs to append the isolated marker."
+const expectedToolCalls = retrievalCase ? largeSource ? 3 : 5 : 0
 const retrievalCalls = []
+let clarificationRequest
 const instructionsText = 'SESSION_INSTRUCTIONS_LITERAL: keep "quoted" text and {{braces}}.\n\tRoot and descendant share this note.'
 // Only the second keyboard-case response is long. The first genuine report keeps
 // all existing saved-history text/metadata and selected-original assertions intact.
@@ -718,7 +724,8 @@ function retrievalReply(body) {
   retrievalCalls.push(body)
   assert.equal(body.model, "v2-production-reviewer")
   assert.equal(body.stream, false, "Retrieval turns are never streamed")
-  assert.deepEqual(body.tools.map(tool => tool.function.name), ["read", "list", "glob", "grep", "finish"])
+  assert.deepEqual(body.tools.map(tool => tool.function.name), ["read", "list", "glob", "grep", "ask_context", "finish"],
+    "Root-conversation reviews offer the single clarification call")
   assert.match(body.messages[0].content, /retrieval stage/)
   const evidence = JSON.parse(body.messages[1].content)
   assert.equal(evidence.kind, "shell")
@@ -729,7 +736,13 @@ function retrievalReply(body) {
   const reply = (...requested) => ({ choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: requested.map(([name, args], index) =>
     ({ id: `retrieval-${turn}-${index}`, type: "function", function: { name, arguments: JSON.stringify(args) } })) }, finish_reason: "tool_calls" }],
   usage: { prompt_tokens: 0, completion_tokens: 0 } })
-  if (turn === 0) return reply(["list", { path: "." }], ["read", { path: "fixture.py" }])
+  if (turn === 0) return reply(["list", { path: "." }], ["read", { path: "fixture.py" }],
+    ...(clarificationCase ? [["ask_context", { questions: clarificationQuestions }]] : []))
+  if (clarificationCase && turn === 1) {
+    const asked = results.find(result => result.tool === "ask_context")
+    assert.deepEqual([asked?.status, asked?.questions, asked?.content], ["ok", clarificationQuestions, clarificationAnswer],
+      "The session model's actual answer reaches the retriever")
+  }
   const read = results.find(result => result.tool === "read" && result.status === "ok")
   assert.ok(read, "The companion read the script from the shell launch directory")
   assert.equal(read.canonicalPath, path.join(inputs, "fixture.py"))
@@ -754,9 +767,11 @@ function assertRetrievedEvidence(evidence) {
     assert.equal(retrieval.trace[1].truncated, true)
     return
   }
-  assert.deepEqual(retrieval.items.map(item => item.tool), ["read", "grep"])
+  assert.deepEqual(retrieval.items.map(item => item.tool), ["read", "ask_context", "grep"])
   assert.equal(retrieval.items[0].content, script)
-  assert.deepEqual(retrieval.items[1].matches.map(match => [match.path, match.line]), [[path.join(inputs, "fixture.py"), 3], [path.join(inputs, "fixture.py"), 4]])
+  assert.deepEqual([retrieval.items[1].questions, retrieval.items[1].content], [clarificationQuestions, clarificationAnswer],
+    "The selected clarification reaches the verdict as questions and answer")
+  assert.deepEqual(retrieval.items[2].matches.map(match => [match.path, match.line]), [[path.join(inputs, "fixture.py"), 3], [path.join(inputs, "fixture.py"), 4]])
   const missing = retrieval.trace.find(entry => entry.arguments?.path === "missing.sh")
   assert.deepEqual([missing.status, missing.reason], ["error", "ENOENT"])
   assert.ok(retrieval.trace[0].size.entries >= 1, "The list result is traced but not selected")
@@ -1044,6 +1059,18 @@ const interruptPending = async (check = () => {}) => {
 }
 const sse = (res, content, finish_reason = null) => res.write(`data: ${JSON.stringify({ choices: [{ index: 0,
   delta: content === undefined ? {} : { content }, finish_reason }] })}\n\n`)
+/** Release the held native session-generation answer in the format it was requested. */
+const answerClarification = () => {
+  const { res, body } = clarificationRequest, message = { role: "assistant", content: clarificationAnswer }
+  if (body.stream) {
+    res.writeHead(200, { "Content-Type": "text/event-stream" })
+    res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: message, finish_reason: null }] })}\n\n`)
+    sse(res, undefined, "stop"); res.end("data: [DONE]\n\n")
+  } else {
+    res.writeHead(200, { "Content-Type": "application/json" })
+    res.end(JSON.stringify({ choices: [{ message, finish_reason: "stop" }] }))
+  }
+}
 const finishReview = () => {
   assert.ok(reviewResponse && !reviewCompleted)
   if (streaming) {
@@ -1291,6 +1318,21 @@ try {
          res.end(JSON.stringify(retrievalReply(body)))
          return
        }
+       const asked = body.messages?.at(-1)
+       if (req.url === "/v1/chat/completions" && asked?.role === "user" && JSON.stringify(asked.content).includes("A separate permission reviewer is checking")) {
+         assert.ok(clarificationCase, "Only the clarification case asks the session model")
+         assert.equal(clarificationRequest, undefined, "One clarification per review")
+         const text = typeof asked.content === "string" ? asked.content : asked.content.map(part => part.text ?? "").join("")
+         const sent = JSON.parse(text.slice(text.indexOf('{"pendingOperation"')))
+         assert.equal(sent.questions, clarificationQuestions)
+         assert.equal(sent.pendingOperation.command, toolCall.input.command)
+         assert.equal(sent.pendingOperation.userPrompt, undefined, "Conversation fields stay in the session's own context")
+         assert.ok(body.messages.slice(0, -1).some(message => message.role === "user" && JSON.stringify(message.content).includes(prompt)),
+           "Native generation answers from the root conversation's own context")
+         assert.doesNotMatch(JSON.stringify(body.messages), /Reason for approval|retrieval stage/, "Reviewer guidance never reaches the session model")
+         clarificationRequest = { res, body }
+         return
+       }
        calls.push({ url: req.url, body })
        if (req.url === "/review/chat/completions") {
          reviewPOSTs++
@@ -1320,7 +1362,7 @@ try {
              assert.deepEqual(lookup[0].input, { account: "public" })
              assert.equal(lookup[0].definition.id, "fixture_lookup")
              assert.ok(evidence.limitations.some(note => /No candidate has been selected/.test(note)))
-             assert.match(body.messages[0].content, /may decide Safe even when the inner call cannot be identified uniquely/)
+             assert.match(body.messages[0].content, /may rate it safe without uniquely identifying the inner call/)
            } else if (registeredTool) {
             assert.equal(evidence.definition.id, toolCall.name)
             assert.equal(evidence.definition.input.properties.account.type, "string")
@@ -1850,6 +1892,13 @@ createInterface({input:process.stdin}).on('line',line=>{
        async (record, screen) => { unavailable(record, screen); await noSavedBody() })
      assert.deepEqual(await command({ type: "pending", sessionID }), [request], "Leave the actual native permission pending for manual handling")
    } else {
+   if (clarificationCase) {
+     await until("native session generation request from the retriever", () => clarificationRequest)
+     await until("rendered Asking status while the session model answers", () => capture().includes("Asking"))
+     await saveCapture("asking")
+     assert.equal(reviewResponse, undefined, "The verdict waits for the clarification")
+     answerClarification()
+   }
    await until("production reviewer POST", () => reviewResponse)
   const payload = JSON.parse(calls.find(call => call.url === "/review/chat/completions").body.messages[1].content)
   const { metadataStatus, source, ...permission } = payload.permission

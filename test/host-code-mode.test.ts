@@ -62,7 +62,7 @@ for (const safe of [true, false]) test(`uncertain parallel MCP linkage reaches t
       fetcher: async (_url, init) => {
         posts++
         const body = JSON.parse(String(init?.body)), evidence = JSON.parse(body.messages[1].content)
-        assert.match(body.messages[0].content, /may decide Safe even when the inner call cannot be identified uniquely/)
+        assert.match(body.messages[0].content, /may rate it safe without uniquely identifying the inner call/)
         assert.equal(evidence.kind, "tool"); assert.equal(evidence.tool, "execute")
         assert.deepEqual(evidence.operation.input, input)
         assert.equal(evidence.permission.id, pending.id)

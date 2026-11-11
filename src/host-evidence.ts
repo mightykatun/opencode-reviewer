@@ -28,7 +28,9 @@ interface OperationBase {
   limitations: string[]
 }
 interface Conversation {
-  conversation: Omit<HostConversationContext, "limitations" | "userPrompt" | "delegation">
+  conversation: Omit<HostConversationContext, "limitations" | "userPrompt" | "earlierUserPrompts" | "delegation">
+  /** Earlier root-user prompts, oldest first; userPrompt is the latest. */
+  earlierUserPrompts: HostConversationContext["earlierUserPrompts"]
   userPrompt: string | null
   delegation?: HostConversationContext["delegation"]
 }
@@ -146,9 +148,9 @@ function matchingOperationScope(owned: OperationRead, evidence: HostOperationEvi
 export function attachHostConversation(owned: HostInvocationRead, evidence: HostOperationEvidence): HostReviewEvidence {
   assertConversationScope(owned)
   if (!matchingOperationScope(owned, evidence)) throw new Error("Evidence operation or conversation scope mismatch")
-  const { userPrompt, delegation, limitations, ...conversation } = owned.conversation
+  const { userPrompt, earlierUserPrompts, delegation, limitations, ...conversation } = owned.conversation
   return { ...evidence, ...(owned.registeredProject ? { project: owned.registeredProject } : {}),
-    conversation, userPrompt, ...(delegation ? { delegation } : {}),
+    conversation, earlierUserPrompts, userPrompt, ...(delegation ? { delegation } : {}),
     limitations: [...limitations, ...evidence.limitations,
       ...(owned.registeredProject ? ["Project metadata comes from the connected server's current registered project and checkout inventory; captured invocation identity and location are unchanged."] : []),
       ...(!userPrompt ? ["User prompt unavailable."] : [])] }

@@ -35,7 +35,8 @@ function fixture() {
     }),
     session: { get: async () => ({ id: "session", projectID: project.id, location: scope.location }),
       message: { get: async () => ({ id: "assistant", type: "assistant", content: [{ id: "call", type: "tool", name: "write", state: { status: "running", input } }] }) } },
-    message: { list: async () => ({ data: [{ id: "root-user", type: "user", text: "Update the isolated target.txt" }], cursor: {} }) },
+    message: { list: async () => ({ data: [{ id: "root-user", type: "user", text: "Update the isolated target.txt" },
+      { id: "earlier-user", type: "user", text: "Only touch files inside /server/project." }], cursor: {} }) },
     permission: { get: async () => raw, reply: async () => { throw Error("Advisory evaluation cannot write a permission reply") } },
   }
   const fetcher: typeof fetch = async (_url, init) => {
@@ -56,7 +57,10 @@ test("native evaluation sends exact V2 evidence as data under the correct guidan
   const [system, user] = f.posts[0].messages
   assert.match(system.content, /permission\.action="edit"/)
   assert.match(system.content, /conversation\.root/)
+  assert.match(system.content, /earlierUserPrompts holds the same conversation's earlier root-user messages, oldest first/)
+  assert.match(system.content, /the latest prompt wins every conflict/)
   const data = JSON.parse(user.content)
+  assert.deepEqual(data.earlierUserPrompts, [{ text: "Only touch files inside /server/project." }])
   assert.equal(data.permission.action, "edit")
   assert.deepEqual(data.permission.resources, ["target.txt"])
   assert.deepEqual(data.permission.source, { assistantID: "assistant", id: "call" })
