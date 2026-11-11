@@ -5,6 +5,7 @@ import path from "node:path"
 import { tmpdir } from "node:os"
 import { setImmediate as settle } from "node:timers/promises"
 import { SessionInstructionsStore } from "../src/session-instructions.js"
+import { monotonicTimers } from "./reviewer-clock.js"
 
 const signal = () => new AbortController().signal
 const MAX_BYTES = 16 * 1024 * 1024
@@ -337,7 +338,7 @@ for (const abort of [false, true]) test(`${abort ? "aborted" : "expired"} reads 
     return read.call(this, buffer, offset, length, position)
   })
   t.after(async () => { resume.resolve(); cleanup.resolve(); await store.flush() })
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const parent = new AbortController(), reason = new Error("parent stopped")
   const first = store.read("a", 100, parent.signal)
   const second = store.read("b", 100, parent.signal)
@@ -349,18 +350,18 @@ for (const abort of [false, true]) test(`${abort ? "aborted" : "expired"} reads 
   await entered.promise
   assert.equal(earlyFlushed, false, "flush includes physical work reserved before dispatch")
   if (abort) parent.abort(reason)
-  else t.mock.timers.tick(5000)
+  else clock.tick(5000)
   assert.deepEqual(await waits, abort ? [undefined, undefined] : ["", ""])
   const queued = Array.from({ length: 20 }, (_, i) => store.read(i % 2 ? "a" : `other-${i}`, 100, signal()))
   await settle()
-  t.mock.timers.tick(5000)
+  clock.tick(5000)
   assert.ok((await Promise.all(queued)).every(value => value === ""))
   assert.equal(handles.length, 2, "expired slots cannot dispatch more actual reads")
   resume.resolve()
   await closing.promise
   const duringClose = store.read("a", 100, signal())
   await settle()
-  t.mock.timers.tick(5000)
+  clock.tick(5000)
   assert.equal(await duringClose, "")
   assert.equal(handles.length, 2, "settled read calls retain slots while close is pending")
   let flushed = false

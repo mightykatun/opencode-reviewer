@@ -3,7 +3,10 @@ import assert from "node:assert/strict"
 import { mkdtemp, mkdir, rm, symlink, writeFile, realpath, open, chmod } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { absoluteRetrievalPath, globSource, retrievalArguments, runRetrievalTool, type RetrievalCall } from "../src/retrieval-tools.js"
+import { absoluteRetrievalPath, retrievalArguments, runRetrievalTool, type RetrievalCall } from "../src/retrieval-tools.js"
+import { globMatcher } from "../src/retrieval-glob.js"
+import { execFileSync } from "node:child_process"
+import type { Dirent } from "node:fs"
 
 async function fixture(t: TestContext) {
   const dir = await realpath(await mkdtemp(path.join(tmpdir(), "review-retrieval-")))
@@ -42,10 +45,69 @@ test("arguments are strict per tool and paths resolve absolute, relative-to-base
   assert.equal(absoluteRetrievalPath("~", "/base", "/home/u"), "/home/u")
   assert.equal(absoluteRetrievalPath("~/.bashrc", "/base", "/home/u"), "/home/u/.bashrc")
   assert.equal(absoluteRetrievalPath("../x", "/base/", "/home/u"), "/base/../x", "parents resolve physically later")
-  assert.equal(new RegExp(`^${globSource("src/**/*.{ts,tsx}")}$`).test("src/a/b/c.tsx"), true)
-  assert.equal(new RegExp(`^${globSource("src/**/*.{ts,tsx}")}$`).test("src/c.ts"), true)
-  assert.equal(new RegExp(`^${globSource("*.ts")}$`).test("src/c.ts"), false)
-  assert.equal(new RegExp(`^${globSource("[!a]?.md")}$`).test("bx.md"), true)
+})
+
+test("bounded glob matching preserves segments, nested alternatives, classes and literal unmatched delimiters", () => {
+  for (const [pattern, yes, no] of [
+    ["src/**/*.{ts,tsx}", ["src/c.ts", "src/a/b/c.tsx"], ["src/c.js", "other/c.ts"]],
+    ["*.ts", ["c.ts", ".hidden.ts"], ["src/c.ts"]],
+    ["[!a]?.md", ["bx.md", "cz.md"], ["ax.md", "b/x.md"]],
+    ["{a,{b,c}}/[a-c]*", ["a/abc", "b/b", "c/c.txt"], ["d/a", "a/z"]],
+    ["**/a/*b", ["a/b", "x/y/a/b", "x/a/ab"], ["x/a/y/b"]],
+    ["**b", ["b", "a/b"], ["a/c", "a\nb"]],
+    ["file[.txt", ["file[.txt"], ["filea.txt"]],
+    ["{open", ["{open"], ["open"]],
+    ["{[{},],x}", ["{", "}", ",", "x"], ["a"]],
+    ["{,a}".repeat(100), ["", "a".repeat(100)], ["a".repeat(101)]],
+    ["{".repeat(250) + "a" + "}".repeat(250), ["a"], ["b"]],
+  ] as const) {
+    const matches = globMatcher(pattern)
+    for (const text of yes) assert.equal(matches(text), true, `${pattern} matches ${JSON.stringify(text)}`)
+    for (const text of no) assert.equal(matches(text), false, `${pattern} excludes ${JSON.stringify(text)}`)
+  }
+  assert.equal(globMatcher("*.ts", true)("src/c.ts"), true)
+  assert.throws(() => globMatcher("[z-a]"), SyntaxError)
+})
+
+test("pathological glob and grep include patterns finish through the production executor", () => {
+  // A process watchdog also catches a regression that blocks the event loop and
+  // would prevent an in-process test timeout from firing.
+  const output = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+    import assert from "node:assert/strict"
+    import { runRetrievalTool } from ${JSON.stringify(new URL("../src/retrieval-tools.ts", import.meta.url).href)}
+    const entry = { name: "a".repeat(128), isFile: () => true, isDirectory: () => false }
+    const io = { realpath: async value => value, readdir: async () => [entry],
+      lstat: async () => ({ isFile: () => false }), open: async () => assert.fail("nonmatching paths must not open") }
+    for (const pattern of ["*".repeat(30) + "z", "*a".repeat(20) + "z"]) for (const tool of ["glob", "grep"]) {
+      const result = await runRetrievalTool({ tool, arguments: tool === "glob" ? { pattern } : { pattern: "x", include: pattern } },
+        { base: "/fixture", home: "/fixture", maxBytes: 4096, io, signal: new AbortController().signal, softEnd: performance.now() + 1000 })
+      assert.equal(result.status, "ok")
+      assert.deepEqual(result.matches, [])
+      assert.equal(result.timedOut, undefined)
+    }
+    console.log("four bounded matches completed")
+  `], { encoding: "utf8", timeout: 2000 })
+  assert.equal(output.trim(), "four bounded matches completed")
+})
+
+test("invalid glob ranges return argument errors before filesystem work", async () => {
+  const ctx = { ...context("/fixture"), io: { realpath: async () => { assert.fail("invalid patterns must not access files") }, open } }
+  assert.equal((await run({ tool: "glob", arguments: { pattern: "[z-a]" } }, ctx)).reason, "invalid arguments: invalid glob pattern")
+  assert.equal((await run({ tool: "grep", arguments: { pattern: "x", include: "[z-a]" } }, ctx)).reason, "invalid arguments: invalid include glob")
+})
+
+test("a single large directory obeys the soft deadline between entries", async t => {
+  let now = 0, visited = 0
+  t.mock.method(performance, "now", () => now)
+  const entries = Array.from({ length: 100 }, (_, index) => ({ name: String(index).padStart(3, "0"),
+    isDirectory: () => { visited++; now += 10; return false } } as Dirent))
+  const result = await runRetrievalTool({ tool: "glob", arguments: { pattern: "missing" } }, {
+    ...context("/fixture"), softEnd: 15,
+    io: { open, realpath: async value => value, readdir: async () => entries },
+  })
+  assert.equal(result.timedOut, true)
+  assert.equal(result.truncated, true)
+  assert.equal(visited, 2)
 })
 
 test("list, glob and grep accept only optional positive integer limits up to 500", () => {

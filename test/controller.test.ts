@@ -6,6 +6,7 @@ import type { HostRequest } from "../src/host-types.js"
 import type { ReviewProgress, ReviewResult, ReviewTiming } from "../src/types.js"
 import { SessionModes } from "../src/session-mode.js"
 import { SessionAncestry } from "../src/session-ancestry.js"
+import { monotonicTimers } from "./reviewer-clock.js"
 
 const request = (id: string, sessionID = "root", action = "shell"): HostRequest => ({ id, sessionID, action,
   resources: [id], source: { assistantID: "assistant", id: "shared-call" } })
@@ -214,12 +215,12 @@ for (const enabled of [false, true]) test(`unavailable saved mode recovers to ${
 })
 
 test("expired saved-mode loading owns actual settlement and cannot replace recovered settings", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const held = deferred<boolean>(); let reads = 0, calls = 0, signal!: AbortSignal
   const gate = new SessionModes({ read: (_root, parent) => { signal = parent; return ++reads === 1 ? held.promise : Promise.resolve(true) },
     write: async () => {}, flush: async () => {} }, new SessionAncestry(async id => ({ id })))
   const controller = new Controller(async () => { calls++; return safe }, () => {}, { ...options, modes: gate })
-  t.after(() => controller.dispose()); controller.asked(request("a")); await settle(); t.mock.timers.tick(5000); await settle()
+  t.after(() => controller.dispose()); controller.asked(request("a")); await settle(); clock.tick(5000); await settle()
   assert.ok(signal.aborted); controller.reconcile([request("a")], controller.revision); await settle(); assert.equal(reads, 1)
   held.resolve(false); await settle(); assert.equal(gate.enabled("root"), false)
   controller.reconcile([request("a")], controller.revision); await settle(); assert.equal(reads, 2); assert.equal(calls, 1)
@@ -248,7 +249,7 @@ test("disposal drains removed review finalizers before caller flush", async () =
 })
 
 for (const outcome of ["resolve", "reject"] as const) test(`many reconciliation deadlines cap stalled mode reads across roots through late ${outcome} cleanup`, async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const pending: { root: string; signal: AbortSignal; value: ReturnType<typeof deferred<boolean>>; cleanup: ReturnType<typeof deferred<void>> }[] = []
   const readCalls = new Map<string, number>(), perRoot = new Map<string, number>(), evaluated: string[] = []
   let available = false, actual = 0, maximum = 0, maximumPerRoot = 0
@@ -272,19 +273,19 @@ for (const outcome of ["resolve", "reject"] as const) test(`many reconciliation 
   controller.reconcile(requests, controller.revision); await settle()
   assert.deepEqual(pending.map(read => read.root), ["rootA", "rootB"])
   for (let cycle = 0; cycle < 40; cycle++) {
-    controller.reconcile(requests, controller.revision); await settle(); t.mock.timers.tick(5000); await settle()
+    controller.reconcile(requests, controller.revision); await settle(); clock.tick(5000); await settle()
     assert.equal(actual, 2); assert.equal(pending.length, 2); assert.ok(controller.views.every(v => v.status === "suspended"))
     assert.deepEqual(evaluated, [])
   }
   assert.ok(pending.every(read => read.signal.aborted)); await gate.set("rootC", false); controller.modeChanged("rootC")
   for (let cycle = 0; cycle < 20; cycle++) {
-    controller.reconcile(requests, controller.revision); await settle(); t.mock.timers.tick(5000); await settle()
+    controller.reconcile(requests, controller.revision); await settle(); clock.tick(5000); await settle()
     assert.equal(pending.length, 2); assert.equal(actual, 2)
   }
   if (outcome === "resolve") pending[0]!.value.resolve(true); else pending[0]!.value.reject(Error("late store failure"))
   await settle()
   for (let cycle = 0; cycle < 5; cycle++) {
-    controller.reconcile(requests, controller.revision); await settle(); t.mock.timers.tick(5000); await settle()
+    controller.reconcile(requests, controller.revision); await settle(); clock.tick(5000); await settle()
     assert.equal(pending.length, 2); assert.equal(actual, 2, "settlement still owns its physical cleanup")
   }
   pending[0]!.cleanup.resolve(); await settle(); assert.equal(actual, 1); assert.equal(gate.enabled("rootA"), false)

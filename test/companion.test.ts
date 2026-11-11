@@ -6,6 +6,7 @@ import { setupCompanion } from "../src/companion.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import type { FileIO } from "../src/file-access.js"
 import { withNotificationProcesses } from "../src/plugin.js"
+import { monotonicTimers } from "./reviewer-clock.js"
 
 const skillOptions = { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
   reviewSkills: true, reviewTools: true, maxFiles: 6, maxEvidenceBytes: 131072 }
@@ -200,7 +201,7 @@ test("an unfamiliar host version still requires exact readable invocation eviden
 })
 
 test("retrieval RPC is scoped, bounded, owns slow operations and returns factual results", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const lifecycle = new PluginLifecycle()
   let handlers: any, release!: () => void
   const slow = new Promise<void>(resolve => { release = resolve })
@@ -225,7 +226,7 @@ test("retrieval RPC is scoped, bounded, owns slow operations and returns factual
   await assert.rejects(handlers.retrieve({ ...query, call: { tool: "read", arguments: { path: "c" } } }, call()), { type: "capacity_busy" })
   let secondSettled = false
   void second.then(() => { secondSettled = true })
-  t.mock.timers.tick(50)
+  clock.tick(50)
   await tick()
   assert.equal(secondSettled, false, "a retrieval response waits for its physical work even after its logical deadline")
   await assert.rejects(handlers.retrieve({ ...query, call: { tool: "read", arguments: { path: "c" } } }, call()), { type: "capacity_busy" },

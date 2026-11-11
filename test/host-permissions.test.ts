@@ -9,6 +9,7 @@ import { setImmediate as tick } from "node:timers/promises"
 import { getEventListeners } from "node:events"
 import { Controller, type ApprovalFact, type ReviewLifecycleFact } from "../src/controller.js"
 import type { HostRequest, HostRequestSnapshot } from "../src/host-types.js"
+import { monotonicTimers } from "./reviewer-clock.js"
 
 const location = { directory: "/invocation", workspaceID: "workspace" }, scope = { location, epoch: "10000000-1000-4000-8000-100000000000" }
 const raw = (id = "request", sessionID = "session") => ({ id, sessionID, action: "shell", resources: ["python3 fixture.py"], save: ["python3 *"] })
@@ -316,7 +317,7 @@ test("successful confirmation and unsent preparation release reservation abort l
 
 for (const outcome of ["rejected acknowledgement", "acknowledgement timeout", "confirmation timeout"] as const) {
   test(`controller + native transport: disappearance before ${outcome} cannot reprepare or rewrite a reappearing ID`, async t => {
-    if (outcome !== "rejected acknowledgement") t.mock.timers.enable({ apis: ["setTimeout"] })
+    const clock = outcome !== "rejected acknowledgement" ? monotonicTimers(t) : undefined
     const f = fixture(), physical = gate(), report = gate(), invoked = gate()
     f.state.pending.clear()
     const request = raw(), snapshot = f.add(request), snapshots = new Map<string, HostRequestSnapshot>([[request.id, snapshot]])
@@ -355,7 +356,7 @@ for (const outcome of ["rejected acknowledgement", "acknowledgement timeout", "c
     assert.equal(controller.views[0]?.resolved, true)
     assert.deepEqual(facts.map(fact => fact.type), ["dispatched"])
     if (outcome === "rejected acknowledgement") physical.release()
-    else t.mock.timers.tick(5000)
+    else clock!.tick(5000)
     await tick()
     assert.equal(controller.views.length, 0)
     assert.deepEqual(lifecycle.filter(fact => fact.type === "removed").map(fact => fact.reason), ["reconciled"])

@@ -11,6 +11,7 @@ import { encodeEvent, type HistoryEvent } from "../src/history-records.js"
 import { NotificationPolicy } from "../src/notification-policy.js"
 import type { NotificationMessage } from "../src/notification-types.js"
 import type { ReviewProgress, ReviewResult } from "../src/types.js"
+import { monotonicTimers } from "./reviewer-clock.js"
 
 const request = (id = "a", sessionID = "root"): HostRequest => ({ id, sessionID, action: "shell", resources: [id],
   source: { assistantID: "assistant", id: `call-${id}` } })
@@ -162,9 +163,9 @@ for (const effect of ["cancel", "disable", "changed evidence"] as const) for (co
   })
 }
 for (const terminal of ["unsafe", "failure"] as const) test(`terminal ${terminal} after verification timeout needs attention without releasing physical read`, async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const f = await fixture(t), held = deferred<HostRequest[]>(); let reads = 0
-  f.list(() => { reads++; return held.promise }); f.rate(); await settle(); t.mock.timers.tick(5000); await settle()
+  f.list(() => { reads++; return held.promise }); f.rate(); await settle(); clock.tick(5000); await settle()
   if (terminal === "unsafe") f.workers.get("a")!.finish(false); else f.workers.get("a")!.fail()
   await settle(); assert.equal(f.controller.views[0]?.autoApproval, undefined); assert.equal(reads, 1)
   assert.equal(f.banners.length, 1); held.resolve([request()]); await settle(); f.ready(true)
@@ -209,8 +210,8 @@ for (const submitted of [false, true]) test(`disable after fast dispatch retains
   assert.equal(f.saved().total, submitted ? 1 : 0); assert.equal(f.writes.length, 1)
 })
 test("fast ACK timeout remains single-shot through late success, resolution and mode re-enable", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
-  const f = await fixture(t); f.rate(); await settle(); t.mock.timers.tick(5000); await settle()
+  const clock = monotonicTimers(t)
+  const f = await fixture(t); f.rate(); await settle(); clock.tick(5000); await settle()
   assert.equal(f.controller.views[0]?.autoApproval?.status, "failed")
   f.writes[0]!.ack.resolve(); await settle(); f.mode(false); f.mode(true); f.controller.reconcile([request()], f.controller.revision); await settle()
   f.rate(); f.ready(true); await settle(); assert.equal(f.writes.length, 1)

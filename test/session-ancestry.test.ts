@@ -2,6 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { setImmediate as settle } from "node:timers/promises"
 import { SessionAncestry } from "../src/session-ancestry.js"
+import { monotonicTimers } from "./reviewer-clock.js"
 
 const signal = () => new AbortController().signal
 function deferred<T>() {
@@ -35,11 +36,11 @@ test("bounded metadata reads honor parent cancellation", async () => {
 })
 
 test("noncooperative ancestry reads expire within their five-second budget", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const ancestry = new SessionAncestry(async () => new Promise(() => {}))
   const lookup = assert.rejects(ancestry.root("root", signal()), /Session ancestry timed out/)
   await Promise.resolve()
-  t.mock.timers.tick(5000)
+  clock.tick(5000)
   await lookup
 })
 
@@ -143,16 +144,16 @@ test("intermediate deletion invalidates warm descendant suffixes and pending cac
 })
 
 for (const outcome of ["resolve", "reject"] as const) test(`ancestry deadlines retain two actual reads through late ${outcome} and cleanup without caching`, async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const f = ancestryFixture(t)
   const a = f.ancestry.root("a", signal()), b = f.ancestry.root("b", signal())
   const expired = Promise.all([assert.rejects(a, /timed out/), assert.rejects(b, /timed out/)])
   let settled = false; void a.settled!.then(() => { settled = true })
-  await settle(); t.mock.timers.tick(5000); await expired
+  await settle(); clock.tick(5000); await expired
   for (let n = 0; n < 25; n++) {
     await assert.rejects(f.ancestry.root("a", signal()), /timed out/)
     await assert.rejects(f.ancestry.root(`other-${n}`, signal()), /capacity/)
-    t.mock.timers.tick(5000)
+    clock.tick(5000)
   }
   assert.equal(f.calls.length, 2); assert.equal(settled, false)
   if (outcome === "resolve") f.calls[0]!.value.resolve({ id: "a" })

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { setImmediate as settle } from "node:timers/promises"
 import { SessionModes, SessionModeStore, type ModeStore } from "../src/session-mode.js"
 import { SessionAncestry } from "../src/session-ancestry.js"
+import { monotonicTimers } from "./reviewer-clock.js"
 
 const signal = () => new AbortController().signal
 function deferred<T>() {
@@ -235,11 +236,11 @@ test("store errors remain closed", async () => {
 })
 
 test("noncooperative mode reads expire within their five-second budget", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const modes = new SessionModes({ ...memory(), read: () => new Promise(() => {}) }, new SessionAncestry(async (id) => ({ id })))
   const loading = assert.rejects(modes.load("root", signal()), /Session mode loading timed out/)
   await Promise.resolve()
-  t.mock.timers.tick(5000)
+  clock.tick(5000)
   await loading
   assert.equal(modes.enabled("root"), false)
 })
@@ -262,15 +263,15 @@ test("concurrent same-root loads share one actual read through cleanup and cache
 })
 
 for (const outcome of ["resolve", "reject"] as const) test(`expired same-root loads retain one actual read across many deadlines and late ${outcome} cleanup`, async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const f = readFixture(t)
   const expired = assert.rejects(f.modes.load("root", signal()), /Session mode loading timed out/)
   await settle()
-  t.mock.timers.tick(5000)
+  clock.tick(5000)
   await expired
   for (let cycle = 0; cycle < 40; cycle++) {
     await Promise.all(Array.from({ length: 20 }, () => assert.rejects(f.modes.load("root", signal()), /Session mode loading timed out/)))
-    t.mock.timers.tick(5000)
+    clock.tick(5000)
     await settle()
     assert.deepEqual(f.counts(), { actual: 1, maximum: 1, maximumPerRoot: 1, reads: 1 })
   }
@@ -292,19 +293,19 @@ for (const outcome of ["resolve", "reject"] as const) test(`expired same-root lo
 })
 
 test("multiple roots are capped at two actual reads through timeout and cleanup, then recover without queueing", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const f = readFixture(t)
   const first = assert.rejects(f.modes.load("a", signal()), /Session mode loading timed out/)
   const second = assert.rejects(f.modes.load("b", signal()), /Session mode loading timed out/)
   await settle()
   for (let i = 0; i < 30; i++) await assert.rejects(f.modes.load(`other${i}`, signal()), /read capacity unavailable/)
-  t.mock.timers.tick(5000)
+  clock.tick(5000)
   await Promise.all([first, second])
   for (let cycle = 0; cycle < 30; cycle++) {
     await assert.rejects(f.modes.load("a", signal()), /timed out/)
     await assert.rejects(f.modes.load("b", signal()), /timed out/)
     for (let i = 0; i < 20; i++) await assert.rejects(f.modes.load(`other${i}`, signal()), /read capacity unavailable/)
-    t.mock.timers.tick(5000)
+    clock.tick(5000)
     await settle()
     assert.deepEqual(f.counts(), { actual: 2, maximum: 2, maximumPerRoot: 1, reads: 2 })
   }
@@ -400,11 +401,11 @@ for (const enabled of [true, false]) test(`local ${enabled ? "enabled" : "disabl
 })
 
 for (const enabled of [true, false]) test(`local ${enabled ? "enabled" : "disabled"} mode survives late expired values while their slot stays occupied`, async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const f = readFixture(t)
   const expired = assert.rejects(f.modes.load("root", signal()), /timed out/)
   await settle()
-  t.mock.timers.tick(5000)
+  clock.tick(5000)
   await expired
   await f.modes.set("root", enabled)
   for (let i = 0; i < 100; i++) await f.modes.load("root", signal())

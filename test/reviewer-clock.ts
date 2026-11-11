@@ -1,6 +1,15 @@
 import type { TestContext } from "node:test"
 import timers from "node:timers/promises"
 
+/** Fake setTimeout and performance.now on one integer clock, so a deadline armed
+ * with Math.ceil(end - now) fires on exactly its own tick. Date and waits stay real. */
+export function monotonicTimers(t: TestContext) {
+  let now = 0
+  t.mock.method(performance, "now", () => now)
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  return { tick(ms: number) { now += ms; t.mock.timers.tick(ms) } }
+}
+
 /** Control production timers and monotonic budget together, without replacing waits. */
 export function reviewerClock(t: TestContext) {
   let now = 0

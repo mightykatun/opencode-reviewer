@@ -4,6 +4,7 @@ import path from "node:path"
 import { Worker } from "node:worker_threads"
 import { fileFailure, physicalPath, type FileIO } from "./file-access.js"
 import type { JSONObject, JSONValue } from "./host-types.js"
+import { globMatcher } from "./retrieval-glob.js"
 
 /** Server-side retrieval operations. Paths come from the reviewer model; every
  * result echoes what was tried so the model can correct itself. No skip list,
@@ -67,51 +68,9 @@ export function absoluteRetrievalPath(requested: string, base: string, home: str
   return path.isAbsolute(requested) ? requested : `${base.replace(/\/+$/, "")}/${requested}`
 }
 
-function escapeRegExp(text: string) { return text.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&") }
-
-/** Minimal glob: **, *, ?, [set], [!set], {a,b}. Matches whole relative paths. */
-export function globSource(glob: string): string {
-  let source = ""
-  for (let i = 0; i < glob.length; i++) {
-    const char = glob[i]!
-    if (char === "*") {
-      if (glob[i + 1] === "*") {
-        i++
-        if (glob[i + 1] === "/") { i++; source += "(?:[^/]*/)*" } else source += ".*"
-      } else source += "[^/]*"
-    } else if (char === "?") source += "[^/]"
-    else if (char === "[") {
-      const end = glob.indexOf("]", i + 2)
-      if (end < 0) { source += "\\["; continue }
-      let body = glob.slice(i + 1, end)
-      if (body.startsWith("!")) body = `^${body.slice(1)}`
-      source += `[${body.replace(/\\/g, "\\\\")}]`
-      i = end
-    } else if (char === "{") {
-      let depth = 0, end = -1
-      for (let j = i; j < glob.length; j++) {
-        if (glob[j] === "{") depth++
-        else if (glob[j] === "}" && --depth === 0) { end = j; break }
-      }
-      if (end < 0) { source += "\\{"; continue }
-      const parts: string[] = []
-      let level = 0, start = i + 1
-      for (let j = i + 1; j < end; j++) {
-        if (glob[j] === "{") level++
-        else if (glob[j] === "}") level--
-        else if (glob[j] === "," && !level) { parts.push(glob.slice(start, j)); start = j + 1 }
-      }
-      parts.push(glob.slice(start, end))
-      source += `(?:${parts.map(globSource).join("|")})`
-      i = end
-    } else source += escapeRegExp(char)
-  }
-  return source
-}
-
-function globMatcher(glob: string, basenameOnly: boolean): (relative: string) => boolean {
-  const pattern = new RegExp(`^${globSource(glob)}$`)
-  return basenameOnly ? relative => pattern.test(relative.slice(relative.lastIndexOf("/") + 1)) : relative => pattern.test(relative)
+function withinBudget(context: RetrievalContext) {
+  context.signal.throwIfAborted()
+  return performance.now() < context.softEnd
 }
 
 /** Breadth-first walk. Symlinked directories are reported, never descended. */
@@ -128,8 +87,11 @@ async function walk(root: string, context: RetrievalContext,
     catch { context.signal.throwIfAborted(); unreadable++; continue }
     entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
     for (const entry of entries) {
+      if (!withinBudget(context)) return { timedOut: true, unreadable }
       const relative = directory ? `${directory}/${entry.name}` : entry.name
-      if (!await visit(relative, entry)) return { timedOut: false, unreadable }
+      const more = await visit(relative, entry)
+      if (!withinBudget(context)) return { timedOut: true, unreadable }
+      if (!more) return { timedOut: false, unreadable }
       if (entry.isDirectory()) queue.push(relative)
     }
   }
@@ -260,10 +222,13 @@ async function globTool(args: JSONObject, context: RetrievalContext): Promise<Re
   const pattern = args.pattern as string
   if (pattern.length > maxPatternLength || path.isAbsolute(pattern))
     return error("glob", "invalid arguments: pattern must be relative to path and at most 1024 characters")
+  let matches: (relative: string) => boolean
+  try { matches = globMatcher(pattern, false, () => withinBudget(context)) }
+  catch { return error("glob", "invalid arguments: invalid glob pattern") }
   const target = await resolved("glob", (args.path as string | undefined) ?? context.base, context)
   if ("failure" in target) return target.failure!
   const { paths, canonical } = target
-  const matches = globMatcher(pattern, false), found: string[] = []
+  const found: string[] = []
   const limit = (args.limit as number | undefined) ?? maxEntries
   let truncated = false
   const walked = await walk(canonical, context, (relative) => {
@@ -303,7 +268,9 @@ async function grepTool(args: JSONObject, context: RetrievalContext): Promise<Re
   try { new RegExp(pattern, flags) } catch { return error("grep", "invalid arguments: invalid regular expression") }
   const include = args.include as string | undefined
   if (include !== undefined && include.length > maxPatternLength) return error("grep", "invalid arguments: include exceeds 1024 characters")
-  const included = include === undefined ? () => true : globMatcher(include, !include.includes("/"))
+  let included: (relative: string) => boolean
+  try { included = include === undefined ? () => true : globMatcher(include, !include.includes("/"), () => withinBudget(context)) }
+  catch { return error("grep", "invalid arguments: invalid include glob") }
   const target = await resolved("grep", (args.path as string | undefined) ?? context.base, context)
   if ("failure" in target) return target.failure!
   const { paths, canonical } = target

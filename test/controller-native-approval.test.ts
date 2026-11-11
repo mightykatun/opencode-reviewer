@@ -5,6 +5,7 @@ import { Controller, type ApprovalFact, type NativeApproval, type ReviewLifecycl
 import type { HostRequest } from "../src/host-types.js"
 import type { OnceSubmission } from "../src/host-permissions.js"
 import type { ReviewResult } from "../src/types.js"
+import { monotonicTimers } from "./reviewer-clock.js"
 
 const request: HostRequest = Object.freeze({ id: "request", sessionID: "root", action: "shell", resources: Object.freeze(["pwd"]),
   source: Object.freeze({ assistantID: "assistant", id: "call" }) })
@@ -182,11 +183,11 @@ for (const fast of [false, true]) {
   })
 
   test(`${mode}: acknowledgement timeout cannot gain confirmation from a late successful ack/event`, async t => {
-    t.mock.timers.enable({ apis: ["setTimeout"] })
+    const clock = monotonicTimers(t)
     const f = await fixture(fast, { acknowledgement: true }); t.after(() => f.dispose())
     const attempt = f.start(); await settle()
     assert.equal(f.writes(), 1)
-    t.mock.timers.tick(5000); await attempt; await settle()
+    clock.tick(5000); await attempt; await settle()
     assert.equal(f.view()?.autoApproval?.status, "failed")
     f.controller.reconcile([request], f.controller.revision); await settle()
     await f.start(); await settle()
@@ -280,7 +281,7 @@ test("native dispatch tombstones survive read-only disappearance and reappearanc
 
 for (const outcome of ["uncertain acknowledgement", "rejected acknowledgement", "confirmation timeout"] as const) {
   test(`fast: disappearance before ${outcome} preserves the dispatch tombstone on same-ID reappearance`, async t => {
-    if (outcome === "confirmation timeout") t.mock.timers.enable({ apis: ["setTimeout"] })
+    const clock = outcome === "confirmation timeout" ? monotonicTimers(t) : undefined
     const f = await fixture(true, { acknowledgement: outcome !== "confirmation timeout" }); t.after(() => f.dispose())
     await f.start(); await settle()
     assert.equal(f.writes(), 1)
@@ -293,7 +294,7 @@ for (const outcome of ["uncertain acknowledgement", "rejected acknowledgement", 
     assert.equal(f.reviews(), 1, "the retained entry deduplicates same-ID asks while acknowledgement is pending")
     if (outcome === "uncertain acknowledgement") f.acknowledgement.resolve({ status: "uncertain" })
     else if (outcome === "rejected acknowledgement") f.acknowledgement.reject(Error("native acknowledgement rejected"))
-    else t.mock.timers.tick(5000)
+    else clock!.tick(5000)
     await settle()
     assert.equal(f.controller.views.length, 0)
     assert.equal(originalSignal.aborted, true)
