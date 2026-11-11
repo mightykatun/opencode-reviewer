@@ -33,15 +33,28 @@ command afterward cannot undo that disclosure. Use an endpoint you trust, and a
 local reviewer or a sandbox without accessible secrets when working with untrusted
 repositories.
 
-Add this entry to the `plugins` array in global `~/.config/opencode/opencode.json`, or
-`$XDG_CONFIG_HOME/opencode/opencode.json` when `XDG_CONFIG_HOME` is set.
-OpenCode loads the [npm package](https://www.npmjs.com/package/opencode-reviewer)
-and its terminal component from this single entry. No reviewer entry is needed
-in `cli.json`.
+The [npm package](https://www.npmjs.com/package/opencode-reviewer) has a server
+companion and a terminal component, and each one needs its own entry in a different
+global config file. Both files are in `~/.config/opencode/`, or in
+`$XDG_CONFIG_HOME/opencode/` when `XDG_CONFIG_HOME` is set.
+
+Add the package name to the `plugins` array in `opencode.json`. The companion takes
+no options:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-reviewer@latest"]
+}
+```
+
+Add the reviewer entry with all options to the `plugins` array in `cli.json`. The
+terminal component reads every option from this entry. If `cli.json` has no reviewer
+entry, the plugin does not review anything. Options in `opencode.json` are ignored.
+
+```json
+{
+  "$schema": "https://opencode.ai/v2/cli.json",
   "plugins": [
     {
       "package": "opencode-reviewer@latest",
@@ -112,7 +125,7 @@ endpoint. Remove `instructions` to use the built-in prompts and
 
 ## Options reference
 
-These are options inside the plugin's `options` object in global `opencode.json`.
+These are options inside the plugin's `options` object in global `cli.json`.
 Defaults apply only to omitted options. `null` is invalid. Boolean and integer
 options require JSON booleans and numbers, not quoted strings. Integer ranges are
 inclusive, fractions are invalid, and the maximum safe integer is
