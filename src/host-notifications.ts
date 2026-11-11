@@ -306,6 +306,13 @@ export class HostNotifications {
     }
   }
   private isHealthy(root: string) { return this.healthy === true || (this.healthy !== false && this.healthy.has(root)) }
+  /** Seeds that need fresh native family health now: live roots, unresolved
+   * visits and births. Idle visited roots are refreshed by the optional form
+   * observer, never on the approval-critical permission refresh. */
+  activeSessions(): ReadonlySet<string> {
+    return new Set([...[...this.roots.keys()].filter(root => { try { return this.live(root) } catch { return true } }),
+      ...this.visits.keys(), ...[...this.permissions.values(), ...this.forms.values()].map(birth => birth.sessionID)])
+  }
   trackedSessions(): ReadonlySet<string> {
     return new Set([...this.roots.keys(), ...this.visits.keys(),
       ...[...this.permissions.values(), ...this.forms.values()].map(birth => birth.sessionID)])

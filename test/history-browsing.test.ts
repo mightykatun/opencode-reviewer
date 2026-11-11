@@ -205,3 +205,24 @@ test("referenced review identities invalidate actual history roots through raw c
   assert.equal(db.prepare("SELECT count(*) AS n FROM history").get()!.n, 4)
   assert.deepEqual(sql.query({ type: "totals" }), totals, "ownership repairs and moves never delete reports or alter accumulated totals")
 })
+
+test("repeated identical outcomes rewrite nothing, so browsing and privacy generations stay put", t => {
+  const directory = mkdtempSync(path.join(tmpdir(), "history-noop-")), file = path.join(directory, "history.sqlite")
+  const db = new DatabaseSync(file)
+  t.after(() => { db.close(); rmSync(directory, { recursive: true, force: true }) })
+  const sql = new HistorySQL(db as unknown as HistoryDatabase)
+  const context = { scope: "/noop", root: "root", session: "root", permission: "permission", review: "review",
+    category: "bash" as const, configuredModel: "model", provider: "https://example.com/v1" }
+  const payload = { safe: true, completedAt: 1, desc: "Same report." }
+  sql.apply("w", 1, encodeEvent({ type: "reviewAccepted", context, at: 1, accepted: { safe: true, completedAt: 1 } }))
+  sql.apply("w", 2, encodeEvent({ type: "permissionResolved", context, at: 2, outcome: "manual", payload }))
+  const generations = () => [db.prepare("SELECT generation FROM history_generations WHERE id=?").get(rootID(context))!.generation,
+    db.prepare("SELECT generation FROM history_privacy").get()!.generation]
+  const before = generations()
+  sql.apply("w", 3, encodeEvent({ type: "permissionResolved", context, at: 2, outcome: "manual", payload }))
+  sql.apply("w", 4, encodeEvent({ type: "permissionOutcome", context, at: 2, outcome: "manual" }))
+  assert.deepEqual(generations(), before)
+  sql.apply("w", 5, encodeEvent({ type: "permissionResolved", context, at: 2, outcome: "manual", payload: { ...payload, desc: "Changed." } }))
+  const after = generations()
+  assert.ok(after[1]! > before[1]!, "a replaced body still schedules privacy cleanup")
+})

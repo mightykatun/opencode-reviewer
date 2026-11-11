@@ -707,3 +707,12 @@ test("optional notification factory failures and disabled config cannot stop run
     signal: f.abort.signal }), undefined)
   void f.host.dispose()
 })
+
+test("idle visited roots stay tracked for notifications but leave the approval-critical refresh", async t => {
+  const f = fixture(); t.after(() => f.host.dispose())
+  f.host.visit("root"); f.host.snapshot([], true); await settle()
+  assert.equal(f.host.trackedSessions().has("root"), true)
+  assert.equal(f.host.activeSessions().has("root"), false)
+  f.emit("session.execution.started", { sessionID: "root" })
+  assert.equal(f.host.activeSessions().has("root"), true, "a running execution needs fresh family health")
+})

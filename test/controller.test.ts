@@ -334,3 +334,22 @@ for (const stage of ["countdown", "checking", "failed", "allowing"] as const) te
   controller.permissionReplied({ sessionID: "root", requestID: "a", decision: "reject" }); controller.asked(request("a")); await settle()
   assert.equal(controller.views[0]?.autoApproval?.status, "countdown", "exact native resolution clears the previous tombstone")
 })
+
+test("carried checkpoints are released only by the exact native resolution or session deletion", async () => {
+  const request = { id: "permission", sessionID: "session" }, other = { id: "other", sessionID: "elsewhere" }
+  const controller = new Controller(async () => null, () => {}, { nativeApproval: { list: async () => [], once: async () => ({ status: "unavailable" }) } as any, checkpoint: {
+    manual: new Map([["permission", "cancelled" as const], ["other", "cancelled" as const]]),
+    pending: new Map([["permission", { request: request as any, deadline: 100 }], ["other", { request: other as any }]]) } })
+  assert.deepEqual(controller.carriedOwners(), [["permission", "session"], ["other", "elsewhere"]])
+  controller.permissionReplied({ sessionID: "wrong", requestID: "permission", decision: "once" })
+  assert.equal(controller.checkpoint().pending.has("permission"), true, "a mismatched session is not authority")
+  controller.permissionReplied({ sessionID: "session", requestID: "permission", decision: "once" })
+  assert.equal(controller.checkpoint().pending.has("permission"), false)
+  assert.equal(controller.checkpoint().manual.has("permission"), false)
+  controller.reconcile([], controller.revision)
+  assert.equal(controller.checkpoint().pending.has("other"), true, "list absence is never resolution")
+  controller.deleted("elsewhere")
+  assert.equal(controller.checkpoint().pending.size, 0)
+  assert.equal(controller.checkpoint().manual.size, 0)
+  await controller.dispose()
+})

@@ -212,6 +212,9 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       },
     },
   })
+  // Carried request ownership admits the exact native resolution of a checkpoint
+  // whose prompt resolved while this terminal was disconnected.
+  for (const [id, session] of controller.carriedOwners()) eventOwners.set(id, session)
   let events = 0, permissionEvents = 0
   const revision = () => controller.revision + events
   const permissionRevision = () => controller.revision + permissionEvents
@@ -259,7 +262,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     // Public native caches must be refreshed as well as the server snapshot.
     const route = ctx.ui.router.current()
     const roots = await refreshNativeFamilies(new Set([...all.map(value => value.request.sessionID),
-      ...controller.pendingViews.map(value => value.request.sessionID), ...(notifications?.trackedSessions() ?? []),
+      ...controller.pendingViews.map(value => value.request.sessionID), ...(notifications?.activeSessions() ?? []),
       ...(notifications && route.type === "session" ? [route.sessionID] : [])]), familyReader, signal, async id => {
       signal.throwIfAborted()
       ctx.data.session.permission.invalidate(id)
@@ -306,7 +309,11 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       void refresh.refresh()
     } else if (event.type === "session.deleted") {
       events++
-      if (!routes.get(event.data.sessionID)) return
+      if (!routes.get(event.data.sessionID)) {
+        // Unknown here, but it may own a checkpoint carried across reconnection.
+        controller.deleted(event.data.sessionID)
+        return
+      }
       routes.deleted(event.data.sessionID)
       records.invalidateSession(event.data.sessionID)
       controller.deleted(event.data.sessionID)

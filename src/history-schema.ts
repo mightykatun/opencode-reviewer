@@ -269,12 +269,16 @@ export class HistorySQL {
         const collision = this.get("SELECT scope,root,session,permission,review FROM history WHERE id=?", id)
         if (collision && (collision.scope !== c.scope || collision.root !== root || collision.session !== session
           || collision.permission !== c.permission || collision.review !== review)) throw new HistoryInvalid("Conflicting saved report identity")
+        // Unchanged rows are not rewritten: an UPDATE fires browsing invalidation.
         this.run(`INSERT INTO history VALUES (?,?,?,?,?,?,?,?,NULL,?,NULL,?,?) ON CONFLICT(id) DO UPDATE SET
-          completed=excluded.completed,tie=excluded.tie,review=excluded.review,resolution=excluded.resolution,resolvedAt=excluded.resolvedAt`,
+          completed=excluded.completed,tie=excluded.tie,review=excluded.review,resolution=excluded.resolution,resolvedAt=excluded.resolvedAt
+          WHERE completed IS NOT excluded.completed OR tie IS NOT excluded.tie OR review IS NOT excluded.review
+            OR resolution IS NOT excluded.resolution OR resolvedAt IS NOT excluded.resolvedAt`,
         id, c.scope, root, session, context.permission, e.payload.completedAt, context.review, review, resolution, e.at, entry)
-        this.run("INSERT INTO payloads VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body", id, JSON.stringify(e.payload))
+        // An identical body needs no privacy checkpoint for replaced text.
+        this.run("INSERT INTO payloads VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body WHERE body IS NOT excluded.body", id, JSON.stringify(e.payload))
       }
-      this.run("UPDATE history SET resolution=? WHERE scope=? AND permission=?", resolution, c.scope, c.permission)
+      this.run("UPDATE history SET resolution=? WHERE scope=? AND permission=? AND resolution IS NOT ?", resolution, c.scope, c.permission, resolution)
       this.countOutcome(entry, root, this.outcome(c.scope, c.permission, entry), e.at); this.revision(root)
     }
   }
@@ -288,7 +292,9 @@ export class HistorySQL {
       : row.resolution === "rejected" ? "rejected" : auto ? "auto" : manual ? "manual"
       : row.resolution === "cancelled" && uncertain ? null : row.resolution
     const resolution = row.resolution === "approved" ? auto ? "auto" : manual ? "manual" : row.resolution : row.resolution
-    this.run("UPDATE history SET outcome=?,approving=?,resolution=? WHERE scope=? AND permission=?", outcome, auto?.review ?? manual?.review ?? null, resolution, scope, permission)
+    const approving = auto?.review ?? manual?.review ?? null
+    this.run(`UPDATE history SET outcome=?,approving=?,resolution=? WHERE scope=? AND permission=?
+      AND (outcome IS NOT ? OR approving IS NOT ? OR resolution IS NOT ?)`, outcome, approving, resolution, scope, permission, outcome, approving, resolution)
     return outcome ?? undefined
   }
   query(q: HistoryQuery): HistoryResult {

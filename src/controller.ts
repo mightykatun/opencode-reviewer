@@ -760,9 +760,12 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     if ((confirmation && confirmation.request.sessionID !== event.sessionID)
       || (entry && entry.view.request.sessionID !== event.sessionID)) return
     if (!entry && !confirmation) {
-      // Unknown events still invalidate pending reads, but cannot clear a
-      // tombstone whose exact session ownership is no longer available here.
+      // Unknown events still invalidate pending reads. A carried checkpoint with
+      // the exact same session ownership is released by this native resolution.
       this.version++
+      if (this.previous.get(event.requestID)?.request.sessionID === event.sessionID) {
+        this.previous.delete(event.requestID); this.manual.delete(event.requestID)
+      }
       return
     }
     confirmation?.resolved(event)
@@ -782,7 +785,13 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     for (const transaction of this.approvalTransactions)
       if (transaction.request.sessionID === sessionID || transaction.root === sessionID) transaction.abort()
     for (const entry of this.entries.values()) if (entry.view.request.sessionID === sessionID || entry.root === sessionID) this.replied(entry.view.request.id, false)
+    // Carried checkpoints retain only their exact session, never a root.
+    for (const [id, value] of this.previous) if (value.request.sessionID === sessionID && !this.entries.has(id)) {
+      this.previous.delete(id); this.manual.delete(id)
+    }
   }
+  /** Request/session ownership carried across reconnection, for native event admission. */
+  carriedOwners(): [string, string][] { return [...this.previous].map(([id, value]) => [id, value.request.sessionID]) }
 
   /** Reject stale HTTP snapshots if permission events arrived during the request. */
   reconcile(requests: readonly R[], revision: number) {
