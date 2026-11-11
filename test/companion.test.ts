@@ -199,7 +199,8 @@ test("an unfamiliar host version still requires exact readable invocation eviden
   } finally { await lifecycle.stop() }
 })
 
-test("retrieval RPC is scoped, bounded, owns slow operations and returns factual results", async () => {
+test("retrieval RPC is scoped, bounded, owns slow operations and returns factual results", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
   const lifecycle = new PluginLifecycle()
   let handlers: any, release!: () => void
   const slow = new Promise<void>(resolve => { release = resolve })
@@ -222,7 +223,11 @@ test("retrieval RPC is scoped, bounded, owns slow operations and returns factual
   const second = handlers.retrieve({ ...query, timeoutMs: 50, call: { tool: "read", arguments: { path: "slow-2" } } }, call())
   await tick()
   await assert.rejects(handlers.retrieve({ ...query, call: { tool: "read", arguments: { path: "c" } } }, call()), { type: "capacity_busy" })
-  assert.deepEqual(await second, { tool: "read", status: "error", reason: "Retrieval timed out" })
+  let secondSettled = false
+  void second.then(() => { secondSettled = true })
+  t.mock.timers.tick(50)
+  await tick()
+  assert.equal(secondSettled, false, "a retrieval response waits for its physical work even after its logical deadline")
   await assert.rejects(handlers.retrieve({ ...query, call: { tool: "read", arguments: { path: "c" } } }, call()), { type: "capacity_busy" },
     "a timed-out operation keeps its slot until it settles")
   let stopped = false
@@ -231,6 +236,7 @@ test("retrieval RPC is scoped, bounded, owns slow operations and returns factual
   assert.equal(stopped, false)
   release()
   assert.equal((await first)?.status ?? null, null)
+  assert.deepEqual(await second, { tool: "read", status: "error", reason: "Retrieval timed out" })
   await stopping
   assert.equal(stopped, true)
 })
