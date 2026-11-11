@@ -11,6 +11,7 @@ import { scrubLegacyFreelist } from "./history-legacy-scrub.js"
 import { historySchema, rebuildLegacyPages } from "./history-legacy-rebuild.js"
 import { initializeHistoryPragmas } from "./history-sqlite-init.js"
 import { migrateHistoryReports } from "./history-report-migration.js"
+import { initializeHistoryVersions } from "./history-versions.js"
 import type { HistoryEvent, HistoryOutcome, HistoryPayload, HistoryQuery, HistoryReview, HistoryScope, HistoryOrder } from "./history-records.js"
 
 type Row = Record<string, any>
@@ -76,6 +77,7 @@ export class HistorySQL {
       if (meta?.version !== 1 || !count(meta.revision)) throw new HistoryInvalid("Unsupported history schema")
       this.parseTotals(meta.totals)
       migrateHistoryReports(db)
+      initializeHistoryVersions(db)
       // Additive v1 indexes, serialized with initialization on both adapters.
       // Cascading maintenance must not scan all unrelated sessions/attempts.
       historySchema(db, `CREATE INDEX IF NOT EXISTS sessions_root ON sessions(scope,root);
@@ -214,6 +216,8 @@ export class HistorySQL {
       const pendingOwner = this.get("SELECT root,session FROM reviews WHERE entry=? LIMIT 1", entry)
       if (pendingOwner && (pendingOwner.root !== root || pendingOwner.session !== session)) throw new HistoryInvalid("Conflicting permission ownership")
       this.run("INSERT OR IGNORE INTO reviews VALUES (?,?,?,?,?,NULL)", review, entry, root, session, JSON.stringify(context))
+      if (!existing && e.versions) this.run("UPDATE review_versions SET reviewer_version=?,opencode_version=? WHERE review=?",
+        e.versions.reviewer, e.versions.opencode, review)
     }
     const delta = historyDelta(e)
     if (e.type === "attemptDispatched" || e.type === "attemptFinalized") {

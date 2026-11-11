@@ -9,6 +9,7 @@ export const HISTORY_OPERATION_OVERHEAD = 512
 export const HISTORY_RETRY_MS = 2000
 export const HISTORY_TEXT_BYTES = 4096
 export const HISTORY_DESCRIPTION_BYTES = 65536
+export const HISTORY_VERSION_BYTES = 128
 // JSON can expand one UTF-8 byte into six ASCII bytes (e.g. U+0001).
 // These are serialized ceilings, not replacements for decoded shape validation.
 const stringBytes = (bytes: number) => 2 + 6 * bytes
@@ -38,12 +39,13 @@ export interface HistoryReview extends HistoryScope {
   permission: string; review: string; category: "bash" | "edit" | "mcp" | "custom" | "external_directory" | "skill" | "registered-tool" | "tool"
   configuredModel: string; provider: string
 }
+export interface HistoryVersions { reviewer: string; opencode: string | null }
 /** Notification targets identify a permission; saved reports have distinct review IDs. */
 export type HistoryTarget = Pick<HistoryReview, "session" | "permission">
 export interface HistoryAccepted { safe: boolean; completedAt: number; reportedModel?: string; timing?: ReviewTiming }
 export interface HistoryPayload extends HistoryAccepted { desc: string; usage?: Usage; toolCalls?: number }
 export type HistoryOutcome = "auto" | "manual" | "approved" | "rejected" | "cancelled"
-export type HistoryEvent =
+export type HistoryEvent = (
   | { type: "attemptDispatched"; context: HistoryReview; at: number; attempt: string; retry: "initial" | "transport" | "format" }
   | { type: "attemptFinalized"; context: HistoryReview; at: number; attempt: string; usage?: Usage; reportedModel?: string }
   | { type: "toolDispatched"; context: HistoryReview; at: number; call: string }
@@ -53,6 +55,7 @@ export type HistoryEvent =
   | { type: "approvalConfirmed"; context: HistoryReview; at: number; approval: string; automatic: boolean }
   | { type: "permissionResolved"; context: HistoryReview; at: number; outcome: HistoryOutcome; payload: HistoryPayload }
   | { type: "permissionOutcome"; context: HistoryReview; at: number; outcome: "approved" | "manual" | "rejected" }
+  ) & { versions?: HistoryVersions }
   | { type: "sessionDeleted"; context: HistoryScope; at: number }
 export interface HistoryOrder { completed: number; tie: string; id: string }
 export type HistoryQuery =
@@ -125,9 +128,14 @@ export function validateEvent(e: HistoryEvent): HistoryEvent {
     approvalSettled: ["approval", "result"], approvalConfirmed: ["approval", "automatic"],
     permissionResolved: ["outcome", "payload"], permissionOutcome: ["outcome"], sessionDeleted: [],
   }
-  requireValue(e && Object.hasOwn(extra, e.type)); object(e, ["type", "context", "at", ...extra[e.type]])
+  requireValue(e && Object.hasOwn(extra, e.type)); object(e, ["type", "context", "at", ...extra[e.type], ...(e.type === "sessionDeleted" ? [] : ["versions"])])
   timestamp(e.at)
   if (e.type === "sessionDeleted") { object(e.context, ["scope", "root", "session"]); validateScope(e.context); return e }
+  if (e.versions !== undefined) {
+    object(e.versions, ["reviewer", "opencode"])
+    text(e.versions.reviewer, HISTORY_VERSION_BYTES)
+    if (e.versions.opencode !== null) text(e.versions.opencode, HISTORY_VERSION_BYTES)
+  }
   validateReview(e.context)
   switch (e.type) {
     case "attemptDispatched": text(e.attempt); requireValue(["initial", "transport", "format"].includes(e.retry)); break

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { KeymapLayer } from "@opencode/plugin/tui/context"
 import { CliRenderEvents } from "@opentui/core"
-import { hostHistoryScope, setupHostHistoryOnly } from "../src/host-history-runtime.js"
+import { hostHistoryScope, setupHostHistory, setupHostHistoryOnly } from "../src/host-history-runtime.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
 import { parseConfig } from "../src/config.js"
@@ -17,6 +17,7 @@ import type { HistoryTransport } from "../src/history-store.js"
 import { setupCli } from "../src/cli-plugin.js"
 import type { CliPluginState } from "../src/cli-plugin.js"
 import { setupCliReconnect } from "../src/cli-reconnect.js"
+import manifest from "../package.json" with { type: "json" }
 
 const location = { directory: "/server/project", workspaceID: "workspace" }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
@@ -158,6 +159,29 @@ test("V2 history uses the existing absolute normalized directory index, independ
   assert.deepEqual(snapshotQuery({ type: "history", scope, root: "root" }), { type: "history", scope, root: "root" })
   assert.throws(() => hostHistoryScope("relative"), /absolute/)
   assert.throws(() => hostHistoryScope("/server/\0project"), /absolute/)
+})
+
+test("history captures the public TUI app version rather than guessing from the companion or package", async t => {
+  const f = contextFixture()
+  t.after(() => f.life.stop())
+  const events: any[] = []
+  const ctx = { ...f.ctx, app: { ...f.ctx.app, version: "2.0.999-cli.fixture" } }
+  const records = setupHostHistory(ctx, f.state, f.life, {
+    rootRoute: () => "root", sidebarOwner: () => undefined, sidebarGeometry: () => undefined,
+    storeOptions: { transport: () => ({ async call(message) {
+      if (message.type === "open") return { cleanup: false }
+      assert.equal(message.type, "apply")
+      events.push(JSON.parse(String(message.event)))
+      return { replay: false }
+    }, async terminate() {} }) },
+  })
+  t.after(() => records.dispose())
+  const observation = records.history.observation({ id: "permission", sessionID: "root" }, "shell", config(), { review: "review", root: "root" })
+  observation.observe!({ type: "dispatched", review: "review", attempt: "post", retry: "initial" })
+  await records.dispose()
+  assert.equal(events.length, 1)
+  assert.deepEqual(events[0].versions, { reviewer: manifest.version, opencode: "2.0.999-cli.fixture" })
+  assert.notEqual(events[0].versions.opencode, (f.state as CliPluginState).companion?.hostVersion)
 })
 
 test("history input observation is opt-in and logical browsing never fabricates mounted input ownership", async t => {

@@ -10,6 +10,7 @@ import type { HistoryRead } from "../src/history-store.js"
 import { Controller, type ReviewLifecycleFact } from "../src/controller.js"
 import type { ReviewResult } from "../src/types.js"
 import { parseConfig } from "../src/config.js"
+import manifest from "../package.json" with { type: "json" }
 
 const request: HostRequest = { id: "permission", sessionID: "child", action: "shell", resources: ["secret command"],
   source: { assistantID: "message", id: "call" } }
@@ -373,6 +374,38 @@ test("shutdown admits real received finalizers before closing storage with the o
   const finalizers = Promise.resolve().then(() => observer.observe!({ type: "finalized", review: "execution", attempt: "post", usage: { cost: 0.1 } }))
   await drainHistory({ dispose: async at => { assert.equal(at, abortAt); assert.equal(f.totals().cost, 0.1) } }, finalizers, abortAt)
   assert.equal(f.history().total, 0)
+})
+
+test("the generating coordinator stamps package and host versions on early, accepted and shutdown facts", async t => {
+  const f = fixture(t)
+  const h = new HistoryCoordinator("/host", f.store, async () => "root", () => 1000, () => 0, "2.0.999-dev.fixture")
+  t.after(() => h.dispose())
+  const observer = h.observation(request, "shell", config, { root: "root", review: "versioned" })
+  observer.observe!({ type: "dispatched", review: "versioned", attempt: "post", retry: "initial" })
+  h.lifecycle(accepted(result("versioned")))
+  h.reply({ requestID: request.id, sessionID: request.sessionID, reply: "once" })
+  h.dispose()
+  observer.observe!({ type: "finalized", review: "versioned", attempt: "post", usage: { input: 12, output: 3 } })
+  assert.deepEqual(f.events.map(event => event.type), ["attemptDispatched", "reviewAccepted", "permissionResolved", "attemptFinalized"])
+  for (const event of f.events) {
+    assert.ok(event.type !== "sessionDeleted")
+    assert.deepEqual(event.versions, { reviewer: manifest.version, opencode: "2.0.999-dev.fixture" })
+    assert.equal(Object.hasOwn(event.context, "versions"), false, "the stored context keeps its old shape")
+  }
+  assert.deepEqual({ ...f.db.prepare("SELECT reviewer_version,opencode_version FROM review_versions").get() },
+    { reviewer_version: manifest.version, opencode_version: "2.0.999-dev.fixture" })
+  assert.equal(f.history().record?.payload.desc, "private report versioned")
+  assert.equal(f.history().record?.payload.usage?.cost, 0)
+  assert.equal(f.totals().input, 12)
+})
+
+test("an unavailable host version remains null without suppressing report storage", t => {
+  const f = fixture(t)
+  f.h.lifecycle(accepted())
+  f.h.reply({ requestID: request.id, sessionID: request.sessionID, reply: "always" })
+  assert.deepEqual({ ...f.db.prepare("SELECT reviewer_version,opencode_version FROM review_versions").get() },
+    { reviewer_version: manifest.version, opencode_version: null })
+  assert.equal(f.history().record?.payload.desc, "private report review")
 })
 
 test("already spent cleanup budget never waits for a hung review finalizer", async () => {

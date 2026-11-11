@@ -440,6 +440,12 @@ settings file that is unreadable or has unsafe ownership suspends review.
 Deleting a conversation keeps its saved reports and totals. Terminals that share
 a state directory share history. Reports not yet saved can be lost on shutdown.
 
+The database also stores the reviewer package version and the OpenCode terminal
+version for each review, separately from its report text. Older records are
+assigned reviewer version `2.7.0`; their OpenCode version is `NULL` because it was
+not recorded. This metadata is available for database queries and does not appear
+in the review panel.
+
 ### Statistics
 
 Open statistics with `/reviewer-stats` or the palette. Tab or a click switches
