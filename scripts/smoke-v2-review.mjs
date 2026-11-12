@@ -95,6 +95,8 @@ async function monitorSetup(ctx) {
   const save = (painted = false) => {
     record.route = JSON.parse(JSON.stringify(ctx.ui.router.current()))
     if (fixture.routeWait || fixture.locationTab) record.tabs = ctx.ui.tabs.list().map(tab => ({ sessionID: tab.sessionID, active: tab.active }))
+    // The host's current location follows the focused conversation once synced.
+    if (fixture.locationTab) record.hostLocation = (ctx.location ?? ctx.data.location.default()).directory
     record.mouse = ctx.renderer.useMouse
     record.mode = ctx.keymap.mode.current()
     record.controlSequence = memory.sequence
@@ -508,9 +510,10 @@ const assertDefaultHomeStorage = async () => {
 }
 await assertDefaultHomeStorage()
 const project = path.join(temp, "project"), initial = path.join(project, "invocation"), inputs = path.join(initial, "inputs")
-// A sibling directory outside the project. Its own server location hosts the
-// active tab while the review conversation waits behind it.
-const elsewhere = path.join(temp, "elsewhere")
+// A sibling directory inside the project, so its own server location inherits
+// the project's configuration and loads its own companion. It hosts the active
+// tab while the review conversation waits behind it.
+const elsewhere = path.join(project, "elsewhere")
 const monitorPath = path.join(artifacts, "monitor.json"), controlPath = path.join(artifacts, "control.json")
 const presentationPath = path.join(artifacts, "presentation.json")
 const notificationPath = path.join(artifacts, "notifications.json"), notificationControlPath = path.join(artifacts, "notifications-control.json")
@@ -1704,6 +1707,10 @@ createInterface({input:process.stdin}).on('line',line=>{
          record?.tabs?.some(tab => tab.sessionID === sessionID && !tab.active)
          && record.tabs.some(tab => tab.sessionID === away.sessionID && tab.active)
          && record.route.type === "session" && record.route.sessionID === away.sessionID, 5000)
+       // Only a moved host location reproduces the defect: the review directory
+       // is then neither current nor the active tab's location.
+       await until("host current location follows the other directory's active tab",
+         record => record?.hostLocation === elsewhere, 10000)
      }
      releaseNativeCall()
     if (editCase) {

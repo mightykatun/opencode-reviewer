@@ -349,7 +349,8 @@ steering rejection, below.
 - Home, the dashboard and unrelated conversations hold approval. With OpenCode
   tabs, an open background tab of the request's conversation is enough, even
   when the active tab is in another directory. Its review runs in the
-  background and its report shows when you return to that tab.
+  background. A report that is still open shows when you return to that tab,
+  and completed reports are saved to history.
 - The current directory and the directories of open tabs are reviewed at the
   same time, up to eight. Requests in tabs past that limit stay manual.
 - A held countdown keeps its deadline. If it has expired, approval runs as soon

@@ -93,7 +93,8 @@ Roles and connection:
 - `plugin.ts`: shared entry and role selection. Its `with*` exports are fixture and embedding seams, never options.
 - `companion.ts`: server role. Captures invocations through hooks (`invocation-capture.ts`) and serves the handshake, invocation, evidence and `retrieve` RPCs. `companion-protocol.ts` defines the schema (protocol 2). `companion-read.ts` wraps reads.
 - `cli-plugin.ts`: CLI setup. Parses options, loads prompts, waits for the connection marker and runs the first handshake (`companion-handshake.ts`).
-- `cli-reconnect.ts`: owns the connection after startup. `setupHostRecovery` in `host-runtime.tsx` wraps it. `connection-marker.ts` handles the delayed echo of the startup marker.
+- `cli-reconnect.ts`: owns the connection after startup and one `LocationAdmission` per review location. `setupHostRecovery` in `host-runtime.tsx` wraps it. `connection-marker.ts` handles the delayed echo of the startup marker.
+- `host-locations.ts`: the review location set (current host location, then each open tab's session location, at most `MAX_REVIEW_LOCATIONS`) and route ownership.
 - `host-runtime.tsx`: connects the controller to native queues, slots, polling and approval gates.
 
 Review:
@@ -122,7 +123,7 @@ UI, history and notifications:
 - Normal approval needs a completed, validated Safe assessment. Then it starts a countdown. Positive countdowns add a 200 ms grace. Zero skips the delay, not the checks.
 - Fast mode (`fastMode` with `autoApprove`) may approve on a parsed Safe preview with no countdown. With `autoRejectSteering` it may also reject once the preview's reason and steering strings are closed. With `stream: false` it waits for the full response. After confirmation, the report keeps running through hiding, navigation and mode disable. Deletion or disposal still aborts it. Use `pendingViews` for order and notifications so finishing reports don't block anything.
 - Immediately before the single write, recheck synchronously: fresh permission identity and scope, native queue priority, same-conversation ancestry and native decision state.
-- The active route must be the request's conversation or a descendant. With tabs, an open background tab of that conversation also qualifies. Home, dashboard, unknown and unrelated routes wait and never cancel. The root also needs fresh native family health (`permissionRoots`). Panel paint, hit tests, mouse and sidebar never gate approval.
+- The active route must be the request's conversation or a descendant. With tabs, an open background tab of that conversation also qualifies, whichever directory the active tab is in. Home, dashboard, unknown and unrelated routes wait and never cancel. The root also needs fresh native family health (`permissionRoots`). Panel paint, hit tests, mouse and sidebar never gate approval.
 - The root's native queue holds its whole descendant family, root first. Follow actual native ownership, not event order. Reconcile native permission caches after interruption. A fresh server read alone doesn't refresh a stale native prompt.
 - Hold without cancelling while native Always or Reject is selected or a rejection is being edited. Observe public renderable IDs and choice colors only. Ambiguous observations hold. Ordinary modal mode is not a hold.
 - A started countdown keeps its monotonic deadline through every wait, including reconnection. An expired countdown resumes without a new delay. A never-armed request starts a full countdown when it first becomes eligible, even with the report hidden.
@@ -176,7 +177,9 @@ Only the agentic retrieval loop chooses files. Never parse commands to pick file
 
 - Startup reads the public client's `server.connected` marker before the first companion RPC. Ignore the native bridge's delayed echo only for that exact event ID. A different marker fences startup and permanently revokes an active generation.
 - Startup and reconnect handshakes each get a 10-second budget with 1.5-second attempts and 250 ms backoff. They retry only timeouts, `rpc.unavailable` and recognized transient transport failures, and only with a valid configuration. Settle physical work before each retry. Invalid replies stay manual. Without a companion, history, statistics and notification-only fallback still run.
-- Choose the runtime or the fallback once per connection. Never promote the fallback on a duplicate marker or revive an old generation.
+- Every review location holds its own scope-pinned composition: the current host location (`context.location`, which follows the focused conversation) and the session location of every open tab, deduplicated and bounded by `MAX_REVIEW_LOCATIONS`. Tabs past the bound stay manual. Each location admits, retires, drains and stays manual independently on the shared connection. Focus changes retire nothing. A location leaves the set only when no open tab needs it and it is not current, and then its continuity is checkpointed by location value. Never key a composition by the active tab.
+- A composition's `context.location` is pinned to its own location. Read locations through `host-locations.ts`, never `context.location` directly outside a composition.
+- Choose the runtime or the fallback once per connection and location. Never promote the fallback on a duplicate marker or revive an old generation.
 - Reconnection admits a fresh composition only when the public client and native markers agree and a fresh scoped handshake completes. Drain the old composition first. Critical native-cache and write work must settle. Optional notification and history cleanup doesn't gate admission. Never mix clients, caches, evidence or approval leases.
 - Across reconnection, carry only manual tombstones and identity-bound countdown deadlines, never assessments. Notification continuity carries observed births, visits and announcement attempts for the same client and location. Reminders need fresh native family health first.
 - Release an idle event subscriber after 45 seconds without activity. A replayed old marker is not fresh admission. A 2-second health probe can replace a changed companion epoch after critical drain and a new handshake, without a plugin reload.
@@ -185,6 +188,7 @@ Only the agentic retrieval loop chooses files. Never parse commands to pick file
 
 - Observe `sidebar.content` and render through `app`. Keep one stable slot root with live and history siblings. Key the live panel by request ID. Changing fragment or view keys remounts Markdown and resets scrolling.
 - Show the reviewer panel (live, retained and history) only on the top-level conversation route. Descendant routes show nothing at any terminal width.
+- Exactly one location presents each route and answers each command: a session route's own location, otherwise the current host location (`routeAtLocation`). Every keymap layer a composition registers is gated by that ownership in `locationContext`. Each composition anchors only sidebars of its own sessions.
 - Reveal a hidden sidebar only after an explicit approval-notification click, through the public native command. Never force mouse or sidebar visibility.
 - FRAME geometry and hit ownership serve UI behavior and fixture observations only. Never fabricate visible IDs, FRAME events or hit-test proof.
 - Sanitize report text and streamed prefixes through `displayText`.
