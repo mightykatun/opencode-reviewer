@@ -132,6 +132,8 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
   }
   approval = (fact: ApprovalFact<R>) => {
     if (this.stopped || !fact.approval || !fact.review) return
+    // Steering rejections never enter approval accounting.
+    if (fact.decision === "reject") return
     const c = this.candidates.get(fact.request.id)
     const early = this.early.get(fact.request.id)
     if (fact.type === "dispatched") {

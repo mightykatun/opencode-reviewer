@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { remainingTime, reviewStage, withDeadline } from "./deadline.js"
-import type { NativeApprovalTransport } from "./host-permissions.js"
+import type { NativeApprovalTransport, NativeDecision } from "./host-permissions.js"
 import type { ApprovalFact, NativePermissionReply, RequestIdentity } from "./controller.js"
 
 export type ApprovalTransactionState = "preparing" | "dispatched" | "acknowledged" | "confirmed" | "uncertain" | "not-sent"
@@ -15,9 +15,10 @@ interface SubmissionPolicy {
   confirmed(): void
 }
 
-/** Owns one approval's transport facts, independently of review/view lifetime.
+/** Owns one automatic reply's transport facts, independently of review/view lifetime.
  * The controller owns policy and physical verification reads. Native attribution
- * requires both our local acknowledgement and the first exact native once event. */
+ * requires both our local acknowledgement and the first exact native event of the
+ * same decision: once for approval, reject for steering. */
 export class ApprovalTransaction<R extends RequestIdentity> {
   readonly approval = randomUUID()
   private current: ApprovalTransactionState = "preparing"
@@ -30,7 +31,8 @@ export class ApprovalTransaction<R extends RequestIdentity> {
   private event = new Promise<string>(resolve => { this.resolveEvent = resolve })
 
   constructor(readonly request: R, readonly root: string | undefined, private review: string, private automatic: boolean,
-    private permissionResolved: unknown, private observe: (fact: ApprovalFact<R>) => unknown) {}
+    private permissionResolved: unknown, private observe: (fact: ApprovalFact<R>) => unknown,
+    readonly decision: NativeDecision = "once", private steering?: { message: string; text: string }) {}
 
   get state() { return this.current }
   get dispatched() { return this.sent }
@@ -49,6 +51,7 @@ export class ApprovalTransaction<R extends RequestIdentity> {
   private terminal() { return this.current === "confirmed" || this.current === "uncertain" || this.current === "not-sent" }
   private fact(type: ApprovalFact<R>["type"]) {
     const fact: ApprovalFact<R> = { type, request: this.request, automatic: this.automatic, approval: this.approval, review: this.review,
+      ...(this.decision === "reject" ? { decision: "reject" as const, steering: this.steering?.text } : {}),
       ...(type === "settled" && this.current !== "confirmed" ? { result: this.sent ? "uncertain" : "not-sent" } : {}) }
     try { void Promise.resolve(this.observe(fact)).catch(() => {}) } catch {}
   }
@@ -91,11 +94,13 @@ export class ApprovalTransaction<R extends RequestIdentity> {
           reviewStage(signal, "Approval verification")
           reviewStage(bounded, "Approval acknowledgement")
           if (!policy.guard()) return
-          const result = await writer.once(this.request, bounded, dispatch)
+          if (this.decision === "reject" && (!writer.reject || !this.steering)) { this.current = "not-sent"; return }
+          const result = this.decision === "reject" ? await writer.reject!(this.request, bounded, dispatch, this.steering!.message)
+            : await writer.once(this.request, bounded, dispatch)
           if (!this.sent) { this.current = "not-sent"; return }
           if (result.status !== "submitted" || this.terminal()) throw Error("Native approval acknowledgement uncertain")
           this.current = "acknowledged"
-          if (await this.event !== "once") throw Error("Native approval reply did not match once")
+          if (await this.event !== this.decision) throw Error("Native reply did not match the dispatched decision")
           if (!bounded.aborted && this.current === "acknowledged") {
             this.current = "confirmed"
             policy.confirming()

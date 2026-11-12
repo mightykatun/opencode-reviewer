@@ -1,5 +1,5 @@
 import type { HostRequest } from "./host-types.js"
-import type { ReviewProgress, ReviewResult, ReviewTiming } from "./types.js"
+import type { AssessmentPreview, ReviewProgress, ReviewResult, ReviewTiming } from "./types.js"
 import type { Config, ReviewOptions } from "./config.js"
 import { isDeepStrictEqual } from "node:util"
 import { randomUUID } from "node:crypto"
@@ -11,8 +11,9 @@ import { reviewFailureText } from "./review-failure-text.js"
 import type { HistoryTarget } from "./history-records.js"
 import { conversationRoot } from "./route-approval.js"
 import { ReviewAdmission, type ReviewEvaluation } from "./review-admission.js"
-import type { NativeApprovalTransport } from "./host-permissions.js"
+import type { NativeApprovalTransport, NativeDecision } from "./host-permissions.js"
 import { ApprovalTransaction } from "./approval-transaction.js"
+import { steeringMessage, steeringReady } from "./steering.js"
 
 export type AutoApproval = { status: "countdown"; seconds: number } | { status: "waiting" | "checking" | "allowing" | "cancelled" | "failed" | "approved" }
 
@@ -25,6 +26,10 @@ export interface View<R extends RequestIdentity = HostRequest> {
   progress?: ReviewProgress
   error?: string
   autoApproval?: AutoApproval
+  /** Decision of the armed automatic reply. reject is steering. */
+  autoDecision?: NativeDecision
+  /** Steering sent with an armed or dispatched automatic rejection. */
+  steering?: string
   approvalPendingConfirmed?: boolean
   /** Fast-mode dispatched review retained independently of native permission lifetime. */
   retained?: boolean
@@ -41,6 +46,9 @@ interface Entry<R extends RequestIdentity = HostRequest> {
   startedAt?: number; ratingAt?: number
   review: string
   approvalDispatched?: boolean
+  /** Armed automatic decision and, for steering, the exact text that will be sent. */
+  decision?: NativeDecision
+  steering?: { reason: string; steering: string }
   approvalRefresh?: boolean
   /** Once started, real cancellation remains durable even between Safe ratings. */
   approvalArmed?: boolean
@@ -63,7 +71,7 @@ const clock: ApprovalClock = {
 }
 const permissionResolved = Object.freeze({ reason: "permission resolved" })
 const requestChanged = Object.freeze({ reason: "pending request changed" })
-type Options = ReviewOptions & Partial<Pick<Config, "autoApprove" | "fastMode" | "autoApproveDelaySeconds" | "stream">>
+type Options = ReviewOptions & Partial<Pick<Config, "autoApprove" | "autoRejectSteering" | "maxSteeringRejections" | "fastMode" | "autoApproveDelaySeconds" | "stream">>
 /** Host closures own admitted snapshots/location/epoch. The controller sees only
  * reviewer requests, never snapshot envelopes or projected requests. */
 export interface NativeApproval<R extends RequestIdentity = HostRequest> extends NativeApprovalTransport<R> {
@@ -72,7 +80,9 @@ export interface NativeApproval<R extends RequestIdentity = HostRequest> extends
 export interface NativePermissionReply { sessionID: string; requestID: string; decision: string }
 
 export type ApprovalFact<R extends RequestIdentity = HostRequest> = { type: "dispatched" | "confirmed" | "settled"; request: R; automatic: boolean;
-  approval?: string; review?: string; result?: "not-sent" | "uncertain" }
+  approval?: string; review?: string; result?: "not-sent" | "uncertain"
+  /** Present only for steering rejections. Absent means a native once approval. */
+  decision?: "reject"; steering?: string }
 export type ApprovalObserver<R extends RequestIdentity = HostRequest> = (fact: ApprovalFact<R>) => unknown
 export type ReviewLifecycleFact<R extends RequestIdentity = HostRequest> =
   | { type: "accepted"; request: R; result: ReviewResult; timing: ReviewTiming; root?: string; review: string; completedAt: number }
@@ -120,6 +130,8 @@ export class Controller<R extends RequestIdentity = HostRequest> {
   private version = 0
   private modeChanges = new Map<string, number>()
   private manual = new Map<string, "cancelled" | "failed">()
+  /** Consecutive dispatched steering rejections per session, reset by any approval. Memory only. */
+  private steered = new Map<string, number>()
   private workers = new Set<Promise<unknown>>()
   private admission = new ReviewAdmission(root => this.nativeFront(root))
   private approvalTransactions = new Set<ApprovalTransaction<R>>()
@@ -233,7 +245,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     // stale owner. Avoid rebuilding the full pending family for every Safe row.
     const pending = this.pendingViews.map(view => view.request), fronts = new Map<string, string | undefined>()
     for (const entry of this.entries.values()) {
-      if (!this.safe(entry) || this.manual.has(entry.view.request.id)) continue
+      if (!this.automatic(entry) || this.manual.has(entry.view.request.id)) continue
       if (this.priority) {
         const root = entry.root ?? (this.session ? conversationRoot(entry.view.request.sessionID, this.session) : entry.view.request.sessionID)
         if (!root) continue
@@ -260,6 +272,9 @@ export class Controller<R extends RequestIdentity = HostRequest> {
   private startApproval(entry: Entry<R>) {
     if (entry.view.autoApproval || entry.approvalAbort || entry.approvalRefresh || !this.eligible(entry)) return
     entry.approvalArmed = true
+    entry.decision = this.automatic(entry)
+    entry.steering = entry.decision === "reject" ? this.steeringText(entry) : undefined
+    entry.view = { ...entry.view, autoDecision: entry.decision, steering: entry.steering?.steering }
     if (this.options.fastMode) {
       entry.view = { ...entry.view, autoApproval: { status: "checking" } }
       this.publish()
@@ -346,17 +361,22 @@ export class Controller<R extends RequestIdentity = HostRequest> {
       this.publish()
       return
     }
-    const preview = { ...(typeof value.preview.safe === "boolean" ? { safe: value.preview.safe } : {}),
-      ...(typeof value.preview.desc === "string" ? { desc: value.preview.desc } : {}) }
+    const source = value.preview, preview: AssessmentPreview = {}
+    if (typeof source.safe === "boolean") preview.safe = source.safe
+    for (const key of ["reason", "steering", "desc"] as const) if (typeof source[key] === "string") preview[key] = source[key]
+    for (const key of ["reasonComplete", "steeringComplete"] as const) if (source[key] === true) preview[key] = true
     if (typeof preview.safe === "boolean" && entry.ratingAt === undefined) entry.ratingAt = this.time.now()
     entry.pendingProgress = { attempt: value.attempt, phase: "streaming", preview }
-    if (preview.safe !== entry.view.progress?.preview?.safe) {
-      const desc = entry.view.progress?.preview?.desc
+    const current = entry.view.progress?.preview
+    const ready = !!steeringReady(preview, false)
+    if (preview.safe !== current?.safe || ready !== !!steeringReady(current, false)) {
+      const desc = current?.desc
+      const { desc: _, ...rating } = preview
       entry.view = { ...entry.view, progress: { attempt: value.attempt, phase: "streaming",
-        preview: { ...(preview.safe === undefined ? {} : { safe: preview.safe }), ...(desc === undefined ? {} : { desc }) } } }
-      if (preview.safe !== true) this.pauseRating(entry)
-      this.publish() // Rating is immediate; text remains on the coalesced cadence.
-      if (this.options.fastMode && preview.safe === true) this.startApproval(entry)
+        preview: { ...rating, ...(desc === undefined ? {} : { desc }) } } }
+      if (!this.matches(entry)) this.pauseRating(entry)
+      this.publish() // Rating and steering readiness are immediate; text remains on the coalesced cadence.
+      if (this.options.fastMode) this.startApproval(entry)
     }
     if (!this.reviewing(entry) || entry.cancelProgress || !entry.pendingProgress) return
     const generation = entry.progressGeneration
@@ -375,9 +395,28 @@ export class Controller<R extends RequestIdentity = HostRequest> {
       : this.options.fastMode === true && entry.view.status === "analyzing" && entry.view.progress?.preview?.safe === true
   }
 
+  /** Complete Unsafe reason and steering, or a fast-mode preview with both closed. */
+  private steeringText(entry: Entry<R>) {
+    if (entry.view.status === "complete") return steeringReady(entry.view.assessment, true)
+    return this.options.fastMode === true && entry.view.status === "analyzing" ? steeringReady(entry.view.progress?.preview, false) : undefined
+  }
+
+  /** The automatic reply this entry qualifies for now, before native gates. */
+  private automatic(entry: Entry<R>): NativeDecision | undefined {
+    if (this.options.autoApprove === true && this.safe(entry)) return "once"
+    if (this.options.autoRejectSteering === true && this.nativeApproval?.reject && this.steeringText(entry)
+      && (this.steered.get(entry.view.request.sessionID) ?? 0) < (this.options.maxSteeringRejections ?? 1)) return "reject"
+  }
+
+  /** Still qualifies for the armed decision (or any decision before arming). */
+  private matches(entry: Entry<R>) {
+    const decision = this.automatic(entry)
+    return !!decision && (!entry.decision || entry.decision === decision)
+  }
+
   private approvalState(entry: Entry<R>): "pending" | "ready" {
     if (!this.nativeApproval || !this.priority || !this.approvalReady || !this.active(entry) || entry.view.resolved
-      || entry.fastApproval || this.options.autoApprove !== true
+      || entry.fastApproval || (this.options.autoApprove !== true && this.options.autoRejectSteering !== true)
       || (this.modes && (entry.root === undefined || !this.modes.enabled(entry.root)))) return "pending"
     try {
       const root = entry.root ?? (this.session ? conversationRoot(entry.view.request.sessionID, this.session) : entry.view.request.sessionID)
@@ -387,7 +426,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
   }
 
   private eligible(entry: Entry<R>) {
-    if (this.manual.has(entry.view.request.id) || entry.approvalPaused || !this.safe(entry)) return false
+    if (this.manual.has(entry.view.request.id) || entry.approvalPaused || !this.matches(entry)) return false
     const state = this.approvalState(entry)
     return state === "ready"
   }
@@ -403,20 +442,23 @@ export class Controller<R extends RequestIdentity = HostRequest> {
       entry.approvalRefresh = false
       entry.approvalPaused = !!entry.approvalAbort
       entry.approvalAbort?.abort()
-      entry.view = { ...entry.view, autoApproval: undefined }
+      entry.decision = undefined; entry.steering = undefined
+      entry.view = { ...entry.view, autoApproval: undefined, autoDecision: undefined, steering: undefined }
       return
     }
     // Repeated parser clears and retry starts revoke only the current rating.
     if (entry.approvalPaused || !entry.view.autoApproval) return
     entry.approvalPaused = !!entry.approvalAbort
     entry.approvalAbort?.abort()
-    entry.view = { ...entry.view, autoApproval: entry.approvalRefresh ? { status: "checking" } : undefined }
+    if (!entry.approvalRefresh) { entry.decision = undefined; entry.steering = undefined }
+    entry.view = { ...entry.view, autoApproval: entry.approvalRefresh ? { status: "checking" } : undefined,
+      ...(entry.approvalRefresh ? {} : { autoDecision: undefined, steering: undefined }) }
   }
 
   private approvalEligible(entry: Entry<R>) {
     const state = this.approvalState(entry)
     if (state === "pending") entry.eligibilityPending = true
-    else if (!this.safe(entry)) this.pauseRating(entry)
+    else if (!this.matches(entry)) this.pauseRating(entry)
     return this.eligible(entry)
   }
 
@@ -511,8 +553,11 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     entry.eligibilityPending = false
     entry.view = { ...entry.view, autoApproval: { status: "checking" } }
     this.publish()
+    const decision = entry.decision ?? "once", steering = entry.steering
+    if (decision === "reject" && !steering) return
     const transaction = new ApprovalTransaction(entry.view.request, entry.root, entry.review, automatic, permissionResolved,
-      fact => this.approvalFact(fact))
+      fact => this.approvalFact(fact), decision,
+      steering && { message: steeringMessage(steering.reason, steering.steering), text: steering.steering })
     this.approvalTransactions.add(transaction)
     try {
       await withDeadline(AbortSignal.any([entry.abort.signal, abort.signal]), 5000, async (signal) => {
@@ -542,6 +587,10 @@ export class Controller<R extends RequestIdentity = HostRequest> {
             dispatch: () => {
               this.manual.set(id, "failed")
               entry.approvalDispatched = true
+              if (decision === "reject") {
+                const session = entry.view.request.sessionID
+                this.steered.set(session, (this.steered.get(session) ?? 0) + 1)
+              }
               if (this.options.fastMode && automatic) {
                 entry.fastApproval = "pending"
                 entry.view = { ...entry.view, retained: true }
@@ -628,7 +677,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
         // Exhausted churn has already settled its reads, but still needs a poll.
         else if (entry.approvalRefresh && entry.approvalAbort === abort && !this.approvalRead) entry.approvalAbort = undefined
         if (entry.eligibilityPending && !entry.approvalAbort && !entry.approvalRefresh && this.active(entry)
-          && !this.manual.has(id) && this.safe(entry)) {
+          && !this.manual.has(id) && this.automatic(entry)) {
           entry.eligibilityPending = false
           entry.view = { ...entry.view, autoApproval: this.options.fastMode ? undefined : { status: "countdown",
             seconds: this.countdownSeconds(entry) } }
@@ -702,7 +751,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
       if (active()) {
         entry.view = assessment ? { ...entry.view, status: "complete", assessment, progress: undefined }
           : { ...entry.view, status: "unrelated", progress: undefined }
-        if (!this.safe(entry)) this.pauseRating(entry)
+        if (!this.matches(entry)) this.pauseRating(entry)
         // Count final accepted reviews, not previews, transport attempts or UI
         // publications. Accounting failures cannot affect review or approval.
         if (assessment) {
@@ -755,6 +804,8 @@ export class Controller<R extends RequestIdentity = HostRequest> {
    * Session and request ownership must both match; events carry no client ID. */
   permissionReplied(event: NativePermissionReply) {
     if (this.stopped || !this.nativeApproval) return
+    // Any approval in the session ends its run of consecutive steering rejections.
+    if (event.decision === "once" || event.decision === "always") this.steered.delete(event.sessionID)
     const confirmation = [...this.approvalTransactions].find(transaction => transaction.dispatched && transaction.request.id === event.requestID)
     const entry = this.entries.get(event.requestID)
     if ((confirmation && confirmation.request.sessionID !== event.sessionID)
@@ -802,7 +853,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
       for (const [id, entry] of this.entries) if (!ids.has(id) && !entry.view.resolved) this.replied(id, true, "reconciled")
       for (const request of requests) {
         let entry = this.entries.get(request.id)
-        if (entry && this.options.autoApprove && !entry.approvalDispatched && !this.manual.has(request.id)
+        if (entry && (this.options.autoApprove || this.options.autoRejectSteering) && !entry.approvalDispatched && !this.manual.has(request.id)
           && !isDeepStrictEqual(request, entry.view.request)) {
           this.manual.set(request.id, "failed")
           entry.cancelTimer?.()
@@ -855,6 +906,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     await Promise.allSettled([...this.approvalWorkers])
     this.approvalTransactions.clear()
     this.manual.clear()
+    this.steered.clear()
   }
 }
 

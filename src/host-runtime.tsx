@@ -262,6 +262,10 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
         const snapshot = snapshots.get(request.id)
         return snapshot ? owned(transport.once(snapshot, signal, dispatch)) : Promise.resolve({ status: "unavailable" as const })
       },
+      reject: (request, signal, dispatch, message) => {
+        const snapshot = snapshots.get(request.id)
+        return snapshot ? owned(transport.reject(snapshot, signal, dispatch, message)) : Promise.resolve({ status: "unavailable" as const })
+      },
     },
   })
   // Carried request ownership admits the exact native resolution of a checkpoint
@@ -414,7 +418,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
        />}}</Show>
       {records.render()}</box>
   } }))
-  if (config.autoApprove) {
+  if (config.autoApprove || config.autoRejectSteering) {
     // Native choice selection is public renderable styling, not a reactive API.
     // Wake waits without requesting/synthesizing paint or revealing the sidebar.
     const eligibility = setInterval(() => controller.refreshApprovalEligibility(), 100)

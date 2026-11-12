@@ -93,7 +93,7 @@ test("native owner: first non-once cannot be replaced by a later once", async ()
   assert.equal(f.transaction.resolved({ ...once, decision: "reject" }), true)
   assert.equal(f.transaction.resolved(once), false)
   f.ack.resolve({ status: "submitted" })
-  await assert.rejects(work, /did not match once/)
+  await assert.rejects(work, /did not match the dispatched decision/)
   assert.equal(f.transaction.state, "uncertain")
   assert.deepEqual(f.facts.map(fact => [fact.type, fact.result]), [["dispatched", undefined], ["settled", "uncertain"]])
 })
@@ -251,4 +251,33 @@ for (const failure of ["throw", "reject"] as const) test(`owner: ${failure} from
   f.transaction.resolved(once); await work; await settle()
   assert.equal(f.transaction.state, "confirmed")
   assert.deepEqual(f.facts.map(fact => fact.type), ["dispatched", "confirmed", "settled"])
+})
+
+test("steering transaction sends its message through reject and confirms only on the native reject", async () => {
+  for (const event of ["reject", "once"] as const) {
+    const facts: ApprovalFact<typeof request>[] = [], sent: string[] = []
+    const transaction = new ApprovalTransaction(request, "root", "review", true, resolved, fact => { facts.push(fact) }, "reject",
+      { message: "Rejected by opencode-reviewer: Too broad. Please narrow it.", text: "Please narrow it." })
+    const policy = { guard: () => true, dispatch: () => {}, confirming: () => {}, confirmed: () => {} }
+    const writer = {
+      once: async () => { throw Error("never Allow once for steering") },
+      reject: async (_request: typeof request, _signal: AbortSignal, dispatch: () => boolean, message: string) => {
+        assert.equal(dispatch(), true); sent.push(message); return { status: "submitted" as const }
+      },
+    }
+    const work = withDeadline(new AbortController().signal, 5000, signal => transaction.submit(signal, writer, policy))
+    await settle()
+    assert.equal(transaction.resolved({ ...once, decision: event }), true)
+    if (event === "reject") await work
+    else await assert.rejects(work, /did not match the dispatched decision/)
+    assert.deepEqual(sent, ["Rejected by opencode-reviewer: Too broad. Please narrow it."])
+    assert.equal(transaction.state, event === "reject" ? "confirmed" : "uncertain")
+    assert.deepEqual(facts.map(fact => [fact.type, fact.decision, fact.steering]), event === "reject"
+      ? [["dispatched", "reject", "Please narrow it."], ["confirmed", "reject", "Please narrow it."], ["settled", "reject", "Please narrow it."]]
+      : [["dispatched", "reject", "Please narrow it."], ["settled", "reject", "Please narrow it."]])
+  }
+  const missing = new ApprovalTransaction(request, "root", "review", true, resolved, () => {}, "reject", { message: "m", text: "t" })
+  await withDeadline(new AbortController().signal, 5000, signal => missing.submit(signal,
+    { once: async () => { throw Error("never") } }, { guard: () => true, dispatch: () => {}, confirming: () => {}, confirmed: () => {} }))
+  assert.equal(missing.state, "not-sent", "a transport without reject writes nothing")
 })
