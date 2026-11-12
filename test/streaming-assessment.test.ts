@@ -115,11 +115,14 @@ test("assessment byte bounds are UTF-8 accurate across literal surrogate splits 
   assert.throws(() => bad.push("x"), /assessment exceeds 64 KiB/)
 })
 
-test("steering is optional in the steering schema: absent, null, empty and blank all mean none, Safe ignores it", () => {
+test("Unsafe requires nonempty steering only in steering mode, Safe ignores it", () => {
   const steer = (text: string) => parseAssessment(text, true)
   assert.deepEqual(steer('{"safe":false,"reason":"r","steering":"  Please split it.  ","desc":"d"}'), { safe: false, reason: "r", steering: "Please split it.", desc: "d" })
-  for (const value of ['', ',"steering":null', ',"steering":""', ',"steering":"  \\n "'])
-    assert.deepEqual(steer(`{"safe":false,"reason":"r"${value},"desc":"d"}`), { safe: false, reason: "r", desc: "d" })
+  for (const value of ['', ',"steering":null', ',"steering":""', ',"steering":"  \\n "']) {
+    assert.throws(() => steer(`{"safe":false,"reason":"r"${value},"desc":"d"}`), /require nonempty steering/)
+    assert.deepEqual(steer(`{"safe":true,"reason":"r"${value},"desc":"d"}`), { safe: true, reason: "r", desc: "d" })
+  }
+  assert.deepEqual(parseAssessment('{"safe":false,"reason":"r","desc":"d"}'), { safe: false, reason: "r", desc: "d" })
   assert.deepEqual(steer('{"safe":true,"reason":"r","steering":"Please stop.","desc":"d"}'), { safe: true, reason: "r", desc: "d" })
   for (const value of ['1', 'true', '{}', '[]', 'nul', 'nullx'])
     assert.throws(() => steer(`{"safe":false,"reason":"r","steering":${value},"desc":"d"}`), AssessmentFormatError, value)

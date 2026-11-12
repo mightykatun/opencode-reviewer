@@ -176,7 +176,7 @@ normal retrieval turns are not counted as retries.
 | Option | Type | Default | Accepted values and behavior |
 | --- | --- | --- | --- |
 | `autoApprove` | boolean | `false` | Allow Safe reviews once automatically. Normally waits for completion, validation and the countdown. Works throughout the current conversation, including subagent browsing and hidden/covered reports. Home, dashboards, unrelated conversations and native permission decision editing wait without cancellation. |
-| `autoRejectSteering` | boolean | `false` | Independent of `autoApprove`. The reviewer also writes steering for the agent with every Unsafe rating. An Unsafe report with steering starts the same countdown, then answers the native prompt with Reject and a message the agent reads: the reason and the steering. An Unsafe report without steering waits for you. See Automatic steering rejection. |
+| `autoRejectSteering` | boolean | `false` | Independent of `autoApprove`. Requires steering text with every Unsafe rating. Missing, null or blank steering triggers format-correction retries. Valid Unsafe reports start the same countdown, then answer the native prompt with Reject and a message the agent reads: the reason and steering. See Automatic steering rejection. |
 | `maxSteeringRejections` | integer | `1` | `1`–`100`. Consecutive automatic rejections per session. After that, Unsafe requests in that session wait for you until any permission in it is approved. |
 | `fastMode` | boolean | `false` | Requires `autoApprove: true` for approvals. Approve an eligible, front-of-queue request as soon as a Safe rating is parsed, bypassing the countdown. With `autoRejectSteering: true`, also reject as soon as an Unsafe rating, its reason and its steering are parsed. Respects `stream`; with `stream: false`, waits for the complete validated response. Finish the report and save it in the background after the reply. |
 | `extraCareful` | boolean | `true` | Include extra-careful guidance when `autoApprove` is enabled. Setting `false` omits that guidance without disabling automatic approval. |
@@ -394,7 +394,9 @@ it normally appears red, but text matching native denial phrases such as
   is armed or sent, and **Rejected in Ns**, **Rejecting…**, **Auto-rejection
   waiting**, **Auto-rejection canceled** or **Auto-rejection unavailable. Use
   native controls.** like automatic approval.
-- An Unsafe report without steering waits for you, as do Unsafe reports after
+- Missing, null or blank steering on an Unsafe response triggers correction up to
+  `formatRetries`. Exhausting those attempts shows Analysis unavailable and leaves
+  the permission manual. Unsafe reports also wait for you after
   `maxSteeringRejections` consecutive automatic rejections in the same session.
   Approving any permission in that session resets the count. The count is kept
   in memory only.

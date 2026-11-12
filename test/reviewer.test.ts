@@ -1438,6 +1438,30 @@ test("complete SSE reviews discard stale estimates from report and lifetime but 
   })
 })
 
+test("missing or blank Unsafe steering corrects in streamed and non-streamed verdicts within formatRetries", async () => {
+  for (const stream of [false, true]) for (const steering of [undefined, null, "", " \n "]) {
+    const bodies: any[] = []
+    const config = parseConfig({ baseURL: "https://fixture.invalid/v1", model: "fixture", retrieval: false,
+      autoRejectSteering: true, stream, formatRetries: 1 })
+    const fetcher: typeof fetch = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      const content = JSON.stringify({ safe: false, reason: "Too broad.",
+        ...(bodies.length === 1 ? { steering } : { steering: "Please narrow the path." }), desc: "Removes files." })
+      return stream
+        ? new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+          { headers: { "Content-Type": "text/event-stream" } })
+        : Response.json({ choices: [{ message: { content }, finish_reason: "stop" }] })
+    }
+    const result = await review(evidence, config, signal(), { fetcher })
+    assert.equal(result.steering, "Please narrow the path.")
+    assert.equal(bodies.length, 2)
+    assert.match(bodies[1].messages.at(-1).content, /Unsafe assessments require nonempty steering/)
+    bodies.length = 0
+    await assert.rejects(review(evidence, { ...config, formatRetries: 0 }, signal(), { fetcher }), /format invalid after configured attempts/)
+    assert.equal(bodies.length, 1, "exhausted format budget stays manual without extra requests")
+  }
+})
+
 test("steering mode appends the steering prompt and contract, corrects with the steering shape and returns normalized steering", async (t) => {
   const { config, requests } = await endpoint(t, (index, res) => res.end(envelope(index
     ? '{"safe":false,"reason":"Deletes too much.","steering":" Please delete only build/cache. ","desc":"Removes the whole tree."}'

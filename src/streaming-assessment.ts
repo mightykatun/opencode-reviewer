@@ -9,7 +9,7 @@ const whitespace = (char: string) => char === " " || char === "\t" || char === "
 const escapes: Record<string, string> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" }
 
 /** Single-pass lexer for the fixed verdict contract: safe, reason and desc, plus an
- * optional steering string or null when steering is enabled. Syntax failures are retained
+ * steering when enabled and Unsafe. Safe may omit steering or return null. Syntax failures are retained
  * until finish(), so transport can still consume terminal usage. Resource limits fail
  * immediately. Previews contain decoded Unicode scalar prefixes, never unfinished
  * escapes/surrogates, and mark reason/steering complete only after their closing token.
@@ -62,8 +62,10 @@ export class StreamingAssessment {
       || typeof this.value.safe !== "boolean" || !this.value.reason?.trim() || !this.value.desc?.trim()) {
       throw new AssessmentFormatError("Invalid assessment fields or types")
     }
-    // Absent, null, empty and blank steering all mean no steering. Safe ignores it.
+    // Unsafe steering-mode verdicts need actionable text. Safe ignores steering.
     const steering = !this.value.safe && typeof this.value.steering === "string" ? this.value.steering.trim() : ""
+    if (this.options.steering && !this.value.safe && !steering)
+      throw new AssessmentFormatError("Unsafe assessments require nonempty steering when steering is enabled")
     return { safe: this.value.safe, reason: this.value.reason.trim(), desc: this.value.desc.trim(), ...(steering ? { steering } : {}) }
   }
 
