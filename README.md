@@ -75,6 +75,8 @@ entry, the plugin does not review anything. Options in `opencode.json` are ignor
         "maxFiles": 6,
         "maxEvidenceBytes": 131072,
         "autoApprove": false,
+        "autoRejectSteering": false,
+        "maxSteeringRejections": 1,
         "fastMode": false,
         "extraCareful": true,
         "autoApproveDelaySeconds": 15,
@@ -86,6 +88,7 @@ entry, the plugin does not review anything. Options in `opencode.json` are ignor
           "unsafe": { "banner": true, "sound": true },
           "question": { "banner": true, "sound": true },
           "approved": { "banner": true, "sound": false },
+          "steered": { "banner": true, "sound": true },
           "error": { "banner": true, "sound": true },
           "ended": { "banner": true, "sound": true }
         },
@@ -173,7 +176,9 @@ normal retrieval turns are not counted as retries.
 | Option | Type | Default | Accepted values and behavior |
 | --- | --- | --- | --- |
 | `autoApprove` | boolean | `false` | Allow Safe reviews once automatically. Normally waits for completion, validation and the countdown. Works throughout the current conversation, including subagent browsing and hidden/covered reports. Home, dashboards, unrelated conversations and native permission decision editing wait without cancellation. |
-| `fastMode` | boolean | `false` | Requires `autoApprove: true`. Approve an eligible, front-of-queue request as soon as a Safe rating is parsed, bypassing the countdown. Respects `stream`; with `stream: false`, waits for the complete validated response. Finish the report and save it in the background after approval. |
+| `autoRejectSteering` | boolean | `false` | Independent of `autoApprove`. The reviewer also writes steering for the agent with every Unsafe rating. An Unsafe report with steering starts the same countdown, then answers the native prompt with Reject and a message the agent reads: the reason and the steering. An Unsafe report without steering waits for you. See Automatic steering rejection. |
+| `maxSteeringRejections` | integer | `1` | `1`–`100`. Consecutive automatic rejections per session. After that, Unsafe requests in that session wait for you until any permission in it is approved. |
+| `fastMode` | boolean | `false` | Requires `autoApprove: true` for approvals. Approve an eligible, front-of-queue request as soon as a Safe rating is parsed, bypassing the countdown. With `autoRejectSteering: true`, also reject as soon as an Unsafe rating, its reason and its steering are parsed. Respects `stream`; with `stream: false`, waits for the complete validated response. Finish the report and save it in the background after the reply. |
 | `extraCareful` | boolean | `true` | Include extra-careful guidance when `autoApprove` is enabled. Setting `false` omits that guidance without disabling automatic approval. |
 | `autoApproveDelaySeconds` | integer | `15` | `0`–`3600` seconds. Positive values include an extra 200 ms initial grace; `0` skips the wait but keeps the other approval checks. Ignored in fast mode. |
 
@@ -184,7 +189,7 @@ normal retrieval turns are not counted as retries.
 | `notify` | boolean | `true` | Master switch for desktop banners, sounds and reminders. `false` overrides all per-type controls. |
 | `notifySound` | boolean | `true` | Master switch for notification audio. `false` silences every type and reminder without disabling enabled banners. |
 | `staleReminderSeconds` | integer | `60` | `0` through the maximum safe integer, in seconds. `0` disables reminders; otherwise eligible pending human interactions repeat at this interval, limited to the native front-of-queue blocker per conversation. |
-| `notifications` | object | All banners enabled; all sounds enabled except `approved` | Keys: `attention`, `unsafe`, `question`, `approved`, `error`, `ended`. Each entry is an object with optional `banner` and `sound` booleans. Omitted types/fields retain their defaults; unknown types/fields are invalid. Controls also apply to reminders. |
+| `notifications` | object | All banners enabled; all sounds enabled except `approved` | Keys: `attention`, `unsafe`, `question`, `approved`, `steered`, `error`, `ended`. Each entry is an object with optional `banner` and `sound` booleans. Omitted types/fields retain their defaults; unknown types/fields are invalid. Controls also apply to reminders. |
 | `notificationSoundDirectory` | string | Unset (bundled sounds) | Absolute, NUL-free path, at most 4096 string code units. Use the six notification type names as basenames: usable `.wav` first, then `.mp3`, then the corresponding bundled sound. |
 
 Notification channels are independent: `banner: false, sound: true` is sound-only,
@@ -206,6 +211,10 @@ while retrieval waits for an answer from the conversation's model, and Thinking
 while a streamed verdict reasons before its report starts. A retry shows
 Retrying. Reports support Markdown and scrolling. If the sidebar is hidden, open
 it with OpenCode's sidebar command.
+
+Below the rating, **Reason for approval:** (green) or **Reason for rejection:**
+(red) is followed by the reviewer's short reason. Reports saved before this line
+existed show the report only.
 
 If required evidence can't be read, the panel shows Analysis unavailable. The
 native permission prompt stays open for you to answer.
@@ -329,7 +338,8 @@ cost money.
 
 With `autoApprove: true`, a Safe report starts a countdown of
 `autoApproveDelaySeconds`. When it ends, the plugin answers the native prompt
-with Allow once. It never sends Allow always or Reject.
+with Allow once. It never sends Allow always. Reject is sent only by automatic
+steering rejection, below.
 
 - Click the countdown to approve right away, or click Cancel to keep the request
   manual.
@@ -362,6 +372,31 @@ waits for the full response. After a fast approval, the panel keeps the report
 until it finishes, even if you hide it, switch conversations or disable review.
 Only a fully validated report is saved. A report that fails later can't undo the
 approval.
+
+### Automatic steering rejection
+
+With `autoRejectSteering: true`, the reviewer writes steering for every Unsafe
+rating: up to two short sentences telling the agent how to change its request so
+it can be approved, such as "Please don't delete the whole build directory.
+Please remove only build/cache instead." Guidance per request type lives in the
+overridable `STEERING-PROMPT.md`.
+
+An Unsafe report with steering behaves like an automatic approval: the same
+countdown, delay, Cancel button, queue, conversation and native decision checks,
+and subagent coverage. When it ends, the plugin answers the native prompt with
+Reject and the message `Rejected by opencode-reviewer: <reason>. <steering>`.
+The agent reads it as the tool's error and continues. OpenCode shows it in red.
+
+- The panel shows **Steering:** and the text in red italics while the rejection
+  is armed or sent, and **Rejected in Ns**, **Rejecting…**, **Auto-rejection
+  waiting**, **Auto-rejection canceled** or **Auto-rejection unavailable. Use
+  native controls.** like automatic approval.
+- An Unsafe report without steering waits for you, as do Unsafe reports after
+  `maxSteeringRejections` consecutive automatic rejections in the same session.
+  Approving any permission in that session resets the count. The count is kept
+  in memory only.
+- Fast mode rejects as soon as the rating, reason and steering are parsed.
+- If the plugin can't confirm that a rejection went through, it never resends it.
 
 ### Commands
 
@@ -424,8 +459,10 @@ Left and Right or the arrow buttons switch entries. Up, Down, PageUp and PageDow
 scroll. Escape or **Close** closes history. It works with mouse tracking off and
 with review disabled. Opening history never holds approval.
 
-Each entry shows the rating, the report, tokens, retrieval tool calls, cost,
-model, provider, timings and the permission outcome.
+Each entry shows the rating, the reason, the report, tokens, retrieval tool
+calls, cost, model, provider, timings and the permission outcome. A permission
+rejected by automatic steering shows **Auto rejected** and the steering that was
+sent.
 
 A validated report is saved when its permission is approved or rejected. This
 includes Unsafe reports and repeated reviews of the same permission. Pending
@@ -459,8 +496,8 @@ conversation and all its subagents. Lifetime covers everything in the state
 directory.
 
 Both views show reviews, retries, tokens, tool calls, cost and the Safe and Unsafe
-shares. They also show auto-approvals, manual approvals, rejections, and the
-average time to rating and to full report.
+shares. They also show auto-approvals, manual approvals, automatic steering
+rejections, manual rejections, and the average time to rating and to full report.
 
 - **Reviews** count each validated review once. A new review after re-enabling
   counts again. Percentages use Safe plus Unsafe as the base.
@@ -499,9 +536,10 @@ focused.
 | Notification | Icon | Sent when |
 | --- | --- | --- |
 | Session needs attention | Orange ! | A permission needs you: review is off or unsupported, the review failed, or a Safe request wasn't auto-approved. Silent while a review or countdown runs. |
-| Unsafe permission needs human approval | Red ! | A completed review is Unsafe. Provisional ratings never notify. |
+| Unsafe permission needs human approval | Red ! | A completed review is Unsafe. Provisional ratings never notify. Silent while an automatic steering rejection can still run. |
 | Agent has a question | Purple ? | The agent asks you a question. |
 | Reviewer approved a permission | Green ✓ | An auto-approval is confirmed. Banner only by default. |
+| Reviewer rejected a permission | Red ! | An automatic steering rejection is confirmed. Plays the attention sound by default. |
 | Session error | Red X | The main conversation fails. Subagent failures don't notify. |
 | Session ended | Grey square | The main agent finished and its subagents and shells are done. Not sent for questions, permissions or when you interrupt. |
 
@@ -518,7 +556,7 @@ after 120 seconds, so longer intervals leave a gap.
 
 Banners are clickable only in GNOME Terminal, not inside tmux, screen or SSH. A
 click brings the right tab forward and opens the main conversation. Clicking
-**Reviewer approved a permission** also opens that permission's report and shows
+**Reviewer approved a permission** or **Reviewer rejected a permission** also opens that permission's report and shows
 the sidebar if hidden. If the report is still being saved, the click waits up to
 five seconds. It never opens a different report.
 
@@ -536,7 +574,8 @@ from `pulseaudio-utils`, or with PipeWire's `pw-play` as a fallback.
 
 Six default sounds are bundled, and FFmpeg isn't needed. To replace a sound, put
 a file named after the type (`attention`, `unsafe`, `question`, `approved`,
-`error` or `ended`) in `notificationSoundDirectory`. WAV is tried before MP3.
+`steered`, `error` or `ended`) in `notificationSoundDirectory`. `steered` uses the
+attention sound unless you supply one. WAV is tried before MP3.
 Files must be MP3 or WAV (PCM or 32-bit float, mono or stereo, 8 to 96 kHz), up
 to 4 MiB and 10 seconds long. Sounds are normalized to about -20 dBFS RMS with a
 -3 dBFS peak. Restart after replacing a sound.
