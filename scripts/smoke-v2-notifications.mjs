@@ -440,7 +440,7 @@ try {
         assert.equal(data.location.directory, project)
         assert.equal(data.permission.action, "shell")
         res.writeHead(200, { "Content-Type": "application/json" })
-        res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify({ safe: true,
+        res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify({ safe: true, reason: "Isolated manual notification marker.",
           desc: "Isolated manual notification marker." }) }, finish_reason: "stop" }] }))
         return
       }

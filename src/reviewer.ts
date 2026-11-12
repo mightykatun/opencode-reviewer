@@ -1,5 +1,5 @@
 import type { Config } from "./config.js"
-import type { Assessment, ReviewProgress, ReviewResult, ReviewObservation, ReviewAttemptEvent } from "./types.js"
+import type { Assessment, AssessmentPreview, ReviewProgress, ReviewResult, ReviewObservation, ReviewAttemptEvent } from "./types.js"
 import { randomUUID } from "node:crypto"
 import { BUILTIN_PROMPTS, correctionPrompt, reviewContract, sessionInstructionsPrompt, type PromptSet } from "./prompts.js"
 import { usageAttempt, sumUsage, type PricingLookup, type Usage } from "./usage.js"
@@ -16,8 +16,8 @@ import { retrieveDocuments, type RetrievalExecutor, type RetrievalSection } from
 import type { ContextAsker } from "./clarification.js"
 export { withDeadline } from "./deadline.js"
 
-export function parseAssessment(content: string): Assessment {
-  const parser = new StreamingAssessment()
+export function parseAssessment(content: string, steering = false): Assessment {
+  const parser = new StreamingAssessment({ steering })
   parser.push(content)
   return parser.finish()
 }
@@ -41,24 +41,27 @@ const reasoning = (delta: Record<string, unknown>) => [delta.reasoning, delta.re
 /** Observations of one streamed attempt. firstReasoning fires once, only when
  * reasoning arrives before any answer text. */
 interface StreamEvents {
-  progress(preview?: Partial<Assessment>): void
+  progress(preview?: AssessmentPreview): void
   content(): void
   firstReasoning(): void
 }
 
+const previewKeys = ["safe", "reason", "reasonComplete", "steering", "steeringComplete", "desc"] as const
+const samePreview = (left?: AssessmentPreview, right?: AssessmentPreview) => previewKeys.every(key => left?.[key] === right?.[key])
+
 async function streamedAssessment(response: Response, signal: AbortSignal, ownership: TransportOwnership, accounting: ReturnType<typeof usageAttempt>,
-  events: StreamEvents): Promise<StreamingAssessment> {
+  events: StreamEvents, steering: boolean): Promise<StreamingAssessment> {
   const progress = events.progress
   let answering = false, thinking = false
   if (response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "text/event-stream") {
     ownership.track(cancelBody(response))
     throw new Error("Reviewer expected an SSE response")
   }
-  const assessment = new StreamingAssessment()
+  const assessment = new StreamingAssessment({ steering })
   let stopped = false, done = false
   let finished: string | undefined
   let id: string | undefined, model: string | undefined
-  let last: Partial<Assessment> | undefined
+  let last: AssessmentPreview | undefined
   let failure: AssessmentStreamError | TerminalAssessmentRejection | undefined
   function invalid(retryable = true): never {
     const message = "Reviewer API did not return a text assessment stream"
@@ -144,7 +147,7 @@ async function streamedAssessment(response: Response, signal: AbortSignal, owner
         events.content()
         assessment.push(delta.content)
         const preview = assessment.preview()
-        if (preview?.safe !== last?.safe || preview?.desc !== last?.desc) {
+        if (!samePreview(preview, last)) {
           last = preview
           progress(preview)
         }
@@ -241,7 +244,7 @@ export async function review(
   let retry: "initial" | "transport" | "format" = "initial"
   for (let attempt = 0; ; attempt++) {
     signal.throwIfAborted()
-    const progress = (phase: ReviewProgress["phase"], preview?: Partial<Assessment>, ordinal = attempt) => {
+    const progress = (phase: ReviewProgress["phase"], preview?: AssessmentPreview, ordinal = attempt) => {
       if (signal.aborted) return
       try { void Promise.resolve(onProgress?.({ attempt: ordinal, phase, ...(preview ? { preview: { ...preview } } : {}) })).catch(() => {}) }
       catch { /* Observational callbacks cannot change review outcomes. */ }
@@ -296,7 +299,7 @@ export async function review(
         },
         content: () => { contentStarted = true; diagnose?.("first-content") },
         firstReasoning: () => progress("thinking"),
-      })
+      }, config.autoRejectSteering)
       else {
         let envelope: unknown
         try { envelope = JSON.parse(await responseText(response, signal, ownership)) }
@@ -319,7 +322,7 @@ export async function review(
           throw new Error("Reviewer API did not return a text assessment")
         }
         if (message.content) { contentStarted = true; diagnose?.("first-content") }
-        assessment = new StreamingAssessment()
+        assessment = new StreamingAssessment({ steering: config.autoRejectSteering })
         assessment.push(message.content)
         if (diagnose && typeof assessment.preview()?.safe === "boolean") diagnose("first-rating")
       }
@@ -330,7 +333,7 @@ export async function review(
       try {
         let result: Assessment
         try { result = assessment.finish() } finally { diagnose?.("final-validation") }
-        if (config.stream) progress("streaming", result)
+        if (config.stream) progress("streaming", { ...result, reasonComplete: true, ...(config.autoRejectSteering ? { steeringComplete: true } : {}) })
         signal.throwIfAborted()
         return { ...result, toolCalls, ...(reportUsage ? { usage: reportUsage } : {}), metadata: {
           review: observation.review, kind: evidence.kind, configuredModel: config.model, provider: config.baseURL,

@@ -6,9 +6,12 @@ import { setupCliReconnect } from "../src/cli-reconnect.js"
 import type { CliPluginState } from "../src/cli-plugin.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 
-const location = { directory: "/server/project", workspaceID: "workspace" }
-const handshake = (epoch = "10000000-1000-4000-8000-100000000000") => ({ protocol: 2 as const, hostVersion: "development", epoch,
-  location, project: { id: "project", directory: "/server", canonical: "/server" } })
+type Location = { directory: string; workspaceID?: string }
+const location: Location = { directory: "/server/project", workspaceID: "workspace" }
+/** Another directory with an open tab. */
+const other: Location = { directory: "/server/other" }
+const handshake = (epoch = "10000000-1000-4000-8000-100000000000", at: Location = location) => ({ protocol: 2 as const,
+  hostVersion: "development", epoch, location: at, project: { id: "project", directory: "/server", canonical: "/server" } })
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(done => { resolve = done })
@@ -41,17 +44,19 @@ function events() {
       } finally { closed++ }
     } }
 }
-function fixture(t: TestContext, options: { read?: (signal: AbortSignal, attempt: number) => Promise<unknown>;
-  cleanup?: () => Promise<void>; optionalCleanup?: () => Promise<void>; checkpoint?: () => void; initialFallback?: boolean } = {}) {
+function fixture(t: TestContext, options: { read?: (signal: AbortSignal, attempt: number, at: Location) => Promise<unknown>;
+  cleanup?: (at: Location) => Promise<void>; optionalCleanup?: () => Promise<void>; checkpoint?: () => void; initialFallback?: boolean;
+  locations?: Location[] } = {}) {
   let native!: (event: { id: string }) => void, now = 0
   t.mock.method(performance, "now", () => now)
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] })
-  const life = new PluginLifecycle(), source = events(), calls: AbortSignal[] = []
-  const installations: { signal: AbortSignal; client: unknown; state: CliPluginState; cleaned: boolean }[] = []
-  const client = { event: source, rpc: () => ({ handshake: (at: unknown, request: { location: unknown; signal: AbortSignal }) => {
-    assert.deepEqual(at, location); assert.deepEqual(request.location, location)
-    calls.push(request.signal)
-    return options.read?.(request.signal, calls.length) ?? Promise.resolve(handshake())
+  const life = new PluginLifecycle(), source = events(), calls: AbortSignal[] = [], handshakes: Location[] = []
+  const installations: { signal: AbortSignal; client: unknown; state: CliPluginState; cleaned: boolean; location: Location }[] = []
+  const locations = { current: options.locations ?? [location] }
+  const client = { event: source, rpc: () => ({ handshake: (at: Location, request: { location: unknown; signal: AbortSignal }) => {
+    assert.ok(locations.current.some(value => value.directory === at.directory)); assert.deepEqual(request.location, at)
+    calls.push(request.signal); handshakes.push(at)
+    return options.read?.(request.signal, calls.length, at) ?? Promise.resolve(handshake(undefined, at))
   } }) }
   const ctx = { location, client, data: { on: (type: string, listener: typeof native) => {
     assert.equal(type, "server.connected"); native = listener
@@ -59,15 +64,15 @@ function fixture(t: TestContext, options: { read?: (signal: AbortSignal, attempt
   } } } as unknown as Plugin.Context
   const state = { connectionID: "initial", companion: options.initialFallback ? undefined : handshake(), config: {}, dependencies: {} } as CliPluginState
   const checkpoints: unknown[] = []
-  const recovery = setupCliReconnect(ctx, state, life, (context, next, child) => {
-    const value = { signal: child.signal, client: context.client, state: next, cleaned: false }
+  const recovery = setupCliReconnect(ctx, state, life, { locations: () => locations.current, install: (context, next, child, at) => {
+    const value = { signal: child.signal, client: context.client, state: next, cleaned: false, location: at }
     installations.push(value)
-    child.addCleanup(async () => { await options.cleanup?.(); value.cleaned = true })
+    child.addCleanup(async () => { await options.cleanup?.(at); value.cleaned = true })
     if (options.optionalCleanup) child.addCleanup(options.optionalCleanup, false)
     return value
-  }, value => { checkpoints.push(value); options.checkpoint?.() })
+  }, checkpoint: value => { checkpoints.push(value); options.checkpoint?.() } })
   t.after(() => life.stop())
-  return { life, source, state, calls, installations, checkpoints, recovery, ctx, native: (id: string) => native({ id }),
+  return { life, source, state, calls, handshakes, installations, checkpoints, recovery, ctx, locations, native: (id: string) => native({ id }),
     async advance(ms = 0) { now += ms; t.mock.timers.tick(ms); await settle(); await settle() } }
 }
 
@@ -314,4 +319,59 @@ test("optional observer cleanup stays owned but cannot prevent fresh review admi
     await f.advance(); assert.equal(settled, false, "New admission must not discard ownership of optional cleanup")
     held.resolve(); await stopped; await draining
   } finally { held.resolve(); await f.life.stop() }
+})
+
+const at = (f: ReturnType<typeof fixture>, value: Location) =>
+  f.installations.filter(installation => installation.location.directory === value.directory)
+
+test("every wanted location admits its own composition with its own scoped handshake", async t => {
+  const f = fixture(t, { locations: [location, other] })
+  f.source.marker("initial"); await f.advance()
+  assert.deepEqual(f.handshakes, [other], "Startup already admitted the current location")
+  assert.equal(at(f, location).length, 1); assert.equal(at(f, other).length, 1)
+  assert.deepEqual(at(f, other)[0]!.state.companion, handshake(undefined, other))
+  assert.equal(f.recovery.current(), at(f, location)[0])
+  assert.equal(f.recovery.runtime(other), at(f, other)[0])
+  assert.deepEqual(f.state.companion, handshake(), "Inspection describes the current location")
+})
+
+test("a failed location stays manual alone while other locations keep their health checks", async t => {
+  const f = fixture(t, { locations: [location, other], read: async (_signal, _attempt, value) => {
+    if (value.directory === other.directory) throw Error("Companion refused")
+    return handshake(undefined, value)
+  } })
+  f.source.marker("initial"); await f.advance()
+  assert.equal(at(f, other).length, 1); assert.equal(at(f, other)[0]!.state.companion, undefined, "Fallback, never a reviewer")
+  await f.advance(2000); await f.advance(2000)
+  assert.equal(f.handshakes.filter(value => value.directory === other.directory).length, 1, "Health checks cannot promote a terminal fallback")
+  assert.equal(f.handshakes.filter(value => value.directory === location.directory).length, 2)
+  assert.equal(at(f, location).length, 1); assert.equal(at(f, location)[0]!.signal.aborted, false)
+})
+
+test("focus changes retire nothing, and a released location checkpoints alone until it returns", async t => {
+  const f = fixture(t, { locations: [location, other] })
+  f.source.marker("initial"); await f.advance()
+  f.locations.current = [other, location]; await f.advance(2000)
+  assert.equal(f.installations.length, 2)
+  assert.equal(f.recovery.current(), at(f, other)[0]); assert.deepEqual(f.state.companion, handshake(undefined, other))
+  f.locations.current = [location]; await f.advance(2000)
+  assert.equal(at(f, other)[0]!.signal.aborted, true); assert.equal(at(f, other)[0]!.cleaned, true)
+  assert.deepEqual(f.checkpoints, [at(f, other)[0]])
+  assert.equal(at(f, location)[0]!.signal.aborted, false)
+  assert.equal(f.recovery.runtime(other), undefined)
+  f.locations.current = [location, other]; await f.advance(2000)
+  assert.equal(at(f, other).length, 2); assert.equal(f.recovery.runtime(other), at(f, other)[1])
+})
+
+test("a connection change retires every location, and each drains only its own generation", async t => {
+  const held = deferred<void>()
+  const f = fixture(t, { locations: [location, other], cleanup: async value => { if (value.directory === other.directory) await held.promise } })
+  f.source.marker("initial"); await f.advance()
+  f.native("next")
+  assert.ok(f.installations.every(installation => installation.signal.aborted), "Native reconnect fences every location synchronously")
+  f.source.marker("next"); await f.advance()
+  assert.equal(at(f, location).length, 2, "One location's held cleanup cannot block another")
+  assert.equal(at(f, other).length, 1)
+  held.resolve(); await f.advance()
+  assert.equal(at(f, other).length, 2); assert.equal(at(f, other)[1]!.state.connectionID, "next")
 })

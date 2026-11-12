@@ -106,7 +106,7 @@ test("fast native confirmation before completion saves only the final validated 
   const evaluation = review(shellEvidence(), fast,
     new AbortController().signal, { observation, fetcher: async () => new Response(new ReadableStream({
       async start(controller) {
-        controller.enqueue(new TextEncoder().encode(frame('{"safe":true,"desc":"Final')))
+        controller.enqueue(new TextEncoder().encode(frame('{"safe":true,"reason":"Decisive reason.","desc":"Final')))
         await remainder
         controller.enqueue(new TextEncoder().encode(frame(' validated native report."}', "stop") + "data: [DONE]\n\n"))
         controller.close()

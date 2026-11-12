@@ -18,6 +18,7 @@ import { setupHostSidebar } from "./host-sidebar.js"
 import { conversationRoot, RouteSessions } from "./route-approval.js"
 import { sameLocation } from "./companion-protocol.js"
 import { historyStateRoot } from "./local-state.js"
+import { hostLocation, sessionAtLocation } from "./host-locations.js"
 import type { RequestIdentity } from "./controller.js"
 
 export interface HostHistoryRuntimeOptions {
@@ -43,8 +44,7 @@ export function hostHistoryScope(directory: string): string {
 export function setupHostHistory(context: Plugin.Context, pluginState: CliPluginState,
   lifecycle: PluginLifecycle, options: HostHistoryRuntimeOptions) {
   const client = context.client
-  const current = context.location ?? context.data.location.default()
-  const location = { directory: current.directory, ...(current.workspaceID ? { workspaceID: current.workspaceID } : {}) }
+  const location = hostLocation(context)
   const scope = hostHistoryScope(location.directory)
   const store = new HistoryStore(historyStateRoot(pluginState.stateRoot), options.storeOptions)
   const generation = new AbortController()
@@ -153,19 +153,15 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
  * No controller lease, permission listener, model transport or maintenance owner. */
 export function setupHostHistoryOnly(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle,
   storeOptions?: HistoryStoreOptions) {
-  const current = ctx.location ?? ctx.data.location.default()
-  const location = { directory: current.directory, ...(current.workspaceID ? { workspaceID: current.workspaceID } : {}) }
-  const routes = new RouteSessions(id => {
-    const session = ctx.data.session.get(id)
-    return session && sameLocation(session.location, location) ? session : undefined
-  })
+  const location = hostLocation(ctx)
+  const routes = new RouteSessions(id => sessionAtLocation(ctx, id, location) ? ctx.data.session.get(id) : undefined)
   const rootRoute = () => {
     if (life.signal.aborted) return
     const route = ctx.ui.router.current()
     if (route.type !== "session" || conversationRoot(route.sessionID, id => routes.get(id)) !== route.sessionID) return
     return route.sessionID
   }
-  const { sidebar, geometry } = setupHostSidebar(ctx, life, rootRoute)
+  const { sidebar, geometry } = setupHostSidebar(ctx, life, rootRoute, id => sessionAtLocation(ctx, id, location))
   const records = setupHostHistory(ctx, state, life, { rootRoute, sidebarOwner: sidebar,
     sidebarGeometry: geometry, storeOptions })
   life.addCleanup(ctx.ui.slot({ append: "app", render: () =>

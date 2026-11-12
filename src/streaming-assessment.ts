@@ -1,17 +1,21 @@
-import type { Assessment } from "./types.js"
+import type { Assessment, AssessmentPreview } from "./types.js"
 
 export const MAX_ASSESSMENT_BYTES = 65536
 export class AssessmentFormatError extends Error {}
 
-type State = "start" | "first-key" | "key" | "key-string" | "colon" | "value" | "boolean" | "desc-string" | "after-value" | "done"
+type State = "start" | "first-key" | "key" | "key-string" | "colon" | "value" | "literal" | "value-string" | "after-value" | "done"
+type TextField = "reason" | "desc" | "steering"
 const whitespace = (char: string) => char === " " || char === "\t" || char === "\r" || char === "\n"
 const escapes: Record<string, string> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" }
 
-/** Single-pass lexer for the fixed two-field contract. Syntax failures are retained until
- * finish(), so transport can still consume terminal usage. Resource limits fail immediately.
- * Previews contain decoded Unicode scalar prefixes, never unfinished escapes/surrogates.
+/** Single-pass lexer for the fixed verdict contract: safe, reason and desc, plus an
+ * optional steering string or null when steering is enabled. Syntax failures are retained
+ * until finish(), so transport can still consume terminal usage. Resource limits fail
+ * immediately. Previews contain decoded Unicode scalar prefixes, never unfinished
+ * escapes/surrogates, and mark reason/steering complete only after their closing token.
  */
 export class StreamingAssessment {
+  constructor(private options: { steering?: boolean } = {}) {}
   private state: State = "start"
   private error?: AssessmentFormatError
   private parts: string[] = []
@@ -25,10 +29,14 @@ export class StreamingAssessment {
   private high = ""
   private literal = ""
   private literalIndex = 0
-  private value: Partial<Assessment> = {}
+  private value: Omit<AssessmentPreview, "steering"> & { steering?: string | null } = {}
 
   get content(): string { return this.parts.join("") }
-  preview(): Partial<Assessment> | undefined { return this.error ? undefined : { ...this.value } }
+  preview(): AssessmentPreview | undefined {
+    if (this.error) return undefined
+    const { steering, ...rest } = this.value
+    return { ...rest, ...(typeof steering === "string" ? { steering } : {}) }
+  }
 
   push(chunk: string): void {
     // Account for a literal surrogate pair split between content deltas without counting it twice.
@@ -50,10 +58,13 @@ export class StreamingAssessment {
   finish(): Assessment {
     if (this.error) throw this.error
     if (this.state !== "done") throw new AssessmentFormatError("Invalid JSON")
-    if (this.fields.size !== 2 || typeof this.value.safe !== "boolean" || !this.value.desc?.trim()) {
+    if (!this.fields.has("safe") || !this.fields.has("reason") || !this.fields.has("desc")
+      || typeof this.value.safe !== "boolean" || !this.value.reason?.trim() || !this.value.desc?.trim()) {
       throw new AssessmentFormatError("Invalid assessment fields or types")
     }
-    return { safe: this.value.safe, desc: this.value.desc.trim() }
+    // Absent, null, empty and blank steering all mean no steering. Safe ignores it.
+    const steering = !this.value.safe && typeof this.value.steering === "string" ? this.value.steering.trim() : ""
+    return { safe: this.value.safe, reason: this.value.reason.trim(), desc: this.value.desc.trim(), ...(steering ? { steering } : {}) }
   }
 
   private invalid(): never { throw new AssessmentFormatError("Invalid JSON") }
@@ -72,7 +83,7 @@ export class StreamingAssessment {
       if (code >= 0xdc00 && code <= 0xdfff) this.invalid()
       this.text += char
     }
-    if (this.state === "desc-string") this.value.desc = this.text
+    if (this.state === "value-string") this.value[this.key as TextField] = this.text
   }
 
   private string(char: string): void {
@@ -93,11 +104,15 @@ export class StreamingAssessment {
       if (this.high) this.invalid()
       if (this.state === "key-string") {
         if (this.fields.has(this.text)) throw new AssessmentFormatError("Duplicate assessment field")
-        if (this.text !== "safe" && this.text !== "desc") this.schema()
+        if (!["safe", "reason", "desc", ...(this.options.steering ? ["steering"] : [])].includes(this.text)) this.schema()
         this.key = this.text
         this.fields.add(this.key)
         this.state = "colon"
-      } else this.state = "after-value"
+      } else {
+        if (this.key === "reason") this.value.reasonComplete = true
+        if (this.key === "steering") this.value.steeringComplete = true
+        this.state = "after-value"
+      }
     } else {
       if (char.charCodeAt(0) < 0x20) this.invalid()
       this.decoded(char)
@@ -105,15 +120,16 @@ export class StreamingAssessment {
   }
 
   private character(char: string): void {
-    if (this.state === "key-string" || this.state === "desc-string") { this.string(char); return }
-    if (this.state === "boolean") {
+    if (this.state === "key-string" || this.state === "value-string") { this.string(char); return }
+    if (this.state === "literal") {
       if (this.literalIndex < this.literal.length) {
         if (char !== this.literal[this.literalIndex++]) this.invalid()
         return
       }
       // A complete spelling alone is not a token boundary (truex must never preview Safe).
       if (!whitespace(char) && char !== "," && char !== "}") this.invalid()
-      this.value.safe = this.literal === "true"
+      if (this.literal === "null") { this.value.steering = null; this.value.steeringComplete = true }
+      else this.value.safe = this.literal === "true"
       this.state = "after-value"
     }
     if (whitespace(char)) return
@@ -135,16 +151,16 @@ export class StreamingAssessment {
         this.state = "value"
         return
       case "value":
-        if (this.key === "safe") {
-          if (char !== "t" && char !== "f") this.schema()
-          this.literal = char === "t" ? "true" : "false"
+        if (this.key === "safe" || (this.key === "steering" && char === "n")) {
+          if (this.key === "safe" ? char !== "t" && char !== "f" : char !== "n") this.schema()
+          this.literal = char === "t" ? "true" : char === "f" ? "false" : "null"
           this.literalIndex = 1
-          this.state = "boolean"
+          this.state = "literal"
         } else {
           if (char !== '"') this.schema()
           this.text = ""
-          this.value.desc = ""
-          this.state = "desc-string"
+          this.value[this.key as TextField] = ""
+          this.state = "value-string"
         }
         return
       case "after-value":

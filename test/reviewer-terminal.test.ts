@@ -14,7 +14,7 @@ const event = (body: unknown) => `data: ${typeof body === "string" ? body : JSON
 const frame = (delta: Record<string, unknown>, finish_reason: string | null = null) => event({
   id: "response", model: "reported-model", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }],
 })
-const preview = frame({ content: '{"safe":true,"desc":"Provisional"}' })
+const preview = frame({ content: '{"safe":true,"reason":"Decisive reason.","desc":"Provisional"}' })
 const usage = event({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 4, cost: 0.03 } })
 const done = event("[DONE]")
 const expected = { input: 12, output: 4, cost: 0.03 }
@@ -65,7 +65,7 @@ function finalized(f: ReturnType<typeof fixture>, value?: Usage) {
 for (const [name, rejection] of refusals) test(`terminal ${name} clears previews and drains usage at every byte split`, async () => {
   // Cumulative usage replaces values. Before a finish, subsequent assessment JSON
   // cannot restore a rejected preview or become a format-correction request.
-  const finish = name.endsWith("finish") || name === "filter" ? "" : frame({ content: '{"safe":true,"desc":"Must not return"}' }, "stop")
+  const finish = name.endsWith("finish") || name === "filter" ? "" : frame({ content: '{"safe":true,"reason":"Decisive reason.","desc":"Must not return"}' }, "stop")
   const wire = Buffer.from(preview + rejection + finish
     + event({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.01 } }) + usage + usage + done)
   for (let split = 0; split <= wire.length; split++) {

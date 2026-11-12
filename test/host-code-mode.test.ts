@@ -75,7 +75,7 @@ for (const safe of [true, false]) test(`uncertain parallel MCP linkage reaches t
         assert.ok(evidence.codeMode.candidates.every((value: any) => value.definition.id === "account_lookup"))
         assert.equal(evidence.definition, undefined, "No inner definition is presented as the outer executor")
         assert.ok(evidence.limitations.some((value: string) => /No candidate has been selected/.test(value)))
-        return Response.json({ choices: [{ message: { content: JSON.stringify({ safe, desc: "Judge decision with linkage uncertainty." }) }, finish_reason: "stop" }] })
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ safe, reason: "Decisive reason.", desc: "Judge decision with linkage uncertainty." }) }, finish_reason: "stop" }] })
       },
     })
     assert.equal(result?.safe, safe); assert.equal(result?.metadata?.kind, "tool")
@@ -136,7 +136,7 @@ for (const safe of [true, false]) test(`the judge's ${safe ? "Safe" : "Unsafe"} 
   const f = await fixture(), timers = new Set<() => void>(), writes: string[] = []
   const options = { ...config, autoApprove: true, autoApproveDelaySeconds: 0 }
   const controller = new Controller((_request, signal, identified) => evaluateHostReview(f.client, f.snapshot, options, BUILTIN_PROMPTS, signal, identified, {
-    fetcher: async () => Response.json({ choices: [{ message: { content: JSON.stringify({ safe, desc: "Decision with uncertainty." }) }, finish_reason: "stop" }] }),
+    fetcher: async () => Response.json({ choices: [{ message: { content: JSON.stringify({ safe, reason: "Decisive reason.", desc: "Decision with uncertainty." }) }, finish_reason: "stop" }] }),
   }), () => {}, {
     reviewOptions: options, candidate: () => true, nativeFront: () => pending.id, approvalReady: () => true,
     modes: { root: async () => "session", load: async () => {}, enabled: () => true },

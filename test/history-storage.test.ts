@@ -23,11 +23,11 @@ const resolve = (c = context, p = payload, outcome: HistoryOutcome = "manual"): 
 test("validated report controls survive resolved storage and remain escaped for display", t => {
   const f = fixture(t), parser = new StreamingAssessment()
   const desc = "Report\u0000with\u001bcontrols\u202e"
-  parser.push(JSON.stringify({ safe: true, desc }))
+  parser.push(JSON.stringify({ safe: true, reason: "Decisive reason.", desc }))
   const assessment = parser.finish()
   f.apply({ type: "reviewAccepted", context, at: 100, accepted: { safe: assessment.safe, completedAt: 100 } })
   assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 0)
-  f.apply(resolve(context, { ...payload, ...assessment }))
+  f.apply(resolve(context, { ...payload, safe: assessment.safe, desc: assessment.desc }))
   assert.equal(f.history().record?.payload.desc, desc)
   assert.equal(displayText(f.history().record!.payload.desc), "Report\\u0000with\\u001bcontrols\\u202e")
 })

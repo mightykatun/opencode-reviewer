@@ -13,7 +13,7 @@ const evidence = shellEvidence()
 const config = parseConfig({ baseURL: "https://fixture.invalid/v1", model: "fixture", stream: false })
 const request = (i: number) => ({ id: `p${String(i).padStart(2, "0")}`, sessionID: "root", action: "shell", resources: ["pwd"],
   source: { assistantID: "assistant", id: "call" } })
-const good = JSON.stringify({ choices: [{ message: { content: '{"safe":true,"desc":"Bounded."}' } }] })
+const good = JSON.stringify({ choices: [{ message: { content: '{"safe":true,"reason":"Decisive reason.","desc":"Bounded."}' } }] })
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (reason: unknown) => void
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
@@ -136,7 +136,7 @@ for (const mode of ["transport", "format"] as const) for (const release of [fals
       fetcher: async () => {
         if (++posts > 1) return new Response(good)
         if (mode === "transport") return new Response(new ReadableStream({ cancel() { canceled++; return cancel.promise } }), { status: 503 })
-        const malformed = JSON.stringify({ choices: [{ message: { content: '{"safe":"yes","desc":"Invalid."}' } }] })
+        const malformed = JSON.stringify({ choices: [{ message: { content: '{"safe":"yes","reason":"Decisive reason.","desc":"Invalid."}' } }] })
         return heldReader(async () => reads++ ? { done: true, value: undefined } : { done: false, value: Buffer.from(malformed) },
           () => { canceled++; return cancel.promise }, () => {})
       }, onRetry: () => { retries++ }, observation: { review: "review", observe: event => { events.push(event) } },

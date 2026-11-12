@@ -9,7 +9,7 @@ import { reviewerClock as clock } from "./reviewer-clock.js"
 
 const evidence = shellEvidence()
 const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", timeoutMs: 5000, formatRetries: 0 })
-const success = () => Response.json({ choices: [{ message: { content: '{"safe":true,"desc":"Recovered."}' } }] })
+const success = () => Response.json({ choices: [{ message: { content: '{"safe":true,"reason":"Decisive reason.","desc":"Recovered."}' } }] })
 
 for (const kind of ["seconds", "date"]) test(`review POST waits for the exact Retry-After ${kind} boundary`, async t => {
   const time = clock(t), requests: RequestInit[] = []

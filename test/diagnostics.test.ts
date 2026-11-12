@@ -12,7 +12,7 @@ const frame = (content: string, finish_reason: string | null = null) => `data: $
   choices: [{ index: 0, delta: { content }, finish_reason }] })}\n\n`
 const finish = frame("", "stop") + "data: [DONE]\n\n"
 const response = (content: string) => Response.json({ model: "PRIVATE_MODEL", choices: [{ message: { content } }] }, { headers: { "x-private": "PRIVATE_HEADER" } })
-const safe = { safe: true, desc: "PRIVATE_DESCRIPTION" }
+const safe = { safe: true, reason: "Decisive reason.", desc: "PRIVATE_DESCRIPTION" }
 
 function assertNumeric(events: readonly DiagnosticEvent[]) {
   assert.ok(events.length > 0)
@@ -34,7 +34,7 @@ for (const stream of [false, true]) test(`${stream ? "streaming" : "non-streamin
   const events: DiagnosticEvent[] = [], bodies: string[] = []
   const fetcher: typeof fetch = async (_, init) => {
     bodies.push(String(init?.body))
-    return stream ? new Response(frame('{"safe":true,') + frame('"desc":"PRIVATE_DESCRIPTION"}') + finish,
+    return stream ? new Response(frame('{"safe":true,"reason":"Decisive reason.",') + frame('"desc":"PRIVATE_DESCRIPTION"}') + finish,
       { headers: { "Content-Type": "text/event-stream", "x-private": "PRIVATE_HEADER" } }) : response(JSON.stringify(safe))
   }
   const args = [evidence, config(stream), new AbortController().signal] as const
@@ -65,7 +65,7 @@ test("first content/rating are observed before terminal validation, once per att
   send(": keepalive\n\n")
   await settle()
   assert.deepEqual(events.map((event) => event.phase), ["dispatch", "headers"])
-  send(frame('{"safe":true,'))
+  send(frame('{"safe":true,"reason":"Decisive reason.",'))
   await settle()
   assert.deepEqual(events.map((event) => event.phase), ["dispatch", "headers", "first-content", "first-rating"])
   send(frame('"desc":"PRIVATE_DESCRIPTION"}'))
@@ -83,7 +83,7 @@ test("correction attempts emit separate ordinals and dispatch-relative clocks", 
   const events: DiagnosticEvent[] = []
   let calls = 0
   const result = await review(evidence, config(true), new AbortController().signal, { fetcher: async () => {
-    const content = ++calls === 1 ? '{"safe":true,"desc":"PRIVATE_DESCRIPTION","extra":1}' : JSON.stringify(safe)
+    const content = ++calls === 1 ? '{"safe":true,"reason":"Decisive reason.","desc":"PRIVATE_DESCRIPTION","extra":1}' : JSON.stringify(safe)
     return new Response(frame(content.slice(0, 13)) + frame(content.slice(13)) + finish, { headers: { "Content-Type": "text/event-stream" } })
   }, environment: {}, onDiagnostics: (event) => { events.push(event) } })
   assert.deepEqual(result, { ...safe, toolCalls: 0, metadata: result.metadata })
@@ -158,7 +158,7 @@ test("abort and failed transport never invent final validation or leak private e
   let calls = 0
   const run = review(evidence, config(true), abort.signal, { fetcher: async () => {
     calls++
-    return new Response(new ReadableStream({ start(writer) { writer.enqueue(new TextEncoder().encode(frame('{"safe":true,'))) } }),
+    return new Response(new ReadableStream({ start(writer) { writer.enqueue(new TextEncoder().encode(frame('{"safe":true,"reason":"Decisive reason.",'))) } }),
       { headers: { "Content-Type": "text/event-stream" } })
   }, environment: {}, onDiagnostics: (event) => { events.push(event) } })
   await settle()

@@ -1,18 +1,19 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { CliRenderEvents, type BoxRenderable, type Renderable } from "@opentui/core"
-import { createEffect, createSignal, onCleanup } from "solid-js"
+import { createEffect, createSignal, onCleanup, Show } from "solid-js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
 import type { HostPanelBounds, HostSidebarAnchor } from "./host-review-panel.js"
 
 /** One public sidebar anchor and FRAME-measured app-slot geometry. Never reveal
- * the sidebar or change mouse tracking to obtain a presentation surface. */
+ * the sidebar or change mouse tracking to obtain a presentation surface. Each
+ * location's composition anchors only the sidebars of its own sessions. */
 export function setupHostSidebar(ctx: Plugin.Context, life: PluginLifecycle,
-  rootSession: () => string | undefined) {
+  rootSession: () => string | undefined, owns: (sessionID: string) => boolean) {
   const [sidebar, setSidebar] = createSignal<HostSidebarAnchor>()
   const [geometry, setGeometry] = createSignal<HostPanelBounds | undefined>(undefined, {
     equals: (a, b) => a?.x === b?.x && a?.y === b?.y && a?.width === b?.width && a?.height === b?.height,
   })
-  life.addCleanup(ctx.ui.slot({ prepend: "sidebar.content", render: input => {
+  const Anchor = (input: { sessionID: string }) => {
     let node: BoxRenderable | undefined
     const owner = Symbol("reviewer.sidebar")
     createEffect(() => { input.sessionID; if (node) setSidebar({ owner, sessionID: input.sessionID, node }) })
@@ -22,7 +23,9 @@ export function setupHostSidebar(ctx: Plugin.Context, life: PluginLifecycle,
     })
     return <box ref={(value: BoxRenderable) => { node = value; setSidebar({ owner, sessionID: input.sessionID, node }) }}
       width="100%" height={1} flexShrink={0} />
-  } }))
+  }
+  life.addCleanup(ctx.ui.slot({ prepend: "sidebar.content", render: input =>
+    <Show when={owns(input.sessionID)}><Anchor sessionID={input.sessionID} /></Show> }))
   const frame = () => {
     const current = sidebar()
     let node: Renderable | undefined = current?.node

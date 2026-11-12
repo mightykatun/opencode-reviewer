@@ -14,7 +14,15 @@ export interface PatchOperation {
 export interface Assessment {
   safe: boolean
   desc: string
+  /** Decisive reason, shown after a fixed label. Required from the model. Absent only
+   * in reports saved before the field existed. */
+  reason?: string
+  /** Normalized steering for the requesting agent: Unsafe only, nonempty when present. */
+  steering?: string
 }
+
+/** Provisional prefixes. Completion flags mark closed reason and steering tokens. */
+export type AssessmentPreview = Partial<Assessment> & { reasonComplete?: boolean; steeringComplete?: boolean }
 
 /** Monotonic durations from evaluation start, excluding approval/countdown time. */
 export interface ReviewTiming {
@@ -33,7 +41,7 @@ export interface ReviewProgress {
    * attempts and never advance attempt ordinals. thinking marks reasoning in a
    * streamed attempt before its answer text starts. */
   phase: "retrieving" | "retrieval-retrying" | "asking" | "evaluating" | "retrying" | "thinking" | "streaming"
-  preview?: Partial<Assessment>
+  preview?: AssessmentPreview
 }
 
 /** Endpoint metadata stays outside the model's strict assessment JSON. */

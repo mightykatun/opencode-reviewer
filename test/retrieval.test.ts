@@ -15,7 +15,7 @@ const tools = (...calls: unknown[]) => ({ choices: [{ index: 0, message: { role:
   usage: { prompt_tokens: 10, completion_tokens: 2 } })
 const text = (content: string, usage = true) => ({ choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
   ...(usage ? { usage: { prompt_tokens: 10, completion_tokens: 2 } } : {}) })
-const verdict = (safe = false) => text(JSON.stringify({ safe, desc: "Assessed with retrieved files." }))
+const verdict = (safe = false) => text(JSON.stringify({ safe, reason: "Decisive reason.", desc: "Assessed with retrieved files." }))
 
 function harness(replies: Reply[], results: Record<string, JSONObject> = {}, options: Record<string, unknown> = {}) {
   const bodies: any[] = [], executed: { call: any; base: string }[] = [], events: ReviewAttemptEvent[] = [], progress: ReviewProgress[] = []

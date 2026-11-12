@@ -62,7 +62,7 @@ function fixture(child = false) {
   const evaluate = (identify = () => {}, signal = new AbortController().signal) => evaluateHostReview(client as unknown as OpenCodeClient, snapshot, config,
     BUILTIN_PROMPTS, signal, identify, { fetcher: async (_url, init) => {
       posts.push(JSON.parse(String(init?.body)))
-      return Response.json({ choices: [{ message: { content: '{"safe":false,"desc":"Synthetic assessment."}' } }] })
+      return Response.json({ choices: [{ message: { content: '{"safe":false,"reason":"Decisive reason.","desc":"Synthetic assessment."}' } }] })
     } })
   return { client, state, posts, calls, evaluate, snapshot }
 }

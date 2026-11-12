@@ -55,7 +55,7 @@ Focused checks are `smoke-v2-review.mjs` scenarios unless another file is named:
 | Native replies in history | `advisory-history-once`, `advisory-history-always`, `advisory-history-reject` |
 | Session instructions | `normal-instructions` |
 | Subagents | `normal-descendant`, `fast-descendant` |
-| Routes, dialogs and decisions | `normal-route-wait`, `normal-decision`, `fast-decision`, `normal-dialog`, `fast-dialog`, `normal-hide`, `normal-resize`, `normal-hidden-complete` |
+| Routes, dialogs and decisions | `normal-route-wait`, `normal-location-tab`, `normal-decision`, `fast-decision`, `normal-dialog`, `fast-dialog`, `normal-hide`, `normal-resize`, `normal-hidden-complete` |
 | Mouse and Cancel | `normal-mouse-off`, `normal-cancel` |
 | Project identity and evidence failure | `normal-project-transition`, `advisory-evidence-timeout` |
 | Approval notification clicks | `fast-notifications` |

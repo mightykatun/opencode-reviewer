@@ -34,7 +34,7 @@ for (const retainedSubscriber of [false, true]) test(retainedSubscriber
   const ctx = { location, client, data: { on: (_type: string, callback: typeof native) => { native = callback; return () => {} } } } as unknown as Plugin.Context
   const state = { connectionID: initial.value!.id, companion, config: {}, dependencies: {} } as CliPluginState
   let installs = 0
-  setupCliReconnect(ctx, state, life, () => ({ generation: ++installs }))
+  setupCliReconnect(ctx, state, life, { locations: () => [location], install: () => ({ generation: ++installs }) })
   t.after(async () => { firstAbort.abort(); foreignAbort.abort(); await foreign?.return?.(); await first.return?.(); await life.stop(); await life.settled() })
   await settle()
   // The native watchdog owns only its subscriber, not the shared transport.

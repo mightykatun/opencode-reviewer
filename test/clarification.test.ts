@@ -60,7 +60,7 @@ test("long answers keep exact leading lines, and the verdict reports every omitt
   const call = (id: string, name: string, args: unknown) => ({ id, type: "function", function: { name, arguments: JSON.stringify(args) } })
   const replies = [{ choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [call("q", "ask_context", { questions: "Why?" })] }, finish_reason: "tool_calls" }] },
     { choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [call("f", "finish", { items: ["c1"], notes: "0123456789" })] }, finish_reason: "tool_calls" }] },
-    { choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ safe: false, desc: "Assessed." }) }, finish_reason: "stop" }] }]
+    { choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ safe: false, reason: "Decisive reason.", desc: "Assessed." }) }, finish_reason: "stop" }] }]
   const bodies: any[] = []
   await review(shellEvidence(), config({ maxEvidenceBytes: 30 }), signal(), { clarification: asker, retrieval: { execute: async () => ({}) },
     fetcher: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return Response.json(replies.shift()) } })

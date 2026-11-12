@@ -8,7 +8,7 @@ import { BUILTIN_PROMPTS } from "../src/prompts.js"
 
 const evidence = shellEvidence({ command: "true", cwd: "/target", userPrompt: "check" })
 const config = parseConfig({ model: "configured", baseURL: "https://openrouter.ai/api/v1", notify: false })
-const envelope = (model?: unknown, content = '{"safe":true,"desc":"report"}', usage: unknown = { cost: 0 }) =>
+const envelope = (model?: unknown, content = '{"safe":true,"reason":"Decisive reason.","desc":"report"}', usage: unknown = { cost: 0 }) =>
   Response.json({ model, usage, choices: [{ message: { content } }] })
 
 test("per execution and POST identity, actual retry kind and exactly-once normalized finalization leave POST bytes unchanged", async () => {

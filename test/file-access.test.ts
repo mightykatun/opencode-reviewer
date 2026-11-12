@@ -184,7 +184,7 @@ for (const outcome of ["slow", "timeout", "cancel"] as const) {
     const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", retrieval: false })
     let evidence: any, posts = 0
     const pending = withDeadline(parent.signal, 1500, s => evaluateHostReview(reader, owned.snapshot, config, BUILTIN_PROMPTS, s, () => {}, {
-      observeEvidence: value => { evidence = value }, fetcher: async () => { posts++; return Response.json({ choices: [{ message: { content: '{"safe":true,"desc":"Captured."}' } }] }) },
+      observeEvidence: value => { evidence = value }, fetcher: async () => { posts++; return Response.json({ choices: [{ message: { content: '{"safe":true,"reason":"Decisive reason.","desc":"Captured."}' } }] }) },
     }))
     try {
       await entered.promise

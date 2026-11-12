@@ -136,7 +136,7 @@ test("real retrieval, report resolution and interrupted work feed history and id
     const toolCall = (name: string, args: unknown) => ({ id: name, type: "function", function: { name, arguments: JSON.stringify(args) } })
     return Response.json({ usage: { prompt_tokens: 10, completion_tokens: 2 }, choices: [{ finish_reason: posts < 3 ? "tool_calls" : "stop",
       message: posts === 1 ? { tool_calls: [toolCall("read", { path: "missing" }), toolCall("list", { path: "." })] }
-        : posts === 2 ? { tool_calls: [toolCall("finish", { items: [] })] } : { content: '{"safe":false,"desc":"Missing context."}' } }] })
+        : posts === 2 ? { tool_calls: [toolCall("finish", { items: [] })] } : { content: '{"safe":false,"reason":"Decisive reason.","desc":"Missing context."}' } }] })
   }
   const result = await review(shellEvidence(), config, new AbortController().signal, { fetcher, observation,
     retrieval: { async execute(call) { return { tool: call.tool, status: "error", reason: "ENOENT" } } } })

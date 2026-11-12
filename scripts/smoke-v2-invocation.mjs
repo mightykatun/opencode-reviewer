@@ -458,7 +458,7 @@ try {
         assert.equal(data.execution.canonicalCwd, inputs)
         evidence.advisoryPayload = body
         res.writeHead(200, { "Content-Type": "application/json" })
-        res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify({ safe: true, desc: "The isolated fixture appends a marker to a local file." }) }, finish_reason: "stop" }] }))
+        res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify({ safe: true, reason: "Decisive reason.", desc: "The isolated fixture appends a marker to a local file." }) }, finish_reason: "stop" }] }))
         return
       }
       if (req.url?.startsWith("/review")) { network.reviewPOSTs++; throw Error("Unexpected reviewer path") }

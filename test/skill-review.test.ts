@@ -11,7 +11,7 @@ for (const stream of [false, true]) test(`native skill review selects its own gu
     formatRetries: 1, notify: false })
   const fetcher = (async (_url, options) => {
     const body = JSON.parse(String(options?.body)); bodies.push(body)
-    const content = bodies.length === 1 ? '{"safe":"yes","desc":"Invalid"}' : '{"safe":true,"desc":"Routine skill loading."}'
+    const content = bodies.length === 1 ? '{"safe":"yes","reason":"Decisive reason.","desc":"Invalid"}' : '{"safe":true,"reason":"Decisive reason.","desc":"Routine skill loading."}'
     return stream ? new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
       { headers: { "Content-Type": "text/event-stream" } })
       : new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content }, finish_reason: "stop" }] }))
@@ -24,7 +24,7 @@ for (const stream of [false, true]) test(`native skill review selects its own gu
   assert.ok(bodies[0].messages[0].content.includes(BUILTIN_PROMPTS.extraCareful))
   assert.deepEqual(JSON.parse(bodies[0].messages[1].content), verdictEvidence(evidence))
   assert.deepEqual(bodies[1].messages.slice(0, 2), bodies[0].messages)
-  assert.equal(bodies[1].messages[2].content, '{"safe":"yes","desc":"Invalid"}')
+  assert.equal(bodies[1].messages[2].content, '{"safe":"yes","reason":"Decisive reason.","desc":"Invalid"}')
   assert.ok(bodies[1].messages[3].content.includes(CORRECTION.split("{{validationError}}")[0]!))
   assert.doesNotMatch(bodies[0].messages[0].content, /permission\.action="shell"|kind="edit"/)
 })

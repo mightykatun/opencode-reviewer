@@ -6,6 +6,7 @@
 // normal-mouse-off, normal-cancel, normal-descendant, fast-descendant,
 // normal-hide, normal-dialog, normal-resize, fast-dialog, normal-hidden-complete,
 // normal-route-wait, normal-decision, fast-decision,
+// normal-location-tab (a request first asked in a background tab while another directory's tab is active),
 // normal-history / normal-history-default-home (actual saved report, browsing and native statistics dialog),
 // normal-history-cover / fast-history-cover (two genuine native requests in one root),
 // normal-history-keyboard-mouse-off (two actual saved reports and real mouse-off keyboard browsing),
@@ -93,7 +94,7 @@ async function monitorSetup(ctx) {
   let statisticsFrames = false
   const save = (painted = false) => {
     record.route = JSON.parse(JSON.stringify(ctx.ui.router.current()))
-    if (fixture.routeWait) record.tabs = ctx.ui.tabs.list().map(tab => ({ sessionID: tab.sessionID, active: tab.active }))
+    if (fixture.routeWait || fixture.locationTab) record.tabs = ctx.ui.tabs.list().map(tab => ({ sessionID: tab.sessionID, active: tab.active }))
     record.mouse = ctx.renderer.useMouse
     record.mode = ctx.keymap.mode.current()
     record.controlSequence = memory.sequence
@@ -218,12 +219,14 @@ async function monitorSetup(ctx) {
            value = { route: ctx.ui.router.current(), root: ctx.data.session.root(command.sessionID),
               session: ctx.data.session.get(command.sessionID) }
           } else if (command.type === "away") {
-            assert.ok(["home", "dashboard", "other"].includes(command.destination))
+            assert.ok(["home", "dashboard", "other", "elsewhere"].includes(command.destination))
             if (command.destination === "home") ctx.ui.router.navigate({ type: "home" })
             else if (command.destination === "dashboard") ctx.ui.router.navigate({ type: "plugin", name: "fixture.dashboard" })
             else {
-              const other = await ctx.client.session.create({ title: "Unrelated fixture conversation", location,
-                model: { providerID: "fixture", id: "fixture" } }, options())
+              // "elsewhere" lives in another directory, so another server location owns it.
+              const at = command.destination === "elsewhere" ? { directory: fixture.elsewhere } : location
+              const other = await ctx.client.session.create({ title: "Unrelated fixture conversation", location: at,
+                model: { providerID: "fixture", id: "fixture" } }, { ...options(), location: at })
               await ctx.data.session.sync(other.id)
               assert.equal(ctx.ui.tabs.enabled(), true, "Unrelated conversation is a native tab")
               ctx.ui.tabs.open(command.sessionID)
@@ -446,6 +449,7 @@ const dialogCase = ["normal-dialog", "fast-dialog"].includes(scenario)
 const visibilityLoss = ["normal-hide", "normal-dialog", "normal-resize"].includes(scenario)
 const hiddenComplete = scenario === "normal-hidden-complete"
 const routeWait = scenario === "normal-route-wait", decisionCase = scenario.endsWith("-decision")
+const locationTab = scenario === "normal-location-tab"
 const editCase = ["normal-edit", "normal-directory-edit"].includes(scenario)
 const codeModeTool = ["normal-code-mode-tool", "fast-code-mode-tool"].includes(scenario)
 const registeredTool = codeModeTool || ["normal-tool", "fast-tool"].includes(scenario)
@@ -465,7 +469,7 @@ const expectedReviewPOSTs = evidenceTimeout ? 0 : pendingReconnect ? stalledStre
 const nativeCallCount = editCase ? 1 : requestCount
 const negative = scenario === "normal-cancel"
 const descendant = scenario.endsWith("-descendant")
-const mouseOff = scenario === "normal-mouse-off", approvalDelaySeconds = fast ? 45 : visibilityLoss || hiddenComplete ? 5 : 8
+const mouseOff = scenario === "normal-mouse-off", approvalDelaySeconds = fast ? 45 : visibilityLoss || hiddenComplete || locationTab ? 5 : 8
 const root = path.resolve(import.meta.dirname, ".."), host = process.env.OPENCODE_BIN ?? "opencode"
 await mkdir(path.join(root, ".runtime"), { recursive: true })
 const artifacts = await mkdtemp(path.join(root, `.runtime/v2-review-${scenario}-`))
@@ -504,6 +508,9 @@ const assertDefaultHomeStorage = async () => {
 }
 await assertDefaultHomeStorage()
 const project = path.join(temp, "project"), initial = path.join(project, "invocation"), inputs = path.join(initial, "inputs")
+// A sibling directory outside the project. Its own server location hosts the
+// active tab while the review conversation waits behind it.
+const elsewhere = path.join(temp, "elsewhere")
 const monitorPath = path.join(artifacts, "monitor.json"), controlPath = path.join(artifacts, "control.json")
 const presentationPath = path.join(artifacts, "presentation.json")
 const notificationPath = path.join(artifacts, "notifications.json"), notificationControlPath = path.join(artifacts, "notifications-control.json")
@@ -1109,7 +1116,7 @@ const answerClarification = () => {
 const finishReview = () => {
   assert.ok(reviewResponse && !reviewCompleted)
   if (streaming) {
-    sse(reviewResponse, fast ? '"}' : JSON.stringify({ safe: true, desc: reportDescription(reviewPOSTs) }))
+    sse(reviewResponse, fast ? '"}' : JSON.stringify({ safe: true, reason: "Decisive reason.", desc: reportDescription(reviewPOSTs) }))
     sse(reviewResponse, undefined, "stop")
     if (savedCase) reviewResponse.write(`data: ${JSON.stringify({ choices: [], usage: reviewUsage })}\n\n`)
     reviewResponse.end("data: [DONE]\n\n")
@@ -1278,6 +1285,7 @@ const limits = [
     : skillCase ? "One direct native skill request with full scoped registry main instructions, an unchanged selected definition, one production once reply and actual native tool-result loading. Normal countdown or fast preview/remainder is observed, and read-only SQLite verifies the saved skill category, confirmed approval and usage totals. No supporting-file inspection, catalog-mutation guarantee, ambiguous nested call, live-provider judgment or multi-client acceptance."
       : editCase ? "One actual native write, exact direct source linkage and pending native diff. Outside-project access, when selected, automatically resumes that same write into a distinct edit permission. Each stage holds the real reviewer response, proves no mutation, paints a full normal countdown and receives one production once reply. Read-only SQLite proves per-stage accepted reports, qualifying resolutions, categories and both aggregate scopes. Production history opens through painted palette activation. No native edit/patch variant, formatter, descendant-owned queue, notification, multi-client or live-provider judgment acceptance."
        : projectTransition ? "Four genuine native shell permissions: nongit root, migrated root, migrated descendant and root after local disable/re-enable. Each review uses captured source linkage and the current registered project metadata. Held reviewer responses and disabled-state observation windows prove no execution; exact native once replies, completed tool results and worker-saved reports prove continuation. No claim that filesystem Git changes alone trigger immediate host discovery."
+       : locationTab ? "The review conversation is a background tab behind an active session tab in another directory, which another server location owns, before its genuine shell permission is first asked. The reviewer POST, full countdown, one native once reply, execution, saved report and aggregates all happen while that other tab stays active and no panel is painted on it. No return to the review tab, tab-limit, tab-close or multi-terminal acceptance."
        : routeWait ? "A started normal countdown waits on native home and a public plugin dashboard, then automatically approves while its tab remains open behind an unrelated active session tab. Saved report and aggregates are verified."
       : decisionCase ? "Actual Right/Left native keyboard input selects Always then Once. Automatic approval waits without cancellation while Always is selected, then resumes with the original delay or fast preview semantics. No persistent native grant is submitted; saved automatic report is verified. Rejection editing is separately source-tested, not host-accepted here."
       : dialogCase ? "Stock command.palette.show owns a real native modal. Normal and fast automatic replies proceed underneath it without closing it; final report and usage are verified in SQLite. No other modal-family acceptance."
@@ -1293,7 +1301,7 @@ const limits = [
 try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
   assertV2HostVersion(version)
-  await Promise.all([inputs, path.dirname(cliPath)].map(directory => mkdir(directory, { recursive: true })))
+  await Promise.all([inputs, path.dirname(cliPath), ...(locationTab ? [elsewhere] : [])].map(directory => mkdir(directory, { recursive: true })))
    if (!projectTransition) smokeGitInit(temp, project)
    else assert.throws(() => smokeGit(temp, initial, ["rev-parse", "--show-toplevel"]),
      "Transition starts outside every Git repository")
@@ -1503,7 +1511,7 @@ try {
   })
   await new Promise(resolve => modelServer.listen(0, "127.0.0.1", resolve))
   const origin = `http://127.0.0.1:${modelServer.address().port}`
-    const fixture = { initial, project, projectTransition, instructionsCase, routeWait, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase, registeredTool, codeModeTool }
+    const fixture = { initial, project, elsewhere, projectTransition, instructionsCase, routeWait, locationTab, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase, registeredTool, codeModeTool }
   const observer = path.join(temp, "observer"), monitor = path.join(temp, "monitor")
   const reviewer = path.join(temp, "reviewer")
   await mkdir(reviewer)
@@ -1687,6 +1695,16 @@ createInterface({input:process.stdin}).on('line',line=>{
      await publish(path.join(artifacts, "warmup-model-calls.json"), warmupCalls)
    }
      if (instructionsCase) await exerciseInstructions(cli)
+     if (locationTab) {
+       // The permission does not exist yet. It is first asked while its tab is
+       // in the background and the active tab belongs to another directory.
+       const away = await command({ type: "away", destination: "elsewhere", sessionID })
+       backgroundRoute = away
+       await until("review tab behind another directory's active tab", record =>
+         record?.tabs?.some(tab => tab.sessionID === sessionID && !tab.active)
+         && record.tabs.some(tab => tab.sessionID === away.sessionID && tab.active)
+         && record.route.type === "session" && record.route.sessionID === away.sessionID, 5000)
+     }
      releaseNativeCall()
     if (editCase) {
      // One direct native call remains running across both permission stages. The
@@ -1854,7 +1872,7 @@ createInterface({input:process.stdin}).on('line',line=>{
      await negativeWindow("skill review held without loading or tool execution", [request], [], null, 1, 1500, noSavedBody)
      if (fast) {
        allowWrites = true
-       sse(reviewResponse, '{"safe":true,"desc":' + JSON.stringify(skillDescription).slice(0, -1))
+       sse(reviewResponse, '{"safe":true,"reason":"Decisive reason.","desc":' + JSON.stringify(skillDescription).slice(0, -1))
        await until("fast skill approval before terminal report", record => record?.replied.length === 1)
        assert.equal(reviewCompleted, false)
        await until("native skill tool continuation", () => calls.filter(call => call.url === "/v1/chat/completions").length === 2)
@@ -1945,7 +1963,13 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.equal(payload.conversation.current.projectID, handshake.project.id)
    assert.deepEqual(payload.limitations, ["Optional effective native tool definition is not included; exact captured arguments and pending permission scope are retained.",
      ...(retrievalCase ? [] : ["Retrieval is disabled for this review category; no files were read."])])
-  await until("rendered production evaluating panel", () => capture().includes("Permission analysis"))
+  if (locationTab) {
+    // The reviewer POST above proves the background location reviews. Its panel
+    // belongs to its own tab, never to another directory's active conversation.
+    const record = await observations()
+    assert.deepEqual(record.route, backgroundRoute)
+    assert.doesNotMatch(capture(), /Permission analysis/)
+  } else await until("rendered production evaluating panel", () => capture().includes("Permission analysis"))
   await saveCapture("evaluating")
    await negativeWindow("review response held", [request], [], null, 1, 1500, notificationCase ? noAttention : savedCase ? noSavedBody : () => {})
     if (pendingReconnect) {
@@ -1991,7 +2015,7 @@ createInterface({input:process.stdin}).on('line',line=>{
        runtime.tmux("send-keys", "-t", "v2-review", "Right")
        await until("actual native Always selection before fast preview", record => record?.choices.always === true && record.choices.once === false)
      } else allowWrites = true
-      sse(reviewResponse, '{"safe":true,"desc":' + JSON.stringify(description).slice(0, -1))
+      sse(reviewResponse, '{"safe":true,"reason":"Decisive reason.","desc":' + JSON.stringify(description).slice(0, -1))
       if (decisionCase) {
         await negativeWindow("native Always selection holds fast Safe preview without a reply", [request], [], null, 1, 1500, async record => {
           assert.equal(record.choices.always, true)
@@ -2074,9 +2098,22 @@ createInterface({input:process.stdin}).on('line',line=>{
           record?.frame && record.mouse && record.mode === "base" && !capture().includes("Finishing startup"))
         await saveCapture("cancel-input-ready")
       }
-      if (hiddenComplete) allowWrites = true
+      if (hiddenComplete || locationTab) allowWrites = true
       finishReview()
-      if (hiddenComplete) {
+      if (locationTab) {
+        presentationEvidence = { locationTab: await until("background report saved and approved once behind another directory's active tab", async record => {
+          assert.deepEqual(record?.route, backgroundRoute)
+          assert.doesNotMatch(capture(), /Permission analysis/)
+          const saved = await readHistory()
+          if (record.replied.length !== 1 || await executed() !== "V2_REVIEW_EXECUTED\n" || !saved?.reviews[0]?.accepted) return false
+          assert.equal(record.replied[0].reply, "once")
+          assert.equal(saved.reviews.length, 1)
+          assert.equal(JSON.parse(saved.reviews[0].context).permission, request.id)
+          assert.equal(JSON.parse(saved.reviews[0].accepted).safe, true)
+          return { tabs: record.tabs, route: record.route }
+        }, 20000) }
+        await saveCapture("location-tab-approved")
+      } else if (hiddenComplete) {
        presentationEvidence.hiddenAccepted = await until("actual normal final acceptance while native child route hides reviewer", async () => {
          const facts = await coverState(), saved = await readHistory()
          if (!facts.events.some(event => event.type === "reviewAccepted" && event.accepted)
@@ -2523,7 +2560,7 @@ createInterface({input:process.stdin}).on('line',line=>{
       await negativeWindow("second held review has no approval while saved history remains selected", [request], firstReplies, markerLine, 2, 1500, unchangedFirst)
       if (fast) {
         allowedReplies = 2
-        sse(reviewResponse, '{"safe":true,"desc":' + JSON.stringify(description).slice(0, -1))
+        sse(reviewResponse, '{"safe":true,"reason":"Decisive reason.","desc":' + JSON.stringify(description).slice(0, -1))
         await phase("second-fast-safe-preview-behind-history")
         await until("fast Safe preview approves underneath production history", async record => record?.replied.length === 2 && await executed() === markerLine.repeat(2))
         assert.equal(reviewCompleted, false, "Fast approval still precedes terminal report validation")

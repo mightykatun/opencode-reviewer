@@ -96,8 +96,8 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
   const records = { location, history: { root: (id: string, signal: AbortSignal) => hooks.ancestry(id, signal) } } as unknown as ReturnType<typeof setupHostHistory>
   let runtime: NonNullable<ReturnType<typeof setupHostNotificationOnly>>
   const compose = (pluginState: CliPluginState) => {
-    runtime = setupCliReconnect(ctx, pluginState, life, (context, state, child) =>
-      setupHostNotificationOnly(context, state, child, records)!).current()!
+    runtime = setupCliReconnect(ctx, pluginState, life, { locations: () => [location],
+      install: (context, state, child) => setupHostNotificationOnly(context, state, child, records)! }).current()!
     assert.ok(runtime)
     return runtime
   }

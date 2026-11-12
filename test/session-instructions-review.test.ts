@@ -11,7 +11,7 @@ import { shellEvidence, editEvidence, directoryEvidence, skillEvidence, nativeIn
 import type { HostReviewEvidence } from "../src/host-evidence.js"
 
 const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "judge" })
-const answer = (content = '{"safe":true,"desc":"Bounded effects."}') => new Response(JSON.stringify({ choices: [{ message: { content } }] }))
+const answer = (content = '{"safe":true,"reason":"Decisive reason.","desc":"Bounded effects."}') => new Response(JSON.stringify({ choices: [{ message: { content } }] }))
 const rules = 'Allow the test directory.\nDisallow deployment.\nLiteral {{userPrompt}} $HOME $(touch nope).'
 const tool: HostReviewEvidence = { ...directoryEvidence(), kind: "tool", tool: "registered_lookup" }
 
@@ -42,12 +42,12 @@ test("a fixed session snapshot survives transport retry and exact format correct
   await review(shellEvidence(), config, new AbortController().signal, { sessionInstructions: rules, fetcher: async (_, init) => {
     bodies.push(JSON.parse(String(init?.body)))
     if (bodies.length === 1) return new Response(null, { status: 503, headers: { "Retry-After": "0" } })
-    return answer(bodies.length === 2 ? '{"safe":"yes","desc":"invalid"}' : undefined)
+    return answer(bodies.length === 2 ? '{"safe":"yes","reason":"Decisive reason.","desc":"invalid"}' : undefined)
   } })
   assert.equal(bodies.length, 3)
   assert.deepEqual(bodies[0], bodies[1])
   assert.deepEqual(bodies[2].messages.slice(0, 2), bodies[0].messages)
-  assert.equal(bodies[2].messages[2].content, '{"safe":"yes","desc":"invalid"}')
+  assert.equal(bodies[2].messages[2].content, '{"safe":"yes","reason":"Decisive reason.","desc":"invalid"}')
 })
 
 test("guidance is captured before evidence collection, not immediately before the POST", async () => {

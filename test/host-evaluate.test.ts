@@ -20,7 +20,7 @@ function fixture() {
   const snapshot = snapshotRequest(raw, scope)!
   const invocation = readHostInvocation({ sessionID: "session", assistantID: "assistant", callID: "call", tool: "write", input, ...scope, project })!
   const calls: string[] = [], posts: any[] = []
-  const state = { missing: false, invalidEvidence: false, response: '{"safe":true,"desc":"A bounded isolated text replacement."}' }
+  const state = { missing: false, invalidEvidence: false, response: '{"safe":true,"reason":"Decisive reason.","desc":"A bounded isolated text replacement."}' }
   const io = new FileAccess({ open: async () => { throw Error("Edits must not read files") }, realpath: async () => { throw Error("Edits must not resolve files") } } as unknown as FileIO)
   const client = {
     rpc: () => ({
@@ -141,7 +141,7 @@ test("native format correction retains byte-exact initial evidence and the faile
   let posted = 0
   const fetcher: typeof fetch = async (_url, init) => {
     f.posts.push(JSON.parse(String(init?.body)))
-    return Response.json({ choices: [{ message: { content: posted++ ? '{"safe":true,"desc":"Bounded replacement."}' : "invalid assessment" }, finish_reason: "stop" }] })
+    return Response.json({ choices: [{ message: { content: posted++ ? '{"safe":true,"reason":"Decisive reason.","desc":"Bounded replacement."}' : "invalid assessment" }, finish_reason: "stop" }] })
   }
   assert.equal((await evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, new AbortController().signal, () => {}, { fetcher }))?.safe, true)
   assert.equal(f.posts.length, 2)

@@ -100,7 +100,7 @@ function start(executor: RetrievalExecutor, parent = new AbortController(), opti
         assert.ok(reply, "unexpected retriever POST")
         return Response.json(reply)
       }
-      return Response.json({ choices: [{ message: { content: JSON.stringify({ safe: false, desc: "Offline fixture assessment." }) }, finish_reason: "stop" }] })
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ safe: false, reason: "Decisive reason.", desc: "Offline fixture assessment." }) }, finish_reason: "stop" }] })
     },
   }))
   return { evaluation, bodies }

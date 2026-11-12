@@ -337,7 +337,11 @@ with Allow once. It never sends Allow always or Reject.
 - You must be viewing the request's conversation or one of its subagents. The
   panel doesn't need to be visible.
 - Home, the dashboard and unrelated conversations hold approval. With OpenCode
-  tabs, an open background tab of the request's conversation is enough.
+  tabs, an open background tab of the request's conversation is enough, even
+  when the active tab is in another directory. Its review runs in the
+  background and its report shows when you return to that tab.
+- The current directory and the directories of open tabs are reviewed at the
+  same time, up to eight. Requests in tabs past that limit stay manual.
 - A held countdown keeps its deadline. If it has expired, approval runs as soon
   as the request is eligible again.
 - Selecting Allow always or Reject in the native prompt, or typing a rejection

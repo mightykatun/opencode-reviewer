@@ -42,7 +42,7 @@ for (const failure of ["transport", "format", "transport+format"] as const) {
       let first!: ReadableStreamDefaultController<Uint8Array>, reads = 0, writes = 0
       let hadReservation = false, clearedRating = false
       let reviewing!: Promise<ReviewResult>
-      const prefix = '{"safe":true,"desc":"Rejected preview"'
+      const prefix = '{"safe":true,"reason":"Decisive reason.","desc":"Rejected preview"'
       const invalid = prefix + ',"safe":false}'
       const controller = new Controller((_req, signal, identified, onProgress) => {
         identified()
@@ -97,7 +97,7 @@ for (const failure of ["transport", "format", "transport+format"] as const) {
         oldRead.resolve([request]); await settle()
         assert.equal(reads, 1); assert.equal(writes, 0)
       }
-      replacement.resolve(response('{"safe":true,"desc":"Validated replacement"}', true))
+      replacement.resolve(response('{"safe":true,"reason":"Decisive reason.","desc":"Validated replacement"}', true))
       const result = await reviewing; await settle()
       assert.equal(result.desc, "Validated replacement")
       if (ordering === "before") {
@@ -144,7 +144,7 @@ for (const stream of [false, true]) for (const safe of [false, true]) {
     const controller = new Controller((_req, signal, identified, onProgress) => {
       identified()
       reviewing = review(evidence, config, signal, { onProgress, fetcher: async () => {
-        if (++posts === 1) return response('{"safe":true,"desc":""}', stream)
+        if (++posts === 1) return response('{"safe":true,"reason":"Decisive reason.","desc":""}', stream)
         nextPOST.resolve(); return replacement.promise
       } })
       return reviewing
@@ -166,7 +166,7 @@ for (const stream of [false, true]) for (const safe of [false, true]) {
     assert.equal(reads, stream ? 1 : 0, "nonstream never publishes an unvalidated rating")
     held.resolve([request]); await settle()
     assert.equal(writes, 0, "the rejected preview cannot write after its GET")
-    replacement.resolve(response(JSON.stringify({ safe, desc: "Final assessment" }), stream))
+    replacement.resolve(response(JSON.stringify({ safe, reason: "Decisive reason.", desc: "Final assessment" }), stream))
     await reviewing; await settle(); controller.refreshApprovalEligibility(); await settle()
     assert.equal(posts, 2)
     assert.equal(writes, safe ? 1 : 0)

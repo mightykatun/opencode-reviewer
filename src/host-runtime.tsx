@@ -31,39 +31,88 @@ import { setupCliReconnect } from "./cli-reconnect.js"
 import { configuredEvidenceBytes } from "./config.js"
 import { SessionInstructionsStore } from "./session-instructions.js"
 import { setupHostSessionInstructions } from "./host-session-instructions.js"
+import { locationKey, reviewLocations, routeAtLocation, sessionAtLocation, type ReviewLocation } from "./host-locations.js"
 
-/** Own setup commands in a native component, where Keymap.Provider is available.
- * A detached Solid root has no native providers; plugin-setup ownership alone
- * would instead retain every old generation's commands until plugin reload. */
+type KeymapLayerFactory = Parameters<Plugin.Context["keymap"]["layer"]>[0]
+type KeymapLayer = ReturnType<KeymapLayerFactory>
+
+/** One location's installed composition. Fallback compositions have no runtime. */
+interface HostComposition {
+  runtime: ReturnType<typeof setupHostRuntime>
+  notifications?: HostNotifications
+}
+
+/** Carried across a location's generations: manual tombstones and countdown
+ * deadlines for the controller, observed births and visits for notifications. */
+interface LocationContinuity {
+  controller?: ControllerCheckpoint<HostPendingRequest>
+  notifications?: HostNotificationCheckpoint
+}
+
+/** A composition's view of the host. `location` is pinned to its own location,
+ * and every keymap layer it registers is active only while that location owns
+ * the current route, so exactly one location answers each command. Layers
+ * registered during setup are collected for the command component. */
+function locationContext(context: Plugin.Context, location: ReviewLocation) {
+  const owns = () => routeAtLocation(context, location)
+  const owned = (factory: KeymapLayerFactory): KeymapLayerFactory => () => {
+    const layer: KeymapLayer = factory()
+    const enabled = layer.enabled
+    return { ...layer, enabled: () => owns() && (typeof enabled === "function" ? enabled() : enabled ?? true) }
+  }
+  const layers: KeymapLayerFactory[] = []
+  let collecting = true
+  const keymap = new Proxy(context.keymap, { get: (target, key) => key === "layer"
+    ? (factory: KeymapLayerFactory) => { if (collecting) layers.push(owned(factory)); else target.layer(owned(factory)) }
+    : Reflect.get(target, key) })
+  const scoped = new Proxy(context, { get: (target, key) =>
+    key === "keymap" ? keymap : key === "location" ? location : Reflect.get(target, key) })
+  return {
+    context: scoped,
+    /** End collection. Later layers belong to components and register directly. */
+    commands() { collecting = false; return layers },
+  }
+}
+
+/** Every open tab's location holds its own scope-pinned composition, so a
+ * background conversation is reviewed wherever it lives. Own setup commands in
+ * a native component, where Keymap.Provider is available. A detached Solid root
+ * has no native providers. Plugin-setup ownership alone would instead retain
+ * every old generation's commands until plugin reload. */
 export function setupHostRecovery(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle) {
-  const checkpoints = new Map<string, ControllerCheckpoint<HostPendingRequest>>()
-  let notificationCheckpoint: HostNotificationCheckpoint | undefined, notifications: HostNotifications | undefined
-  const checkpointKey = (location: { directory: string; workspaceID?: string }) =>
-    JSON.stringify([location.directory, location.workspaceID ?? null])
-  return setupCliReconnect(ctx, state, life, (context, next, child) => {
-    const layers: Parameters<Plugin.Context["keymap"]["layer"]>[0][] = []
-    let collecting = true
-    const keymap = new Proxy(context.keymap, { get: (target, key) => key === "layer"
-      ? (factory: (typeof layers)[number]) => { if (collecting) layers.push(factory); else target.layer(factory) }
-      : Reflect.get(target, key) })
-    const scoped = new Proxy(context, { get: (target, key) => key === "keymap" ? keymap : Reflect.get(target, key) })
-    const location = context.location ?? context.data.location.default()
-    const continuity: { previous?: HostNotificationCheckpoint; current?: HostNotifications } = { previous: notificationCheckpoint }
-    const runtime = setupHostRuntime(scoped, next, child, checkpoints.get(checkpointKey(location)), continuity)
-    notifications = continuity.current
-    collecting = false
-    // This contributes no UI surface. Component disposal removes the layers,
-    // while the existing live/history app slot remains the only reviewer panel.
-    child.addCleanup(context.ui.slot({ append: "app", render: function registerCommands() {
-      for (const factory of layers) context.keymap.layer(factory)
-      return null
-    } }))
-    return runtime
-  }, runtime => {
-    try { notificationCheckpoint = notifications?.checkpoint() }
-    catch { notificationCheckpoint = undefined }
-    if (runtime) checkpoints.set(checkpointKey(runtime.scope.location), runtime.controller.checkpoint())
+  // One entry per location this terminal has reviewed, matching its admissions.
+  const continuity = new Map<string, LocationContinuity>()
+  const recovery = setupCliReconnect<HostComposition>(ctx, state, life, {
+    locations: () => reviewLocations(ctx),
+    install: (context, next, child, location) => {
+      const scope = locationContext(context, location)
+      const notifications: { previous?: HostNotificationCheckpoint; current?: HostNotifications } =
+        { previous: continuity.get(locationKey(location))?.notifications }
+      const runtime = setupHostRuntime(scope.context, next, child, continuity.get(locationKey(location))?.controller, notifications)
+      const layers = scope.commands()
+      // This contributes no UI surface. Component disposal removes the layers,
+      // while the existing live/history app slot remains the only reviewer panel.
+      child.addCleanup(context.ui.slot({ append: "app", render: function registerCommands() {
+        for (const factory of layers) context.keymap.layer(factory)
+        return null
+      } }))
+      return { runtime, notifications: notifications.current }
+    },
+    checkpoint: ({ runtime, notifications }, location) => {
+      const saved = continuity.get(locationKey(location)) ?? {}
+      continuity.set(locationKey(location), saved)
+      try { saved.notifications = notifications?.checkpoint() }
+      catch { saved.notifications = undefined }
+      // A fallback generation keeps the last reviewer's carried facts.
+      if (runtime) saved.controller = runtime.controller.checkpoint()
+    },
   })
+  return {
+    /** The reviewer runtime for the current host location. */
+    current: () => recovery.current()?.runtime,
+    /** The reviewer runtime admitted for one exact location. */
+    runtime: (location: ReviewLocation) => recovery.runtime(location)?.runtime,
+  }
 }
 
 /** One supervisor-owned, scope-pinned composition. Never revive a retired lifecycle. */
@@ -127,14 +176,17 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   }
   let permissionRoots: ReadonlySet<string> = new Set(), formRoots: ReadonlySet<string> = new Set()
   const front = (root: string) => hostQueueFront(root, queueReader)?.id
+  // Only this location's own root conversations present its panel. Another
+  // location's composition presents the rest.
   const rootRoute = () => {
     const route = ctx.ui.router.current()
-    if (route.type !== "session" || conversationRoot(route.sessionID, id => routes.get(id)) !== route.sessionID) return
+    if (route.type !== "session" || !sessionAtLocation(ctx, route.sessionID, scope.location)
+      || conversationRoot(route.sessionID, id => routes.get(id)) !== route.sessionID) return
     return route.sessionID
   }
   const select = () => visibleReview(views(), rootRoute(), id => routes.get(id), root => front(root))
   setupInstructions(rootRoute)
-  const { sidebar, geometry } = setupHostSidebar(ctx, life, rootRoute)
+  const { sidebar, geometry } = setupHostSidebar(ctx, life, rootRoute, id => sessionAtLocation(ctx, id, scope.location))
   const records = setupHostHistory(ctx, state, life, { rootRoute, sidebarOwner: sidebar, sidebarGeometry: geometry, ancestry })
   let cancelReveal = () => {}
   life.addCleanup(() => cancelReveal())

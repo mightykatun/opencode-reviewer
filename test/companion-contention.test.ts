@@ -81,7 +81,7 @@ async function fixture(stage: "invocation" | "evidence", synchronize = false) {
   }) as unknown as OpenCodeClient
   const fetcher: typeof fetch = async (_url, init) => {
     posts.push(JSON.parse(String(init?.body)))
-    return Response.json({ choices: [{ message: { content: '{"safe":true,"desc":"Bounded text replacement."}' }, finish_reason: "stop" }] })
+    return Response.json({ choices: [{ message: { content: '{"safe":true,"reason":"Decisive reason.","desc":"Bounded text replacement."}' }, finish_reason: "stop" }] })
   }
   return { lifecycle, requests, scope, config, client, fetcher, held, busy, queries, posts, handlers, call,
     maximum: () => maximum, physical: () => physical,

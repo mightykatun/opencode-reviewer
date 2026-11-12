@@ -16,28 +16,39 @@ import { setupCli, type CliPluginState } from "../src/cli-plugin.js"
 import type { FormInfo } from "@opencode/client"
 
 const location = { directory: "/server/project" }
+/** A second directory whose root conversation "elsewhere" is open as a tab. */
+const elsewhere = { directory: "/server/elsewhere" }
 const companion = { protocol: 2 as const, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location,
   project: { id: "project", directory: "/server", canonical: "/server" } }
-const pending = (id: string) => ({ id, sessionID: "root", action: "unknown", resources: ["scope"] })
+const pending = (id: string, sessionID = "root") => ({ id, sessionID, action: "unknown", resources: ["scope"] })
+type Location = { directory: string; workspaceID?: string }
 async function fixture(options: { notify?: boolean; reminderSeconds?: number; formSync?: (id: string) => Promise<void>; sessionSync?: (id: string) => Promise<void>;
   backend?: NotificationBackend; unavailable?: "configuration" | "companion"; connectionID?: string;
   startupFailure?: "companion" | "configuration" | "unobserved" | "conflicting";
-  location?: { directory: string; workspaceID?: string }; reverseEvents?: boolean } = {}) {
-  const location: { directory: string; workspaceID?: string } = options.location ?? companion.location
+  location?: Location; reverseEvents?: boolean; elsewhere?: boolean } = {}) {
+  const location: Location = options.location ?? companion.location
   const scopedCompanion = { ...companion, location: { directory: location.directory,
     ...(location.workspaceID ? { workspaceID: location.workspaceID } : {}) } }
   const life = new PluginLifecycle(), calls: string[] = [], ancestryReads: string[] = []
   const commands: { id: string; run: () => Promise<void>; enabled?: () => boolean }[] = []
+  /** Registered layers with their effective layer-level enabled state. */
+  const layers: { commands: typeof commands; enabled: () => boolean }[] = []
   const renderer = Object.assign(new EventEmitter(), { width: 140, height: 40, requestRender: () => calls.push("render") })
   const listeners = new Set<(event: any) => void>()
   const slots = new Set<unknown>(), markers: string[] = []
   let markerAvailable = () => {}
   const state = { requests: [pending("first")], epoch: companion.epoch, list: async () => ({ location, data: state.requests }),
+    elsewhereRequests: [pending("away", "elsewhere")],
     nativeRequests: undefined as ReturnType<typeof pending>[] | undefined,
     forms: [] as FormInfo[],
-    route: { type: "home" } as { type: "home" } | { type: "session"; sessionID: string } }
+    route: { type: "home" } as { type: "home" } | { type: "session"; sessionID: string },
+    /** The host's current location follows the focused conversation. */
+    current: location,
+    tabs: options.elsewhere ? [{ sessionID: "root", active: true }, { sessionID: "elsewhere", active: false }] : [] }
+  const sessionLocation = (id: string) => id === "elsewhere" ? elsewhere : location
+  const session = (id: string) => ({ id, location: sessionLocation(id), ...(id === "child" ? { parentID: "root" } : {}) })
   const ctx = {
-    location,
+    get location() { return state.current },
     client: { event: { async *subscribe({ signal }: { signal: AbortSignal }) {
       if (options.startupFailure !== "unobserved" && options.startupFailure !== "conflicting")
         yield { type: "server.connected", id: options.connectionID ?? "event-initial" }
@@ -51,25 +62,30 @@ async function fixture(options: { notify?: boolean; reminderSeconds?: number; fo
         const id = markers.shift()
         if (id) yield { type: "server.connected", id }
       }
-    } }, rpc: () => ({ handshake: async () => ({ ...scopedCompanion, epoch: state.epoch }) }),
-      session: { get: async ({ sessionID }: { sessionID: string }) => { ancestryReads.push(sessionID);
-        return { id: sessionID, location, ...(sessionID === "child" ? { parentID: "root" } : {}) } } },
-      permission: { request: { list: () => state.list() } } },
+    } }, rpc: () => ({ handshake: async (at: Location) => ({ ...scopedCompanion, location: { ...at }, epoch: state.epoch }) }),
+      session: { get: async ({ sessionID }: { sessionID: string }) => { ancestryReads.push(sessionID); return session(sessionID) } },
+      permission: { request: { list: (input: { location: Location }) => input.location.directory === elsewhere.directory
+        ? Promise.resolve({ location: elsewhere, data: state.elsewhereRequests }) : state.list() } } },
     data: { listen: (callback: (event: any) => void) => { listeners.add(callback); return () => { listeners.delete(callback); calls.push("off") } },
       on: (type: string, callback: (event: any) => void) => {
         const listen = ({ details }: { details: { type: string } }) => { if (details.type === type) callback(details) }
         listeners.add(listen); return () => { listeners.delete(listen) }
       },
       session: { list: () => [{ id: "root", location }],
-         get: (id: string) => ({ id, location, ...(id === "child" ? { parentID: "root" } : {}) }), family: (id: string) => [id],
+         get: session, family: (id: string) => [id],
          sync: async (id: string) => { calls.push("session:" + id); await options.sessionSync?.(id) },
         permission: { invalidate: (id: string) => calls.push("invalidate:" + id), sync: async (id: string) => { calls.push("sync:" + id) },
             list: (id: string) => (state.nativeRequests ?? state.requests).filter(value => value.sessionID === id) }, form: { sync: async (id: string) => { calls.push("form"); await options.formSync?.(id) },
              list: (id: string) => id === "root" ? state.forms : [] } } },
-    keymap: { mode: { current: () => "base" }, layer: (factory: () => { commands: typeof commands }) => {
-      const owned = factory().commands
-      commands.push(...owned)
-      if (getOwner()) onCleanup(() => { for (const command of owned) commands.splice(commands.indexOf(command), 1) })
+    keymap: { mode: { current: () => "base" }, layer: (factory: () => { commands: typeof commands; enabled?: boolean | (() => boolean) }) => {
+      const value = factory(), owned = value.commands
+      const layer = { commands: owned,
+        enabled: () => { const enabled = factory().enabled; return typeof enabled === "function" ? enabled() : enabled ?? true } }
+      commands.push(...owned); layers.push(layer)
+      if (getOwner()) onCleanup(() => {
+        for (const command of owned) commands.splice(commands.indexOf(command), 1)
+        layers.splice(layers.indexOf(layer), 1)
+      })
     },
       commands: () => [{ id: "session.sidebar.toggle" }], dispatch: (id: string) => calls.push("dispatch:" + id) },
     renderer,
@@ -82,7 +98,8 @@ async function fixture(options: { notify?: boolean; reminderSeconds?: number; fo
         createRoot(stop => { dispose = stop; assert.equal(value.render(), null) })
       return () => { dispose(); slots.delete(value) }
     }, router: { current: () => state.route,
-      navigate: (route: typeof state.route) => { state.route = route } }, toast: { show: () => {} } },
+      navigate: (route: typeof state.route) => { state.route = route } }, toast: { show: () => {} },
+      tabs: { enabled: () => !!options.elsewhere, list: () => state.tabs } },
   } as unknown as Plugin.Context
   // Saved modes need a nonreplaceable namespace, just like the history fixture.
   const root = await mkdtemp("/tmp/reviewer-runtime-source-")
@@ -109,7 +126,7 @@ async function fixture(options: { notify?: boolean; reminderSeconds?: number; fo
   const recovery = setupHostRecovery(ctx, pluginState, life)
   const runtime = recovery.current()!
   let sequence = 0
-  return { life, runtime, recovery, slots, listeners, pluginState, state, ctx, calls, ancestryReads, commands, renderer, stateRoot: root,
+  return { life, runtime, recovery, slots, listeners, pluginState, state, ctx, calls, ancestryReads, commands, layers, renderer, stateRoot: root,
     clientMarker: (id: string) => { markers.push(id); markerAvailable() }, event: (type: string, data: unknown, eventID?: string) => {
     sequence++
     for (const listen of options.reverseEvents ? [...listeners].reverse() : listeners) listen({ details: { type, data, location, id: eventID ?? `event-${sequence}`, created: sequence,
@@ -646,4 +663,107 @@ test("a deleted observed session cannot poison later notification form reconcili
     assert.equal(lookedUp.includes("gone"), false)
     assert.equal(f.runtime.controller.pendingViews[0]?.request.id, "first")
   } finally { await f.life.stop() }
+})
+
+/** Wait until one location's composition satisfies a condition. */
+async function admitted(f: Awaited<ReturnType<typeof fixture>>, at: Location,
+  ready: (runtime: NonNullable<ReturnType<typeof f.recovery.runtime>>) => boolean = () => true) {
+  for (let turn = 0; turn < 50; turn++) {
+    const runtime = f.recovery.runtime(at)
+    if (runtime && ready(runtime)) return runtime
+    await tick()
+  }
+  assert.fail(`No composition admitted for ${at.directory}`)
+}
+/** Every command ID answers from exactly one enabled layer, and returns it. */
+function answering(f: Awaited<ReturnType<typeof fixture>>, id: string) {
+  const enabled = f.layers.filter(layer => layer.enabled()).flatMap(layer => layer.commands)
+  const ids = enabled.map(command => command.id).filter(Boolean)
+  assert.equal(new Set(ids).size, ids.length, "Two locations answer the same command")
+  return enabled.find(command => command.id === id)
+}
+const advance = async (t: { mock: { timers: { tick(ms: number): void } } }, ms: number) => {
+  t.mock.timers.tick(ms)
+  for (let turn = 0; turn < 20; turn++) await tick()
+}
+
+test("a background tab in another directory is reviewed by its own scope-pinned composition", async t => {
+  const f = await fixture({ elsewhere: true })
+  t.after(async () => { await f.life.stop(); await f.life.settled() })
+  const away = await admitted(f, elsewhere, runtime => runtime.controller.pendingViews.length > 0)
+  const here = f.recovery.current()!
+  assert.notEqual(away, here)
+  assert.deepEqual(away.scope.location, elsewhere)
+  assert.deepEqual(here.scope.location, location)
+  assert.deepEqual(away.controller.pendingViews.map(view => view.request.id), ["away"])
+  assert.deepEqual(here.controller.pendingViews.map(view => view.request.id), ["first"])
+  assert.deepEqual(f.pluginState.companion?.location, location, "Inspection describes the current host location")
+})
+
+test("exactly one location answers each command and presents each route", async t => {
+  const f = await fixture({ elsewhere: true })
+  t.after(async () => { await f.life.stop(); await f.life.settled() })
+  await admitted(f, elsewhere)
+  // The answering layer's own root-route gate proves which location answered.
+  f.state.route = { type: "session", sessionID: "root" }
+  assert.equal(answering(f, "reviewer.history")?.enabled?.(), true, "The root's own location answers")
+  assert.ok(answering(f, "reviewer.enable"))
+  f.state.route = { type: "session", sessionID: "elsewhere" }
+  assert.equal(answering(f, "reviewer.history")?.enabled?.(), true, "The background location answers its own route")
+  assert.ok(answering(f, "reviewer.enable"))
+  f.state.route = { type: "home" }
+  assert.equal(answering(f, "reviewer.history")?.enabled?.(), false)
+  assert.ok(answering(f, "reviewer.lifetime"), "The current host location answers non-session routes")
+})
+
+test("focus changes keep both compositions, and a closed tab retires with continuity until reopened", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] })
+  const f = await fixture({ elsewhere: true })
+  t.after(async () => { await f.life.stop(); await f.life.settled() })
+  const away = await admitted(f, elsewhere, runtime => runtime.controller.views.length > 0)
+  const here = f.recovery.current()!
+  // Focus the background tab. The host location follows it, nothing is retired.
+  f.state.current = elsewhere
+  f.state.route = { type: "session", sessionID: "elsewhere" }
+  f.state.tabs = [{ sessionID: "root", active: false }, { sessionID: "elsewhere", active: true }]
+  await advance(t, 2000)
+  assert.equal(f.recovery.runtime(elsewhere), away)
+  assert.equal(f.recovery.runtime(location), here)
+  assert.equal(f.recovery.current(), away)
+  assert.deepEqual(f.pluginState.companion?.location, elsewhere)
+  // Close it from the other location. Its carried facts survive the retirement.
+  let checkpoints = 0
+  away.controller.checkpoint = () => {
+    checkpoints++
+    return { manual: new Map([["away", "cancelled"]]), pending: new Map() }
+  }
+  f.state.current = location
+  f.state.route = { type: "session", sessionID: "root" }
+  f.state.tabs = [{ sessionID: "root", active: true }]
+  await advance(t, 2000)
+  assert.equal(checkpoints, 1)
+  assert.equal(f.recovery.runtime(elsewhere), undefined)
+  assert.deepEqual(away.controller.views, [], "A retired location keeps no live entries")
+  assert.equal(f.recovery.runtime(location), here, "Other locations are untouched")
+  f.state.tabs = [{ sessionID: "root", active: true }, { sessionID: "elsewhere", active: false }]
+  await advance(t, 2000)
+  const reopened = await admitted(f, elsewhere, runtime => runtime.controller.views.length > 0)
+  assert.notEqual(reopened, away)
+  assert.equal(reopened.controller.views[0]?.autoApproval?.status, "cancelled", "A reopened tab cannot forget a cancellation")
+})
+
+test("a connection change retires every location and re-admits each with its own handshake", async t => {
+  const f = await fixture({ elsewhere: true })
+  t.after(async () => { await f.life.stop(); await f.life.settled() })
+  const away = await admitted(f, elsewhere)
+  const here = f.recovery.current()!
+  f.event("server.connected", {}, "event-next")
+  assert.equal(f.recovery.runtime(elsewhere), undefined, "Native reconnect fences every location synchronously")
+  assert.equal(f.recovery.current(), undefined)
+  f.clientMarker("event-next")
+  const nextAway = await admitted(f, elsewhere, runtime => runtime.controller.pendingViews.length > 0)
+  const nextHere = await admitted(f, location, runtime => runtime.controller.pendingViews.length > 0)
+  assert.notEqual(nextAway, away); assert.notEqual(nextHere, here)
+  assert.deepEqual(nextAway.controller.pendingViews.map(view => view.request.id), ["away"])
+  assert.equal(f.pluginState.connectionID, "event-next")
 })

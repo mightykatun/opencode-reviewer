@@ -184,7 +184,7 @@ async function measure(scenario: Scenario, mode: Mode): Promise<Recorded> {
         }
         assert.equal(finished, true, "the verdict follows finish")
         assert.equal(++verdictPosts, 1)
-        return Response.json({ choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ safe: scenario.name === "no-files",
+        return Response.json({ choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ safe: scenario.name === "no-files", reason: "Decisive reason.",
           desc: scenario.name === "no-files" ? "The operation only prints its working directory." : "The attached script contains actions that remove or send customer data." }) }, finish_reason: "stop" }] })
       },
       retrieval: { execute: async (call, relativeBase, timeoutMs, signal) => {

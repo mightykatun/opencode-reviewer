@@ -13,6 +13,7 @@ import { parseNotificationConfig, type NotificationConfig } from "./notification
 import type { setupHostRuntime } from "./host-runtime.js"
 import { initialConnectionEcho } from "./connection-marker.js"
 import { companionHandshake } from "./companion-handshake.js"
+import { hostLocation } from "./host-locations.js"
 
 export interface CliPluginState {
   config?: Config
@@ -49,8 +50,9 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
       state.configError = error instanceof Error ? error.message : uiText.review.invalidConfiguration
     }
   }
-  const current = context.location ?? context.data.location.default()
-  const location = { directory: current.directory, ...(current.workspaceID ? { workspaceID: current.workspaceID } : {}) }
+  // Startup admits the current host location. Recovery admits every other
+  // location an open tab needs, each with its own handshake.
+  const location = hostLocation(context)
   // Load before admission so no asynchronous import separates the scoped
   // handshake from installing the runtime's connection fence and recovery owner.
   const runtime = dependencies.adapterOnly ? undefined : await loadHostRuntime()

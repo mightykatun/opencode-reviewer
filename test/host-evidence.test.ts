@@ -51,7 +51,7 @@ test("missing tool evidence reaches the LLM, whose Safe or Unsafe decision is pr
           assert.ok(evidence.limitations.some((note: string) => /unavailable|omitted/.test(note)))
           assert.equal(evidence.limitations.includes(emptyDataNote), noData)
           assert.doesNotMatch(body.messages[1].content, /private registry error/)
-          return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ safe, desc: "Assessment based on available evidence." }) }, finish_reason: "stop" }] }))
+          return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ safe, reason: "Decisive reason.", desc: "Assessment based on available evidence." }) }, finish_reason: "stop" }] }))
         },
       })
       assert.equal(response.safe, safe)
