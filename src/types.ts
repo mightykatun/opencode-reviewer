@@ -54,7 +54,7 @@ export interface ReviewMetadata {
 export type ReviewAttemptEvent =
   | { type: "dispatched"; review: string; attempt: string; retry: "initial" | "transport" | "format" }
   | { type: "finalized"; review: string; attempt: string; usage?: import("./usage.js").Usage; reportedModel?: string }
-  | { type: "toolDispatched"; review: string; call: string }
+  | { type: "toolDispatched"; review: string; call: string; tool: import("./history-records.js").RetrievalCallTool }
 export interface ReviewObservation {
   review: string
   observe?: (event: ReviewAttemptEvent) => unknown

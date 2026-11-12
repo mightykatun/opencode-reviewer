@@ -257,7 +257,7 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
       if (timeout <= 0) throw new DeadlineError("Retrieval")
       item.entry.status = "error"
       item.entry.reason = "attachment read interrupted before completion"
-      deps.observe({ type: "toolDispatched", review: deps.review, call: String(++toolCalls) })
+      deps.observe({ type: "toolDispatched", review: deps.review, call: String(++toolCalls), tool: "read" })
       const result = await execute({ tool: "read", arguments: item.args }, timeout, stage)
       stage.throwIfAborted()
       delete item.entry.reason
@@ -323,7 +323,7 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
             }
             asked = true
             stage.throwIfAborted()
-            deps.observe({ type: "toolDispatched", review: deps.review, call: String(++toolCalls) })
+            deps.observe({ type: "toolDispatched", review: deps.review, call: String(++toolCalls), tool: "ask_context" })
             deps.progress("asking")
             const result = await ownership.track(askContext(asker, prompts.clarification, evidence, questions, config.maxEvidenceBytes, stage))
             stage.throwIfAborted()
@@ -342,7 +342,7 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
           const timeout = Math.min(3600000, remainingTime(stage))
           if (timeout <= 0) throw new DeadlineError("Retrieval")
           stage.throwIfAborted()
-          deps.observe({ type: "toolDispatched", review: deps.review, call: String(++toolCalls) })
+          deps.observe({ type: "toolDispatched", review: deps.review, call: String(++toolCalls), tool: call.name as RetrievalToolName })
           const requested = args as JSONObject
           const inspection = { ...requested, limit: requested.limit === undefined ? (call.name === "read" ? 100 : 50) : requested.limit }
           const result = await execute({ tool: call.name as RetrievalToolName, arguments: inspection }, timeout, stage)

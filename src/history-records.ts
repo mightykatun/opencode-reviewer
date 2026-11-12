@@ -45,10 +45,13 @@ export type HistoryTarget = Pick<HistoryReview, "session" | "permission">
 export interface HistoryAccepted { safe: boolean; completedAt: number; reportedModel?: string; timing?: ReviewTiming }
 export interface HistoryPayload extends HistoryAccepted { desc: string; usage?: Usage; toolCalls?: number }
 export type HistoryOutcome = "auto" | "manual" | "approved" | "rejected" | "cancelled"
+/** Dispatched retriever tool kinds. Calls recorded before kinds existed stay unknown. */
+export const retrievalCallTools = ["read", "list", "glob", "grep", "ask_context"] as const
+export type RetrievalCallTool = typeof retrievalCallTools[number]
 export type HistoryEvent = (
   | { type: "attemptDispatched"; context: HistoryReview; at: number; attempt: string; retry: "initial" | "transport" | "format" }
   | { type: "attemptFinalized"; context: HistoryReview; at: number; attempt: string; usage?: Usage; reportedModel?: string }
-  | { type: "toolDispatched"; context: HistoryReview; at: number; call: string }
+  | { type: "toolDispatched"; context: HistoryReview; at: number; call: string; tool?: RetrievalCallTool }
   | { type: "reviewAccepted"; context: HistoryReview; at: number; accepted: HistoryAccepted }
   | { type: "approvalDispatched"; context: HistoryReview; at: number; approval: string; automatic: boolean }
   | { type: "approvalSettled"; context: HistoryReview; at: number; approval: string; result: "not-sent" | "uncertain" }
@@ -123,7 +126,7 @@ export function validatePayload(v: HistoryPayload): HistoryPayload {
 export function validateEvent(e: HistoryEvent): HistoryEvent {
   const extra: Record<HistoryEvent["type"], string[]> = {
     attemptDispatched: ["attempt", "retry"], attemptFinalized: ["attempt", "usage", "reportedModel"],
-    toolDispatched: ["call"],
+    toolDispatched: ["call", "tool"],
     reviewAccepted: ["accepted"], approvalDispatched: ["approval", "automatic"],
     approvalSettled: ["approval", "result"], approvalConfirmed: ["approval", "automatic"],
     permissionResolved: ["outcome", "payload"], permissionOutcome: ["outcome"], sessionDeleted: [],
@@ -140,7 +143,7 @@ export function validateEvent(e: HistoryEvent): HistoryEvent {
   switch (e.type) {
     case "attemptDispatched": text(e.attempt); requireValue(["initial", "transport", "format"].includes(e.retry)); break
     case "attemptFinalized": text(e.attempt); if (e.usage !== undefined) usage(e.usage); if (e.reportedModel !== undefined) text(e.reportedModel); break
-    case "toolDispatched": text(e.call); break
+    case "toolDispatched": text(e.call); requireValue(e.tool === undefined || retrievalCallTools.includes(e.tool)); break
     case "reviewAccepted": accepted(e.accepted); break
     case "approvalDispatched": case "approvalConfirmed": text(e.approval); requireValue(typeof e.automatic === "boolean"); break
     case "approvalSettled": text(e.approval); requireValue(["not-sent", "uncertain"].includes(e.result)); break

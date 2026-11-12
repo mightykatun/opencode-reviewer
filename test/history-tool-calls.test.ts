@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { HistorySQL, type HistoryTotals, type HistorySelection } from "../src/history-schema.js"
-import { encodeEvent, rootID, type HistoryEvent, type HistoryReview } from "../src/history-records.js"
+import { encodeEvent, reviewID, rootID, type HistoryEvent, type HistoryReview, type RetrievalCallTool } from "../src/history-records.js"
 import { HistoryCoordinator } from "../src/history-coordinator.js"
 import { HISTORY_DELETE_STEPS } from "../src/history-deletion.js"
 import { HISTORY_BOOTSTRAP_STEPS } from "../src/history-migration.js"
@@ -18,7 +18,8 @@ import { shellEvidence } from "./review-fixtures.js"
 
 const context: HistoryReview = { scope: "/project", root: "root", session: "child", permission: "permission", review: "review",
   category: "bash", configuredModel: "model", provider: "https://example.com/v1" }
-const tool = (call: string, c = context): HistoryEvent => ({ type: "toolDispatched", context: c, at: 100, call })
+const tool = (call: string, c = context, kind?: RetrievalCallTool): HistoryEvent =>
+  ({ type: "toolDispatched", context: c, at: 100, call, ...(kind ? { tool: kind } : {}) })
 function fixture(t: TestContext) {
   const dir = mkdtempSync(path.join(tmpdir(), "history-tool-calls-")), file = path.join(dir, "history.sqlite")
   const db = new DatabaseSync(file), sql = new HistorySQL(db), clients = [sql]
@@ -78,6 +79,25 @@ test("legacy totals normalize only the absent tool count and preserve all existi
   }
 })
 
+test("tool kinds use an additive side table: untyped and older calls stay unknown, invalid kinds are rejected, deletion removes kinds", t => {
+  const f = fixture(t)
+  f.apply(tool("old"))
+  // A database from before kinds existed, still written by an older worker's three-value insert.
+  f.db.exec("DROP TABLE retrieval_call_tools")
+  f.db.prepare("INSERT INTO retrieval_calls VALUES (?,?,?)").run("legacy", reviewID(context), 1)
+  const reopened = f.open()
+  assert.equal(f.db.prepare("SELECT count(*) n FROM retrieval_call_tools").get()!.n, 0, "no backfill guesses earlier kinds")
+  let sequence = 0
+  const apply = (e: HistoryEvent) => reopened.apply("upgraded", ++sequence, encodeEvent(e))
+  apply(tool("grep", context, "grep")); apply(tool("grep", context, "grep")); apply(tool("ask", context, "ask_context"))
+  assert.equal(totals(reopened).totals.activity.toolCalls, 3)
+  assert.deepEqual(f.db.prepare("SELECT tool FROM retrieval_call_tools ORDER BY tool").all().map(row => row.tool), ["ask_context", "grep"])
+  f.db.prepare("INSERT INTO retrieval_calls VALUES (?,?,?)").run("after-upgrade", reviewID(context), 2)
+  for (const invalid of ["finish", "bash", "", null, 1]) assert.throws(() => encodeEvent({ ...tool("x"), tool: invalid } as any))
+  apply({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.session }, at: 200 })
+  assert.equal(f.db.prepare("SELECT count(*) n FROM retrieval_call_tools").get()!.n, 0)
+})
+
 test("retrieval-only bootstrap and deletion stay bounded while preserving lifetime totals", t => {
   const f = fixture(t), count = HISTORY_BOOTSTRAP_STEPS * 3
   for (let index = 0; index < count; index++) f.apply(tool(String(index)))
@@ -121,6 +141,8 @@ test("real retrieval, report resolution and interrupted work feed history and id
   const result = await review(shellEvidence(), config, new AbortController().signal, { fetcher, observation,
     retrieval: { async execute(call) { return { tool: call.tool, status: "error", reason: "ENOENT" } } } })
   assert.equal(result.toolCalls, 2)
+  assert.deepEqual(f.db.prepare("SELECT tool FROM retrieval_call_tools ORDER BY tool").all().map(row => row.tool), ["list", "read"],
+    "dispatched kinds are recorded beside the count")
   coordinator.lifecycle({ type: "accepted", request, root: context.root, review: context.review, result,
     completedAt: 100, timing: { fullReportMs: 20, ratingMs: 20 } })
   coordinator.reply({ requestID: request.id, sessionID: request.sessionID, reply: "reject" })

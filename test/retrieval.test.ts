@@ -75,7 +75,7 @@ test("the agent reads a script, selects it with notes, and the separate verdict 
   assert.deepEqual(result.usage, { input: 30, output: 6 })
   assert.deepEqual(h.events.filter(event => event.type === "dispatched").map(event => event.retry), ["initial", "initial", "initial"])
   assert.equal(h.events.filter(event => event.type === "finalized").length, 3)
-  assert.deepEqual(h.events.filter(event => event.type === "toolDispatched"), [{ type: "toolDispatched", review: "review-1", call: "1" }])
+  assert.deepEqual(h.events.filter(event => event.type === "toolDispatched"), [{ type: "toolDispatched", review: "review-1", call: "1", tool: "read" }])
   assert.equal(h.retries(), 0)
   assert.deepEqual(h.progress.map(value => value.phase), ["retrieving", "retrieving", "evaluating"])
 })
@@ -301,6 +301,8 @@ test("a root review asks the conversation once, and the answer is selectable evi
   assert.equal(Object.hasOwn(evidence.retrieval.trace[0], "questions"), false, "the trace keeps questions once, as arguments")
   assert.equal(evidence.retrieval.trace[2].status, "not-executed")
   assert.equal(result.toolCalls, 2)
+  assert.deepEqual(h.events.flatMap(event => event.type === "toolDispatched" ? [event.tool] : []), ["ask_context", "read"],
+    "the rejected second ask_context records no kind")
   assert.deepEqual(h.progress.map(value => value.phase), ["retrieving", "asking", "retrieving", "retrieving", "retrieving", "evaluating"])
 })
 
@@ -489,7 +491,8 @@ test("attachment timeout retains the valid selection and waits for physical work
   assert.equal(evidence.retrieval.endReason, "retrieval-timeout")
   assert.deepEqual(evidence.retrieval.trace.slice(1).map((item: any) => item.status), ["ok", "error", "not-executed"])
   assert.match(evidence.limitations.join("\n"), /after a valid finish selection/)
-  assert.equal(h.events.filter(event => event.type === "toolDispatched").length, 3)
+  assert.deepEqual(h.events.flatMap(event => event.type === "toolDispatched" ? [event.tool] : []), ["read", "read", "read"],
+    "attachment reads are recorded as read")
 })
 
 test("parent cancellation during attachment collection ends the review without a verdict", async () => {

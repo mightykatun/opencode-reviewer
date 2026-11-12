@@ -63,7 +63,7 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
       if (event.type === "dispatched") {
         if (!this.stopped) this.admit({ type: "attemptDispatched", context, at: this.now(), attempt: event.attempt, retry: event.retry })
       } else if (event.type === "toolDispatched") {
-        if (!this.stopped) this.admit({ type: "toolDispatched", context, at: this.now(), call: event.call })
+        if (!this.stopped) this.admit({ type: "toolDispatched", context, at: this.now(), call: event.call, tool: event.tool })
       } else this.admit({ type: "attemptFinalized", context, at: this.now(), attempt: event.attempt,
         ...(event.usage ? { usage: event.usage } : {}), ...(event.reportedModel ? { reportedModel: event.reportedModel } : {}) })
     } }

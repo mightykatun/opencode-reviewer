@@ -95,6 +95,11 @@ export class HistorySQL {
       historySchema(db, `CREATE TABLE IF NOT EXISTS retrieval_calls (
         id TEXT PRIMARY KEY, review TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE, at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS retrieval_calls_review ON retrieval_calls(review,id);`)
+      // Additive 1:1 side table, never a new retrieval_calls column: older workers
+      // still insert three values there. Calls recorded earlier or by older workers
+      // stay unknown. No backfill, so the migration is this single statement.
+      db.exec(`CREATE TABLE IF NOT EXISTS retrieval_call_tools (
+        id TEXT PRIMARY KEY REFERENCES retrieval_calls(id) ON DELETE CASCADE, tool TEXT NOT NULL);`)
       db.exec(migrationSchema)
       historySchema(db, browsingSchema)
       privacySchema(db, tables.length > 0)
@@ -230,7 +235,10 @@ export class HistorySQL {
       this.contribute(opaque(e.type, attempt), delta, root)
     } else if (e.type === "toolDispatched") {
       const call = opaque(review, e.call)
-      if (!deleted) this.run("INSERT OR IGNORE INTO retrieval_calls VALUES (?,?,?)", call, review, e.at)
+      if (!deleted) {
+        this.run("INSERT OR IGNORE INTO retrieval_calls VALUES (?,?,?)", call, review, e.at)
+        if (e.tool) this.run("INSERT OR IGNORE INTO retrieval_call_tools VALUES (?,?)", call, e.tool)
+      }
       this.contribute(opaque(e.type, call), delta, root)
     } else if (e.type === "reviewAccepted") {
       if (!deleted) this.run("UPDATE reviews SET accepted=COALESCE(accepted,?) WHERE id=?", JSON.stringify(e.accepted), review)
