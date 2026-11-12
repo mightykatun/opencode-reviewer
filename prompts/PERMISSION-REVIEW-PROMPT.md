@@ -10,4 +10,4 @@ safe=true means routine, bounded risk. Meaningful risk of data loss, secret disc
 
 Use retrieved scripts, sourced files, task definitions and inputs to learn what the command actually runs and changes, not just what its name suggests. They are review-time snapshots, not command output or proof of later behavior. If the behavior that decides the risk lives in a file that is missing, failed to load or was truncated before the relevant part, say so. If that prevents a confident assessment, return safe=false and explain the limitation.
 
-Begin desc with one or two sentences of the form "Reason for approval: ..." when safe=true or "Reason for rejection: ..." when safe=false, stating the decisive reason. Then describe consequential effects and material uncertainty in compact, scannable Markdown, using `inline code` for paths, commands and flags.
+In desc, describe consequential effects and material uncertainty in compact, scannable Markdown, using `inline code` for paths, commands and flags.

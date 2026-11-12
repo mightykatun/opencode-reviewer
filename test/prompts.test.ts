@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile, open, type FileHandle
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { execFileSync } from "node:child_process"
-import { BUILTIN_PROMPTS, CONTRACT, CORRECTION, correctionPrompt, loadPrompts, RETRIEVAL_CONTRACT } from "../src/prompts.js"
+import { BUILTIN_PROMPTS, CONTRACT, CORRECTION, correctionPrompt, loadPrompts, RETRIEVAL_CONTRACT, reviewContract } from "../src/prompts.js"
 import inventory from "../src/prompt-files.json" with { type: "json" }
 import { parseConfig } from "../src/config.js"
 import fs from "node:fs/promises"
@@ -49,9 +49,25 @@ test("all review kinds use named assessment files and one fixed correction contr
   assert.equal(CORRECTION, (await readFile(new URL("../contracts/PERMISSION-REVIEW-CORRECTION.md", import.meta.url), "utf8")).trim())
   assert.match(CORRECTION, /\{\{validationError\}\}/)
   assert.ok(correctionPrompt("feedback $&").includes("feedback $&"))
-  assert.equal(CONTRACT, (await readFile(new URL("../contracts/PERMISSION-REVIEW-CONTRACT.md", import.meta.url), "utf8")).trim())
+  const contract = (await readFile(new URL("../contracts/PERMISSION-REVIEW-CONTRACT.md", import.meta.url), "utf8")).trim()
+  const response = (await readFile(new URL("../contracts/RESPONSE-CONTRACT.md", import.meta.url), "utf8")).trim()
+  const steeringResponse = (await readFile(new URL("../contracts/STEERING-RESPONSE-CONTRACT.md", import.meta.url), "utf8")).trim()
+  assert.equal(contract.split("{{responseFormat}}").length, 2)
+  assert.equal(CONTRACT, contract.replace("{{responseFormat}}", response))
+  assert.equal(reviewContract(false), CONTRACT)
+  assert.equal(reviewContract(true), contract.replace("{{responseFormat}}", steeringResponse))
   assert.match(CONTRACT, /proposed diffs/)
-  assert.match(CONTRACT, /exactly two fields/)
+  assert.match(CONTRACT, /exactly three fields in this order: "safe" \(boolean\), "reason"/)
+  assert.doesNotMatch(CONTRACT, /"steering"/)
+  assert.match(reviewContract(true), /exactly four fields in this order: "safe" \(boolean\), "reason" \(nonempty string\), "steering"/)
+  assert.doesNotMatch(reviewContract(true), /optional/i, "The model is never told steering is optional")
+  assert.match(correctionPrompt("x", true), /"steering"/)
+  assert.doesNotMatch(correctionPrompt("x"), /"steering"/)
+  assert.equal(BUILTIN_PROMPTS.steering, (await readFile(new URL("../prompts/STEERING-PROMPT.md", import.meta.url), "utf8")).trim())
+  for (const kind of ["Shell", "Edits", "Skills", "Registered, MCP, custom and Code Mode tools", "External directories"])
+    assert.ok(BUILTIN_PROMPTS.steering.includes(`- ${kind}:`), kind)
+  for (const kind of ["shell", "edit", "external-directory", "skill", "tool"] as const)
+    assert.doesNotMatch(BUILTIN_PROMPTS[kind].instructions, /Reason for (approval|rejection)/, "reason is a separate field")
   assert.match(BUILTIN_PROMPTS.edit.instructions, /partial=true/)
   assert.match(BUILTIN_PROMPTS.edit.instructions, /writing executable code.*running it now/)
   assert.match(BUILTIN_PROMPTS.skill.instructions, /current scoped host registry/)
@@ -64,6 +80,13 @@ test("all review kinds use named assessment files and one fixed correction contr
   for (const kind of ["shell", "edit", "external-directory", "skill", "tool"] as const)
     assert.doesNotMatch(BUILTIN_PROMPTS[kind].instructions, /literal argument|cat\/head|L-prefixed|excerpt|No directory enumeration|were not inspected/)
   assert.doesNotMatch(BUILTIN_PROMPTS.extraCareful, /auto|countdown|will (?:run|execute)/i)
+})
+
+test("every prompt and contract file avoids semicolons, middle dots and em dashes", async () => {
+  for (const file of Object.values(inventory)) {
+    const text = await readFile(new URL(`../${file}`, import.meta.url), "utf8")
+    assert.doesNotMatch(text, /[;·—]/, file)
+  }
 })
 
 test("instructions accepts only absolute directory paths, not former inline guidance", () => {
@@ -105,8 +128,22 @@ test("all seven assessment/guidance files load independently", async (t) => {
   }
   await writeFile(path.join(dir, "EXTRA-CAREFUL-REVIEW-PROMPT.md"), "Custom extra-careful guidance")
   await writeFile(path.join(dir, "RETRIEVAL-PROMPT.md"), "Custom retrieval guidance")
+  await writeFile(path.join(dir, "STEERING-PROMPT.md"), "Custom steering guidance")
   const prompts = await loadPrompts(dir, new AbortController().signal)
   assert.equal(prompts.retrieval, "Custom retrieval guidance")
+  assert.equal(prompts.steering, "Custom steering guidance")
+  for (const name of ["RESPONSE-CONTRACT.md", "STEERING-RESPONSE-CONTRACT.md"]) {
+    const fixed = await mkdtemp(path.join(tmpdir(), "review-prompts-"))
+    t.after(() => rm(fixed, { recursive: true, force: true }))
+    await writeFile(path.join(fixed, name), "override")
+    await assert.rejects(loadPrompts(fixed, new AbortController().signal), /Contract prompt overrides/)
+  }
+  await assert.rejects(loadPrompts(await (async () => {
+    const fixed = await mkdtemp(path.join(tmpdir(), "review-prompts-"))
+    t.after(() => rm(fixed, { recursive: true, force: true }))
+    await writeFile(path.join(fixed, "STEERING-REVIEW-CORRECTION.md"), "override")
+    return fixed
+  })(), new AbortController().signal), /Correction contracts are fixed/)
   await writeFile(path.join(dir, "EXTRA-CAREFUL-REVIEW-PROMPT.md"), "Changed on disk")
   assert.equal(prompts.extraCareful, "Custom extra-careful guidance")
   for (const kind of ["shell", "edit", "external-directory", "skill", "tool"] as const) {

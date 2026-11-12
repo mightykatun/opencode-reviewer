@@ -10,4 +10,4 @@ Retrieved listings and files show what currently exists in the requested directo
 
 safe=true means routine, bounded risk for this allowance, not merely user authorization. If the evidence cannot establish bounded access and operation risk, return safe=false and explain the uncertainty. Missing files, unavailable canonicalization or unknown scopes are limitations, not automatic proof of danger.
 
-Begin desc with one or two sentences of the form "Reason for approval: ..." when safe=true or "Reason for rejection: ..." when safe=false, stating the decisive reason. Then explain effects, scope and uncertainty in compact Markdown.
+In desc, explain effects, scope and uncertainty in compact Markdown.

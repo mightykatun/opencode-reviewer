@@ -1,7 +1,7 @@
 import type { Config } from "./config.js"
 import type { Assessment, ReviewProgress, ReviewResult, ReviewObservation, ReviewAttemptEvent } from "./types.js"
 import { randomUUID } from "node:crypto"
-import { BUILTIN_PROMPTS, CONTRACT, correctionPrompt, sessionInstructionsPrompt, type PromptSet } from "./prompts.js"
+import { BUILTIN_PROMPTS, correctionPrompt, reviewContract, sessionInstructionsPrompt, type PromptSet } from "./prompts.js"
 import { usageAttempt, sumUsage, type PricingLookup, type Usage } from "./usage.js"
 import { remainingTime, reviewStage, withDeadline } from "./deadline.js"
 import { SSEParser } from "./sse.js"
@@ -230,7 +230,8 @@ export async function review(
   const prompt = prompts[evidence.kind]
   const messages = [
     { role: "system", content: [prompt.instructions, ...(config.autoApprove && config.extraCareful ? [prompts.extraCareful] : []),
-      ...(sessionInstructions ? [sessionInstructionsPrompt(sessionInstructions)] : []), CONTRACT].join("\n\n") },
+      ...(sessionInstructions ? [sessionInstructionsPrompt(sessionInstructions)] : []),
+      ...(config.autoRejectSteering ? [prompts.steering] : []), reviewContract(config.autoRejectSteering)].join("\n\n") },
     { role: "user", content: JSON.stringify({ ...evidence, limitations: [...evidence.limitations, ...extra], retrieval: section }) },
   ]
   let usage: Usage | undefined
@@ -341,7 +342,7 @@ export async function review(
         if (corrections++ === config.formatRetries) throw new Error("Reviewer response format invalid after configured attempts")
         messages.push(
           { role: "assistant", content: assessment.content },
-          { role: "user", content: correctionPrompt(error.message) },
+          { role: "user", content: correctionPrompt(error.message, config.autoRejectSteering) },
         )
       }
     } catch (error) {

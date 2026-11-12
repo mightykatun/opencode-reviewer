@@ -14,4 +14,4 @@ The diffs are host-computed before approval, not verified complete files, and ma
 
 A truncated entry holds exactly the first truncated.includedLines lines of the original diff, and truncated.omittedLines counts the remaining diff lines, not target-file lines. An omitted entry's reason says why its content is missing. Its optional additions and deletions are host line counts, not evidence of the omitted content or its safety. When partial=true or any entry is truncated or omitted, say that coverage is incomplete, name the missing changes and do not infer their safety. If the missing parts prevent a confident assessment of the whole request, return safe=false and explain. Without any supplied diff content, the proposed content cannot be assessed.
 
-Begin desc with one or two sentences of the form "Reason for approval: ..." when safe=true or "Reason for rejection: ..." when safe=false, stating the decisive reason. Then describe consequential effects and material uncertainty in compact Markdown.
+In desc, describe consequential effects and material uncertainty in compact Markdown.

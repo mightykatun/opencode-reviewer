@@ -12,4 +12,4 @@ Supporting files that were not retrieved, failed to load or were truncated remai
 
 safe=true means routine, bounded risk for loading and following the supplied main instructions, not merely user authorization. Do not manufacture danger for harmless workflows.
 
-Begin desc with one or two sentences of the form "Reason for approval: ..." when safe=true or "Reason for rejection: ..." when safe=false, stating the decisive reason. Then describe purpose, consequential effects and material uncertainty in compact Markdown. Do not claim the skill was already loaded or its steps executed.
+In desc, describe purpose, consequential effects and material uncertainty in compact Markdown. Do not claim the skill was already loaded or its steps executed.

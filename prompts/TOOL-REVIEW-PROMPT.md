@@ -8,4 +8,4 @@ Always produce an assessment, even without registered tool data: use the call ev
 
 Supplied registered definitions are assumed unchanged while the permission is pending and accurate about tool behavior. That assumption alone is not a reason for safe=false. Origin is unavailable, so do not infer an MCP server or plugin from names or claim to have inspected executor code or remote implementations. Check the stated behavior, exact arguments, scope and user intent for destructive effects, disclosure, credential access, privilege changes and unintended external actions.
 
-Begin desc with one or two sentences of the form "Reason for approval: ..." when safe=true or "Reason for rejection: ..." when safe=false, stating the decisive reason. Then explain effects and relevant uncertainty in compact Markdown.
+In desc, explain effects and relevant uncertainty in compact Markdown.

@@ -7,7 +7,7 @@ import type { ReviewKind } from "./types.js"
 type PromptName = keyof typeof inventory
 
 export type PromptSet = Readonly<Record<ReviewKind, Readonly<{ instructions: string }>>>
-  & Readonly<{ extraCareful: string; retrieval: string; clarification: string }>
+  & Readonly<{ extraCareful: string; retrieval: string; clarification: string; steering: string }>
 const kinds = ["shell", "edit", "external-directory", "skill", "tool"] as const
 
 // The build embeds these files; direct source tests read the same Markdown.
@@ -22,23 +22,29 @@ export const BUILTIN_PROMPTS: PromptSet = Object.freeze({
   extraCareful: prompt("extraCareful"),
   retrieval: prompt("retrieval"),
   clarification: prompt("clarification"),
+  steering: prompt("steering"),
   shell: Object.freeze({ instructions: prompt("shell") }),
   edit: Object.freeze({ instructions: prompt("edit") }),
   "external-directory": Object.freeze({ instructions: prompt("external-directory") }),
   skill: Object.freeze({ instructions: prompt("skill") }),
   tool: Object.freeze({ instructions: prompt("tool") }),
 })
-export const CONTRACT = prompt("contract")
+/** Fixed verdict contract. The steering schema is used only with autoRejectSteering. */
+export function reviewContract(steering: boolean): string {
+  return prompt("contract").replaceAll("{{responseFormat}}", () => prompt(steering ? "steeringResponse" : "response"))
+}
+export const CONTRACT = reviewContract(false)
 export const RETRIEVAL_CONTRACT = prompt("retrievalContract")
 export const CORRECTION = prompt("correction")
+const STEERING_CORRECTION = prompt("steeringCorrection")
 
 /** Session text is literal user guidance, never substituted as a template. */
 export function sessionInstructionsPrompt(text: string): string {
   return `${prompt("sessionInstructions")}\n\n${text}`
 }
 
-export function correctionPrompt(validationError: string): string {
-  return CORRECTION.replaceAll("{{validationError}}", () => validationError)
+export function correctionPrompt(validationError: string, steering = false): string {
+  return (steering ? STEERING_CORRECTION : CORRECTION).replaceAll("{{validationError}}", () => validationError)
 }
 
 /** One startup snapshot; absent named files inherit built-ins, invalid ones fail. */
@@ -61,6 +67,7 @@ export async function loadPrompts(directory: string | undefined, signal: AbortSi
   result.extraCareful = await override(directory, path.basename(inventory.extraCareful), signal) ?? result.extraCareful
   result.retrieval = await override(directory, path.basename(inventory.retrieval), signal) ?? result.retrieval
   result.clarification = await override(directory, path.basename(inventory.clarification), signal) ?? result.clarification
+  result.steering = await override(directory, path.basename(inventory.steering), signal) ?? result.steering
   signal.throwIfAborted()
   return Object.freeze(result)
 }

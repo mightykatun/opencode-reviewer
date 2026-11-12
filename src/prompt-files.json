@@ -8,7 +8,11 @@
   "retrieval": "prompts/RETRIEVAL-PROMPT.md",
   "clarification": "prompts/CLARIFICATION-PROMPT.md",
   "sessionInstructions": "prompts/SESSION-INSTRUCTIONS-PROMPT.md",
+  "steering": "prompts/STEERING-PROMPT.md",
   "contract": "contracts/PERMISSION-REVIEW-CONTRACT.md",
+  "response": "contracts/RESPONSE-CONTRACT.md",
+  "steeringResponse": "contracts/STEERING-RESPONSE-CONTRACT.md",
   "retrievalContract": "contracts/RETRIEVAL-CONTRACT.md",
-  "correction": "contracts/PERMISSION-REVIEW-CORRECTION.md"
+  "correction": "contracts/PERMISSION-REVIEW-CORRECTION.md",
+  "steeringCorrection": "contracts/STEERING-REVIEW-CORRECTION.md"
 }
