@@ -217,11 +217,11 @@ export function HostHistoryView(props: HostHistoryViewProps) {
       <b>{value().payload.safe ? uiText.review.safe : uiText.review.unsafe}</b>
     </text>}</Show>
     <Show when={record() && reasonLine({ status: "complete", assessment: { safe: record()!.payload.safe, desc: record()!.payload.desc, reason: record()!.reason } })}>{line =>
-      <text fg={context.theme.text.base} wrapMode="word" flexShrink={0}>
-        <span style={{ fg: line().approved ? context.theme.text.feedback.success.base : context.theme.text.feedback.error.base }}>{line().label}</span>
+      <text marginTop={1} fg={context.theme.text.base} wrapMode="word" flexShrink={0}>
+        <span style={{ fg: line().approved ? context.theme.text.feedback.success.base : context.theme.text.feedback.error.base }}><b>{line().label}</b></span>
         {" "}{displayText(line().text)}
       </text>}</Show>
-    <Show when={record()?.steering}>{text => <text fg={context.theme.text.feedback.error.base} wrapMode="word" flexShrink={0}>
+    <Show when={record()?.steering}>{text => <text marginTop={1} fg={context.theme.text.feedback.error.base} wrapMode="word" flexShrink={0}>
       <i>{uiText.review.steering} {displayText(text())}</i>
     </text>}</Show>
     <Show when={selection()?.unreadable}><text marginTop={1} flexShrink={0} fg={context.theme.text.feedback.warning.base}><b>{uiText.history.unreadable}</b></text></Show>

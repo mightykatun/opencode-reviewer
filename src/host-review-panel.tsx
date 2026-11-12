@@ -301,11 +301,11 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
         <HostReviewLoading context={context} phase={view().progress?.phase} animations={props.animations} />
       </Show>
       <Show when={unavailable()}><text fg={context.theme.text.feedback.warning.base}><b>{uiText.review.unavailable}</b></text></Show>
-      <Show when={reasonLine(view())}>{line => <text fg={context.theme.text.base} wrapMode="word" flexShrink={0}>
-        <span style={{ fg: line().approved ? context.theme.text.feedback.success.base : context.theme.text.feedback.error.base }}>{line().label}</span>
+      <Show when={reasonLine(view())}>{line => <text marginTop={1} fg={context.theme.text.base} wrapMode="word" flexShrink={0}>
+        <span style={{ fg: line().approved ? context.theme.text.feedback.success.base : context.theme.text.feedback.error.base }}><b>{line().label}</b></span>
         {" "}{displayText(line().text)}
       </text>}</Show>
-      <Show when={steeringLine(view())}>{text => <text fg={context.theme.text.feedback.error.base} wrapMode="word" flexShrink={0}>
+      <Show when={steeringLine(view())}>{text => <text marginTop={1} fg={context.theme.text.feedback.error.base} wrapMode="word" flexShrink={0}>
         <i>{uiText.review.steering} {displayText(text())}</i>
       </text>}</Show>
     </box>
