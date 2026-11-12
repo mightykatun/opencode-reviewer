@@ -11,6 +11,7 @@ import { uiText } from "./ui-text.js"
 import type { ReviewProgress } from "./types.js"
 import { usageText } from "./usage.js"
 import type { HistoryRenderProbe } from "./embedding-types.js"
+import { automaticCopy, reasonLine, steeringLine } from "./review-lines.js"
 
 export type HostPanelObservationState = "visible" | "pending" | "lost"
 export type HostPanelObservation = { state: HostPanelObservationState; id?: string }
@@ -35,7 +36,7 @@ export interface HostReviewPanelProps {
   sidebarGeometry(): HostPanelBounds | undefined
   /** Stable app-slot parent can own the same measured absolute frame. */
   positionedByParent?: boolean
-  config?: Pick<Config, "autoApprove" | "fastMode">
+  config?: Pick<Config, "autoApprove" | "fastMode"> & Partial<Pick<Config, "autoRejectSteering">>
   /** Host CLI animation preference, if available. Does not alter mouse tracking. */
   animations?: () => boolean
   lifetimeText?: () => string | undefined
@@ -176,30 +177,32 @@ function HostReviewButton(props: { context: Plugin.Context; label: string; selec
     }}><text fg={foreground()}>{props.label}</text></box>
 }
 
-function HostReviewFooter(props: Pick<HostReviewPanelProps, "context" | "onApprove" | "onCancel"> & { view: View<RequestIdentity>; enabled: boolean; ref(value: BoxRenderable): void }) {
+function HostReviewFooter(props: Pick<HostReviewPanelProps, "context" | "onApprove" | "onCancel"> & { view: View<RequestIdentity>; enabled: boolean;
+  approvals: boolean; ref(value: BoxRenderable): void }) {
   const [selected, setSelected] = createSignal<"approve" | "cancel">("approve")
   const state = () => props.view.autoApproval
-  const label = () => { const current = state(); return current?.status === "countdown" ? uiText.autoApproval.countdown(current.seconds) : uiText.autoApproval.checking }
-  return <Show when={props.enabled && (props.view.assessment?.safe || !!state())}>
+  const copy = () => automaticCopy(props.view)
+  const label = () => { const current = state(); return current?.status === "countdown" ? copy().countdown(current.seconds) : copy().checking }
+  return <Show when={props.enabled && ((props.approvals && props.view.assessment?.safe) || !!state())}>
     <box ref={props.ref} marginTop={1} paddingTop={1} minHeight={3} flexShrink={0} border={["top"]} borderColor={props.context.theme.border.base}>
-      <Switch fallback={<text fg={props.context.theme.text.muted}>{uiText.autoApproval.checking}</text>}>
+      <Switch fallback={<text fg={props.context.theme.text.muted}>{copy().checking}</text>}>
         <Match when={state()?.status === "countdown" || state()?.status === "checking"}>
           <box flexDirection="row" gap={1}>
             <HostReviewButton context={props.context} label={label()} disabled={state()?.status === "checking"}
               selected={selected() === "approve"} onHover={() => setSelected("approve")}
               onClick={() => { void props.onApprove(props.view.request.id) }} />
-            <HostReviewButton context={props.context} label={uiText.autoApproval.cancel} selected={selected() === "cancel"}
+            <HostReviewButton context={props.context} label={copy().cancel} selected={selected() === "cancel"}
               onHover={() => setSelected("cancel")} onClick={() => props.onCancel(props.view.request.id)} />
           </box>
         </Match>
         <Match when={state()?.status === "allowing"}>
-          <HostReviewButton context={props.context} label={uiText.autoApproval.allowing} disabled onClick={() => {}} />
+          <HostReviewButton context={props.context} label={copy().allowing} disabled onClick={() => {}} />
         </Match>
-        <Match when={state()?.status === "approved"}><text fg={props.context.theme.text.muted}>{uiText.autoApproval.finishing}</text></Match>
-        <Match when={state()?.status === "waiting"}><text fg={props.context.theme.text.muted}>{uiText.autoApproval.waiting}</text>
-          <HostReviewButton context={props.context} label={uiText.autoApproval.cancel} onClick={() => props.onCancel(props.view.request.id)} /></Match>
-        <Match when={state()?.status === "cancelled"}><text fg={props.context.theme.text.muted}>{uiText.autoApproval.cancelled}</text></Match>
-        <Match when={state()?.status === "failed"}><text fg={props.context.theme.text.feedback.warning.base}>{uiText.autoApproval.unavailable}</text></Match>
+        <Match when={state()?.status === "approved"}><text fg={props.context.theme.text.muted}>{copy().finishing}</text></Match>
+        <Match when={state()?.status === "waiting"}><text fg={props.context.theme.text.muted}>{copy().waiting}</text>
+          <HostReviewButton context={props.context} label={copy().cancel} onClick={() => props.onCancel(props.view.request.id)} /></Match>
+        <Match when={state()?.status === "cancelled"}><text fg={props.context.theme.text.muted}>{copy().cancelled}</text></Match>
+        <Match when={state()?.status === "failed"}><text fg={props.context.theme.text.feedback.warning.base}>{copy().unavailable}</text></Match>
       </Switch>
     </box>
   </Show>
@@ -298,6 +301,13 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
         <HostReviewLoading context={context} phase={view().progress?.phase} animations={props.animations} />
       </Show>
       <Show when={unavailable()}><text fg={context.theme.text.feedback.warning.base}><b>{uiText.review.unavailable}</b></text></Show>
+      <Show when={reasonLine(view())}>{line => <text fg={context.theme.text.base} wrapMode="word" flexShrink={0}>
+        <span style={{ fg: line().approved ? context.theme.text.feedback.success.base : context.theme.text.feedback.error.base }}>{line().label}</span>
+        {" "}{displayText(line().text)}
+      </text>}</Show>
+      <Show when={steeringLine(view())}>{text => <text fg={context.theme.text.feedback.error.base} wrapMode="word" flexShrink={0}>
+        <i>{uiText.review.steering} {displayText(text())}</i>
+      </text>}</Show>
     </box>
     <scrollbox ref={(value: ScrollBoxRenderable) => { scroll = value }} marginTop={1} flexGrow={1} minHeight={0}
       contentOptions={{ minHeight: 0 }} scrollbarOptions={{ trackOptions: {
@@ -313,6 +323,7 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
       </>}</Show>
     </scrollbox>
     <HostReviewFooter ref={value => { footer = value }} context={context} view={view()} onApprove={props.onApprove} onCancel={props.onCancel}
-      enabled={props.config?.autoApprove === true} />
+      enabled={props.config?.autoApprove === true || props.config?.autoRejectSteering === true}
+      approvals={props.config?.autoApprove === true} />
   </box>
 }

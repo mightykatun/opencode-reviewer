@@ -11,6 +11,7 @@ import { displayText } from "../src/controller.js"
 import { ReviewGeometryProof } from "../src/review-geometry.js"
 import { uiText } from "../src/ui-text.js"
 import { usageText } from "../src/usage.js"
+import * as reviewLines from "../src/review-lines.js"
 import type { HostReviewPanelProps } from "../src/host-review-panel.js"
 import { HostPanelPresentationProof, hostPanelOwnsHit, type HostPanelNode, type HostPanelProofInput } from "../src/host-review-panel.js"
 
@@ -185,7 +186,7 @@ function panelObserverFixture(probe: boolean) {
     "./review-description.js": { HostReviewDescription() {} },
     "./host-review-metadata.js": { HostReviewMetadata() {} },
     "./review-geometry.js": { ReviewGeometryProof },
-    "./ui-text.js": { uiText }, "./usage.js": { usageText },
+    "./ui-text.js": { uiText }, "./usage.js": { usageText }, "./review-lines.js": reviewLines,
   }
   const module = { exports: {} as { HostReviewPanel(props: HostReviewPanelProps): unknown } }
   new Function("require", "module", "exports", compiled.code)((name: string) => {

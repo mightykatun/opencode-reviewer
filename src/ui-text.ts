@@ -46,6 +46,11 @@ export const uiText = {
     /** The streamed verdict is reasoning before its report starts. */
     thinking: "Thinking",
     retrying: "Retrying",
+    /** Fixed labels before the model's reason. Colored like the rating. */
+    reasonForApproval: "Reason for approval:",
+    reasonForRejection: "Reason for rejection:",
+    /** Label before steering sent to the agent with an automatic rejection. */
+    steering: "Steering:",
     /** Shown instead of the scanner when host animations are off. */
     staticIndicator: "[⋯]",
     /** Eight single-cell glyphs animate before the progress label. */
@@ -126,6 +131,17 @@ export const uiText = {
     finishing: "Auto-approved. Finishing report…",
     cancelled: "Auto-approval canceled",
     unavailable: "! Auto-approval unavailable. Use native controls.",
+  },
+  /** Mirrors autoApproval for automatic steering rejections. */
+  autoRejection: {
+    countdown: (seconds: number) => `Rejected in ${seconds}s`,
+    checking: "Checking…",
+    waiting: "Auto-rejection waiting",
+    cancel: "Cancel",
+    allowing: "Rejecting…",
+    finishing: "Auto-rejected. Finishing report…",
+    cancelled: "Auto-rejection canceled",
+    unavailable: "! Auto-rejection unavailable. Use native controls.",
   },
   commands: {
     history: "Reviewer: Report history",
