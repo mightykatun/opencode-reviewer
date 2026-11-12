@@ -411,3 +411,25 @@ test("controller + native transport: exact resolution after disappearance confir
   assert.deepEqual(lifecycle.filter(fact => fact.type === "removed").map(fact => fact.reason), ["resolved"])
   assert.equal(f.state.calls.length, 1)
 })
+
+test("steering reject sends one native reject with its message and confirms only on a reject resolution", async () => {
+  const f = fixture(), snapshot = snapshotRequest(raw(), scope)!
+  const message = "Rejected by opencode-reviewer: Too broad. Please narrow it."
+  assert.equal((await f.transport.reject(snapshot, signal(), () => true, message)).status, "submitted")
+  assert.deepEqual((f.state.calls[0] as any).input, { sessionID: "session", requestID: "request", decision: "reject", message })
+  assert.deepEqual((f.state.calls[0] as any).options.location, location)
+  assert.equal((await f.transport.reject(snapshot, signal(), () => true, message)).status, "unavailable", "never resent")
+  assert.equal((await f.transport.once(snapshot, signal(), () => true)).status, "unavailable", "one reply per permission")
+  assert.equal(f.state.calls.length, 1)
+  assert.equal(f.transport.retainedReservations, 1)
+  f.transport.resolved(resolution(raw(), "once"))
+  f.transport.resolved(resolution(raw(), "reject"))
+  assert.equal(f.transport.retainedReservations, 1, "a different native outcome stays protected")
+  const g = fixture(), other = snapshotRequest(raw(), scope)!
+  assert.equal((await g.transport.reject(other, signal(), () => true, message)).status, "submitted")
+  g.transport.resolved(resolution(raw(), "reject"))
+  assert.equal(g.transport.retainedReservations, 0)
+  const h = fixture(), refused = snapshotRequest(raw(), scope)!
+  assert.equal((await h.transport.reject(refused, signal(), () => false, message)).status, "unavailable")
+  assert.equal(h.state.calls.length, 0, "a refused final guard writes nothing")
+})

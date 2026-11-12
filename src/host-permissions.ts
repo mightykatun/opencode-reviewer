@@ -5,15 +5,21 @@ import { transportOwnership } from "./transport-ownership.js"
 import type { HostPendingSnapshot, HostRequestSnapshot, HostScope } from "./host-types.js"
 
 export type OnceSubmission = { status: "submitted" | "unavailable" | "uncertain" }
+/** Automatic native replies: once for approval, reject with a message for steering. */
+export type NativeDecision = "once" | "reject"
 /** Preparation may await host reads. Call dispatch exactly once, synchronously
- * immediately before invoking the native once reply, with no intervening work.
+ * immediately before invoking the native reply, with no intervening work.
  * The caller proves same-conversation eligibility/native priority in that callback.
  * A false return means no write. submitted is only a successful local ack,
  * never a permission.replied confirmation event. */
 export interface NativeApprovalTransport<R> {
   once(request: R, signal: AbortSignal, dispatch: () => boolean): Promise<OnceSubmission>
+  /** Steering only: a native reject carrying the steering message. Never always or rule
+   * writes. Without it, steering never rejects automatically. */
+  reject?(request: R, signal: AbortSignal, dispatch: () => boolean, message: string): Promise<OnceSubmission>
 }
 export interface HostPermissionTransport extends NativeApprovalTransport<HostRequestSnapshot> {
+  reject(request: HostRequestSnapshot, signal: AbortSignal, dispatch: () => boolean, message: string): Promise<OnceSubmission>
   /** Caller-admitted native resolution from this connected location/epoch only. */
   resolved(event: { sessionID: string; requestID: string; decision: string }): void
   /** Local source-test/embedding count, not configuration or UI diagnostics. */
@@ -25,20 +31,21 @@ export interface HostPermissionTransport extends NativeApprovalTransport<HostReq
   get(sessionID: string, requestID: string, signal: AbortSignal): Promise<HostRequestSnapshot | undefined>
 }
 
-/** No rejection, persistent grants, tool execution or rule-writing surface.
- * Each instance is pinned to one connected client/location/companion epoch.
+/** No persistent grants, tool execution or rule-writing surface. The only
+ * rejection is a steering reject with its message. Each instance is pinned to
+ * one connected client/location/companion epoch.
  */
 export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): HostPermissionTransport {
   const scope = readHostScope(at)
   if (!scope) throw Error("Permission connection scope unavailable")
-  type Reservation = { dispatched: boolean; acknowledged: boolean; uncertain?: boolean; resolution?: string; cleanup?: () => void }
+  type Reservation = { decision: NativeDecision; dispatched: boolean; acknowledged: boolean; uncertain?: boolean; resolution?: string; cleanup?: () => void }
   const reservations = new Map<string, Reservation>()
   // Keep original snapshots spent without strongly retaining successful IDs.
   // Other snapshots still need a fresh native get, which fails after resolution.
   const dispatchedSnapshots = new WeakSet<HostRequestSnapshot>()
   const identity = (sessionID: string, requestID: string) => JSON.stringify([sessionID, requestID])
   const prune = (key: string, reservation: Reservation) => {
-    if (reservation.acknowledged && !reservation.uncertain && reservation.resolution === "once") {
+    if (reservation.acknowledged && !reservation.uncertain && reservation.resolution === reservation.decision) {
       reservation.cleanup?.()
       reservations.delete(key)
     }
@@ -63,6 +70,47 @@ export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): 
     signal.throwIfAborted()
     return value?.request.sessionID === sessionID && value.request.id === requestID && await currentEpoch(signal) ? value : undefined
   }
+  const reply = async (snapshot: HostRequestSnapshot, signal: AbortSignal, dispatch: () => boolean,
+    decision: NativeDecision, message?: string): Promise<OnceSubmission> => {
+    const key = identity(snapshot.request.sessionID, snapshot.request.id)
+    const bound = snapshotRequest(hostRequestWire(snapshot), scope)
+    if (!bound || !sameRequest(bound, snapshot) || reservations.has(key) || dispatchedSnapshots.has(snapshot)) return { status: "unavailable" }
+    // Reserve before awaited reads so concurrent contenders cannot race past
+    // the fresh identity check. No retries after dispatch, even on rejection.
+    const reservation: Reservation = { decision, dispatched: false, acknowledged: false }
+    reservations.set(key, reservation)
+    // Confirmation may outlive the physical ACK. Keep the same signal owner
+    // until exact native resolution, so a timeout cannot later prune uncertainty.
+    const aborted = () => { if (reservation.dispatched) reservation.uncertain = true }
+    signal.addEventListener("abort", aborted, { once: true })
+    reservation.cleanup = () => signal.removeEventListener("abort", aborted)
+    try {
+      signal.throwIfAborted()
+      const current = await get(snapshot.request.sessionID, snapshot.request.id, signal)
+      if (!current || !sameRequest(current, snapshot)) return { status: "unavailable" }
+      signal.throwIfAborted()
+      // The callback admits and records actual invocation. Nothing fallible or
+      // asynchronous may separate it from the fixed native reply call.
+      const input = { sessionID: snapshot.request.sessionID, requestID: snapshot.request.id, decision,
+        ...(decision === "reject" ? { message } : {}) }
+      const requestOptions = options(signal)
+      // Allocate the weak receipt before final admission, not in the native
+      // callback-to-invocation gap. An unsent reservation removes it below.
+      dispatchedSnapshots.add(snapshot)
+      if (!dispatch()) return { status: "unavailable" }
+      reservation.dispatched = true
+      await owned(signal, client.permission.reply(input, requestOptions))
+      // An ignored abort followed by a late physical ACK is still uncertain.
+      signal.throwIfAborted()
+      reservation.acknowledged = true
+      prune(key, reservation)
+      return { status: "submitted" }
+    } catch {
+      return { status: reservation.dispatched ? "uncertain" : "unavailable" }
+    } finally {
+      if (!reservation.dispatched) { reservation.cleanup(); reservations.delete(key); dispatchedSnapshots.delete(snapshot) }
+    }
+  }
   return {
     get,
     get retainedReservations() { return reservations.size },
@@ -70,8 +118,8 @@ export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): 
       const key = identity(event.sessionID, event.requestID), reservation = reservations.get(key)
       // Preparation and unrelated events cannot confirm our physical write.
       if (!reservation?.dispatched) return
-      // A non-once outcome stays protected, even if another event follows it.
-      if (reservation.resolution === undefined || event.decision !== "once") reservation.resolution = event.decision
+      // A different outcome stays protected, even if another event follows it.
+      if (reservation.resolution === undefined || event.decision !== reservation.decision) reservation.resolution = event.decision
       prune(key, reservation)
     },
     async listScope(signal) {
@@ -102,44 +150,7 @@ export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): 
       if (!await currentEpoch(signal)) throw Error("Pending permission connection replaced")
       return requests
     },
-    async once(snapshot, signal, dispatch) {
-      const key = identity(snapshot.request.sessionID, snapshot.request.id)
-      const bound = snapshotRequest(hostRequestWire(snapshot), scope)
-      if (!bound || !sameRequest(bound, snapshot) || reservations.has(key) || dispatchedSnapshots.has(snapshot)) return { status: "unavailable" }
-      // Reserve before awaited reads so concurrent contenders cannot race past
-      // the fresh identity check. No retries after dispatch, even on rejection.
-      const reservation: Reservation = { dispatched: false, acknowledged: false }
-      reservations.set(key, reservation)
-      // Confirmation may outlive the physical ACK. Keep the same signal owner
-      // until exact native resolution, so a timeout cannot later prune uncertainty.
-      const aborted = () => { if (reservation.dispatched) reservation.uncertain = true }
-      signal.addEventListener("abort", aborted, { once: true })
-      reservation.cleanup = () => signal.removeEventListener("abort", aborted)
-      try {
-        signal.throwIfAborted()
-        const current = await get(snapshot.request.sessionID, snapshot.request.id, signal)
-        if (!current || !sameRequest(current, snapshot)) return { status: "unavailable" }
-        signal.throwIfAborted()
-        // The callback admits and records actual invocation. Nothing fallible or
-        // asynchronous may separate it from the fixed native reply call.
-        const input = { sessionID: snapshot.request.sessionID, requestID: snapshot.request.id, decision: "once" as const }
-        const requestOptions = options(signal)
-        // Allocate the weak receipt before final admission, not in the native
-        // callback-to-invocation gap. An unsent reservation removes it below.
-        dispatchedSnapshots.add(snapshot)
-        if (!dispatch()) return { status: "unavailable" }
-        reservation.dispatched = true
-        await owned(signal, client.permission.reply(input, requestOptions))
-        // An ignored abort followed by a late physical ACK is still uncertain.
-        signal.throwIfAborted()
-        reservation.acknowledged = true
-        prune(key, reservation)
-        return { status: "submitted" }
-      } catch {
-        return { status: reservation.dispatched ? "uncertain" : "unavailable" }
-      } finally {
-        if (!reservation.dispatched) { reservation.cleanup(); reservations.delete(key); dispatchedSnapshots.delete(snapshot) }
-      }
-    },
+    once: (snapshot, signal, dispatch) => reply(snapshot, signal, dispatch, "once"),
+    reject: (snapshot, signal, dispatch, message) => reply(snapshot, signal, dispatch, "reject", message),
   }
 }
