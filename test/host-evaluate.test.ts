@@ -8,6 +8,7 @@ import { parseConfig } from "../src/config.js"
 import { readHostInvocation, snapshotRequest } from "../src/host-request.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
 import type { ReviewAttemptEvent } from "../src/types.js"
+import type { SteeringRecord } from "../src/steering-follow-up.js"
 
 const scope = { epoch: "10000000-1000-4000-8000-100000000000", location: { directory: "/server/project" } }
 const project = { id: "project", directory: "/server", canonical: "/server" }
@@ -169,4 +170,42 @@ test("pre-dispatch cancellation starts no native evidence read, and late reviewe
   resolve(new Response(new ReadableStream({ cancel() { canceled = true } })))
   await cleanup
   assert.equal(canceled, true)
+})
+
+test("a paired steering reaches only the verdict, and a category mismatch or newer root prompt sends none", async () => {
+  const steering: SteeringRecord = { sessionID: "session", assistantID: "earlier", callID: "rejected", message: "Rejected by opencode-reviewer: Too broad.",
+    rejected: { category: "edit", tool: "write", input: { path: "all.txt" } }, root: true, rootMessageID: "root-user" }
+  const run = async (record: SteeringRecord, retrieval = false) => {
+    const f = fixture(), client = f.client as any, list = client.message.list
+    client.message.list = async (query: any) => query.type === "assistant" ? { data: [
+      { id: "assistant", type: "assistant", content: [{ type: "text", text: "I will write only target.txt." }, { id: "call", type: "tool", name: "write", state: { status: "running", input } }] },
+      { id: "earlier", type: "assistant", content: [{ id: "rejected", type: "tool", name: "write", state: { status: "error", input: { path: "all.txt" } } }] }], cursor: {} } : list(query)
+    let posts = 0, retrievalPosts = 0
+    const fetcher: typeof fetch = async (url, init) => {
+      const body = JSON.parse(String(init?.body))
+      if (body.tools) {
+        retrievalPosts++
+        assert.doesNotMatch(String(init?.body), /steeringFollowUp|Too broad/, "retrieval never sees the follow-up")
+        return Response.json({ choices: [{ message: { role: "assistant", content: null, tool_calls: [{ id: `f${posts++}`, type: "function",
+          function: { name: "finish", arguments: '{"items":[]}' } }] }, finish_reason: "tool_calls" }] })
+      }
+      return f.fetcher(url, init)
+    }
+    const value = parseConfig({ baseURL: "http://127.0.0.1:40999/v1", model: "reviewer", stream: false, notify: false, retrieval, retrievalKinds: { edit: true }, autoRejectSteering: true })
+    await evaluateHostReview(f.client, f.snapshot, value, BUILTIN_PROMPTS, new AbortController().signal, () => {}, { fetcher, steeringRecord: record })
+    assert.equal(retrievalPosts > 0, retrieval)
+    const [system, user] = f.posts.at(-1).messages
+    return { system: system.content as string, evidence: JSON.parse(user.content) }
+  }
+  for (const retrieval of [false, true]) {
+    const { system, evidence } = await run(steering, retrieval)
+    assert.match(system, /steeringFollowUp is context for a previously rejected request/)
+    assert.deepEqual(evidence.steeringFollowUp, { steeringMessage: steering.message, rejectedOperation: steering.rejected,
+      agentOutput: [{ type: "text", text: "I will write only target.txt." }] })
+  }
+  for (const record of [{ ...steering, rejected: { ...steering.rejected, category: "shell" } } satisfies SteeringRecord, { ...steering, rootMessageID: "older-user" }]) {
+    const { system, evidence } = await run(record)
+    assert.doesNotMatch(system, /steeringFollowUp/)
+    assert.equal(evidence.steeringFollowUp, undefined)
+  }
 })
