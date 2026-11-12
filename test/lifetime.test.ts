@@ -13,7 +13,7 @@ test("pure aggregate helpers retain weighted means and exact compact presentatio
   assert.equal(totals.activity.timedReviews, 4)
   assert.equal(lifetimeReport(totals), [
     "Reviews: 4", "Retries: 2", "Tokens: 100 in 20 out (partial coverage)", "Tool calls: 0", "Cost: $0.1500", "",
-    "Safe: 2 (50.0%)", "Unsafe: 2 (50.0%)", "Auto-approved: 1 (25.0%)", "Manually approved: 2 (50.0%)", "Rejected: 1 (25.0%)", "",
+    "Safe: 2 (50.0%)", "Unsafe: 2 (50.0%)", "Auto-approved: 1 (25.0%)", "Manually approved: 2 (50.0%)", "Auto-rejected: 0 (0.0%)", "Rejected: 1 (25.0%)", "",
     "Average time to full report: 4.00s", "Average time to rating: 0.55s",
   ].join("\n"))
   assert.equal(totals.since, 2); assert.equal(totals.ratingsSince, 1)
@@ -22,7 +22,7 @@ test("pure aggregate helpers retain weighted means and exact compact presentatio
 test("empty, unpriced, zero cost and independent coverage keep their exact meanings", () => {
   assert.equal(lifetimeCost(empty()), "lifetime: no recorded usage")
   assert.equal(lifetimeReport(empty()), ["Reviews: 0", "Retries: 0", "Tokens: unavailable", "Tool calls: 0", "Cost: unavailable", "",
-    "Safe: 0 (n/a)", "Unsafe: 0 (n/a)", "Auto-approved: 0 (n/a)", "Manually approved: 0 (n/a)", "Rejected: 0 (n/a)", "",
+    "Safe: 0 (n/a)", "Unsafe: 0 (n/a)", "Auto-approved: 0 (n/a)", "Manually approved: 0 (n/a)", "Auto-rejected: 0 (n/a)", "Rejected: 0 (n/a)", "",
     "Average time to full report: unavailable", "Average time to rating: unavailable"].join("\n"))
   const unpriced = { ...empty(), requests: 1, tokenRequests: 1, input: 10, output: 2, since: 1 }
   assert.equal(lifetimeCost(unpriced), "lifetime: cost unavailable")
@@ -68,4 +68,15 @@ test("statistics abbreviate token counts without rounding up or changing recorde
     assert.ok(lifetimeReport(totals).split("\n").includes(`Tokens: ${expected}`))
     assert.equal(totals.input, input); assert.equal(totals.output, output)
   }
+})
+
+test("automatic steering rejections are a separate row and Rejected counts only manual rejections", () => {
+  const totals = { ...empty(), safe: 1, unsafe: 3, ratingsSince: 1,
+    activity: { ...empty().activity, reviews: 4, rejected: 3, autoRejected: 2, since: 1 } }
+  const lines = lifetimeReport(totals).split("\n")
+  assert.ok(lines.includes("Auto-rejected: 2 (50.0%)"))
+  assert.ok(lines.includes("Rejected: 1 (25.0%)"))
+  assert.ok(lines.indexOf("Manually approved: 0 (0.0%)") < lines.indexOf("Auto-rejected: 2 (50.0%)"))
+  const inconsistent = { ...totals, activity: { ...totals.activity, rejected: 1 } }
+  assert.ok(lifetimeReport(inconsistent).split("\n").includes("Rejected: 0 (0.0%)"), "never negative")
 })

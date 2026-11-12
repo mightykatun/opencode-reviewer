@@ -108,6 +108,9 @@ export interface LifetimeReportPart { text: string; rating?: "safe" | "unsafe" }
 export function lifetimeReportParts(totals: LifetimeTotals): LifetimeReportPart[] {
   const reviews = totals.safe + totals.unsafe, activity = totals.activity
   const percentage = (count: number) => reviews ? (count / reviews * 100).toFixed(1) : undefined
+  // Rejections count native rejects. Automatic steering rejections are shown apart,
+  // so Rejected counts manual ones, disjoint like the two approval rows.
+  const autoRejected = activity.autoRejected ?? 0, manuallyRejected = Math.max(0, activity.rejected - autoRejected)
   return [{ text: [uiText.lifetime.dialogReviews(reviews), uiText.lifetime.dialogRetries(activity.retries),
     totals.tokenRequests ? uiText.lifetime.dialogTokens(totals.input, totals.output, totals.tokenRequests < totals.requests) : uiText.lifetime.dialogTokensUnavailable,
     uiText.lifetime.dialogToolCalls(activity.toolCalls),
@@ -119,7 +122,8 @@ export function lifetimeReportParts(totals: LifetimeTotals): LifetimeReportPart[
     { text: ["",
     uiText.lifetime.dialogAutoApproved(activity.autoApproved, percentage(activity.autoApproved)),
     uiText.lifetime.dialogManuallyApproved(activity.manuallyApproved, percentage(activity.manuallyApproved)),
-    uiText.lifetime.dialogRejected(activity.rejected, percentage(activity.rejected)),
+    uiText.lifetime.dialogAutoRejected(autoRejected, percentage(autoRejected)),
+    uiText.lifetime.dialogRejected(manuallyRejected, percentage(manuallyRejected)),
     "", uiText.lifetime.averageFullReport(activity.timedReviews ? (activity.meanFullReportMs / 1000).toFixed(2) : undefined),
     uiText.lifetime.averageRating(activity.timedReviews ? (activity.meanRatingMs / 1000).toFixed(2) : undefined),
   ].join("\n") }]
