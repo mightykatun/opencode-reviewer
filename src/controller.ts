@@ -812,7 +812,16 @@ export class Controller<R extends RequestIdentity = HostRequest> {
   permissionReplied(event: NativePermissionReply) {
     if (this.stopped || !this.nativeApproval) return
     // Any approval in the session ends its run of consecutive steering rejections.
-    if (event.decision === "once" || event.decision === "always") this.steered.delete(event.sessionID)
+    if ((event.decision === "once" || event.decision === "always") && this.steered.delete(event.sessionID)) {
+      let changed = false
+      for (const pending of this.entries.values()) {
+        if (pending.view.request.sessionID !== event.sessionID || pending.view.status !== "complete"
+          || pending.view.steerable || this.automatic(pending) !== "reject") continue
+        pending.view = { ...pending.view, steerable: true }
+        changed = true
+      }
+      if (changed) this.publish()
+    }
     const confirmation = [...this.approvalTransactions].find(transaction => transaction.dispatched && transaction.request.id === event.requestID)
     const entry = this.entries.get(event.requestID)
     if ((confirmation && confirmation.request.sessionID !== event.sessionID)

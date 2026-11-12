@@ -94,6 +94,27 @@ test("the per-session cap stops consecutive rejections until an approval in that
   assert.equal(f.view("third")?.autoDecision, "reject", "an approval in the session resets the run")
 })
 
+test("resetting the cap restores silence for an already completed report before its native gates open", async t => {
+  const f = fixture()
+  t.after(() => f.controller.dispose())
+  const first = make("first"), waiting = make("waiting")
+  await f.ask(first)
+  const work = f.controller.approveNow("first", true); await settle(); await settle()
+  f.reply(first, "reject"); await work
+  f.front(() => undefined)
+  await f.ask(waiting)
+  assert.equal(f.view("waiting")?.steerable, undefined)
+  f.reply(make("manual", "other"), "once")
+  assert.equal(f.view("waiting")?.steerable, undefined, "another session cannot reset the cap")
+  f.reply(make("manual"), "always")
+  assert.equal(f.view("waiting")?.steerable, true, "eligible steering waits silently even before the native front is ready")
+  assert.equal(f.view("waiting")?.autoApproval, undefined)
+  f.front(() => "waiting")
+  f.controller.refreshApprovalEligibility()
+  assert.equal(f.view("waiting")?.autoApproval?.status, "countdown")
+  assert.equal(f.view("waiting")?.steerable, true)
+})
+
 test("no steering, no reject transport, a disabled option or a Safe rating never arms a rejection", async t => {
   for (const [name, options] of [
     ["no steering", { result: { safe: false, reason: "r", desc: "d" } }],
