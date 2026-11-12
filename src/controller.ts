@@ -1,5 +1,5 @@
 import type { HostRequest } from "./host-types.js"
-import type { AssessmentPreview, ReviewProgress, ReviewResult, ReviewTiming } from "./types.js"
+import type { AssessmentPreview, ReviewKind, ReviewProgress, ReviewResult, ReviewTiming } from "./types.js"
 import type { Config, ReviewOptions } from "./config.js"
 import { isDeepStrictEqual } from "node:util"
 import { randomUUID } from "node:crypto"
@@ -84,7 +84,9 @@ export interface NativePermissionReply { sessionID: string; requestID: string; d
 export type ApprovalFact<R extends RequestIdentity = HostRequest> = { type: "dispatched" | "confirmed" | "settled"; request: R; automatic: boolean;
   approval?: string; review?: string; result?: "not-sent" | "uncertain"
   /** Present only for steering rejections. Absent means a native once approval. */
-  decision?: "reject"; steering?: string }
+  decision?: "reject"; steering?: string
+  /** Exact native reject message, present only for steering rejections. */
+  message?: string }
 export type ApprovalObserver<R extends RequestIdentity = HostRequest> = (fact: ApprovalFact<R>) => unknown
 export type ReviewLifecycleFact<R extends RequestIdentity = HostRequest> =
   | { type: "accepted"; request: R; result: ReviewResult; timing: ReviewTiming; root?: string; review: string; completedAt: number }
@@ -123,6 +125,8 @@ export interface ControllerOptions<R extends RequestIdentity = HostRequest> {
   onApproval?: ApprovalObserver<R>
   onRating?: (safe: boolean, timing: ReviewTiming) => unknown
   onLifecycle?: ReviewLifecycleObserver<R>
+  /** Review category named in the steering message's closing sentence. */
+  steeringCategory?: (request: R) => ReviewKind | undefined
 }
 
 /** Reviews remain advisory unless explicitly configured with a once-only writer. */
@@ -154,10 +158,12 @@ export class Controller<R extends RequestIdentity = HostRequest> {
   private lifecycleObserver?: ReviewLifecycleObserver<R>
   private previous: Map<string, { request: R; deadline?: number }>
   private unavailable?: ControllerOptions<R>["unavailable"]
+  private category?: ControllerOptions<R>["steeringCategory"]
   constructor(private evaluate: Evaluate<R>, private changed: (views: View<R>[]) => void,
     { reviewOptions = { reviewBash: true, reviewEdits: true }, nativeApproval, clock: time = clock, modes,
-      onApproval, onRating, onLifecycle, session, candidate = () => false, nativeFront, approvalReady, checkpoint, unavailable }: ControllerOptions<R> = {}) {
+      onApproval, onRating, onLifecycle, session, candidate = () => false, nativeFront, approvalReady, checkpoint, unavailable, steeringCategory }: ControllerOptions<R> = {}) {
     this.unavailable = unavailable
+    this.category = steeringCategory
     this.manual = new Map(checkpoint?.manual)
     this.previous = new Map(checkpoint?.pending)
     this.options = reviewOptions
@@ -559,7 +565,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     if (decision === "reject" && !steering) return
     const transaction = new ApprovalTransaction(entry.view.request, entry.root, entry.review, automatic, permissionResolved,
       fact => this.approvalFact(fact), decision,
-      steering && { message: steeringMessage(steering.reason, steering.steering), text: steering.steering })
+      steering && { message: steeringMessage(steering.reason, steering.steering, this.steeringCategory(entry.view.request)), text: steering.steering })
     this.approvalTransactions.add(transaction)
     try {
       await withDeadline(AbortSignal.any([entry.abort.signal, abort.signal]), 5000, async (signal) => {
@@ -837,6 +843,10 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     }
     confirmation?.resolved(event)
     this.replied(event.requestID)
+  }
+
+  private steeringCategory(request: R) {
+    try { return this.category?.(request) } catch { return undefined }
   }
 
   private finishFast(entry: Entry<R>) {

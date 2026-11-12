@@ -51,7 +51,8 @@ export class ApprovalTransaction<R extends RequestIdentity> {
   private terminal() { return this.current === "confirmed" || this.current === "uncertain" || this.current === "not-sent" }
   private fact(type: ApprovalFact<R>["type"]) {
     const fact: ApprovalFact<R> = { type, request: this.request, automatic: this.automatic, approval: this.approval, review: this.review,
-      ...(this.decision === "reject" ? { decision: "reject" as const, steering: this.steering?.text } : {}),
+      ...(this.decision === "reject" ? { decision: "reject" as const, steering: this.steering?.text,
+        ...(this.steering ? { message: this.steering.message } : {}) } : {}),
       ...(type === "settled" && this.current !== "confirmed" ? { result: this.sent ? "uncertain" : "not-sent" } : {}) }
     try { void Promise.resolve(this.observe(fact)).catch(() => {}) } catch {}
   }

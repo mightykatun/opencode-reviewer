@@ -7,6 +7,7 @@ import { hostPermissionTransport } from "./host-permissions.js"
 import { hostQueueFront, hostQueueSnapshot, type HostQueueReader } from "./host-queue.js"
 import { refreshNativeFamilies } from "./host-native-observations.js"
 import { evaluateHostReview } from "./host-evaluate.js"
+import { SteeringFollowUps, followUpCategory } from "./steering-follow-up.js"
 import { PendingRefresh } from "./pending-refresh.js"
 import { SessionModes, SessionModeStore } from "./session-mode.js"
 import { conversationRoot, RouteSessions } from "./route-approval.js"
@@ -233,6 +234,9 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     },
   })
   if (continuity) continuity.current = notifications
+  // Memory only and per composition: reconnection and disposal drop every open steering.
+  const followUps = new SteeringFollowUps()
+  life.addCleanup(() => followUps.clear(), false)
   const controller = new Controller<HostPendingRequest>((request, signal, identified, onProgress, observation) => {
     const snapshot = snapshots.get(request.id)
     if (!snapshot) return Promise.reject(new Error(uiText.review.evidenceUnavailable))
@@ -243,7 +247,11 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       { onProgress, observation, pricing, onDiagnostics: state.dependencies.observer,
         loadSessionInstructions: signal => observation?.root
           ? instructions.read(observation.root, config.maxEvidenceBytes, signal) : Promise.resolve(""),
-        observeEvidence: evidence => observation ? records.history.observation(request, evidence.kind, config, observation) : undefined })
+        ...(config.autoRejectSteering ? { steeringRecord: followUps.paired(request.id) } : {}),
+        observeEvidence: evidence => {
+          if (observation && config.autoRejectSteering) try { followUps.observe(observation.review, evidence) } catch {}
+          return observation ? records.history.observation(request, evidence.kind, config, observation) : undefined
+        } })
   }, values => { setViews(values); notifications?.snapshot(controller.pendingViews) }, {
     reviewOptions: config, modes, session: id => routes.get(id), checkpoint,
     unavailable: request => "unavailable" in request ? uiText.review.evidenceUnavailable : undefined,
@@ -252,7 +260,12 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       ctx.ui.tabs.enabled() ? ctx.ui.tabs.list() : []),
     nativeFront: root => front(root),
     onLifecycle: records.history.lifecycle,
-    onApproval: fact => { records.history.approval(fact); notifications?.approval(fact) },
+    onApproval: fact => {
+      if (fact.type === "confirmed" && fact.decision === "reject" && fact.message && fact.review && !("unavailable" in fact.request))
+        try { followUps.steered(fact.request, fact.review, fact.message) } catch {}
+      records.history.approval(fact); notifications?.approval(fact)
+    },
+    steeringCategory: request => "unavailable" in request ? undefined : followUpCategory(request.action),
     candidate: request => !("unavailable" in request) && !!request.source && ((request.action === "shell" && config.reviewBash)
       || (request.action === "edit" && config.reviewEdits) || (request.action === "external_directory" && config.reviewExternalDirectories)
       || (request.action === "skill" && config.reviewSkills) || config.reviewTools),
@@ -309,6 +322,8 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
         const live = new Set(controller.views.map(value => value.request.id))
         for (const id of eventOwners.keys()) if (!snapshots.has(id) && !live.has(id)) eventOwners.delete(id)
       }
+      // Steering pairing follows native arrival order, before review admission.
+      if (config.autoRejectSteering) for (const { request } of requests) if (!("unavailable" in request)) followUps.asked(request)
       controller.reconcile(requests.map(value => value.request), controller.revision)
       notificationSnapshot()
     },
@@ -359,6 +374,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       if (eventOwners.get(event.data.requestID) === event.data.sessionID) {
         transport.resolved({ sessionID: event.data.sessionID, requestID: event.data.requestID, decision: event.data.reply })
         try { records.history.reply(event.data) } catch {}
+        followUps.replied(event.data.sessionID, event.data.requestID, event.data.reply)
         controller.permissionReplied({ sessionID: event.data.sessionID, requestID: event.data.requestID, decision: event.data.reply })
       }
       eventOwners.delete(event.data.requestID)
@@ -367,10 +383,12 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       events++
       if (!routes.get(event.data.sessionID)) {
         // Unknown here, but it may own a checkpoint carried across reconnection.
+        followUps.deleted(event.data.sessionID)
         controller.deleted(event.data.sessionID)
         return
       }
       routes.deleted(event.data.sessionID)
+      followUps.deleted(event.data.sessionID)
       records.invalidateSession(event.data.sessionID)
       controller.deleted(event.data.sessionID)
       void refresh.refresh()

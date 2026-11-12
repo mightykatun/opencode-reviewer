@@ -1,7 +1,7 @@
 import type { Config } from "./config.js"
 import type { Assessment, AssessmentPreview, ReviewProgress, ReviewResult, ReviewObservation, ReviewAttemptEvent } from "./types.js"
 import { randomUUID } from "node:crypto"
-import { BUILTIN_PROMPTS, correctionPrompt, reviewContract, sessionInstructionsPrompt, type PromptSet } from "./prompts.js"
+import { BUILTIN_PROMPTS, STEERING_FOLLOW_UP_CONTRACT, correctionPrompt, reviewContract, sessionInstructionsPrompt, type PromptSet } from "./prompts.js"
 import { usageAttempt, sumUsage, type PricingLookup, type Usage } from "./usage.js"
 import { remainingTime, reviewStage, withDeadline } from "./deadline.js"
 import { SSEParser } from "./sse.js"
@@ -14,6 +14,7 @@ import type { HostReviewEvidence } from "./host-evidence.js"
 import { retrievalEnabled } from "./config.js"
 import { retrieveDocuments, type RetrievalExecutor, type RetrievalSection } from "./retrieval.js"
 import type { ContextAsker } from "./clarification.js"
+import type { SteeringFollowUpEvidence } from "./steering-follow-up.js"
 export { withDeadline } from "./deadline.js"
 
 export function parseAssessment(content: string, steering = false): Assessment {
@@ -187,6 +188,8 @@ export interface ReviewerDependencies {
   retrieval?: RetrievalExecutor
   /** The root conversation's own model, offered to retrieval as ask_context. */
   clarification?: ContextAsker
+  /** Verdict-only context for the request following a steering rejection. Retrieval never sees it. */
+  steeringFollowUp?: SteeringFollowUpEvidence
 }
 
 export async function review(
@@ -194,7 +197,8 @@ export async function review(
   config: Config,
   signal: AbortSignal,
   { fetcher = fetch, environment = process.env, prompts = BUILTIN_PROMPTS,
-    pricing, onUsage, onProgress, onDiagnostics, onRetry, sessionInstructions, observation = { review: randomUUID() }, retrieval, clarification }: ReviewerDependencies = {},
+    pricing, onUsage, onProgress, onDiagnostics, onRetry, sessionInstructions, observation = { review: randomUUID() }, retrieval, clarification,
+    steeringFollowUp }: ReviewerDependencies = {},
 ): Promise<ReviewResult> {
   // Production already shares a deadline with evidence collection. Direct
   // callers get the same bound, including all internal backoff and POSTs.
@@ -203,7 +207,7 @@ export async function review(
     try {
       return await withDeadline(signal, config.timeoutMs, (bounded) =>
         worker = review(evidence, config, bounded, { fetcher, environment, prompts, pricing, onUsage, onProgress, onDiagnostics, onRetry,
-          sessionInstructions, observation, retrieval, clarification }))
+          sessionInstructions, observation, retrieval, clarification, steeringFollowUp }))
     } finally { await worker?.catch(() => {}) }
   }
   const key = config.apiKey ?? (config.apiKeyEnv ? environment[config.apiKeyEnv]?.trim() : undefined)
@@ -234,8 +238,10 @@ export async function review(
   const messages = [
     { role: "system", content: [prompt.instructions, ...(config.autoApprove && config.extraCareful ? [prompts.extraCareful] : []),
       ...(sessionInstructions ? [sessionInstructionsPrompt(sessionInstructions)] : []),
-      ...(config.autoRejectSteering ? [prompts.steering] : []), reviewContract(config.autoRejectSteering)].join("\n\n") },
-    { role: "user", content: JSON.stringify({ ...evidence, limitations: [...evidence.limitations, ...extra], retrieval: section }) },
+      ...(config.autoRejectSteering ? [prompts.steering] : []), reviewContract(config.autoRejectSteering),
+      ...(steeringFollowUp ? [STEERING_FOLLOW_UP_CONTRACT] : [])].join("\n\n") },
+    { role: "user", content: JSON.stringify({ ...evidence, limitations: [...evidence.limitations, ...extra], retrieval: section,
+      ...(steeringFollowUp ? { steeringFollowUp } : {}) }) },
   ]
   let usage: Usage | undefined
   let corrections = 0

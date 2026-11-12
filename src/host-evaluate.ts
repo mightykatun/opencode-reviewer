@@ -17,11 +17,14 @@ import { RetrievalCompletionError, type RetrievalExecutor } from "./retrieval.js
 import { DeadlineError, remainingTime } from "./deadline.js"
 import { sessionContextAsker } from "./clarification.js"
 import type { HostScope, HostRequest, JSONObject } from "./host-types.js"
+import { readSteeringFollowUp, type SteeringRecord } from "./steering-follow-up.js"
 
 export interface HostReviewerDependencies extends ReviewerDependencies {
   loadSessionInstructions?: (signal: AbortSignal) => Promise<string>
   /** Synchronous accounting setup using the validated evidence kind. */
   observeEvidence?: (evidence: HostReviewEvidence) => ReviewObservation | void
+  /** Open steering paired with this request on arrival. */
+  steeringRecord?: SteeringRecord
 }
 
 /** Advisory evaluation only. Admission/mode/queue/presentation are controller
@@ -31,7 +34,7 @@ export interface HostReviewerDependencies extends ReviewerDependencies {
 export function evaluateHostReview(client: OpenCodeClient, snapshot: HostRequestSnapshot, config: Config,
   prompts: PromptSet, parent: AbortSignal, onIdentified: () => void, dependencies: HostReviewerDependencies = {}): ReviewEvaluation<ReviewResult | null> {
   return ownedReview(parent, config.timeoutMs, async signal => {
-    const { loadSessionInstructions, ...captured } = dependencies
+    const { loadSessionInstructions, steeringRecord, ...captured } = dependencies
     const sessionInstructions = loadSessionInstructions
       ? await sessionInstructionsSnapshot(loadSessionInstructions, signal) : captured.sessionInstructions
     signal.throwIfAborted()
@@ -48,7 +51,13 @@ export function evaluateHostReview(client: OpenCodeClient, snapshot: HostRequest
     try { observation = observeEvidence?.(owned.result.evidence) } catch { /* Accounting cannot change review. */ }
     signal.throwIfAborted()
     const evidence = owned.result.evidence
+    // Same category, and a root-session steering ends with a newer root user message.
+    const steeringFollowUp = steeringRecord && config.autoRejectSteering && steeringRecord.rejected.category === evidence.kind
+      && (!steeringRecord.root || steeringRecord.rootMessageID === evidence.conversation.rootMessageID)
+      ? await readSteeringFollowUp(client, steeringRecord, owned.snapshot.request, signal) : undefined
+    signal.throwIfAborted()
     return review(evidence, config, signal, { ...reviewer, sessionInstructions, ...(observation ? { observation } : {}), prompts,
+      ...(steeringFollowUp ? { steeringFollowUp } : {}),
       retrieval: reviewer.retrieval ?? companionRetrieval(client, owned.snapshot.scope, owned.snapshot.request, config.maxEvidenceBytes),
       // Retrieval offers it only for root conversations (clarificationEnabled).
       clarification: reviewer.clarification ?? sessionContextAsker(client, evidence.conversation.current.id) })

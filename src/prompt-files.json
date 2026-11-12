@@ -14,5 +14,6 @@
   "steeringResponse": "contracts/STEERING-RESPONSE-CONTRACT.md",
   "retrievalContract": "contracts/RETRIEVAL-CONTRACT.md",
   "correction": "contracts/PERMISSION-REVIEW-CORRECTION.md",
-  "steeringCorrection": "contracts/STEERING-REVIEW-CORRECTION.md"
+  "steeringCorrection": "contracts/STEERING-REVIEW-CORRECTION.md",
+  "steeringFollowUp": "contracts/STEERING-FOLLOW-UP-CONTRACT.md"
 }

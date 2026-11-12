@@ -23,3 +23,17 @@ export function leadingLines(text: string, budget: number, check?: () => void): 
   }
   return { text: text.slice(0, end), lines, bytes }
 }
+
+/** Byte-faithful trailing complete lines within a UTF-8 budget. Never splits a line. */
+export function trailingLines(text: string, budget: number): { text: string; lines: number; bytes: number } {
+  let start = text.length, bytes = 0, lines = 0
+  while (start > 0) {
+    const search = text[start - 1] === "\n" ? start - 2 : start - 1
+    const newline = search < 0 ? -1 : text.lastIndexOf("\n", search)
+    const from = newline < 0 ? 0 : newline + 1
+    const size = Buffer.byteLength(text.slice(from, start))
+    if (bytes + size > budget) break
+    bytes += size; lines++; start = from
+  }
+  return { text: text.slice(start), lines, bytes }
+}

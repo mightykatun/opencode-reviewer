@@ -4,12 +4,12 @@ import { setImmediate as settle } from "node:timers/promises"
 import { Controller, type ApprovalFact, type NativeApproval } from "../src/controller.js"
 import type { HostRequest } from "../src/host-types.js"
 import type { ReviewProgress, ReviewResult } from "../src/types.js"
-import { steeringMessage } from "../src/steering.js"
+import { steeringFollowUpSentence, steeringMessage } from "../src/steering.js"
 
 const make = (id: string, sessionID = "root"): HostRequest => Object.freeze({ id, sessionID, action: "shell", resources: Object.freeze(["rm -rf build"]),
   source: Object.freeze({ assistantID: "assistant", id: `call-${id}` }) })
 const steered: ReviewResult = { safe: false, reason: "Deletes the whole build tree.", steering: "Please remove only build/cache.", desc: "Removes everything." }
-const message = steeringMessage(steered.reason!, steered.steering!)
+const message = steeringMessage(steered.reason!, steered.steering!, "shell")
 
 function fixture(options: { result?: ReviewResult; autoApprove?: boolean; steering?: boolean; fast?: boolean; cap?: number; reject?: boolean } = {}) {
   const writes: { kind: string; id: string; message?: string }[] = []
@@ -37,7 +37,7 @@ function fixture(options: { result?: ReviewResult; autoApprove?: boolean; steeri
     clock: { now: () => 0, after: () => () => {} },
     reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: options.autoApprove ?? false, autoRejectSteering: options.steering ?? true,
       maxSteeringRejections: options.cap ?? 1, fastMode: options.fast ?? false, stream: true, autoApproveDelaySeconds: 15 },
-    onApproval: fact => { facts.push(fact) },
+    onApproval: fact => { facts.push(fact) }, steeringCategory: () => "shell",
   })
   return {
     controller, writes, facts,
@@ -65,7 +65,9 @@ test("Unsafe steering arms the shared countdown, rejects natively with the exact
   const work = f.controller.approveNow("a", true)
   await settle(); await settle()
   assert.deepEqual(f.writes, [{ kind: "reject", id: "a", message }])
-  assert.equal(message, "Rejected by opencode-reviewer: Deletes the whole build tree. Please remove only build/cache.")
+  assert.equal(message, "Rejected by opencode-reviewer: Deletes the whole build tree. Please remove only build/cache. Please start by resolving this."
+    + " Ideally, the next shell tool call you execute should fix this review issue. You may gather additional context before.")
+  assert.equal(f.facts[0]?.message, message, "the dispatched fact carries the exact native message")
   assert.equal(f.view("a")?.autoApproval?.status, "allowing")
   f.reply(request, "reject"); await work; await settle()
   assert.deepEqual(f.facts.map(fact => [fact.type, fact.decision, fact.steering]),
@@ -163,11 +165,20 @@ test("fast mode rejects once reason and steering are closed in the preview, befo
   f.stream("a", { attempt: 0, phase: "streaming", preview: { safe: false, reason: "Too broad.", reasonComplete: true,
     steering: "Please narrow it.", steeringComplete: true, desc: "Partial" } })
   for (let i = 0; i < 6; i++) await settle()
-  assert.deepEqual(f.writes, [{ kind: "reject", id: "a", message: "Rejected by opencode-reviewer: Too broad. Please narrow it." }])
+  assert.deepEqual(f.writes, [{ kind: "reject", id: "a", message: `Rejected by opencode-reviewer: Too broad. Please narrow it. ${steeringFollowUpSentence("shell")}` }])
   assert.equal(f.view("a")?.retained, true, "the report keeps running after a fast rejection")
   f.reply(make("a"), "reject"); await settle(); await settle()
   assert.equal(f.view("a")?.autoApproval?.status, "approved")
   assert.equal(f.view("a")?.autoDecision, "reject")
   f.finish("a", { safe: false, reason: "Too broad.", steering: "Please narrow it.", desc: "Full report." }); await settle(); await settle()
   assert.equal(f.view("a"), undefined, "the retained report ends after completion")
+})
+
+test("the steering message closes with a category sentence and always ends the steering sentence", () => {
+  assert.equal(steeringMessage("Too broad", "Please narrow it", "external-directory"),
+    "Rejected by opencode-reviewer: Too broad. Please narrow it. Please start by resolving this. Ideally, the next external directory tool call"
+    + " you execute should fix this review issue. You may gather additional context before.")
+  assert.match(steeringMessage("Too broad.", "Please narrow it.", "tool"), /the next registered tool call you execute/)
+  assert.match(steeringMessage("Too broad.", "Please narrow it."), /the next tool call of the same type you execute/)
+  assert.doesNotMatch(steeringMessage("a\nb", "c\n d"), /\n/)
 })
