@@ -31,7 +31,7 @@ export class LinuxNotifications implements NotificationBackend {
   async show(message: NotificationMessage, parent: AbortSignal) {
     if (this.stopped || parent.aborted || this.platform !== "linux") return
     const sessionID = message.sessionID
-    const history = message.kind === "approved" && message.history ? { ...message.history } : undefined
+    const history = (message.kind === "approved" || message.kind === "steered") && message.history ? { ...message.history } : undefined
     const preparation = AbortSignal.any([parent, this.abort.signal])
     if (!message.banner) {
       if (!message.sound) return

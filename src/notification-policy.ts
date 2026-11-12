@@ -36,7 +36,9 @@ function permissionAttention(view: View<RequestIdentity>, auto: boolean): "atten
   if (state === "failed" && !view.approvalPendingConfirmed) return
   if (view.status === "complete") {
     if (!view.assessment) return
-    if (!view.assessment.safe) return "unsafe"
+    // Like a Safe report awaiting automatic approval, a steerable one stays silent
+    // until it is canceled, fails or falls back to manual.
+    if (!view.assessment.safe) return view.steerable && state !== "cancelled" && state !== "failed" ? undefined : "unsafe"
     if (!auto || state === "cancelled" || state === "failed") return "attention"
     return
   }
@@ -247,10 +249,13 @@ export class NotificationPolicy<R extends RequestIdentity = HostRequest> {
     if (kind) this.attention(entry, kind)
     else this.wait(entry)
   }
-  approved(request: R, target?: Target) {
-    if (!this.remember(`approved:${request.id}`)) return
+  approved(request: R, target?: Target) { this.automatic("approved", request, target) }
+  /** A confirmed automatic steering rejection. */
+  steered(request: R, target?: Target) { this.automatic("steered", request, target) }
+  private automatic(kind: "approved" | "steered", request: R, target?: Target) {
+    if (!this.remember(`${kind}:${request.id}`)) return
     const current = this.permissions.get(request.id)
-    if (current || target) this.show("approved", uiText.notifications.approved, current?.target ?? target!,
+    if (current || target) this.show(kind, uiText.notifications[kind], current?.target ?? target!,
       { session: request.sessionID, permission: request.id })
   }
   resolved(kind: "permission" | "question", id: string) {

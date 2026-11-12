@@ -2,7 +2,7 @@ import { constants } from "node:fs"
 import { mkdtemp, open, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import type { NotificationKind } from "./notification-types.js"
+import { bundledSoundKind, type NotificationKind } from "./notification-types.js"
 import type { NotificationProcesses } from "./notification-process.js"
 import { withDeadline } from "./deadline.js"
 import { MAX_SOUND_BYTES, normalizedSound } from "./notification-codec.js"
@@ -57,7 +57,7 @@ export class NotificationAudio {
       catch { signal.throwIfAborted() }
     }
     if (!pcm) {
-      const sound = this.sounds[kind]
+      const sound = this.sounds[bundledSoundKind(kind)]
       if (!sound) return
       pcm = await normalizedSound(Buffer.from(sound.data, "base64"), sound.format, signal)
     }

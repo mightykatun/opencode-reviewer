@@ -30,6 +30,8 @@ export interface View<R extends RequestIdentity = HostRequest> {
   autoDecision?: NativeDecision
   /** Steering sent with an armed or dispatched automatic rejection. */
   steering?: string
+  /** The completed Unsafe report qualifies for a steering rejection once native gates allow it. */
+  steerable?: boolean
   approvalPendingConfirmed?: boolean
   /** Fast-mode dispatched review retained independently of native permission lifetime. */
   retained?: boolean
@@ -590,6 +592,10 @@ export class Controller<R extends RequestIdentity = HostRequest> {
               if (decision === "reject") {
                 const session = entry.view.request.sessionID
                 this.steered.set(session, (this.steered.get(session) ?? 0) + 1)
+                // Reports in this session that can no longer steer fall back to manual attention.
+                for (const other of this.entries.values()) if (other !== entry && other.view.steerable
+                  && other.view.request.sessionID === session && !other.decision && this.automatic(other) !== "reject")
+                  other.view = { ...other.view, steerable: undefined }
               }
               if (this.options.fastMode && automatic) {
                 entry.fastApproval = "pending"
@@ -751,6 +757,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
       if (active()) {
         entry.view = assessment ? { ...entry.view, status: "complete", assessment, progress: undefined }
           : { ...entry.view, status: "unrelated", progress: undefined }
+        if (this.automatic(entry) === "reject") entry.view = { ...entry.view, steerable: true }
         if (!this.matches(entry)) this.pauseRating(entry)
         // Count final accepted reviews, not previews, transport attempts or UI
         // publications. Accounting failures cannot affect review or approval.

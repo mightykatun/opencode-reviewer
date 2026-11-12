@@ -53,3 +53,9 @@ for (const stage of ["directory", "write"] as const) test(`W4: immediate icon ca
   await icon.dispose()
   assert.equal(removed, stage === "directory" ? 0 : 1)
 })
+
+test("steering notifications reuse the bundled attention sound", async () => {
+  const { bundledSoundKind } = await import("../src/notification-types.js")
+  assert.equal(bundledSoundKind("steered"), "attention")
+  assert.equal(bundledSoundKind("approved"), "approved")
+})

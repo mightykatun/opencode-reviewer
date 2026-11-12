@@ -45,7 +45,7 @@ test("notification settings are independently strict, default to silent approval
   assert.deepEqual(parseNotificationConfig(), { notify: true, notifySound: true, notificationSoundDirectory: undefined,
     staleReminderSeconds: 60, notifications: {
       attention: { banner: true, sound: true }, unsafe: { banner: true, sound: true }, question: { banner: true, sound: true },
-      approved: { banner: true, sound: false }, error: { banner: true, sound: true }, ended: { banner: true, sound: true },
+      approved: { banner: true, sound: false }, steered: { banner: true, sound: true }, error: { banner: true, sound: true }, ended: { banner: true, sound: true },
     } })
   for (const name of ["notify", "notifySound"]) for (const value of [null, "true", 0, [], {}]) {
     assert.throws(() => parseNotificationConfig({ [name]: value }), new RegExp(`${name} must be a boolean`))
@@ -701,4 +701,24 @@ test("child deletion withdraws an exact approval target even when its banner bel
   for (const dismiss of f.dismissals) dismiss()
   await settle(); assert.equal(f.messages.length, 48)
   await f.policy.dispose()
+})
+
+test("a steerable Unsafe report stays silent until it falls back to manual, and a confirmed rejection notifies once", async () => {
+  const f = fixture()
+  const steerable = (state?: "countdown" | "cancelled" | "failed"): View => ({ ...view("a", "complete", false), steerable: true,
+    ...(state ? { autoApproval: state === "countdown" ? { status: "countdown", seconds: 3 } : { status: state } } : {}) })
+  f.add(steerable()); await settle()
+  assert.deepEqual(f.messages, [], "waiting for eligibility")
+  f.policy.snapshot([steerable("countdown")]); await settle()
+  assert.deepEqual(f.messages, [], "counting down")
+  f.policy.snapshot([steerable("cancelled")]); await settle()
+  assert.deepEqual(f.messages.map(message => [message.kind, message.title]), [["unsafe", "Unsafe permission needs human approval"]])
+  const plain = fixture()
+  plain.add(view("b", "complete", false)); await settle()
+  assert.deepEqual(plain.messages.map(message => message.kind), ["unsafe"], "without steering, Unsafe alerts as before")
+  const confirmed = fixture()
+  confirmed.policy.steered(view("c").request, target); await settle()
+  confirmed.policy.steered(view("c").request, target); await settle()
+  assert.deepEqual(confirmed.messages.map(message => [message.kind, message.title, message.sound, message.history]),
+    [["steered", "Reviewer rejected a permission", true, { session: "root", permission: "c" }]])
 })

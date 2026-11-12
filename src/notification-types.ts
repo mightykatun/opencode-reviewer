@@ -1,7 +1,9 @@
 import { uiText } from "./ui-text.js"
 import type { HistoryTarget } from "./history-records.js"
 
-export const notificationKinds = ["attention", "unsafe", "question", "approved", "error", "ended"] as const
+export const notificationKinds = ["attention", "unsafe", "question", "approved", "steered", "error", "ended"] as const
+/** Bundled sound per kind. Steering reuses the attention sound, so six files stay embedded. */
+export const bundledSoundKind = (kind: NotificationKind): Exclude<NotificationKind, "steered"> => kind === "steered" ? "attention" : kind
 export type NotificationKind = typeof notificationKinds[number]
 export interface NotificationInteraction { kind: "permission" | "question"; id: string }
 export interface NotificationClickLease { signal: AbortSignal; current(): boolean; commit(): void; cancel(): void }

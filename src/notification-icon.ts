@@ -28,6 +28,8 @@ const icons: Record<NotificationKind, { strokes: readonly Stroke[]; rgb: readonl
   // Purple accent #9d7cd8 distinguishes questions from permission attention.
   question: { strokes: [[19, 20, 19, 19], [19, 19, 21, 17], [21, 17, 27, 17], [27, 17, 29, 19],
     [29, 19, 29, 22], [29, 22, 24, 26], [24, 26, 24, 27], [24, 31, 24, 31]], rgb: [157, 124, 216] },
+  // Steering reuses the unsafe glyph and color.
+  steered: { strokes: [[24, 17, 24, 25], [24, 31, 24, 31]], rgb: [239, 68, 68] },
   error: { strokes: [[18, 18, 30, 30], [30, 18, 18, 30]], rgb: [239, 68, 68] },
   ended: { strokes: [[18, 18, 30, 18], [30, 18, 30, 30], [30, 30, 18, 30], [18, 30, 18, 18]], rgb: [160, 160, 160] },
 }

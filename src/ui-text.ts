@@ -235,6 +235,7 @@ export const uiText = {
     question: "Agent has a question",
     reminder: (event: string) => `${event} (Reminder)`,
     approved: "Reviewer approved a permission",
+    steered: "Reviewer rejected a permission",
     error: "Session error",
     ended: "Session ended",
     // Arguments are escaped by the desktop adapter before formatting.

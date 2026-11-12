@@ -353,10 +353,11 @@ export class HostNotifications {
         const dispatch = this.dispatches.get(id)
         if (!dispatch || dispatch.request.sessionID !== fact.request.sessionID || dispatch.approval !== fact.approval) return
         this.dispatches.delete(id)
-        if (fact.type === "confirmed" && fact.automatic && dispatch.automatic && fact.decision !== "reject"
+        if (fact.type === "confirmed" && fact.automatic && dispatch.automatic
           && !this.deletedSessions.has(fact.request.sessionID) && !this.deletedSessions.has(dispatch.target.root)) {
           // Policy delivery is microtask-queued, never process work on the write path.
-          this.policy.approved(dispatch.request, this.target(dispatch.target.root))
+          if (fact.decision === "reject") this.policy.steered(dispatch.request, this.target(dispatch.target.root))
+          else this.policy.approved(dispatch.request, this.target(dispatch.target.root))
         }
       }
     })
