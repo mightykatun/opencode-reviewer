@@ -30,6 +30,7 @@ interface Resolved { context: HistoryReview; outcome: HistoryOutcome }
 export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
   private candidates = new Map<string, Candidate>()
   private dispatches = new Map<string, Dispatch>()
+  private rejections = new Map<string, HistoryReview>()
   private early = new Map<string, EarlyReview>()
   private resolved = new Map<string, Resolved>()
   private stopped = false
@@ -56,7 +57,7 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
       configuredModel: config.model, provider: config.baseURL } : undefined
     // Early approval needs identity/accounting before an accepted report exists.
     // No provisional rating or explanation enters persistent history.
-    if (!this.stopped && context && config.autoApprove && config.fastMode) this.early.set(request.id, { context })
+    if (!this.stopped && context && (config.autoApprove || config.autoRejectSteering) && config.fastMode) this.early.set(request.id, { context })
     return { review: execution.review, observe: event => {
       // Real transport finalizers may still enqueue received usage during shutdown.
       if (!context || event.review !== context.review) return
@@ -78,7 +79,8 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
         permission: id, review: m.review, category: category(m.kind), configuredModel: m.configuredModel, provider: m.provider }
       const accepted = { safe: fact.result.safe, completedAt: fact.completedAt, timing: { ...fact.timing },
         ...(m.reportedModel ? { reportedModel: m.reportedModel } : {}) }
-      this.admit({ type: "reviewAccepted", context, at: fact.completedAt, accepted })
+      this.admit({ type: "reviewAccepted", context, at: fact.completedAt, accepted,
+        ...(fact.result.reason ? { reason: fact.result.reason } : {}) })
       const old = this.candidates.get(id)
       if (old && (old.context.session !== context.session || old.context.root !== context.root)) return
       const early = this.early.get(id)
@@ -132,10 +134,22 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
   }
   approval = (fact: ApprovalFact<R>) => {
     if (this.stopped || !fact.approval || !fact.review) return
-    // Steering rejections never enter approval accounting.
-    if (fact.decision === "reject") return
     const c = this.candidates.get(fact.request.id)
     const early = this.early.get(fact.request.id)
+    // Steering rejections never enter approval accounting. The native reject saves
+    // the report as rejected, and confirmation records the steering that was sent.
+    if (fact.decision === "reject") {
+      if (fact.type === "dispatched") {
+        const context = early?.context.review === fact.review ? early.context : c?.reports.get(fact.review)?.context
+        if (context && context.session === fact.request.sessionID) this.rejections.set(fact.approval, context)
+      } else {
+        const context = this.rejections.get(fact.approval)
+        this.rejections.delete(fact.approval)
+        if (fact.type === "confirmed" && context && fact.steering && context.permission === fact.request.id)
+          this.admit({ type: "rejectionConfirmed", context, at: this.now(), approval: fact.approval, steering: fact.steering })
+      }
+      return
+    }
     if (fact.type === "dispatched") {
       const context = early?.context.review === fact.review ? early.context : c?.reports.get(fact.review)?.context
       if (!context || context.review !== fact.review || context.session !== fact.request.sessionID) return
@@ -221,12 +235,13 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
     for (const [id, e] of this.early) if (e.context.session === session || e.context.root === session) this.early.delete(id)
     for (const [id, c] of this.candidates) if (c.context.session === session || c.context.root === session) this.candidates.delete(id)
     for (const [id, d] of this.dispatches) if (d.context.session === session || d.context.root === session) this.dispatches.delete(id)
+    for (const [id, c] of this.rejections) if (c.session === session || c.root === session) this.rejections.delete(id)
     for (const [id, c] of this.resolved) if (c.context.session === session || c.context.root === session) this.resolved.delete(id)
   }
   dispose() {
     if (this.stopped) return
     this.stopped = true; this.unsubscribe(); clearTimeout(this.timer); this.abort.abort()
-    this.candidates.clear(); this.dispatches.clear(); this.resolved.clear(); this.early.clear()
+    this.candidates.clear(); this.dispatches.clear(); this.resolved.clear(); this.early.clear(); this.rejections.clear()
   }
 }
 

@@ -8,6 +8,8 @@ export interface LifetimeActivity {
   manuallyApproved: number
   rejected: number
   toolCalls: number
+  /** Confirmed automatic steering rejections, read from a separate ledger. Absent when unknown. */
+  autoRejected?: number
   timedReviews: number
   meanFullReportMs: number
   meanRatingMs: number

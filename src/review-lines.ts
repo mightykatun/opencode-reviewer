@@ -28,6 +28,11 @@ export function steeringLine(view: ReviewLineSource): string | undefined {
   return view.steering.trim()
 }
 
+/** Saved outcome label. A rejection with recorded steering was automatic. */
+export function historyOutcome(outcome: keyof typeof uiText.history.outcomes, steering?: string): string {
+  return outcome === "rejected" && steering ? uiText.history.autoRejected : uiText.history.outcomes[outcome]
+}
+
 /** Footer copy mirrors auto-approval for an armed steering rejection. */
 export function automaticCopy(view: ReviewLineSource) {
   return view.autoDecision === "reject" ? uiText.autoRejection : uiText.autoApproval

@@ -1,6 +1,6 @@
 import { add, empty, validate } from "./lifetime.js"
 import type { LifetimeTotals } from "./lifetime.js"
-import { count, decodeEvent, entryID, HISTORY_RECORD_BYTES as bytes, HISTORY_TEXT_BYTES, HistoryInvalid, opaque, reviewID, rootID, sessionID, validatePayload, validateQuery, validateReview, validateScope } from "./history-records.js"
+import { count, decodeEvent, entryID, HISTORY_DESCRIPTION_BYTES, HISTORY_RECORD_BYTES as bytes, HISTORY_TEXT_BYTES, HistoryInvalid, opaque, reviewID, rootID, sessionID, validatePayload, validateQuery, validateReview, validateScope } from "./history-records.js"
 import { bootstrap, migrationSchema } from "./history-migration.js"
 import { browsingSchema, HistoryBrowsing } from "./history-browsing.js"
 import { historyDelta, permissionStatistic, permissionStatisticsSchema, replacePermissionStatistic, validatePermissionStatistic } from "./history-statistics.js"
@@ -22,7 +22,11 @@ export interface HistoryDatabase {
 }
 export interface HistorySelection {
   revision: number; total: number; rank: number; entry?: string; older?: string; newer?: string
-  record?: { context: HistoryReview; payload: HistoryPayload; outcome: HistoryOutcome; approvingReview?: string }
+  record?: { context: HistoryReview; payload: HistoryPayload; outcome: HistoryOutcome; approvingReview?: string
+    /** Absent for reports saved before reasons existed. */
+    reason?: string
+    /** Present only when this review's steering was sent by a confirmed automatic rejection. */
+    steering?: string }
   unreadable?: boolean
   order?: HistoryOrder
   deleted?: boolean
@@ -35,6 +39,9 @@ export interface HistoryResolution { outcome?: HistoryOutcome; uncertain: boolea
 export type HistoryResult = HistorySelection | HistoryTotals | HistoryConversationTotals | HistoryResolution
 export interface HistoryPending { pending: string }
 export interface HistoryDeleting { deleting: true }
+
+/** Ledger key of the lifetime automatic-rejection count. Conversation keys are 64-hex root IDs. */
+const AUTO_REJECTION_LIFETIME = "lifetime"
 
 const schema = `
 CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, revision INTEGER NOT NULL, totals TEXT NOT NULL);
@@ -100,6 +107,16 @@ export class HistorySQL {
       // stay unknown. No backfill, so the migration is this single statement.
       db.exec(`CREATE TABLE IF NOT EXISTS retrieval_call_tools (
         id TEXT PRIMARY KEY REFERENCES retrieval_calls(id) ON DELETE CASCADE, tool TEXT NOT NULL);`)
+      // Additive steering tables. Payload and accepted JSON keep their shapes for older
+      // workers. Reasons cascade 1:1 with their review. Confirmed automatic rejections
+      // are deleted row by row with their conversation. The totals ledger only grows.
+      db.exec(`CREATE TABLE IF NOT EXISTS review_reasons (
+          review TEXT PRIMARY KEY REFERENCES reviews(id) ON DELETE CASCADE, reason TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS auto_rejections (entry TEXT PRIMARY KEY, root TEXT NOT NULL, session TEXT NOT NULL,
+          review TEXT NOT NULL, steering TEXT NOT NULL, at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS auto_rejection_totals (id TEXT PRIMARY KEY, count INTEGER NOT NULL);`)
+      historySchema(db, `CREATE INDEX IF NOT EXISTS auto_rejections_root ON auto_rejections(root);
+        CREATE INDEX IF NOT EXISTS auto_rejections_session ON auto_rejections(session);`)
       db.exec(migrationSchema)
       historySchema(db, browsingSchema)
       privacySchema(db, tables.length > 0)
@@ -116,6 +133,22 @@ export class HistorySQL {
     this.db.exec(write ? "BEGIN IMMEDIATE" : "BEGIN")
     try { const result = run(); this.db.exec("COMMIT"); return result }
     catch (error) { this.db.exec("ROLLBACK"); throw error }
+  }
+  /** Optional display details. Malformed or oversized rows are omitted, never fatal. */
+  private steeringDetails(review: string, entry: string): { reason?: string; steering?: string } {
+    const bounded = (value: unknown) => typeof value === "string" && value.trim() && Buffer.byteLength(value) <= HISTORY_DESCRIPTION_BYTES ? value : undefined
+    const reason = bounded(this.get(`SELECT CASE WHEN length(CAST(reason AS BLOB))<=${HISTORY_DESCRIPTION_BYTES} THEN reason END AS reason
+      FROM review_reasons WHERE review=?`, review)?.reason)
+    const steering = bounded(this.get(`SELECT CASE WHEN length(CAST(steering AS BLOB))<=${HISTORY_DESCRIPTION_BYTES} THEN steering END AS steering
+      FROM auto_rejections WHERE entry=? AND review=?`, entry, review)?.steering)
+    return { ...(reason ? { reason } : {}), ...(steering ? { steering } : {}) }
+  }
+  /** Automatic rejections come from their own ledger, outside the shared totals JSON.
+   * A missing ledger row is zero and leaves the totals shape unchanged. */
+  private withAutoRejected(totals: LifetimeTotals, id: string): LifetimeTotals {
+    const count = this.get("SELECT count FROM auto_rejection_totals WHERE id=?", id)?.count ?? 0
+    if (!Number.isSafeInteger(count) || count < 0) throw new HistoryInvalid("Invalid automatic rejection totals")
+    return count ? { ...totals, activity: { ...totals.activity, autoRejected: count } } : totals
   }
   private parseTotals(text: string): LifetimeTotals {
     if (typeof text !== "string" || Buffer.byteLength(text) > bytes.totals) throw new HistoryInvalid("Invalid history totals")
@@ -240,8 +273,22 @@ export class HistorySQL {
         if (e.tool) this.run("INSERT OR IGNORE INTO retrieval_call_tools VALUES (?,?)", call, e.tool)
       }
       this.contribute(opaque(e.type, call), delta, root)
+    } else if (e.type === "rejectionConfirmed") {
+      if (!deleted) {
+        this.run("INSERT OR IGNORE INTO auto_rejections VALUES (?,?,?,?,?,?)", entry, root, session, review, e.steering, e.at)
+        this.revision(root)
+      }
+      // Counted once per permission, never decremented by detail deletion.
+      const key = opaque(e.type, entry)
+      if (!this.get("SELECT id FROM contributions WHERE id=?", key)) {
+        this.run("INSERT INTO contributions VALUES (?)", key)
+        for (const id of [AUTO_REJECTION_LIFETIME, root])
+          this.run("INSERT INTO auto_rejection_totals VALUES (?,1) ON CONFLICT(id) DO UPDATE SET count=count+1", id)
+        this.run("UPDATE meta SET revision=revision+1 WHERE id=1")
+      }
     } else if (e.type === "reviewAccepted") {
       if (!deleted) this.run("UPDATE reviews SET accepted=COALESCE(accepted,?) WHERE id=?", JSON.stringify(e.accepted), review)
+      if (!deleted && e.reason) this.run("INSERT OR IGNORE INTO review_reasons VALUES (?,?)", review, e.reason)
       this.contribute(opaque(e.type, review), delta, root)
     } else if (e.type === "approvalConfirmed" || e.type === "approvalDispatched" || e.type === "approvalSettled") {
       const id = opaque(entry, e.approval)
@@ -326,13 +373,15 @@ export class HistorySQL {
       if (q.type === "totals") {
         const row = this.get(`SELECT revision,CASE WHEN length(CAST(totals AS BLOB))<=${bytes.totals} THEN totals END AS totals FROM meta WHERE id=1`)!
         if (!count(row.revision)) throw new HistoryInvalid("Invalid aggregate revision")
-        return { revision: row.revision, totals: this.parseTotals(row.totals),
-          ...(q.conversation ? { conversation: this.conversation(rootID(q.conversation)) } : {}) }
+        const conversation = q.conversation && this.conversation(rootID(q.conversation))
+        return { revision: row.revision, totals: this.withAutoRejected(this.parseTotals(row.totals), AUTO_REJECTION_LIFETIME),
+          ...(conversation ? { conversation: { ...conversation, totals: this.withAutoRejected(conversation.totals, rootID(q.conversation!)) } } : {}) }
       }
       if (q.type === "conversationTotals") {
         const revision = this.get("SELECT revision FROM meta WHERE id=1")!.revision
         if (!count(revision)) throw new HistoryInvalid("Invalid aggregate revision")
-        return { revision, ...this.conversation(rootID(q)) }
+        const conversation = this.conversation(rootID(q))
+        return { revision, ...conversation, totals: this.withAutoRejected(conversation.totals, rootID(q)) }
       }
       if (q.type === "resolution") {
         const entry = opaque(q.scope, q.permission), root = rootID(q), session = sessionID(q)
@@ -428,7 +477,7 @@ export class HistorySQL {
         if (typeof body !== "string" || Buffer.byteLength(body) > bytes.payload) throw new Error()
         const payload = validatePayload(JSON.parse(body))
         if (payload.completedAt !== s.completed) throw new Error()
-        result.record = { context, payload, outcome: s.outcome, approvingReview: s.approving ?? undefined }
+        result.record = { context, payload, outcome: s.outcome, approvingReview: s.approving ?? undefined, ...this.steeringDetails(s.review, s.entry) }
       } catch { result.unreadable = true }
       return result
     }, false)

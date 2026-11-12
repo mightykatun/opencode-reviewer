@@ -30,6 +30,8 @@ export function deleteHistory(db: HistoryDatabase, context: HistoryScope): boole
   const removeApproval = db.prepare("DELETE FROM approvals WHERE id=?")
   const removeReview = db.prepare("DELETE FROM reviews WHERE id=?")
   const removeAttempt = db.prepare("DELETE FROM attempts WHERE id=?")
+  const rejection = db.prepare(`SELECT entry FROM auto_rejections WHERE ${column}=? LIMIT 1`)
+  const removeRejection = db.prepare("DELETE FROM auto_rejections WHERE entry=?")
   const call = db.prepare("SELECT id FROM retrieval_calls WHERE review=? LIMIT 1")
   const removeCall = db.prepare("DELETE FROM retrieval_calls WHERE id=?")
   const nextSession = db.prepare(isRoot ? "SELECT id FROM sessions WHERE scope=? AND root=? LIMIT 1" : "SELECT id FROM sessions WHERE id=?")
@@ -39,6 +41,8 @@ export function deleteHistory(db: HistoryDatabase, context: HistoryScope): boole
     if (h) { removeHistory.run(h.id); return true } // Exactly one bounded payload, including overflow pages.
     const a = approval.get(key)
     if (a) { removeApproval.run(a.id); return true }
+    const j = rejection.get(key)
+    if (j) { removeRejection.run(j.entry); return true }
     const r = review.get(key)
     if (r) {
       const a = attempt.get(r.id)

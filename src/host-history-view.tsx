@@ -8,6 +8,8 @@ import { HostReviewDescription } from "./review-description.js"
 import { HostReviewMetadata } from "./host-review-metadata.js"
 import { uiText } from "./ui-text.js"
 import { HostButton as HistoryButton } from "./host-button.js"
+import { historyOutcome, reasonLine } from "./review-lines.js"
+import { displayText } from "./controller.js"
 
 export interface HostHistoryProofInput {
   session: string
@@ -156,7 +158,7 @@ export function HostHistoryView(props: HostHistoryViewProps) {
   const record = () => props.state().status === "ready" ? props.state().selection?.record : undefined
   const selection = () => props.state().status === "ready" ? props.state().selection : undefined
   const index = () => uiText.history.index(selection()?.rank ?? 0, selection()?.total ?? 0)
-  const layout = createMemo(() => historyLayout(record() ? uiText.history.outcomes[record()!.outcome] : undefined, index(),
+  const layout = createMemo(() => historyLayout(record() ? historyOutcome(record()!.outcome, record()!.steering) : undefined, index(),
     Math.max(0, (props.sidebarGeometry()?.width ?? 42) - 4)))
   const scrollBy = (amount: number, page: boolean) => {
     if (!scroll || scroll.isDestroyed) return
@@ -213,6 +215,14 @@ export function HostHistoryView(props: HostHistoryViewProps) {
     </box>
     <Show when={record()}>{value => <text marginTop={1} flexShrink={0} fg={value().payload.safe ? context.theme.text.feedback.success.base : context.theme.text.feedback.error.base}>
       <b>{value().payload.safe ? uiText.review.safe : uiText.review.unsafe}</b>
+    </text>}</Show>
+    <Show when={record() && reasonLine({ status: "complete", assessment: { safe: record()!.payload.safe, desc: record()!.payload.desc, reason: record()!.reason } })}>{line =>
+      <text fg={context.theme.text.base} wrapMode="word" flexShrink={0}>
+        <span style={{ fg: line().approved ? context.theme.text.feedback.success.base : context.theme.text.feedback.error.base }}>{line().label}</span>
+        {" "}{displayText(line().text)}
+      </text>}</Show>
+    <Show when={record()?.steering}>{text => <text fg={context.theme.text.feedback.error.base} wrapMode="word" flexShrink={0}>
+      <i>{uiText.review.steering} {displayText(text())}</i>
     </text>}</Show>
     <Show when={selection()?.unreadable}><text marginTop={1} flexShrink={0} fg={context.theme.text.feedback.warning.base}><b>{uiText.history.unreadable}</b></text></Show>
     <scrollbox ref={(value: ScrollBoxRenderable) => { scroll = value }} marginTop={1} flexGrow={1} minHeight={0} contentOptions={{ minHeight: 0 }}
