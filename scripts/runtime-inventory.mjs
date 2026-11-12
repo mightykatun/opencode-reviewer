@@ -13,6 +13,8 @@ export const runtimeInventory = {
       "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-location-tab", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-code-mode-tool", "fast-code-mode-tool", "normal-project-transition", "normal-long-session", "normal-large-source", "normal-reconnect", "normal-reconnect-visible", "normal-stalled-stream", "normal-instructions"], [], { scenarioHosts: { "normal-reconnect": 2, "normal-reconnect-visible": 2, "normal-stalled-stream": 2 }, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
   "smoke-v2-notifications.mjs": host(["manual-handoff", "forms", "execution", "unavailable-review"], [], {
     requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"], timeoutMs: 360000 }),
+  "smoke-v2-steering.mjs": host(["normal-steering", "fast-steering", "normal-steering-cap"], [], {
+    requires: ["linux", "git", "tmux", "bundle", "node-sqlite"] }),
   "smoke-notification-desktop.ts": { classification: "interactive", scenarios: ["default"], default: "default", flags: ["all", "sounds", "click", "critical"],
     rules: [], exactlyOne: ["all", "sounds", "click"], requires: ["linux", "desktop-bus", "audio-player", "source", "tsx"], hosts: 0, timeoutMs: 180000 },
   ...Object.fromEntries(["smoke-runtime.mjs", "smoke-desktop-playback.mjs", "smoke-observations.mjs", "smoke-connection.mjs", "smoke-ui.mjs", "smoke-v2-review-support.mjs", "smoke-v2-rpc.mjs", "runtime-inventory.mjs", "runtime-runner.mjs", "runtime-summary.mjs", "test-runtime.mjs"]
@@ -80,6 +82,7 @@ export const runtimeProfiles = {
       "fast-history-cover", "fast-notifications", "normal-hide", "normal-dialog", "normal-resize", "fast-dialog",
       "normal-hidden-complete", "normal-route-wait", "normal-location-tab", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit"].map(scenario => ["smoke-v2-review.mjs", scenario]),
     ...["manual-handoff", "forms", "execution", "unavailable-review"].map(scenario => ["smoke-v2-notifications.mjs", scenario]),
+    ...["normal-steering", "fast-steering", "normal-steering-cap"].map(scenario => ["smoke-v2-steering.mjs", scenario]),
   ],
   "v2-permissions": [
     ["smoke-v2-invocation.mjs"], ["smoke-v2-invocation.mjs", "review"],

@@ -47,6 +47,7 @@ Focused checks are `smoke-v2-review.mjs` scenarios unless another file is named:
 | Startup connection | `smoke-v2-lifecycle.mjs cold-startup` |
 | Reconnect and stalls | `normal-reconnect`, `normal-reconnect-visible`, `normal-stalled-stream` |
 | Review modes | `advisory`, `normal`, `fast` |
+| Steering rejection and steered notifications | `smoke-v2-steering.mjs` `normal-steering`, `fast-steering`, `normal-steering-cap` |
 | Retrieval | `normal-retrieval` (also the native `ask_context` clarification and Asking), `normal-large-source`, `normal-long-session` |
 | Skills | `normal-skill`, `fast-skill` |
 | Registered tools and Code Mode | `normal-tool`, `fast-tool`, `normal-code-mode-tool`, `fast-code-mode-tool` |

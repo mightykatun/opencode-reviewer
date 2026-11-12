@@ -550,7 +550,7 @@ const instructionsText = 'SESSION_INSTRUCTIONS_LITERAL: keep "quoted" text and {
 const keyboardDescription = description + "\n\n" + Array.from({ length: 80 }, (_, index) =>
   `Keyboard scroll line ${String(index + 1).padStart(2, "0")}: one isolated marker.`).join("\n\n")
 const reportDescription = index => skillCase ? skillDescription : editCase ? editDescriptions[index - 1] : keyboardMouseOffCase && index === 2 ? keyboardDescription : description
-const assessment = { safe: !manualHistoryCase, desc: editCase ? editDescriptions.at(-1) : description }
+const assessment = { safe: !manualHistoryCase, reason: "Decisive reason.", desc: editCase ? editDescriptions.at(-1) : description }
 const reviewUsage = { prompt_tokens: 23, completion_tokens: 11, total_tokens: 34 }
 const toolCall = codeModeTool ? { id: "v2-production-review-code-mode", name: "execute", input: { code:
   'const found = search({namespace:"fixture",query:"lookup"}); if (!found.items.some(item => item.path === "tools.fixture.lookup")) throw Error("Fixture tool unavailable"); await tools.fixture.ping({}); return await tools.fixture.lookup({account:"public"});' } }

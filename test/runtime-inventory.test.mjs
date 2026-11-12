@@ -105,7 +105,7 @@ test("session instructions selects one installed production host with the existi
 
 test("V2 acceptance includes each production review case exactly once and retains explicit synthetic classifications", () => {
   const cases = profilePlan("v2-acceptance")
-  assert.equal(cases.length, 53, "Includes literal argument opt-in, Code Mode decisions, instructions, recovery and location tabs")
+  assert.equal(cases.length, 56, "Includes literal argument opt-in, Code Mode decisions, instructions, recovery, location tabs and steering")
   assert.equal(cases.length, new Set(cases.map(value => value.id)).size)
   const reviews = cases.filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs")
   const expectedReviews = ["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "normal-retrieval", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant",
@@ -114,6 +114,9 @@ test("V2 acceptance includes each production review case exactly once and retain
   assert.deepEqual(reviews.map(value => value.scenario).sort(), expectedReviews)
   assert.deepEqual([...runtimeInventory["smoke-v2-review.mjs"].scenarios].sort(), expectedReviews)
   assert.ok(reviews.every(value => value.classification === "production-host"))
+  const steering = cases.filter(value => value.entrypoint === "scripts/smoke-v2-steering.mjs")
+  assert.deepEqual(steering.map(value => value.scenario).sort(), ["fast-steering", "normal-steering", "normal-steering-cap"])
+  assert.ok(steering.every(value => value.classification === "production-host" && value.hosts === 1 && value.timeoutMs === 240000))
   assert.ok(cases.every(value => value.hostMajor === 2 && value.hosts <= 2))
   assert.deepEqual(profilePlan("ci").map(value => value.id).sort(), cases.map(value => value.id).sort(),
     "The retained ci profile contains the exact manual acceptance selection")
