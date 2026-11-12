@@ -13,10 +13,10 @@ import type { HostRequest } from "../src/host-types.js"
 
 const context: HistoryReview = { scope: "/project", root: "root", session: "child", permission: "permission", review: "review",
   category: "bash", configuredModel: "model", provider: "https://example.com/v1" }
-const accepted = (c = context, reason?: string): HistoryEvent => ({ type: "reviewAccepted", context: c, at: 100,
-  accepted: { safe: false, completedAt: 100 }, ...(reason ? { reason } : {}) })
+const accepted = (c = context): HistoryEvent => ({ type: "reviewAccepted", context: c, at: 100,
+  accepted: { safe: false, completedAt: 100 } })
 const rejection = (c = context, steering = "Please narrow it."): HistoryEvent => ({ type: "rejectionConfirmed", context: c, at: 110, approval: "a", steering })
-const resolved = (c = context): HistoryEvent => ({ type: "permissionResolved", context: c, at: 120, outcome: "rejected",
+const resolved = (c = context, reason?: string): HistoryEvent => ({ type: "permissionResolved", context: c, at: 120, outcome: "rejected", ...(reason ? { reason } : {}),
   payload: { safe: false, completedAt: 100, desc: "Removes everything." } })
 function fixture(t: TestContext) {
   const dir = mkdtempSync(path.join(tmpdir(), "history-steering-")), file = path.join(dir, "history.sqlite")
@@ -31,7 +31,7 @@ const selection = (sql: HistorySQL) => sql.query({ type: "history", scope: conte
 
 test("reasons and confirmed steering are side-table details, the payload keeps its shape and the outcome label is Auto rejected", t => {
   const f = fixture(t)
-  f.apply(accepted(context, "Deletes the whole tree.")); f.apply(rejection()); f.apply(resolved())
+  f.apply(accepted()); f.apply(rejection()); f.apply(resolved(context, "Deletes the whole tree."))
   const record = selection(f.sql).record!
   assert.equal(record.reason, "Deletes the whole tree.")
   assert.equal(record.steering, "Please narrow it.")
@@ -57,6 +57,7 @@ test("the automatic rejection ledger counts once per permission in both scopes a
   const value = totals(f.open())
   assert.equal(value.totals.activity.autoRejected, 2)
   assert.equal(value.conversation!.totals.activity.autoRejected, 1)
+  assert.equal(value.totals.activity.rejected, 2, "confirmed fast rejections count even without a completed report")
   assert.equal(totals(f.sql, other).conversation!.totals.activity.autoRejected, 1)
   f.apply({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.session }, at: 300 })
   assert.equal(f.db.prepare("SELECT count(*) n FROM auto_rejections").get()!.n, 1, "only the deleted conversation's details are removed")
@@ -68,12 +69,12 @@ test("the automatic rejection ledger counts once per permission in both scopes a
 
 test("invalid steering events are rejected and old databases gain the tables on open", t => {
   for (const steering of ["", " ", 7, null]) assert.throws(() => encodeEvent({ ...rejection(), steering } as any))
-  assert.throws(() => encodeEvent({ ...accepted(), reason: "" } as any))
+  assert.throws(() => encodeEvent({ ...resolved(), reason: "" } as any))
   const f = fixture(t)
   f.db.exec("DROP TABLE review_reasons; DROP TABLE auto_rejections; DROP TABLE auto_rejection_totals")
   const reopened = f.open()
   assert.equal(totals(reopened).totals.activity.autoRejected, undefined, "no ledger row reads as zero without changing the shape")
-  reopened.apply("reopened", 1, encodeEvent(accepted(context, "Reason.")))
+  reopened.apply("reopened", 1, encodeEvent(resolved(context, "Reason.")))
   assert.equal(f.db.prepare("SELECT reason FROM review_reasons").get()!.reason, "Reason.")
 })
 
@@ -89,13 +90,14 @@ test("the coordinator saves the reason and records a confirmed steering rejectio
   const result = { safe: false, reason: "Deletes too much.", steering: "Please narrow it.", desc: "Removes everything.",
     metadata: { review: context.review, kind: "shell" as const, configuredModel: context.configuredModel, provider: context.provider } }
   coordinator.lifecycle({ type: "accepted", request, root: context.root, review: context.review, result, completedAt: 100, timing: { fullReportMs: 1, ratingMs: 1 } })
+  assert.equal(f.db.prepare("SELECT count(*) n FROM review_reasons").get()!.n, 0, "unresolved reasons remain memory-only")
   const fact = { request, automatic: true, approval: "steer-1", review: context.review, decision: "reject" as const, steering: "Please narrow it." }
   coordinator.approval({ ...fact, type: "dispatched" })
   coordinator.reply({ requestID: request.id, sessionID: request.sessionID, reply: "reject" })
   coordinator.approval({ ...fact, type: "confirmed" })
   coordinator.approval({ ...fact, type: "settled" })
   assert.deepEqual(events.map(event => event.type), ["reviewAccepted", "permissionResolved", "rejectionConfirmed"])
-  assert.equal((events[0] as Extract<HistoryEvent, { type: "reviewAccepted" }>).reason, "Deletes too much.")
+  assert.equal((events[1] as Extract<HistoryEvent, { type: "permissionResolved" }>).reason, "Deletes too much.")
   const value = totals(f.sql)
   assert.equal(value.totals.activity.autoApproved, 0)
   assert.equal(value.totals.activity.autoRejected, 1)

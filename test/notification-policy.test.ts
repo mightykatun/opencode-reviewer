@@ -708,9 +708,9 @@ test("a steerable Unsafe report stays silent until it falls back to manual, and 
   const steerable = (state?: "countdown" | "cancelled" | "failed"): View => ({ ...view("a", "complete", false), steerable: true,
     ...(state ? { autoApproval: state === "countdown" ? { status: "countdown", seconds: 3 } : { status: state } } : {}) })
   f.add(steerable()); await settle()
-  assert.deepEqual(f.messages, [], "waiting for eligibility")
+  assert.equal(f.messages.length, 0, "waiting for eligibility")
   f.policy.snapshot([steerable("countdown")]); await settle()
-  assert.deepEqual(f.messages, [], "counting down")
+  assert.equal(f.messages.length, 0, "counting down")
   f.policy.snapshot([steerable("cancelled")]); await settle()
   assert.deepEqual(f.messages.map(message => [message.kind, message.title]), [["unsafe", "Unsafe permission needs human approval"]])
   const plain = fixture()

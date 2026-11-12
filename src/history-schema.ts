@@ -276,6 +276,7 @@ export class HistorySQL {
     } else if (e.type === "rejectionConfirmed") {
       if (!deleted) {
         this.run("INSERT OR IGNORE INTO auto_rejections VALUES (?,?,?,?,?,?)", entry, root, session, review, e.steering, e.at)
+        this.countOutcome(entry, root, "rejected", e.at)
         this.revision(root)
       }
       // Counted once per permission, never decremented by detail deletion.
@@ -288,7 +289,6 @@ export class HistorySQL {
       }
     } else if (e.type === "reviewAccepted") {
       if (!deleted) this.run("UPDATE reviews SET accepted=COALESCE(accepted,?) WHERE id=?", JSON.stringify(e.accepted), review)
-      if (!deleted && e.reason) this.run("INSERT OR IGNORE INTO review_reasons VALUES (?,?)", review, e.reason)
       this.contribute(opaque(e.type, review), delta, root)
     } else if (e.type === "approvalConfirmed" || e.type === "approvalDispatched" || e.type === "approvalSettled") {
       const id = opaque(entry, e.approval)
@@ -318,6 +318,7 @@ export class HistorySQL {
         : prior === "auto" || e.outcome === "auto" ? "auto"
         : prior === "manual" || e.outcome === "manual" ? "manual" : e.outcome
       if (e.type === "permissionResolved") {
+        if (e.reason) this.run("INSERT OR IGNORE INTO review_reasons VALUES (?,?)", review, e.reason)
         // Legacy IDs stay stable on replay; new reports use their review identity.
         const saved = this.get("SELECT id FROM history WHERE scope=? AND permission=? AND review=?", c.scope, c.permission, review)
         const id = saved?.id ?? review

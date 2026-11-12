@@ -11,7 +11,7 @@ import { reviewVersions } from "./review-versions.js"
 type Store = Pick<HistoryStore, "admit" | "query" | "onCommit">
 interface Candidate {
   context: HistoryReview
-  reports: Map<string, { context: HistoryReview; payload: HistoryPayload }>
+  reports: Map<string, { context: HistoryReview; payload: HistoryPayload; reason?: string }>
   removed: boolean
   reply?: "once" | "always" | "reject"
   confirmed?: "auto" | "manual"
@@ -79,8 +79,7 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
         permission: id, review: m.review, category: category(m.kind), configuredModel: m.configuredModel, provider: m.provider }
       const accepted = { safe: fact.result.safe, completedAt: fact.completedAt, timing: { ...fact.timing },
         ...(m.reportedModel ? { reportedModel: m.reportedModel } : {}) }
-      this.admit({ type: "reviewAccepted", context, at: fact.completedAt, accepted,
-        ...(fact.result.reason ? { reason: fact.result.reason } : {}) })
+      this.admit({ type: "reviewAccepted", context, at: fact.completedAt, accepted })
       const old = this.candidates.get(id)
       if (old && (old.context.session !== context.session || old.context.root !== context.root)) return
       const early = this.early.get(id)
@@ -88,7 +87,7 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
       const candidate: Candidate = old ?? { context, reports: new Map(), removed: false,
         confirmed,
         ...(early?.context.review === fact.review && early.reply ? { reply: early.reply } : {}) }
-      candidate.reports.set(fact.review, { context, payload: { ...accepted, desc: fact.result.desc,
+      candidate.reports.set(fact.review, { context, ...(fact.result.reason ? { reason: fact.result.reason } : {}), payload: { ...accepted, desc: fact.result.desc,
         ...(fact.result.toolCalls !== undefined ? { toolCalls: fact.result.toolCalls } : {}),
         ...(fact.result.usage ? { usage: { ...fact.result.usage } } : {}) } })
       this.candidates.set(id, candidate)

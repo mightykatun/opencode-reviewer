@@ -52,14 +52,14 @@ export type HistoryEvent = (
   | { type: "attemptDispatched"; context: HistoryReview; at: number; attempt: string; retry: "initial" | "transport" | "format" }
   | { type: "attemptFinalized"; context: HistoryReview; at: number; attempt: string; usage?: Usage; reportedModel?: string }
   | { type: "toolDispatched"; context: HistoryReview; at: number; call: string; tool?: RetrievalCallTool }
-  /** reason is stored in its own table, outside accepted, so older workers keep reading accepted. */
-  | { type: "reviewAccepted"; context: HistoryReview; at: number; accepted: HistoryAccepted; reason?: string }
+  | { type: "reviewAccepted"; context: HistoryReview; at: number; accepted: HistoryAccepted }
   | { type: "approvalDispatched"; context: HistoryReview; at: number; approval: string; automatic: boolean }
   | { type: "approvalSettled"; context: HistoryReview; at: number; approval: string; result: "not-sent" | "uncertain" }
   | { type: "approvalConfirmed"; context: HistoryReview; at: number; approval: string; automatic: boolean }
   /** Confirmed automatic steering rejection, with the steering that was sent. */
   | { type: "rejectionConfirmed"; context: HistoryReview; at: number; approval: string; steering: string }
-  | { type: "permissionResolved"; context: HistoryReview; at: number; outcome: HistoryOutcome; payload: HistoryPayload }
+  /** Reason stays memory-only until resolution and outside the legacy payload. */
+  | { type: "permissionResolved"; context: HistoryReview; at: number; outcome: HistoryOutcome; payload: HistoryPayload; reason?: string }
   | { type: "permissionOutcome"; context: HistoryReview; at: number; outcome: "approved" | "manual" | "rejected" }
   ) & { versions?: HistoryVersions }
   | { type: "sessionDeleted"; context: HistoryScope; at: number }
@@ -130,9 +130,9 @@ export function validateEvent(e: HistoryEvent): HistoryEvent {
   const extra: Record<HistoryEvent["type"], string[]> = {
     attemptDispatched: ["attempt", "retry"], attemptFinalized: ["attempt", "usage", "reportedModel"],
     toolDispatched: ["call", "tool"],
-    reviewAccepted: ["accepted", "reason"], approvalDispatched: ["approval", "automatic"], rejectionConfirmed: ["approval", "steering"],
+    reviewAccepted: ["accepted"], approvalDispatched: ["approval", "automatic"], rejectionConfirmed: ["approval", "steering"],
     approvalSettled: ["approval", "result"], approvalConfirmed: ["approval", "automatic"],
-    permissionResolved: ["outcome", "payload"], permissionOutcome: ["outcome"], sessionDeleted: [],
+    permissionResolved: ["outcome", "payload", "reason"], permissionOutcome: ["outcome"], sessionDeleted: [],
   }
   requireValue(e && Object.hasOwn(extra, e.type)); object(e, ["type", "context", "at", ...extra[e.type], ...(e.type === "sessionDeleted" ? [] : ["versions"])])
   timestamp(e.at)
@@ -147,11 +147,11 @@ export function validateEvent(e: HistoryEvent): HistoryEvent {
     case "attemptDispatched": text(e.attempt); requireValue(["initial", "transport", "format"].includes(e.retry)); break
     case "attemptFinalized": text(e.attempt); if (e.usage !== undefined) usage(e.usage); if (e.reportedModel !== undefined) text(e.reportedModel); break
     case "toolDispatched": text(e.call); requireValue(e.tool === undefined || retrievalCallTools.includes(e.tool)); break
-    case "reviewAccepted": accepted(e.accepted); if (e.reason !== undefined) text(e.reason, HISTORY_DESCRIPTION_BYTES); break
+    case "reviewAccepted": accepted(e.accepted); break
     case "rejectionConfirmed": text(e.approval); text(e.steering, HISTORY_DESCRIPTION_BYTES); break
     case "approvalDispatched": case "approvalConfirmed": text(e.approval); requireValue(typeof e.automatic === "boolean"); break
     case "approvalSettled": text(e.approval); requireValue(["not-sent", "uncertain"].includes(e.result)); break
-    case "permissionResolved": requireValue(["auto", "manual", "approved", "rejected", "cancelled"].includes(e.outcome)); validatePayload(e.payload); break
+    case "permissionResolved": requireValue(["auto", "manual", "approved", "rejected", "cancelled"].includes(e.outcome)); validatePayload(e.payload); if (e.reason !== undefined) text(e.reason, HISTORY_DESCRIPTION_BYTES); break
     case "permissionOutcome": requireValue(["approved", "manual", "rejected"].includes(e.outcome)); break
   }
   return e
