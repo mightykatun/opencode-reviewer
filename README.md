@@ -385,7 +385,9 @@ An Unsafe report with steering behaves like an automatic approval: the same
 countdown, delay, Cancel button, queue, conversation and native decision checks,
 and subagent coverage. When it ends, the plugin answers the native prompt with
 Reject and the message `Rejected by opencode-reviewer: <reason>. <steering>`.
-The agent reads it as the tool's error and continues. OpenCode shows it in red.
+The agent reads it as the tool's error and continues. OpenCode controls its color:
+it normally appears red, but text matching native denial phrases such as
+`rejected permission` can appear muted.
 
 - The panel shows **Steering:** and the text in red italics while the rejection
   is armed or sent, and **Rejected in Ns**, **Rejecting…**, **Auto-rejection

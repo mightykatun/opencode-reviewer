@@ -1,7 +1,8 @@
 import type { AssessmentPreview } from "./types.js"
 
-/** Prefix of the native reject message the requesting agent reads. It must never
- * contain "rejected permission", which OpenCode renders as a muted denial. */
+/** Prefix of the native reject message the requesting agent reads. The prefix
+ * avoids native muted-denial phrases. Model text is preserved, so the host may
+ * still render a message muted when that text contains a denial phrase. */
 export const STEERING_PREFIX = "Rejected by opencode-reviewer:"
 
 /** One line: whitespace runs, including newlines, collapse to single spaces. */
