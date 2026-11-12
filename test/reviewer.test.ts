@@ -260,7 +260,7 @@ test("review switches are independent strict booleans with enabled defaults", ()
     assert.equal(config.reviewBash, reviewBash)
     assert.equal(config.reviewEdits, reviewEdits)
   }
-  for (const name of ["reviewBash", "reviewEdits", "reviewSkills", "reviewTools", "reviewExternalDirectories", "autoApprove", "fastMode", "extraCareful", "stream"] as const) {
+  for (const name of ["reviewBash", "reviewEdits", "reviewSkills", "reviewTools", "reviewExternalDirectories", "autoApprove", "autoRejectSteering", "fastMode", "extraCareful", "stream"] as const) {
     assert.equal(parseConfig({ ...options, [name]: undefined })[name], name.startsWith("review") || name === "extraCareful")
     for (const value of [true, false]) assert.equal(parseConfig({ ...options, [name]: value })[name], value)
     for (const value of [null, 0, 1, "true", "false", {}, []]) {
@@ -279,6 +279,7 @@ test("numeric settings default only on omission and enforce integer boundaries b
     ["maxFiles", 6, 1, 1000],
     ["maxEvidenceBytes", 131072, 1, 16 * 1024 * 1024],
     ["autoApproveDelaySeconds", 15, 0, 3600],
+    ["maxSteeringRejections", 1, 1, 100],
   ] as const) {
     await t.test(name, async (t) => {
       const { config, requests } = await endpoint(t, (_, res) => res.end(envelope('{"safe":true,"desc":"Unexpected."}')))
