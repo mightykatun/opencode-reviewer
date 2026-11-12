@@ -74,7 +74,7 @@ async function reviewerSetup(ctx) {
 }
 
 const { scenario } = runtimeArguments("smoke-v2-steering.mjs")
-const fast = scenario === "fast-steering", cap = scenario === "normal-steering-cap"
+const fast = scenario === "fast-steering", cap = scenario === "normal-steering-cap", followUp = scenario === "normal-steering-follow-up"
 const root = path.resolve(import.meta.dirname, ".."), host = process.env.OPENCODE_BIN ?? "opencode"
 const version = execFileSync(host, ["--version"], { encoding: "utf8" }).trim()
 assertV2HostVersion(version)
@@ -123,7 +123,9 @@ const answer = (pending, message, finish = "stop") => {
 }
 const reason = "The requested command exceeds the allowed scope.", steering = "Use a read-only inspection instead."
 const assessment = { safe: false, reason, steering, desc: "The fixture command writes a marker." }
-const message = `Rejected by opencode-reviewer: ${reason} ${steering}`
+const message = `Rejected by opencode-reviewer: ${reason} ${steering} Please start by resolving this. Ideally, the next shell tool call`
+  + " you execute should fix this review issue. You may gather additional context before."
+const followUpText = "I will inspect the project read-only instead.", followUpCommand = "ls"
 const finishReview = index => {
   const res = reviews[index].res
   sse(res, { content: fast ? '"}' : JSON.stringify(assessment) }); sse(res, {}, "stop"); res.end("data: [DONE]\n\n")
@@ -159,13 +161,17 @@ try {
       if (req.url === "/review/chat/completions") {
         assert.equal(body.stream, true); assert.equal(body.tools, undefined)
         const evidence = JSON.parse(body.messages[1].content)
-        assert.equal(evidence.command, "printf 'executed\\n' >> executed")
+        assert.equal(evidence.command, followUp && reviews.length === 1 ? followUpCommand : "printf 'executed\\n' >> executed")
         reviews.push(pending)
         res.writeHead(200, { "Content-Type": "text/event-stream" }); res.flushHeaders()
       } else {
         assert.equal(req.url, "/v1/chat/completions")
         if (body.messages.at(-1).role === "tool") {
-          results.push(body.messages.at(-1)); answer(pending, { role: "assistant", content: "Fixture complete." }); completed++
+          results.push(body.messages.at(-1))
+          // The corrected request is a new assistant step with text before its tool call.
+          if (followUp && results.length === 1) answer(pending, { role: "assistant", content: followUpText, tool_calls: [{ index: 0, id: "follow-up",
+            type: "function", function: { name: "shell", arguments: JSON.stringify({ command: followUpCommand }) } }] }, "tool_calls")
+          else { answer(pending, { role: "assistant", content: "Fixture complete." }); completed++ }
         } else mains.push(pending)
       }
     } catch (error) { errors.push(String(error.stack)); res.destroy() }
@@ -234,6 +240,7 @@ try {
     await until("native decision", record => record.replied.length === index + 1)
     const reply = (await observe()).replied[index]
     assert.equal(reply.reply, cap && index === 1 ? "once" : "reject")
+    if (followUp) break
     if (fast) {
       assert.equal((await database()).rows.length, 0, "fast confirmation has no provisional saved report")
       await until("retained fast rejection", () => capture().includes("Finishing report"))
@@ -248,6 +255,30 @@ try {
     assert.equal(await marker(), cap && index >= 1 ? "executed\n" : "")
     await writeFile(path.join(artifacts, `stage-${index}.txt`), capture())
   }
+  if (followUp) {
+    await until("follow-up review", () => reviews.length === 2)
+    assert.ok(JSON.stringify(results[0]).includes(message), "exact steering message with the closing sentence reaches the agent")
+    const [system, user] = reviews[1].body.messages, evidence = JSON.parse(user.content)
+    assert.match(system.content, /steeringFollowUp is context for a previously rejected request/)
+    assert.equal(evidence.steeringFollowUp.steeringMessage, message)
+    assert.equal(evidence.steeringFollowUp.rejectedOperation.category, "shell")
+    assert.equal(evidence.steeringFollowUp.rejectedOperation.tool, "shell")
+    assert.equal(evidence.steeringFollowUp.rejectedOperation.input.command, "printf 'executed\\n' >> executed")
+    assert.deepEqual(evidence.steeringFollowUp.agentOutput, [{ type: "text", text: followUpText }])
+    assert.equal(evidence.steeringFollowUp.omittedOlderItems, undefined)
+    const res = reviews[1].res
+    sse(res, { content: JSON.stringify({ safe: true, reason: "A read-only listing follows the steering.", steering: null, desc: "Lists the project." }) })
+    sse(res, {}, "stop"); res.end("data: [DONE]\n\n")
+    await until("follow-up rating", () => capture().includes("Reason for approval:"))
+    await writeFile(path.join(artifacts, "follow-up.txt"), capture())
+    runtime.tmux("send-keys", "-t", "steering", "Enter") // native Allow once
+    await until("follow-up approval", record => record.replied.length === 2 && record.replied[1].reply === "once")
+    await until("native continuation", () => completed === 1)
+    assert.equal(await marker(), "", "the rejected command never ran")
+    assert.equal((await command({ type: "pending", sessionID })).length, 0)
+    await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, sessionID, native: await observe() })
+    console.log(`PASS V2 steering ${scenario}: ${artifacts}`)
+  } else {
   const expected = cap ? 2 : 1
   await until("steered notifications", async () => (await notifications()).filter(item => item.kind === "steered").length === expected)
   const notices = (await notifications()).filter(item => item.kind === "steered")
@@ -269,6 +300,7 @@ try {
   await writeFile(path.join(artifacts, "statistics.txt"), capture())
   await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, sessionID, database: db, notices, native: await observe() })
   console.log(`PASS V2 steering ${scenario}: ${artifacts}`)
+  }
 } catch (error) {
   let screen = ""
   try { screen = capture() } catch { /* Startup may fail before the pane exists. */ }
