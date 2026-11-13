@@ -123,15 +123,15 @@ inclusive, fractions are invalid, and the maximum safe integer is
 
 | Option | Type | Default | Accepted values and behavior |
 | --- | --- | --- | --- |
-| `baseURL` | string | Required | HTTP(S) API base URL; `/chat/completions` is appended after removing trailing slashes. Embedded credentials, query strings and fragments are rejected. |
+| `baseURL` | string | Required | HTTP(S) API base URL. `/chat/completions` is appended after removing trailing slashes. Embedded credentials, query strings and fragments are rejected. |
 | `model` | string | Required | Nonempty model identifier for the verdict and, by default, retrieval. |
 | `apiKey` | string | Unset | Nonempty Bearer token. Takes precedence over `apiKeyEnv`. |
 | `apiKeyEnv` | string | Unset | Environment-variable name matching `[A-Za-z_][A-Za-z_0-9]*`. Without an inline key, its value must be set and nonblank when a review runs. Omit both key options for no Authorization header. |
-| `instructions` | string | Unset (built-ins) | Absolute, NUL-free directory path containing category, extra-careful, retrieval (`RETRIEVAL-PROMPT.md`) and clarification (`CLARIFICATION-PROMPT.md`) [prompt template](https://github.com/mightykatun/opencode-reviewer/tree/main/prompts) overrides, not inline instructions. Missing named files use built-ins; supplied files must be readable, regular, non-symlink, nonempty UTF-8 text up to 64 KiB. Fixed contracts and the session-instructions precedence wrapper cannot be overridden. |
-| `stream` | boolean | `false` | Request SSE for the verdict and show provisional rating/text updates. Retrieval is always non-streaming. Normal automatic approval waits for a completed, validated report; fast mode can approve on an early Safe rating. Approval rules are described below. |
+| `instructions` | string | Unset (built-ins) | Absolute, NUL-free directory path containing category, extra-careful, retrieval (`RETRIEVAL-PROMPT.md`) and clarification (`CLARIFICATION-PROMPT.md`) [prompt template](https://github.com/mightykatun/opencode-reviewer/tree/main/prompts) overrides, not inline instructions. Missing named files use built-ins. Supplied files must be readable, regular, non-symlink, nonempty UTF-8 text up to 64 KiB. Fixed contracts and the session-instructions precedence wrapper cannot be overridden. |
+| `stream` | boolean | `false` | Request SSE for the verdict and show provisional rating/text updates. Retrieval is always non-streaming. Normal automatic approval waits for a completed, validated report. Fast mode can approve on an early Safe rating. Approval rules are described below. |
 | `formatRetries` | integer | `1` | `0`–`100` additional verdict-format correction attempts. Does not control retrieval turns. `0` disables format corrections, not independent transport recovery. |
 | `maxOutputTokens` | integer | `4096` | `1` through the maximum safe integer. Sent as `max_tokens` on every retrieval and verdict POST, including retries/corrections. Your provider/model enforces its supported output limit. |
-| `timeoutMs` | integer | `120000` | `1`–`3600000` milliseconds shared across context, evidence collection, retrieval, verdict HTTP requests, retries and corrections; not a fresh budget per stage or POST. Expiry ends the review. |
+| `timeoutMs` | integer | `120000` | `1`–`3600000` milliseconds shared across context, evidence collection, retrieval, verdict HTTP requests, retries and corrections. This is not a fresh budget per stage or POST. Expiry ends the review. |
 
 ### Review categories
 
@@ -140,7 +140,7 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `reviewBash` | boolean | `true` | Review native `shell` permissions. |
 | `reviewEdits` | boolean | `true` | Review native `edit`, `write` and `patch` tools, which use the `edit` permission action. |
 | `reviewSkills` | boolean | `true` | Review native skill loading using the exact requested ID and full currently registered main instructions. Assumes the selected definition stays unchanged while permission is pending. Missing or ambiguous instructions remain manual. |
-| `reviewTools` | boolean | `true` | Review other tools, including MCP and custom tools, using `TOOL-REVIEW-PROMPT.md`. Requires the exact direct call or outer Code Mode invocation and pending permission scope. For Code Mode, the judge receives captured candidate calls and any uncertainty about which inner call owns the permission. Descriptions and JSON Schemas are optional; missing evidence is explained to the LLM, which decides Safe/Unsafe. Safe reviews can use normal or fast automatic approval. |
+| `reviewTools` | boolean | `true` | Review other tools, including MCP and custom tools, using `TOOL-REVIEW-PROMPT.md`. Requires the exact direct call or outer Code Mode invocation and pending permission scope. For Code Mode, the judge receives captured candidate calls and any uncertainty about which inner call owns the permission. Descriptions and JSON Schemas are optional. Missing evidence is explained to the LLM, which decides Safe/Unsafe. Safe reviews can use normal or fast automatic approval. |
 | `reviewExternalDirectories` | boolean | `true` | Review directory access independently of operation-review switches. Directory approval can resume the operation without another prompt. |
 
 ### Retrieval and evidence limits
@@ -152,12 +152,12 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `retrievalModel` | string | `model` | Optional nonempty retrieval model identifier. |
 | `retrievalApiKey` | string | Inherited at the same endpoint | Optional retrieval Bearer token. Takes precedence over `retrievalApiKeyEnv`. |
 | `retrievalApiKeyEnv` | string | Inherited at the same endpoint | Optional environment-variable name for the retrieval key. Setting either retrieval key option replaces the inherited credentials. An unset or blank variable skips retrieval with a factual limitation, then the verdict runs. |
-| `retrievalKinds` | object | `bash: true`, `edit: false`, `skill: true`, `tool: true`, `external_directory: true` | Optional boolean fields with exactly these names. Omitted fields retain their defaults; unknown fields and non-booleans are invalid. `bash` selects native shell reviews. `retrieval: false` overrides all categories. These switches control retrieval, not whether the permission is reviewed. |
+| `retrievalKinds` | object | `bash: true`, `edit: false`, `skill: true`, `tool: true`, `external_directory: true` | Optional boolean fields with exactly these names. Omitted fields retain their defaults. Unknown fields and non-booleans are invalid. `bash` selects native shell reviews. `retrieval: false` overrides all categories. These switches control retrieval, not whether the permission is reviewed. |
 | `retrievalClarification` | boolean | `true` | Lets retrieval ask the main conversation's own model once per review (`ask_context`), in the background through OpenCode's `/btw` mechanism. Applies only where retrieval is on, and never to subagent reviews. `false` removes the tool. |
 | `maxRetrievalRounds` | integer | `3` | `1`–`50` retrieval-model rounds, each allowing up to ten sequential tool calls. The model may finish early. After the last round, or an early response without tool calls, one additional forced `finish` turn selects results if needed. Transport retries do not consume rounds. |
 | `retrievalTimeoutMs` | integer | `60000` | `1`–`3600000` milliseconds for the retrieval stage, including model requests, tool operations, retries, the forced `finish` turn and direct attachment reads. Also bounded by the remaining `timeoutMs`. On expiry, the verdict uses completed selected results, or successful results in call order if there was no valid finish, if the review budget remains. Reserves no time for the verdict. |
-| `maxFiles` | integer | `6` | `1`–`1000` retrieval `read` results forwarded to the verdict, shared by selected inspections and direct attachments; separate pages or repeated reads count separately, listings and searches do not. Does not cap how many files retrieval may inspect. Independently limits distinct declared edit targets eligible for diff inclusion. |
-| `maxEvidenceBytes` | integer | `131072` | `1`–`16777216` bytes for category-specific operation evidence or pending edit diffs. Separately caps each retrieval tool result, content plus notes forwarded to the verdict, and trimmed session instructions. Oversized diffs and forwarded content keep exact leading complete lines or entries with omitted counts; optional items may instead be omitted. Oversized mandatory evidence fails analysis. These are separate budgets, not a cap on the full prompt or HTTP request. |
+| `maxFiles` | integer | `6` | `1`–`1000` retrieval `read` results forwarded to the verdict, shared by selected inspections and direct attachments. Separate pages or repeated reads count separately, listings and searches do not. Does not cap how many files retrieval may inspect. Independently limits distinct declared edit targets eligible for diff inclusion. |
+| `maxEvidenceBytes` | integer | `131072` | `1`–`16777216` bytes for category-specific operation evidence or pending edit diffs. Separately caps each retrieval tool result, content plus notes forwarded to the verdict, and trimmed session instructions. Oversized diffs and forwarded content keep exact leading complete lines or entries with omitted counts. Optional items may instead be omitted. Oversized mandatory evidence fails analysis. These are separate budgets, not a cap on the full prompt or HTTP request. |
 
 The retriever can immediately call `finish` with `items: []` when no documents are
 needed. This reads no files but still makes one retrieval-model request. To skip
@@ -168,8 +168,8 @@ when retrieval is disabled.
 Relative retrieval paths use the shell launch directory for shell reviews and the
 captured invocation directory for other categories. Absolute paths and `~/` paths
 (using the server's home directory) are also accepted. The retrieval stage and the
-verdict each allow up to two extra transport POSTs within their existing deadlines;
-normal retrieval turns are not counted as retries.
+verdict each allow up to two extra transport POSTs within their existing deadlines.
+Normal retrieval turns are not counted as retries.
 
 ### Automatic approval
 
@@ -178,9 +178,9 @@ normal retrieval turns are not counted as retries.
 | `autoApprove` | boolean | `false` | Allow Safe reviews once automatically. Normally waits for completion, validation and the countdown. Works throughout the current conversation, including subagent browsing and hidden/covered reports. Home, dashboards, unrelated conversations and native permission decision editing wait without cancellation. |
 | `autoRejectSteering` | boolean | `false` | Independent of `autoApprove`. Requires steering text with every Unsafe rating. Missing, null or blank steering triggers format-correction retries. Valid Unsafe reports start the same countdown, then answer the native prompt with Reject and a message the agent reads: the reason, the steering and a fixed closing sentence. See Automatic steering rejection. |
 | `maxSteeringRejections` | integer | `1` | `1`–`100`. Consecutive automatic rejections per session. After that, Unsafe requests in that session wait for you until any permission in it is approved. |
-| `fastMode` | boolean | `false` | Requires `autoApprove: true` for approvals. Approve an eligible, front-of-queue request as soon as a Safe rating is parsed, bypassing the countdown. With `autoRejectSteering: true`, also reject as soon as an Unsafe rating, its reason and its steering are parsed. Respects `stream`; with `stream: false`, waits for the complete validated response. Finish the report and save it in the background after the reply. |
+| `fastMode` | boolean | `false` | Requires `autoApprove: true` for approvals. Approve an eligible, front-of-queue request as soon as a Safe rating is parsed, bypassing the countdown. With `autoRejectSteering: true`, also reject as soon as an Unsafe rating, its reason and its steering are parsed. Respects `stream`. With `stream: false`, waits for the complete validated response. Finish the report and save it in the background after the reply. |
 | `extraCareful` | boolean | `true` | Include extra-careful guidance when `autoApprove` is enabled. Setting `false` omits that guidance without disabling automatic approval. |
-| `autoApproveDelaySeconds` | integer | `15` | `0`–`3600` seconds. Positive values include an extra 200 ms initial grace; `0` skips the wait but keeps the other approval checks. Ignored in fast mode. |
+| `autoApproveDelaySeconds` | integer | `15` | `0`–`3600` seconds. Positive values include an extra 200 ms initial grace. `0` skips the wait but keeps the other approval checks. Ignored in fast mode. |
 
 ### Notifications
 
@@ -188,8 +188,8 @@ normal retrieval turns are not counted as retries.
 | --- | --- | --- | --- |
 | `notify` | boolean | `true` | Master switch for desktop banners, sounds and reminders. `false` overrides all per-type controls. |
 | `notifySound` | boolean | `true` | Master switch for notification audio. `false` silences every type and reminder without disabling enabled banners. |
-| `staleReminderSeconds` | integer | `60` | `0` through the maximum safe integer, in seconds. `0` disables reminders; otherwise eligible pending human interactions repeat at this interval, limited to the native front-of-queue blocker per conversation. |
-| `notifications` | object | All banners enabled; all sounds enabled except `approved` | Keys: `attention`, `unsafe`, `question`, `approved`, `steered`, `error`, `ended`. Each entry is an object with optional `banner` and `sound` booleans. Omitted types/fields retain their defaults; unknown types/fields are invalid. Controls also apply to reminders. |
+| `staleReminderSeconds` | integer | `60` | `0` through the maximum safe integer, in seconds. `0` disables reminders. Otherwise eligible pending human interactions repeat at this interval, limited to the native front-of-queue blocker per conversation. |
+| `notifications` | object | All banners enabled. All sounds enabled except `approved` | Keys: `attention`, `unsafe`, `question`, `approved`, `steered`, `error`, `ended`. Each entry is an object with optional `banner` and `sound` booleans. Omitted types/fields retain their defaults. Unknown types/fields are invalid. Controls also apply to reminders. |
 | `notificationSoundDirectory` | string | Unset (bundled sounds) | Absolute, NUL-free path, at most 4096 string code units. Use the six notification type names as basenames: usable `.wav` first, then `.mp3`, then the corresponding bundled sound. |
 
 Notification channels are independent: `banner: false, sound: true` is sound-only,
@@ -503,7 +503,7 @@ a state directory share history. Reports not yet saved can be lost on shutdown.
 
 The database also stores the reviewer package version and the OpenCode terminal
 version for each review, separately from its report text. Older records are
-assigned reviewer version `2.7.0`; their OpenCode version is `NULL` because it was
+assigned reviewer version `2.7.0`. Their OpenCode version is `NULL` because it was
 not recorded. This metadata is available for database queries and does not appear
 in the review panel.
 

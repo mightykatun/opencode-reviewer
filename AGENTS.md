@@ -237,8 +237,8 @@ Observer, accounting and persistence failures never change review or approval. D
 
 ## Writing rules
 
-- Never use em dashes.
-- Files in `prompts/` and `contracts/` also never use semicolons or middle dots. The review contract tells the judge the same for desc.
+- Never use em dashes, semicolons or middle dots in any text you write, including assistant responses, documentation, comments, UI copy, commit messages, prompts and contracts. Preserve punctuation required by code, configuration, commands, URLs or literal data.
+- The review contract applies the same writing rules to the judge's `desc`.
 - Model guidance lives in `prompts/`, including the overridable `RETRIEVAL-PROMPT.md`, `CLARIFICATION-PROMPT.md` and `STEERING-PROMPT.md` (included only with `autoRejectSteering`). Fixed contracts live in `contracts/`, including `STEERING-FOLLOW-UP-CONTRACT.md`. Both are listed in `src/prompt-files.json`. `PERMISSION-REVIEW-CONTRACT.md` takes `{{responseFormat}}` from `RESPONSE-CONTRACT.md` or `STEERING-RESPONSE-CONTRACT.md`. Keep `{{validationError}}` in both correction contracts.
 - The README covers npm installation, one full config example and user behavior, with no release history.
 
