@@ -4,7 +4,7 @@ import { archiveIntegrity } from "../scripts/npm-publication.mjs"
 export const fixturePackage = (version = "0.4.0") => ({ name: "opencode-reviewer", version, type: "module", license: "MIT",
   exports: { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" },
   publishConfig: { access: "public", registry: "https://registry.npmjs.org/" },
-  engines: { node: ">=22", opencode: ">=2.0.0 <3" } })
+  engines: { node: ">=26.4.0", opencode: ">=2.0.0 <3" } })
 
 export function archiveFixture({ pkg = fixturePackage(), entries, alterHeader } = {}) {
   entries ??= ["LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "dist/tui.js", "package.json"].map((file) => ({

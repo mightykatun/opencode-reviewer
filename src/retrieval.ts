@@ -4,7 +4,7 @@ import { DeadlineError, remainingTime, reviewStage, withDeadline } from "./deadl
 import type { HostReviewEvidence } from "./host-evidence.js"
 import type { JSONObject, JSONValue } from "./host-types.js"
 import { RETRIEVAL_CONTRACT, type PromptSet } from "./prompts.js"
-import { abortable, cancelBody, responseText } from "./chat-transport.js"
+import { abortable, cancelBody, modelApiKey, responseText } from "./chat-transport.js"
 import { AssessmentStreamError, httpFailure, networkFailure, transientFailure, TransportRetries } from "./transport-retry.js"
 import { TransportOwnership, transportOwnership } from "./transport-ownership.js"
 import { leadingLines, lineCount } from "./truncate.js"
@@ -109,7 +109,7 @@ function parseTurn(envelope: unknown): { message: Record<string, unknown>; calls
 
 interface Dependencies {
   fetcher: typeof fetch
-  key?: string
+  environment?: NodeJS.ProcessEnv
   pricing?: PricingLookup
   onUsage?: (usage: Usage) => void
   onRetry?: () => unknown
@@ -139,6 +139,7 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
   let posts = 0, usage: Usage | undefined, rounds = 0, nextID = 1, toolCalls = 0, asked = false
   let selection: Selection | undefined, endReason: RetrievalEndReason = "no-finish", stopDetail = ""
   let completionFailure: RetrievalCompletionError | undefined
+  let key: string | undefined
   const execute = (call: Parameters<RetrievalExecutor["execute"]>[0], timeout: number, stage: AbortSignal) =>
     ownership.track(deps.executor.execute(call, base, timeout, stage).catch(error => {
       // A transport failure can arrive after the stage's visible timeout. Keep
@@ -164,7 +165,7 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
           try {
             pending = deps.fetcher(`${config.baseURL}/chat/completions`, { method: "POST", redirect: "error",
               signal: AbortSignal.any([stage, requestAbort.signal]),
-              headers: { "Content-Type": "application/json", ...(deps.key ? { Authorization: `Bearer ${deps.key}` } : {}) }, body })
+              headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) }, body })
           } finally {
             deps.observe({ type: "dispatched", review: deps.review, attempt: attemptID, retry: attempt ? "transport" : "initial" })
             if (attempt) { try { void Promise.resolve(deps.onRetry?.()).catch(() => {}) } catch {} }
@@ -281,6 +282,8 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
           stopDetail = `The forced finish turn failed (${error.message}).`
         }
       }
+      try { key = modelApiKey(config, deps.environment ?? process.env) }
+      catch { throw new RetrievalStop("provider-error", "Retrieval API key environment variable is unset or empty") }
       for (;;) {
         if (rounds >= config.maxRetrievalRounds) return finishTurn()
         deps.progress("retrieving")

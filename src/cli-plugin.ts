@@ -1,55 +1,37 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { parseConfig, type Config } from "./config.js"
 import type { CompanionHandshake } from "./companion-protocol.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
-import { uiText } from "./ui-text.js"
 import type { PluginDependencies } from "./plugin-dependencies.js"
 import { localStateRoot } from "./local-state.js"
-import { BUILTIN_PROMPTS, loadPrompts } from "./prompts.js"
+import { BUILTIN_PROMPTS } from "./prompts.js"
 import { remainingTime, withDeadline } from "./deadline.js"
 import { TransportOwnership } from "./transport-ownership.js"
 import { loadHostRuntime } from "./host-runtime-loader.js"
-import { parseNotificationConfig, type NotificationConfig } from "./notification-config.js"
 import type { setupHostRuntime } from "./host-runtime.js"
 import { initialConnectionEcho } from "./connection-marker.js"
 import { companionHandshake } from "./companion-handshake.js"
 import { hostLocation } from "./host-locations.js"
+import { readCliConfiguration, type CliConfiguration } from "./cli-configuration.js"
 
-export interface CliPluginState {
-  config?: Config
-  configError?: string
-  notificationConfig?: NotificationConfig
+export interface CliPluginState extends CliConfiguration {
+  /** Empty native TUI options inherit configuration from each scoped companion. */
+  inheritOptions?: boolean
   companion?: CompanionHandshake
   /** The public connected marker already admitted by startup, not a host epoch. */
   connectionID?: string
   dependencies: PluginDependencies
   stateRoot: string
-  prompts: typeof BUILTIN_PROMPTS
   /** Non-enumerable embedding inspection, never configuration or diagnostics. */
   readonly runtime?: ReturnType<typeof setupHostRuntime>
 }
 
 /** Configuration and handshake precede scope-pinned production admission. */
 export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecycle, dependencies: PluginDependencies): Promise<CliPluginState> {
-  const state: CliPluginState = { dependencies, stateRoot: localStateRoot(), prompts: BUILTIN_PROMPTS }
-  try { state.notificationConfig = parseNotificationConfig(context.options) } catch { /* Invalid desktop options disable notifications only. */ }
-  try { state.config = parseConfig(state.notificationConfig ? context.options : { ...context.options,
-    notify: false, notifySound: false, notificationSoundDirectory: undefined, staleReminderSeconds: 0, notifications: {} }) }
-  catch (error) { state.configError = error instanceof Error ? error.message : uiText.review.invalidConfiguration }
-  if (state.config) {
-    try {
-      state.prompts = await withDeadline(lifecycle.signal, 5000, signal => {
-        const pending = loadPrompts(state.config!.instructions, signal)
-        // A deadline ends the caller's wait, not ownership of open-file cleanup.
-        lifecycle.addCleanup(() => pending.then(() => {}, () => {}))
-        return pending
-      }, "Prompt configuration lookup")
-    } catch (error) {
-      lifecycle.signal.throwIfAborted()
-      state.config = undefined
-      state.configError = error instanceof Error ? error.message : uiText.review.invalidConfiguration
-    }
-  }
+  const state: CliPluginState = { dependencies, stateRoot: localStateRoot(), prompts: BUILTIN_PROMPTS,
+    inheritOptions: Object.keys(context.options).length === 0 }
+  const reads = new TransportOwnership()
+  lifecycle.addCleanup(() => reads.settled())
+  if (!state.inheritOptions) Object.assign(state, await readCliConfiguration(context.options, lifecycle.signal, reads))
   // Startup admits the current host location. Recovery admits every other
   // location an open tab needs, each with its own handshake.
   const location = hostLocation(context)
@@ -57,8 +39,6 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
   // handshake from installing the runtime's connection fence and recovery owner.
   const runtime = dependencies.adapterOnly ? undefined : await loadHostRuntime()
   lifecycle.signal.throwIfAborted()
-  const reads = new TransportOwnership()
-  lifecycle.addCleanup(() => reads.settled())
   let connection = new AbortController()
   let markerID: string | undefined, nativeID: string | undefined
   let connectionVerified = false
@@ -94,11 +74,17 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
         || (nativeID !== undefined && !initialConnectionEcho(connected, nativeID))) return
       markerID = connected
       connectionVerified = true
-      return companionHandshake(() => context.client, location, reads, signal, !!state.config, () => connection.signal)
+      const result = await companionHandshake(() => context.client, location, reads, signal,
+        state.inheritOptions || !!state.config, { connection: () => connection.signal, configuration: state.inheritOptions })
+      if (!result) return
+      const configuration = result.options
+        ? await readCliConfiguration(result.options, AbortSignal.any([signal, result.connection]), reads) : undefined
+      return { ...result, configuration }
     }, "Companion startup")
     // Deadline callbacks produce data only. Fence the final promise handoff
     // before installing the runtime's connection fence and recovery owner.
     if (admission?.connection === connection.signal) {
+      if (admission.configuration) Object.assign(state, admission.configuration)
       state.companion = admission.companion
     }
   } catch { lifecycle.signal.throwIfAborted() }

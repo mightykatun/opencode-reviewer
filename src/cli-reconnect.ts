@@ -7,6 +7,8 @@ import { TransportOwnership } from "./transport-ownership.js"
 import timers from "node:timers/promises"
 import { companionHandshake } from "./companion-handshake.js"
 import { hostLocation, locationKey, type ReviewLocation } from "./host-locations.js"
+import { readCliConfiguration, type CliConfiguration } from "./cli-configuration.js"
+import { BUILTIN_PROMPTS } from "./prompts.js"
 
 type Client = Plugin.Context["client"]
 
@@ -45,7 +47,7 @@ function marker(id: unknown): id is string {
 class LocationAdmission<T> {
   /** Whether the current location set still includes this location. */
   private wanted = false
-  private active?: { life: PluginLifecycle; runtime: T; id?: string; client: Client; companion?: CompanionHandshake }
+  private active?: { life: PluginLifecycle; runtime: T; id?: string; client: Client; companion?: CompanionHandshake; state: CliPluginState }
   /** A connection whose admission failed. Health checks cannot promote its fallback. */
   private manualConnection?: string
   private continuityHealthy = true
@@ -131,7 +133,7 @@ class LocationAdmission<T> {
     const scoped = new Proxy(this.host.context, { get: (target, key) => key === "client" ? client : Reflect.get(target, key) })
     try {
       const runtime = this.host.options.install(scoped, next, child, this.location)
-      this.active = { life: child, runtime, id: next.connectionID, client, companion: next.companion }
+      this.active = { life: child, runtime, id: next.connectionID, client, companion: next.companion, state: next }
     } catch (error) {
       void child.stop()
       this.ownRetired(child)
@@ -158,12 +160,16 @@ class LocationAdmission<T> {
       const abort = new AbortController()
       this.admission = abort
       let companion: CompanionHandshake | undefined
+      let configuration: CliConfiguration | undefined
       let terminal = false
       let rebind = false
       try {
         companion = await withDeadline(AbortSignal.any([this.host.signal, abort.signal]), 10000, async signal => {
-          const result = await companionHandshake(() => connection.client, this.location, this.reads, signal, !!this.host.state.config)
+          const inherit = this.host.state.inheritOptions && !this.active
+          const result = await companionHandshake(() => connection.client, this.location, this.reads, signal,
+            !!(this.active?.state ?? this.host.state).config || !!inherit, { configuration: inherit })
           terminal = result?.terminal ?? false
+          if (result?.options) configuration = await readCliConfiguration(result.options, signal, this.reads)
           return result?.companion
         }, "Companion reconnection")
       } catch { /* Failed admission leaves this connection manual. */ }
@@ -179,9 +185,11 @@ class LocationAdmission<T> {
           await this.draining
           if (!abort.signal.aborted && this.current(connection)) {
             if (companion) { this.dirty = true; rebind = true } // Bind again after the old critical work settled.
-            else this.start(connection.client, { ...this.host.state, companion: undefined, connectionID: connection.id })
+            else this.start(connection.client, { ...previous.state, companion: undefined, connectionID: connection.id })
           }
-        } else if (!previous) this.start(connection.client, { ...this.host.state, companion, connectionID: connection.id })
+        } else if (!previous) this.start(connection.client, { ...this.host.state,
+          ...(this.host.state.inheritOptions ? { config: undefined, configError: undefined, notificationConfig: undefined, reviewerOptions: undefined,
+            prompts: BUILTIN_PROMPTS, ...configuration } : {}), companion, connectionID: connection.id })
       }
       this.probeAt = rebind ? 0 : performance.now() + 2000
       if (this.admission === abort) this.admission = undefined

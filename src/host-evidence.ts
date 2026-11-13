@@ -128,7 +128,7 @@ function shellLocation(invocation: HostInvocation) {
   if (workdir?.includes("\0") || workdir === "~" || workdir?.startsWith("~/")) {
     throw new Error("Native shell workdir expansion unavailable from captured location")
   }
-  // Pinned Linux 2.0.26 ShellTool.prepare uses FileAccess.resolvePath, which
+  // Native ShellTool.prepare uses FileAccess.resolvePath, which
   // lexically resolves before filesystem traversal, including symlink/.. paths.
   const cwd = path.resolve(invocation.location.directory, workdir ?? ".")
   const cwdSource = workdir === undefined ? "invocation.location.directory" as const

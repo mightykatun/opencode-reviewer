@@ -191,15 +191,16 @@ try {
   await publish(path.join(title, "package.json"), { name: "steering-title", type: "module", exports: { ".": "./index.mjs" } })
   await writeFile(path.join(title, "index.mjs"), 'export default {id:"fixture.steering.title",async setup(ctx){const r=await ctx.session.hook("title",e=>{e.result="Steering fixture"});return ()=>r.dispose()}}\n')
   await publish(path.join(project, "opencode.json"), { $schema: "https://opencode.ai/config.json", model: "fixture/fixture", update: "disable",
-    plugins: [reviewer, title], permissions: [{ action: "*", resource: "*", effect: "allow" }, { action: "shell", resource: "*", effect: "ask" }],
+    plugins: [{ package: reviewer, options: { baseURL: origin + "/review", model: "steering-reviewer",
+      autoApprove: false, autoRejectSteering: true, maxSteeringRejections: 1, fastMode: fast, stream: true, retrieval: false,
+      autoApproveDelaySeconds: fast ? 45 : 3, notify: true, notifySound: false, staleReminderSeconds: 0,
+      notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } }, title],
+    permissions: [{ action: "*", resource: "*", effect: "allow" }, { action: "shell", resource: "*", effect: "ask" }],
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: origin + "/v1", apiKey: "synthetic" },
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } })
   const cliPath = path.join(temp, "config/opencode/cli.json")
   const cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, mouse: true, attention: { notifications: false, sound: false },
-    session: { permissions: "prompt" }, plugins: [{ package: reviewer, options: { baseURL: origin + "/review", model: "steering-reviewer",
-      autoApprove: false, autoRejectSteering: true, maxSteeringRejections: 1, fastMode: fast, stream: true, retrieval: false,
-      autoApproveDelaySeconds: fast ? 45 : 3, notify: true, notifySound: false, staleReminderSeconds: 0,
-      notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } }, monitor] }
+    session: { permissions: "prompt" }, plugins: [monitor] }
   await publish(cliPath, { ...cli, plugins: ["-opencode-reviewer", monitor] })
   await runtime.start("-d", "-s", "steering", "-x", "160", "-y", "48", "-c", project, "env", "XDG_STATE_HOME=" + env.XDG_STATE_HOME, host, "--standalone")
   await until("monitor", record => record, 60000)

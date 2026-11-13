@@ -1,6 +1,13 @@
 import { reviewStage } from "./deadline.js"
 import { networkFailure } from "./transport-retry.js"
 import type { TransportOwnership } from "./transport-ownership.js"
+import type { ModelConnection } from "./config.js"
+
+export function modelApiKey(config: ModelConnection, environment: NodeJS.ProcessEnv): string | undefined {
+  const key = config.apiKey ?? (config.apiKeyEnv ? environment[config.apiKeyEnv]?.trim() : undefined)
+  if (config.apiKeyEnv && !key) throw new Error(`API key environment variable ${config.apiKeyEnv} is unset or empty`)
+  return key
+}
 
 /** Each wait removes its listener on settlement; no growing Promise.race listener chain.
  * A fetcher may ignore abort. Own any late response without allowing it back into review.
@@ -73,4 +80,3 @@ export async function responseText(response: Response, signal: AbortSignal, owne
   try { return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)) }
   catch { throw new Error("Reviewer HTTP response contains invalid UTF-8") }
 }
-

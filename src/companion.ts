@@ -26,6 +26,7 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
     project: { ...context.location.project },
   }
   const captures = new InvocationCapture(handshake)
+  const options = structuredClone(context.options)
   const files = new FileAccess(fileIO)
   const reads = new TransportOwnership()
   let activeReads = 0, activeRetrievals = 0
@@ -122,6 +123,12 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
       call.signal.throwIfAborted()
       if (!sameLocation(input, location)) return call.error("scope", "Reviewer companion scope mismatch", {})
       return structuredClone(handshake)
+    },
+    configuration: async (input, call) => {
+      lifecycle.signal.throwIfAborted()
+      call.signal.throwIfAborted()
+      if (!sameLocation(input, location)) return call.error("scope", "Reviewer companion scope mismatch", {})
+      return structuredClone({ handshake, options })
     },
     invocation: async (input, call) => {
       const query = input as Query

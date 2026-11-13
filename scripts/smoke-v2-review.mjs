@@ -534,14 +534,15 @@ const prompt = registeredTool ? "Look up the public account once using fixture_l
   : skillCase ? `Load the ${skillID} skill once with the native skill tool.`
   : editCase ? `Use native write once to replace ${writeTarget} with exactly V2_EDIT_AFTER followed by a newline.`
   : "Run python3 fixture.py once in inputs. It appends the isolated V2_REVIEW_EXECUTED marker and prints it."
+const retrievalModelCase = scenario === "normal-retrieval-model"
 const script = (largeSource ? "# oversized source fixture context\n".repeat(8000) : "")
   + 'from pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write("V2_REVIEW_EXECUTED\\n")\nprint("V2_REVIEW_EXECUTED")\n'
-  + (scenario === "normal-retrieval" ? "# uninspected attachment context\n".repeat(100) + "# V2_REVIEWER_ONLY_ATTACHMENT_EOF\n" : "")
+  + (scenario === "normal-retrieval" || retrievalModelCase ? "# uninspected attachment context\n".repeat(100) + "# V2_REVIEWER_ONLY_ATTACHMENT_EOF\n" : "")
 const description = "V2 local marker report.\n\nThe script writes one isolated marker."
 // Retrieval runs only in its dedicated cases; history cases keep one POST per review.
-const retrievalCase = scenario === "normal-retrieval" || largeSource
+const retrievalCase = scenario === "normal-retrieval" || retrievalModelCase || largeSource
 // normal-retrieval also asks the root conversation once through native session generation.
-const clarificationCase = scenario === "normal-retrieval"
+const clarificationCase = scenario === "normal-retrieval" || retrievalModelCase
 const clarificationQuestions = "Why does fixture.py need to run, and did the user ask for it?"
 const clarificationAnswer = "The user asked to run python3 fixture.py once in inputs to append the isolated marker."
 const expectedToolCalls = retrievalCase ? largeSource ? 3 : 6 : 0
@@ -563,7 +564,7 @@ const toolCall = codeModeTool ? { id: "v2-production-review-code-mode", name: "e
    : { id: "v2-production-review-shell", name: "shell", input: {
      command: "python3 fixture.py", workdir: "inputs" } }
 const publishers = new Map(), calls = [], errors = [], negativeWindows = []
-let version, modelServer, mainResponse, reviewResponse, sessionID, childSession, request, inspection, handshake, sequence = 0
+let version, modelServer, retrievalServer, mainResponse, reviewResponse, sessionID, childSession, request, inspection, handshake, sequence = 0
 let networkProxy, networkBlocked = false, networkEvidence
 const eventResponses = new Set()
 const proxySockets = new Set(), proxyRequests = []
@@ -733,7 +734,7 @@ const recoverPendingConnection = async (label, { silent = false, outageMs = 1500
 function retrievalReply(body) {
   assert.ok(retrievalCase, "Retrieval POSTs only in retrieval cases")
   retrievalCalls.push(body)
-  assert.equal(body.model, "v2-production-reviewer")
+  assert.equal(body.model, retrievalModelCase ? "v2-retrieval-only" : "v2-production-reviewer")
   assert.equal(body.stream, false, "Retrieval turns are never streamed")
   assert.deepEqual(body.tools.map(tool => tool.function.name), ["read", "list", "glob", "grep", "ask_context", "finish"],
     "Root-conversation reviews offer the single clarification call")
@@ -1229,7 +1230,7 @@ const exerciseInstructions = async cli => {
   assert.equal(await committedInstructions(), instructionsText, "Ctrl+S applies and closes")
   await saveCapture("instructions-committed")
   // Public unload/reload rereads durable state, never fixture-created drafts.
-  await publish(cliPath, { ...cli, plugins: ["-opencode-reviewer", cli.plugins[1]] })
+  await publish(cliPath, { ...cli, plugins: ["-opencode-reviewer", ...cli.plugins] })
   await until("production instructions command unloads", async () => !(await command({ type: "keymap", id: "reviewer.instructions" })).registered)
   await publish(cliPath, cli)
   await until("production instructions command reloads", async () => (await command({ type: "keymap", id: "reviewer.instructions" })).registered)
@@ -1360,6 +1361,7 @@ try {
          return
        }
        if (req.url === "/review/chat/completions" && body.tools) {
+         assert.equal(retrievalModelCase, false, "Separate retrieval never reaches the verdict endpoint")
          res.writeHead(200, { "Content-Type": "application/json" })
          res.end(JSON.stringify(retrievalReply(body)))
          return
@@ -1381,6 +1383,7 @@ try {
        }
        calls.push({ url: req.url, body })
        if (req.url === "/review/chat/completions") {
+         if (retrievalModelCase) assert.equal(req.headers.authorization, "Bearer verdict-only-key")
          reviewPOSTs++
           assert.ok(reviewPOSTs <= expectedReviewPOSTs, "Evidence timeout must fail before any reviewer model POST")
         assert.equal(body.model, "v2-production-reviewer")
@@ -1465,8 +1468,13 @@ try {
          "Reviewer-local session instructions are never sent to the main model")
       assert.ok(body.tools?.some(tool => tool.function.name === "execute"), "Native Code Mode search/execution remains installed")
       const mainCalls = calls.filter(call => call.url === req.url)
-        assert.ok(mainCalls.length <= nativeCallCount * 2, "Only genuine prompts and tool-result continuations")
-         if (mainCalls.length === 1 || coverCase && mainCalls.length === 3 || (projectTransition || instructionsCase) && mainCalls.length % 2 === 1) {
+         assert.ok(mainCalls.length <= nativeCallCount * 2 + (instructionsCase ? 1 : 0), "Only genuine prompts, tool-result continuations and the owned child report")
+         if (instructionsCase && mainCalls.length === 5) {
+           const lastUser = body.messages.filter(message => message.role === "user").at(-1)
+           assert.equal(lastUser?.content, `<subagent sessionID="${childSession.id}" state="completed" description="V2 production review descendant">\nV2 fixture complete.\n</subagent>`,
+             "The native report belongs to the exact completed descendant")
+           assert.ok(body.messages.some(message => message.role === "user" && message.content === prompt))
+         } else if (mainCalls.length === 1 || coverCase && mainCalls.length === 3 || (projectTransition || instructionsCase) && mainCalls.length % 2 === 1) {
           assert.ok(body.tools.some(tool => tool.function.name === toolCall.name), "Use the actually advertised direct native tool")
           if (skillCase) {
             assert.ok(body.messages.some(message => typeof message.content === "string" && message.content.includes(prompt)))
@@ -1485,7 +1493,7 @@ try {
          }
         mainResponse = { res, body }
         return
-      }
+      } else {
       assert.ok(allowWrites, "Advisory must not resume native execution")
        const toolResults = body.messages.filter(message => message.role === "tool" && !message.tool_call_id.startsWith("warmup-"))
         assert.equal(toolResults.length, projectTransition
@@ -1501,6 +1509,7 @@ try {
           assert.ok(latestResult.content, "Actual native write response reaches the main model")
           assert.doesNotMatch(JSON.stringify(latestResult.content), /Tool execution failed|Permission denied/)
         } else assert.match(JSON.stringify(latestResult.content), /V2_REVIEW_EXECUTED/, "Exact latest actual native tool response reaches the main model")
+      }
       const message = { role: "assistant", content: "V2 fixture complete." }
       if (body.stream) {
         res.writeHead(200, { "Content-Type": "text/event-stream" })
@@ -1514,6 +1523,21 @@ try {
   })
   await new Promise(resolve => modelServer.listen(0, "127.0.0.1", resolve))
   const origin = `http://127.0.0.1:${modelServer.address().port}`
+  if (retrievalModelCase) {
+    retrievalServer = createServer(async (req, res) => {
+      try {
+        assert.equal(req.method, "POST"); assert.equal(req.url, "/v1/chat/completions")
+        assert.equal(req.headers.authorization, "Bearer retrieval-only-key")
+        let text = ""
+        for await (const chunk of req) { text += chunk; assert.ok(text.length < 8 * 1024 * 1024) }
+        const body = JSON.parse(text)
+        assert.ok(Array.isArray(body.tools), "The separate endpoint receives retrieval only")
+        res.writeHead(200, { "Content-Type": "application/json" })
+        res.end(JSON.stringify(retrievalReply(body)))
+      } catch (error) { errors.push(String(error)); res.destroy() }
+    })
+    await new Promise(resolve => retrievalServer.listen(0, "127.0.0.1", resolve))
+  }
     const fixture = { initial, project, elsewhere, projectTransition, instructionsCase, routeWait, locationTab, monitor: monitorPath, control: controlPath, keyboardMouseOff: keyboardMouseOffCase, registeredTool, codeModeTool }
   const observer = path.join(temp, "observer"), monitor = path.join(temp, "monitor")
   const reviewer = path.join(temp, "reviewer")
@@ -1556,7 +1580,16 @@ createInterface({input:process.stdin}).on('line',line=>{
 `)
   const config = { $schema: "https://opencode.ai/config.json", model: "fixture/fixture", update: "disable",
     ...(registeredTool ? { mcp: { servers: { fixture: { type: "local", command: [process.execPath, mcpFile] } } } } : {}),
-    plugins: [reviewer, observer], permissions: [{ action: "*", resource: "*", effect: "allow" },
+    plugins: [{ package: reviewer, options: { baseURL: origin + "/review", model: "v2-production-reviewer",
+        ...(retrievalModelCase ? { apiKey: "verdict-only-key", retrievalBaseURL: `http://127.0.0.1:${retrievalServer.address().port}/v1`,
+          retrievalModel: "v2-retrieval-only", retrievalApiKey: "retrieval-only-key" } : {}),
+        stream: streaming, autoApprove: automatic, fastMode: fast, autoApproveDelaySeconds: approvalDelaySeconds,
+         retrieval: retrievalCase,
+        ...(directoryEditCase ? { reviewExternalDirectories: true } : {}),
+         ...(registeredTool ? { reviewTools: true, maxEvidenceBytes: fast ? 131072 : 2048 } : {}),
+         ...(largeSource ? { maxEvidenceBytes: 2048 } : {}),
+       timeoutMs: evidenceTimeout ? 1 : 120000, notify: notificationCase, notifySound: false, staleReminderSeconds: 0,
+       ...(notificationCase ? { notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } : {}) } }, observer], permissions: [{ action: "*", resource: "*", effect: "allow" },
       ...(editCase ? editActions.map(action => ({ action, resource: "*", effect: "ask" })) : [{ action: registeredTool ? "fixture_lookup" : skillCase ? "skill" : "shell", resource: "*", effect: "ask" }])],
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: origin + "/v1", apiKey: "synthetic-only" },
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } }
@@ -1566,14 +1599,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   // Native autoaccept is explicitly disabled.
   const cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, attention: { notifications: false, sound: false },
      ...(automatic ? { mouse: !mouseOff } : {}),
-    session: { permissions: "prompt" }, plugins: [{ package: reviewer, options: { baseURL: origin + "/review", model: "v2-production-reviewer",
-        stream: streaming, autoApprove: automatic, fastMode: fast, autoApproveDelaySeconds: approvalDelaySeconds,
-         retrieval: retrievalCase,
-        ...(directoryEditCase ? { reviewExternalDirectories: true } : {}),
-         ...(registeredTool ? { reviewTools: true, maxEvidenceBytes: fast ? 131072 : 2048 } : {}),
-         ...(largeSource ? { maxEvidenceBytes: 2048 } : {}),
-       timeoutMs: evidenceTimeout ? 1 : 120000, notify: notificationCase, notifySound: false, staleReminderSeconds: 0,
-       ...(notificationCase ? { notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } : {}) } }, monitor] }
+    session: { permissions: "prompt" }, plugins: [monitor] }
   const startupCli = { ...cli, plugins: ["-opencode-reviewer", monitor] }
   await publish(path.join(project, "opencode.json"), config); await publish(cliPath, startupCli)
   await publish(path.join(artifacts, "setup.json"), { version, scenario, temp, archive, packed, installed,
@@ -2465,7 +2491,7 @@ createInterface({input:process.stdin}).on('line',line=>{
       allowedReplies = 2
       await until("descendant production once reply and execution", async record => record?.replied.length === 2
         && await executed() === markerLine.repeat(2))
-      await until("descendant native tool-result continuation", () => calls.filter(call => call.url === "/v1/chat/completions").length === 4)
+      await until("descendant native tool-result continuation", () => calls.filter(call => call.url === "/v1/chat/completions")[3])
       const completed = await command({ type: "message", sessionID: childSession.id, messageID: request.source.messageID })
       const native = completed.content.filter(item => item.type === "tool" && item.id === toolCall.id)
       assert.equal(native.length, 1); assert.equal(native[0].state.status, "completed")
@@ -2483,6 +2509,7 @@ createInterface({input:process.stdin}).on('line',line=>{
       }, 20000)
       assert.equal(instructionsEvidence.judge.length, 2)
       assert.equal(await committedInstructions(), instructionsText)
+      await until("native descendant completion report reaches the root", () => calls.filter(call => call.url === "/v1/chat/completions").length === 5)
       await negativeWindow("instructions root and descendant remain once-only", [], (await observations()).replied,
         markerLine.repeat(2), 2, 1500, () => {}, childSession.id)
       await publish(path.join(artifacts, "session-instructions.json"), instructionsEvidence)
@@ -3054,7 +3081,7 @@ createInterface({input:process.stdin}).on('line',line=>{
     }
   assert.equal(reviewCompleted, !evidenceTimeout)
    assert.equal(reviewPOSTs, expectedReviewPOSTs)
-   assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, allowWrites ? nativeCallCount * 2 : 1)
+   assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, allowWrites ? nativeCallCount * 2 + (instructionsCase ? 1 : 0) : 1)
   const final = await observations()
    assert.equal(final.asked.length, requestCount)
     assert.equal(final.replied.length, allowWrites || manualHistoryCase ? requestCount : 0)
@@ -3065,7 +3092,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   // Notification acceptance also verifies production/backend teardown while the
   // host is alive. Other cases disable only the independent observer as before.
    await publish(cliPath, { ...cli, ...(keyboardMouseOffCase ? { mouse: false } : {}), plugins: notificationCase ? ["-opencode-reviewer", "-fixture.review.monitor"]
-    : [cli.plugins[0], "-fixture.review.monitor"] })
+     : ["-fixture.review.monitor"] })
   const cleaned = await until("monitor final flush/close", record => record?.cleaned && record)
   if (notificationCase) {
     notificationEvidence.cleaned = await until("production notification backend disposed and publisher closed", async () => {
@@ -3097,6 +3124,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   finally {
     if (networkProxy) { for (const socket of proxySockets) socket.destroy(); await new Promise(resolve => networkProxy.close(resolve)) }
     if (modelServer) { modelServer.closeAllConnections(); await new Promise(resolve => modelServer.close(resolve)) }
+    if (retrievalServer) { retrievalServer.closeAllConnections(); await new Promise(resolve => retrievalServer.close(resolve)) }
     await Promise.all([...publishers.values()].map(publisher => publisher.close()))
   }
 }

@@ -1,6 +1,7 @@
 import { Rpc } from "@opencode/plugin/rpc"
 import path from "node:path"
 import { evidenceOptionsSchema } from "./host-evidence-options.js"
+import { boundedHostJSON } from "./host-request.js"
 
 export const companionProtocol = 2
 /** Model-chosen read-only operations the companion executes for retrieval. */
@@ -14,6 +15,16 @@ const text = { type: "string", minLength: 1, maxLength: 16384 } as const
 const location = {
   type: "object", properties: { directory: text, workspaceID: text }, required: ["directory"], additionalProperties: false,
 } as const
+const handshakeSchema = {
+  type: "object",
+  properties: {
+    protocol: { const: companionProtocol }, hostVersion: text, epoch: { type: "string", format: "uuid" }, location,
+    project: { type: "object", properties: { id: text, directory: text, canonical: text },
+      required: ["id", "directory", "canonical"], additionalProperties: false },
+  },
+  required: ["protocol", "hostVersion", "epoch", "location", "project"], additionalProperties: false,
+} as const
+const scopeErrors = { scope: { type: "object", properties: {}, additionalProperties: false } } as const
 
 /** Transport identity only. An epoch is never durable history/deletion authority. */
 export interface CompanionHandshake {
@@ -29,16 +40,18 @@ export const companionRpc = Rpc.define({
   methods: {
     handshake: {
       input: location,
+      output: handshakeSchema,
+      errors: scopeErrors,
+    },
+    // Native TUI discovery loads the package but does not forward its options.
+    // Configuration is separate from evidence and bound to the owning epoch.
+    configuration: {
+      input: location,
       output: {
-        type: "object",
-        properties: {
-          protocol: { const: companionProtocol }, hostVersion: text, epoch: { type: "string", format: "uuid" }, location,
-          project: { type: "object", properties: { id: text, directory: text, canonical: text },
-            required: ["id", "directory", "canonical"], additionalProperties: false },
-        },
-        required: ["protocol", "hostVersion", "epoch", "location", "project"], additionalProperties: false,
+        type: "object", properties: { handshake: handshakeSchema, options: { type: "object" } },
+        required: ["handshake", "options"], additionalProperties: false,
       },
-      errors: { scope: { type: "object", properties: {}, additionalProperties: false } },
+      errors: scopeErrors,
     },
     invocation: {
       input: { type: "object", properties: { location, epoch: text, sessionID: text, requestID: text },
@@ -93,4 +106,15 @@ export function readHandshake(value: unknown, expected: CompanionHandshake["loca
     || ![expected.directory, project.directory, project.canonical].every(item => path.isAbsolute(item as string))) return
   return { protocol: companionProtocol, hostVersion: record.hostVersion, epoch: record.epoch,
     location: { ...expected }, project: { id: project.id as string, directory: project.directory as string, canonical: project.canonical as string } }
+}
+
+/** Keep configuration validation separate from transport and operation evidence. */
+export function readCompanionConfiguration(value: unknown, expected: CompanionHandshake["location"]) {
+  const record = boundedHostJSON(value)
+  if (!record || typeof record !== "object" || Array.isArray(record) || Object.keys(record).length !== 2
+    || !("handshake" in record) || !("options" in record)) return
+  const options = record.options
+  if (!options || typeof options !== "object" || Array.isArray(options)) return
+  const companion = readHandshake(record.handshake, expected)
+  if (companion) return { companion, options: options as Record<string, unknown> }
 }

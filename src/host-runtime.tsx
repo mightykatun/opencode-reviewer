@@ -125,7 +125,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   life.addCleanup(() => instructions.flush(), false)
   const setupInstructions = (root: () => string | undefined) => {
     let maxBytes: number
-    try { maxBytes = configuredEvidenceBytes(ctx.options) } catch { return }
+    try { maxBytes = configuredEvidenceBytes(state.reviewerOptions ?? ctx.options) } catch { return }
     setupHostSessionInstructions(ctx, life, { root, maxBytes,
       read: (id, signal) => instructions.read(id, maxBytes, signal, true), write: (id, text) => instructions.write(id, text) })
   }
@@ -240,11 +240,16 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   const controller = new Controller<HostPendingRequest>((request, signal, identified, onProgress, observation) => {
     const snapshot = snapshots.get(request.id)
     if (!snapshot) return Promise.reject(new Error(uiText.review.evidenceUnavailable))
-    let pricing: PricingLookup | undefined
-    try { pricing = hostPricingLookup(config.baseURL, ctx.data.location.model.list(scope.location), ctx.data.location.provider.list(scope.location)) }
+    let pricing: PricingLookup | undefined, retrievalPricing: PricingLookup | undefined
+    try {
+      const models = ctx.data.location.model.list(scope.location), providers = ctx.data.location.provider.list(scope.location)
+      pricing = hostPricingLookup(config.baseURL, models, providers)
+      retrievalPricing = config.retrievalBaseURL && config.retrievalBaseURL !== config.baseURL
+        ? hostPricingLookup(config.retrievalBaseURL, models, providers) : pricing
+    }
     catch { /* Missing/failed optional pricing cannot change the review. */ }
     return evaluateHostReview(ctx.client, snapshot, config, state.prompts, signal, identified,
-      { onProgress, observation, pricing, onDiagnostics: state.dependencies.observer,
+      { onProgress, observation, pricing, retrievalPricing, onDiagnostics: state.dependencies.observer,
         loadSessionInstructions: signal => observation?.root
           ? instructions.read(observation.root, config.maxEvidenceBytes, signal) : Promise.resolve(""),
         ...(config.autoRejectSteering ? { steeringRecord: followUps.paired(request.id) } : {}),

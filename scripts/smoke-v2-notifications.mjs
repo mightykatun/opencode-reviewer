@@ -242,7 +242,7 @@ const script = 'import sys\nfrom pathlib import Path\nwith Path("executed").open
 const publishers = new Map(), calls = [], errors = [], negativeWindows = [], transactions = [], evidence = []
 const mainRequests = new Map()
 let version, server, cli, config, phase = scenario === "unavailable-review" ? "invalid" : "main", sequence = 0
-let sessionID, expectedReplies = 0, allowedManual = 0, expectedReviews = scenario === "manual-handoff" ? 2 : 0
+let sessionID, backgroundChildID, expectedReplies = 0, allowedManual = 0, expectedReviews = scenario === "manual-handoff" ? 2 : 0
 const publish = async (file, value) => {
   let publisher = publishers.get(file)
   if (!publisher) { publisher = observationPublisher(file); publishers.set(file, publisher) }
@@ -447,7 +447,14 @@ try {
       assert.equal(req.url, "/v1/chat/completions")
       assert.ok(body.tools.some(tool => tool.function.name === "execute"), "Native Code Mode remains installed")
       const lastUser = body.messages.filter(message => message.role === "user").at(-1)
-      const tag = JSON.stringify(lastUser?.content).match(/NOTIFICATIONS:([a-z-]+)/)?.[1]
+      let tag = JSON.stringify(lastUser?.content).match(/NOTIFICATIONS:([a-z-]+)/)?.[1]
+      if (!tag && scenario === "execution") {
+        assert.ok(backgroundChildID)
+        assert.equal(lastUser?.content, `<subagent sessionID="${backgroundChildID}" state="completed" description="Background child">\nBackground child finished.\n</subagent>`,
+          "Only the owned child's exact native completion report may wake its parent")
+        assert.ok(body.messages.some(message => message.role === "user" && message.content === prompt("ended")))
+        tag = "child-report"
+      }
       assert.ok(tag, "Actual fixture user prompt identifies the owned primary transaction")
       const requests = mainRequests.get(tag) ?? []
       requests.push({ res, body }); mainRequests.set(tag, requests)
@@ -497,10 +504,10 @@ try {
   const options = { baseURL: origin + "/review", model: "v2-production-notifications", stream: false, autoApprove: false, retrieval: false,
     timeoutMs: 120000, notify: true, notifySound: false, staleReminderSeconds: reminderMs / 1000,
     notifications: Object.fromEntries(["attention", "unsafe", "question", "approved", "ended", "error"].map(kind => [kind,
-      { banner: kind === "attention" || kind === "question" || scenario === "execution" && ["ended", "error"].includes(kind), sound: false }])) }
+       { banner: kind === "attention" || kind === "question" || scenario === "execution" && ["ended", "error"].includes(kind), sound: false }])) }
+  config.plugins = [{ package: reviewer, options: { ...options, ...(phase === "invalid" ? { fileIO: {} } : {}) } }, title]
   cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, attention: { notifications: false, sound: false },
-    session: { permissions: "prompt" }, plugins: [{ package: reviewer,
-      options: { ...options, ...(phase === "invalid" ? { fileIO: {} } : {}) } }, monitor] }
+    session: { permissions: "prompt" }, plugins: [monitor] }
   await publish(setupControl, { phase })
   // Behavioral checks activate a fresh generation after the actual
   // initial connection. Native receipt of an exact real probe birth establishes
@@ -635,6 +642,7 @@ try {
     await until("actual first active execution", record => events(record, "session.execution.started").length === 1)
     await quiet("active execution is not an ended notification", 0)
     const background = await command({ type: "background-work", sessionID })
+    backgroundChildID = background.child.id
     await until("actual background child provider transaction", () => mainRequests.get("background-child")?.[0])
     const backgroundState = () => command({ type: "background-state", childID: background.child.id })
     let running = await backgroundState()
@@ -646,6 +654,11 @@ try {
     await quiet("root stopped while its child, shell and terminal are still running", 0, 2500)
     send(mainRequests.get("background-child")[0], { role: "assistant", content: "Background child finished." })
     await until("actual child completion", record => events(record, "session.execution.succeeded", background.child.id).length === 1)
+    const followUp = await until("native child report wakes the parent", record => mainRequests.get("child-report")?.[0]
+      && events(record, "session.execution.started").length === 2 && mainRequests.get("child-report")[0])
+    await quiet("parent processing its child's report is still active", 0)
+    send(followUp, { role: "assistant", content: "Acknowledged background child completion." })
+    await until("parent finishes processing the child report", record => events(record, "session.execution.succeeded").length === 2)
     await quiet("finished child does not conceal its running shell and terminal", 0, 2500)
     await command({ type: "stop-background-shell", shellID: background.shell.id })
     running = await backgroundState()
@@ -658,7 +671,7 @@ try {
     evidence.push({ background, settled: await backgroundState(), scope: "Public child execution and native session-owned shell/terminal processes; no fabricated activity." })
     await command({ type: "prompt", sessionID, text: prompt("error") })
     const failure = await until("real error primary transaction and active execution", record => mainRequests.get("error")?.[0]
-      && events(record, "session.execution.started").length === 2
+      && events(record, "session.execution.started").length === 3
       && mainRequests.get("error")[0])
     await quiet("active error-target step does not prematurely notify", 1)
     failure.res.writeHead(400, { "Content-Type": "application/json" })
@@ -667,23 +680,23 @@ try {
     assert.equal(shows(await awaitShows(2))[1].message.kind, "error")
     await command({ type: "prompt", sessionID, text: prompt("aborted") })
     await until("held native execution is actually active", record => mainRequests.get("aborted")?.[0]
-      && events(record, "session.execution.started").length === 3)
+      && events(record, "session.execution.started").length === 4)
     await quiet("held third execution is silent until terminal fact", 2)
     await interrupt()
     await until("aborted native HTTP transaction physically closes", () => mainRequests.get("aborted")[0].res.destroyed)
     await quiet("actual aborted execution suppresses both ended and error notices", 2, reminderMs + 1500, async record => {
-      assert.equal(events(record, "session.execution.succeeded").length, 1)
+      assert.equal(events(record, "session.execution.succeeded").length, 2)
       assert.equal(events(record, "session.execution.failed").filter(event => event.data.error.type !== "aborted").length, 1)
       assert.deepEqual(recordReplies(record), []); assert.equal(reviewCalls().length, 0)
       assert.deepEqual((await snapshot()).pending, []); assert.equal(await execution(), null)
     })
     const record = await observation()
     const active = events(record, "session.execution.started"), steps = events(record, "session.step.started")
-    assert.equal(active.length, 3)
-    assert.equal(new Set(active.map(event => event.id)).size, 3, "Three distinct genuine execution births")
+    assert.equal(active.length, 4)
+    assert.equal(new Set(active.map(event => event.id)).size, 4, "Four distinct genuine execution births, including the child report")
     const executionEvents = record.events.filter(event => event.type.startsWith("session.execution.") && event.data.sessionID === sessionID)
     for (const event of executionEvents) assert.equal(event.durable.aggregateID, sessionID, "Terminal facts belong to the actual native root aggregate")
-    assert.equal(executionEvents.length, 6, "Three execution births and three native terminal facts, not inferred model outcomes")
+    assert.equal(executionEvents.length, 8, "Four execution births and four native terminal facts, not inferred model outcomes")
     assert.ok(executionEvents.every((event, index) => !index || event.durable.seq > executionEvents[index - 1].durable.seq))
     const childEvents = record.events.filter(event => event.type.startsWith("session.execution.") && event.data.sessionID === background.child.id)
     assert.deepEqual(childEvents.map(event => event.type), ["session.execution.started", "session.execution.succeeded"])
@@ -759,7 +772,7 @@ try {
   assert.equal(recordReplies(final).length, scenario === "manual-handoff" ? 2 : 0)
   assert.equal(reviewCalls().length, expectedReviews)
   assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length,
-    scenario === "execution" ? 4 : scenario === "unavailable-review" ? 2 : 2)
+    scenario === "execution" ? 5 : 2)
   await saveCapture("final")
   await publish(cliPath, { ...cli, plugins: ["-opencode-reviewer", "-fixture.notifications.monitor"] })
   const cleaned = await until("monitor owned transactions and final publication settle", record => record?.cleaned && record)

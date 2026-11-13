@@ -1,20 +1,20 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { execFileSync } from "node:child_process"
 import path from "node:path"
-import { adaptThemeSyntax, themeSyntaxOnlyPlugin, verifyThemeSyntaxInputs, verifyThemeSyntaxBuild } from "../scripts/theme-syntax-adapter.mjs"
+import { themeSyntaxOnlyPlugin, verifyThemeSyntaxInputs, verifyThemeSyntaxBuild } from "../scripts/theme-syntax-adapter.mjs"
 
 const manifest = {
-  name: "@opencode/theme", version: "2.1.4",
+  name: "@opencode/theme", version: "2.3.0",
   exports: { "./tui": { import: "./dist/tui/index.js" } },
-  dependencies: { "@opentui/core": "0.8.1", effect: "4.1.0" },
+  dependencies: { "@opentui/core": "0.8.4", effect: "4.1.0" },
 }
 // Independent published-input expectations, not imported adapter constants.
 const digests = {
   "index.js": "4f9360a53406c11a0c90ad684999ed6fb4a3c18c8ef7340c2f0d7744cad7f694",
   "schema.js": "d35764264d8de3b8c3a35cdec2750f07f2878525474b08ae59c07ca06d29c77a",
-  "syntax.js": "d31a110203ddfb4849440522951f82f02de1d5028f9a4174cfb45ee0a6e69358",
+  "syntax.js": "6b96cee07d0a806ecad0446687873e4d8843e60acf2fd0b004a8c9cc1ce434b2",
 }
 
 test("theme adapter admits only the reviewed package identity and exact public build inputs", () => {
@@ -52,13 +52,6 @@ test("the build adapter hashes actual adjacent sources and rejects changed or mi
   await assert.rejects(load({ path: syntax }), /Pinned theme build input changed: index.js/)
   await rm(path.join(directory, "schema.js"))
   await assert.rejects(load({ path: barrel }), /ENOENT/)
-  const upstream = await readFile(new URL("./syntax.js", import.meta.resolve("@opencode/theme/tui")), "utf8")
-  const adapted = adaptThemeSyntax(upstream)
-  assert.match(adapted, /^import \{ SyntaxStyle \} from "@opentui\/core";\nexport function generateSyntax\(theme, owner\) \{/)
-  assert.equal(adapted, upstream)
-  assert.match(adapted, /return SyntaxStyle\.fromTheme\(rules, owner\);/)
-  assert.throws(() => adaptThemeSyntax(upstream.replace("generateSyntax(theme, owner)", "generateSyntax()")), /Pinned theme syntax source changed/)
-  assert.throws(() => adaptThemeSyntax(upstream.replace("fromTheme(rules, owner)", "fromTheme(rules)")), /Pinned theme syntax source changed/)
 })
 
 test("theme adapter checks resolve installed inputs outside the active policy checkout", async t => {

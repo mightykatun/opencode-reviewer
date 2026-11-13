@@ -11,6 +11,39 @@ import { monotonicTimers } from "./reviewer-clock.js"
 const skillOptions = { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
   reviewSkills: true, reviewTools: true, maxFiles: 6, maxEvidenceBytes: 131072 }
 
+test("configuration is scoped and returns independent clones of the setup options and handshake", async () => {
+  const life = new PluginLifecycle()
+  let handlers: any
+  const location = { directory: "/project", workspaceID: "workspace" }
+  const options = { model: "original", notifications: { approved: { sound: true } } }
+  const context = { app: { version: "development" }, options,
+    location: { ...location, project: { id: "project", directory: "/project", canonical: "/project" } },
+    tool: { hook: async () => ({ dispose() {} }) },
+    rpc: { register: async (_definition: unknown, value: unknown) => { handlers = value; return { dispose() {} } } },
+  } as unknown as Plugin.Context
+  const handshake = await setupCompanion(context, life)
+  const call = { signal: life.signal, error: (type: string, message: string, data: unknown) => {
+    throw Object.assign(Error(message), { type, data })
+  } }
+  try {
+    options.model = "changed"; options.notifications.approved.sound = false
+    const first = await handlers.configuration(location, call)
+    assert.deepEqual(first, { handshake, options: { model: "original", notifications: { approved: { sound: true } } } })
+    first.options.notifications.approved.sound = false
+    first.handshake.project.id = "changed"
+    assert.deepEqual(await handlers.configuration(location, call),
+      { handshake, options: { model: "original", notifications: { approved: { sound: true } } } })
+    assert.deepEqual(await handlers.handshake(location, call), handshake)
+    assert.equal("options" in await handlers.handshake(location, call), false)
+    for (const wrong of [{ directory: "/other", workspaceID: "workspace" }, { directory: "/project", workspaceID: "other" }]) {
+      await assert.rejects(handlers.configuration(wrong, call), { type: "scope" })
+      await assert.rejects(handlers.handshake(wrong, call), { type: "scope" })
+    }
+    const aborted = new AbortController(); aborted.abort()
+    await assert.rejects(handlers.configuration(location, { ...call, signal: aborted.signal }))
+  } finally { await life.stop() }
+})
+
 test("skill registry evidence cannot survive a changed pending permission identity", async () => {
   const life = new PluginLifecycle(), hooks = new Map<string, (event: any) => void>()
   let handlers: any, change = false, calls = 0

@@ -71,7 +71,7 @@ export function inspectPackageArchive(bytes) {
   validatePublicationPackage(pkg)
   assert.equal(pkg.type, "module")
   assert.equal(pkg.license, "MIT")
-  assert.equal(pkg.engines?.node, ">=22", "Unexpected Node runtime engine")
+  assert.equal(pkg.engines?.node, ">=26.4.0", "Unexpected Node runtime engine")
   assert.equal(pkg.engines?.opencode, ">=2.0.0 <3", "Unexpected OpenCode API generation")
   assert.deepEqual(pkg.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })
   assert.ok(!pkg.dependencies && !pkg.optionalDependencies, "Release package must not install project dependencies")

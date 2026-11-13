@@ -4,7 +4,7 @@
 
 ## Setup and checks
 
-Use Node.js 24.x with npm. This major version is recommended (>=24.15.0). Node.js 22.x also works (>=22.22.2). These floors apply to development. The published package declares `node >=22`. Run commands from the repository root:
+Use Node.js >=26.4.0 with npm. `.nvmrc` selects Node 26. Development and the published package share this minimum. CI checks both 26.4.0 and the latest Node 26. Run commands from the repository root:
 
 ```sh
 npm ci --ignore-scripts
@@ -49,7 +49,7 @@ Focused checks are `smoke-v2-review.mjs` scenarios unless another file is named:
 | Review modes | `advisory`, `normal`, `fast` |
 | Steering rejection and steered notifications | `smoke-v2-steering.mjs` `normal-steering`, `fast-steering`, `normal-steering-cap` |
 | Steering follow-up context | `smoke-v2-steering.mjs` `normal-steering-follow-up` |
-| Retrieval | `normal-retrieval` (also the native `ask_context` clarification and Asking), `normal-large-source`, `normal-long-session` |
+| Retrieval | `normal-retrieval` (also the native `ask_context` clarification and Asking), `normal-retrieval-model` (separate endpoint, model and credentials), `normal-large-source`, `normal-long-session` |
 | Skills | `normal-skill`, `fast-skill` |
 | Registered tools and Code Mode | `normal-tool`, `fast-tool`, `normal-code-mode-tool`, `fast-code-mode-tool` |
 | Edits and directories | `normal-edit`, `normal-directory-edit` |
@@ -66,12 +66,12 @@ Focused checks are `smoke-v2-review.mjs` scenarios unless another file is named:
 ## Configuration and package
 
 - The package and plugin ID is `opencode-reviewer`. The exports `.`, `./server` and `./tui` all point to `dist/tui.js`. `src/plugin.ts` selects the role. The CLI role applies when the context has `ui`. Otherwise the role is the server companion.
-- Users list the package in both global config files:
-  - `opencode.json` loads the server companion. That entry takes no options and ignores any. Permission rules, providers and MCP servers also live in this file.
-  - `cli.json` loads the terminal role. Every reviewer option and `keybinds` go in this entry. `cli-plugin.ts` parses `context.options` and rejects unknown keys.
-  - Without the `cli.json` entry nothing is reviewed. Without the `opencode.json` entry the companion handshake fails.
+- Users list the package and all reviewer options once in global `opencode.json`. Permission rules, providers and MCP servers also live there.
+  - Native OpenCode discovery loads the terminal role, but does not forward server options. The scoped `configuration` RPC returns the companion's setup options and handshake together. Options never enter evidence or the regular handshake.
+  - Empty terminal `context.options` inherits these settings. Existing nonempty options in a `cli.json` reviewer entry remain a complete override. Native `keybinds` and other terminal preferences stay at the top level of `cli.json`.
+  - `cli-configuration.ts` parses options and owns prompt reads. New locations and companion epochs load their own settings. Ordinary health probes do not reread prompts. Invalid settings never enable review.
 - Defaults and validation live in `src/config.ts`. Notification options live in `notification-config.ts`. All `review*` categories and `retrievalClarification` default on. `retrievalKinds.edit`, `autoApprove`, `autoRejectSteering`, `fastMode` and `stream` default off. `maxSteeringRejections` defaults to 1.
-- Source or built-in prompt changes need a build and a host restart. Config or custom prompt changes need a restart.
+- Source or built-in prompt changes need a build and a host restart. OpenCode reloads config edits automatically. Custom prompt-file changes need a plugin reload.
 - The archive holds exactly five files: `dist/tui.js`, `package.json`, `README.md`, `LICENSE` and `THIRD_PARTY_NOTICES.md`. `files` lists three. npm adds the other two. `dist/` is generated and ignored. `npm pack` rebuilds through `prepack`. Verified CI packing uses `--ignore-scripts`.
 - Development dependencies use V2 ranges for `@opencode/plugin`, `@opencode/client` and `@opencode/theme`. Pin OpenTUI and Solid to the host's exact versions. Keep the lockfile. Refresh OpenCode dependencies to the latest stable V2 when developing.
 - Never gate activation, companion admission or evidence reads on host version numbers. Keep protocol, location, epoch, evidence and eligibility checks. Incompatible API data stays manual and is never guessed.
@@ -92,8 +92,8 @@ Focused checks are `smoke-v2-review.mjs` scenarios unless another file is named:
 Roles and connection:
 
 - `plugin.ts`: shared entry and role selection. Its `with*` exports are fixture and embedding seams, never options.
-- `companion.ts`: server role. Captures invocations through hooks (`invocation-capture.ts`) and serves the handshake, invocation, evidence and `retrieve` RPCs. `companion-protocol.ts` defines the schema (protocol 2). `companion-read.ts` wraps reads.
-- `cli-plugin.ts`: CLI setup. Parses options, loads prompts, waits for the connection marker and runs the first handshake (`companion-handshake.ts`).
+- `companion.ts`: server role. Captures invocations through hooks (`invocation-capture.ts`) and serves the handshake, configuration, invocation, evidence and `retrieve` RPCs. `companion-protocol.ts` defines the schema (protocol 2). `companion-read.ts` wraps reads.
+- `cli-plugin.ts`: CLI setup. Waits for the connection marker and runs the first handshake or configuration RPC (`companion-handshake.ts`). `cli-configuration.ts` parses explicit or inherited options and loads prompts before admission.
 - `cli-reconnect.ts`: owns the connection after startup and one `LocationAdmission` per review location. `setupHostRecovery` in `host-runtime.tsx` wraps it. `connection-marker.ts` handles the delayed echo of the startup marker.
 - `host-locations.ts`: the review location set (current host location, then each open tab's session location, at most `MAX_REVIEW_LOCATIONS`) and route ownership.
 - `host-runtime.tsx`: connects the controller to native queues, slots, polling and approval gates.
@@ -154,6 +154,7 @@ Mandatory evidence must be exact. Otherwise the review shows Analysis unavailabl
 
 Only the agentic retrieval loop chooses files. Never parse commands to pick files. Keep this code short and simple.
 
+- `retrievalBaseURL` and `retrievalModel` optionally override the verdict connection. Credentials inherit as a pair only at the same normalized endpoint and only when neither `retrievalApiKey` nor `retrievalApiKeyEnv` is supplied. An explicit retrieval credential replaces the pair. Missing retrieval environment credentials produce a factual retrieval limitation and no retrieval POST. Disabled or unavailable retrieval never resolves them. Pricing and OpenRouter caching follow each stage's own endpoint and model. `ask_context` still uses the root conversation's model.
 - `retrieval.ts` runs in the CLI before every enabled verdict. It uses non-streaming tool calls with fixed byte-stable definitions: `read`, `list`, `glob`, `grep` and `finish`, plus `ask_context` before `finish` when clarification is offered. It runs up to `maxRetrievalRounds` rounds. Calls past ten in one round get a `not-executed` error result. A forced `finish` turn (`tool_choice`) follows the last round or a round without tool calls. All of it runs within `retrievalTimeoutMs` and the shared deadline.
 - Invalid individual calls return error results to the model. A malformed `tool_calls` envelope ends retrieval.
 - Model-requested inspection reads default to 100 lines, and list/glob/grep to 50 entries or matches. Apply defaults at CLI dispatch, retaining original arguments in the trace. Explicit larger limits remain available within existing byte bounds and the 500-entry search/list bound. Backend reads without a limit retain whole-file semantics.
@@ -179,7 +180,7 @@ Only the agentic retrieval loop chooses files. Never parse commands to pick file
 ## Connection lifecycle
 
 - Startup reads the public client's `server.connected` marker before the first companion RPC. Ignore the native bridge's delayed echo only for that exact event ID. A different marker fences startup and permanently revokes an active generation.
-- Startup and reconnect handshakes each get a 10-second budget with 1.5-second attempts and 250 ms backoff. They retry only timeouts, `rpc.unavailable` and recognized transient transport failures, and only with a valid configuration. Settle physical work before each retry. Invalid replies stay manual. Without a companion, history, statistics and notification-only fallback still run.
+- Startup and reconnect handshakes each get a 10-second budget with 1.5-second attempts and 250 ms backoff. They retry only timeouts, `rpc.unavailable` and recognized transient transport failures, with valid settings or while initially fetching inherited settings. Known invalid settings get one attempt. Settle physical work before each retry. Invalid replies stay manual. Without a companion, history, statistics and notification-only fallback still run with any already accepted settings for that location.
 - Every review location holds its own scope-pinned composition: the current host location (`context.location`, which follows the focused conversation) and the session location of every open tab, deduplicated and bounded by `MAX_REVIEW_LOCATIONS`. Tabs past the bound stay manual. Each location admits, retires, drains and stays manual independently on the shared connection. Focus changes retire nothing. A location leaves the set only when no open tab needs it and it is not current, and then its continuity is checkpointed by location value. Never key a composition by the active tab.
 - A composition's `context.location` is pinned to its own location. Read locations through `host-locations.ts`, never `context.location` directly outside a composition.
 - Choose the runtime or the fallback once per connection and location. Never promote the fallback on a duplicate marker or revive an old generation.
@@ -250,6 +251,6 @@ Observer, accounting and persistence failures never change review or approval. D
 - Provenance is signed in a time-limited child with pinned npm and Sigstore. `runDetails.metadata.invocationId` names the signing attempt. The workflow-policy source is the first resolved dependency. The release tag and commit are a separate input. Signing errors expose only fixed stages, allowlisted codes and HTTP status numbers. Keep signing bundles outside the artifact directory and TUF's `XDG_DATA_HOME` in the private job cache. Never use trigger identity as a substitute or fall back to unsigned publication.
 - Provenance requires the `mightykatun/opencode-reviewer` repository and a GitHub-hosted runner.
 - The GitHub release with the verified archive is created before npm publication. Uploads never retry. Only npm's structured HTTP 422 provenance rejection fails at once. Other failures are verified read-only within the wait budget, which must stay below the publish job timeout. Existing versions verify immutable bytes without retagging. Channels follow SemVer in `scripts/npm-publication.mjs`. Never bypass archive verification or republish to fix a delay.
-- `ci.yml` is manual. It runs Node 22 and 24 and the `v2-acceptance` profile on the latest V2. Its result never gates or vetoes publication.
+- `ci.yml` is manual. It runs checks on Node 26.4.0 and the latest Node 26, and the `v2-acceptance` profile on the latest V2. Release validation and publication use Node 26. CI's result never gates or vetoes publication.
 - After workflow edits, run `bash scripts/lint-workflows.sh`, which downloads actionlint. Its only ignore covers actionlint's missing support for `queue: max`, which helper tests check separately. Keep actions pinned to verified commit SHAs.
 - Offline tests replace signing, crypto and network boundaries. They never request OIDC tokens or write transparency logs. After a build, run `node --test test/release-artifact-smoke.test.mjs`. With the npm version that `test/npm-cli-smoke.test.mjs` requires, run that test too. Neither publishes.

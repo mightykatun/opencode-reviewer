@@ -24,12 +24,8 @@ function createPlugin(dependencies: PluginDependencies = {}, observe?: PluginSet
       const lifecycle = new PluginLifecycle()
       await lifecycle.start(async () => {
         if ("ui" in context) {
-          // Keep terminal APIs lazy so this shared file can also load on servers.
-          const { Plugin } = await import("@opencode/plugin/tui")
-          await Plugin.define({ id: pluginID, setup: async cli => {
-            const state = await setupCli(cli, lifecycle, dependencies)
-            await observe?.({ role: "cli", state }, lifecycle)
-          } }).setup(context)
+          const state = await setupCli(context, lifecycle, dependencies)
+          await observe?.({ role: "cli", state }, lifecycle)
         } else {
           const state = await setupCompanion(context, lifecycle, dependencies.fileIO)
           await observe?.({ role: "server", state }, lifecycle)
@@ -37,7 +33,7 @@ function createPlugin(dependencies: PluginDependencies = {}, observe?: PluginSet
       })
       return () => lifecycle.stop()
     },
-  }
+  } satisfies ServerPlugin.Plugin & CliPlugin.Definition
 }
 
 export function withPluginSetup(observe: PluginSetupObserver) { return createPlugin({}, observe) }

@@ -9,9 +9,9 @@ import { AssessmentFormatError, StreamingAssessment } from "./streaming-assessme
 import { diagnosticAttempt, type DiagnosticObserver } from "./diagnostics.js"
 import { AssessmentStreamError, httpFailure, networkFailure, TransportRetries } from "./transport-retry.js"
 import { TransportOwnership, transportOwnership } from "./transport-ownership.js"
-import { abortable, cancelBody, readBody, responseText } from "./chat-transport.js"
+import { abortable, cancelBody, modelApiKey, readBody, responseText } from "./chat-transport.js"
 import type { HostReviewEvidence } from "./host-evidence.js"
-import { retrievalEnabled } from "./config.js"
+import { retrievalConnection, retrievalEnabled } from "./config.js"
 import { retrieveDocuments, type RetrievalExecutor, type RetrievalSection } from "./retrieval.js"
 import type { ContextAsker } from "./clarification.js"
 import type { SteeringFollowUpEvidence } from "./steering-follow-up.js"
@@ -178,6 +178,7 @@ export interface ReviewerDependencies {
   environment?: NodeJS.ProcessEnv
   prompts?: PromptSet
   pricing?: PricingLookup
+  retrievalPricing?: PricingLookup
   onUsage?: (usage: Usage) => void
   onProgress?: (progress: ReviewProgress) => void
   onDiagnostics?: DiagnosticObserver
@@ -197,7 +198,7 @@ export async function review(
   config: Config,
   signal: AbortSignal,
   { fetcher = fetch, environment = process.env, prompts = BUILTIN_PROMPTS,
-    pricing, onUsage, onProgress, onDiagnostics, onRetry, sessionInstructions, observation = { review: randomUUID() }, retrieval, clarification,
+    pricing, retrievalPricing, onUsage, onProgress, onDiagnostics, onRetry, sessionInstructions, observation = { review: randomUUID() }, retrieval, clarification,
     steeringFollowUp }: ReviewerDependencies = {},
 ): Promise<ReviewResult> {
   // Production already shares a deadline with evidence collection. Direct
@@ -206,12 +207,11 @@ export async function review(
     let worker: Promise<ReviewResult> | undefined
     try {
       return await withDeadline(signal, config.timeoutMs, (bounded) =>
-        worker = review(evidence, config, bounded, { fetcher, environment, prompts, pricing, onUsage, onProgress, onDiagnostics, onRetry,
+        worker = review(evidence, config, bounded, { fetcher, environment, prompts, pricing, retrievalPricing, onUsage, onProgress, onDiagnostics, onRetry,
           sessionInstructions, observation, retrieval, clarification, steeringFollowUp }))
     } finally { await worker?.catch(() => {}) }
   }
-  const key = config.apiKey ?? (config.apiKeyEnv ? environment[config.apiKeyEnv]?.trim() : undefined)
-  if (config.apiKeyEnv && !key) throw new Error(`API key environment variable ${config.apiKeyEnv} is unset or empty`)
+  const key = modelApiKey(config, environment)
   const observe = (event: ReviewAttemptEvent) => {
     try { void Promise.resolve(observation.observe?.(event)).catch(() => {}) } catch {}
   }
@@ -225,7 +225,9 @@ export async function review(
     section = { status: "unavailable" }
     extra = ["Retrieval executor unavailable; no files were read."]
   } else {
-    const outcome = await retrieveDocuments(evidence, config, prompts, signal, { fetcher, ...(key ? { key } : {}), pricing, onUsage, onRetry, observe,
+    const connection = retrievalConnection(config)
+    const outcome = await retrieveDocuments(evidence, { ...config, ...connection }, prompts, signal, { fetcher, environment,
+      pricing: retrievalPricing ?? (connection.baseURL === config.baseURL ? pricing : undefined), onUsage, onRetry, observe,
       review: observation.review, executor: retrieval, ...(clarification ? { asker: clarification } : {}), progress: phase => {
         if (signal.aborted) return
         try { void Promise.resolve(onProgress?.({ attempt: 0, phase })).catch(() => {}) } catch {}

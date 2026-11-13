@@ -19,13 +19,18 @@ function handshakeDefinition() {
   const text = { type: "string", minLength: 1, maxLength: 16384 }
   const location = { type: "object", properties: { directory: text, workspaceID: text },
     required: ["directory"], additionalProperties: false }
-  return { id: "opencode-reviewer", methods: { handshake: {
+  const handshake = {
     input: location,
     output: { type: "object", properties: {
       protocol: { const: 2 }, hostVersion: text, epoch: { type: "string", format: "uuid" }, location,
       project: { type: "object", properties: { id: text, directory: text, canonical: text },
         required: ["id", "directory", "canonical"], additionalProperties: false },
     }, required: ["protocol", "hostVersion", "epoch", "location", "project"], additionalProperties: false },
+    errors: { scope: { type: "object", properties: {}, additionalProperties: false } },
+  }
+  return { id: "opencode-reviewer", methods: { handshake, configuration: {
+    input: location, output: { type: "object", properties: { handshake: handshake.output, options: { type: "object" } },
+      required: ["handshake", "options"], additionalProperties: false },
     errors: { scope: { type: "object", properties: {}, additionalProperties: false } },
   }, invocation: {
     input: { type: "object", properties: { location, epoch: text, sessionID: text, requestID: text },
@@ -162,13 +167,14 @@ async function observedSetup(ctx) {
       return definition => {
         assert.deepEqual(definition, handshakeDefinition())
         const rpc = target.rpc(definition)
-        return { ...rpc, handshake: async (...args) => {
+        const method = phase === "cold-startup" ? "configuration" : "handshake"
+        return { ...rpc, [method]: async (...args) => {
           if (phase === "cold-startup") {
             const attempt = { started: performance.now() - started, startup: result.readyCalls === undefined }
             const attempts = result.handshakes ??= []
             attempts.push(attempt)
             try {
-              const value = await rpc.handshake(...args)
+              const value = await rpc.configuration(...args)
               attempt.success = true
               return value
             } catch (error) {
@@ -277,8 +283,12 @@ async function observedSetup(ctx) {
       if (phase === "cold-startup") {
         const attempts = result.handshakes.filter(attempt => attempt.startup)
         assert.ok(ready.state.runtime?.controller, "Cold startup installs the production reviewer")
-        assert.equal(attempts.length, 1, "Initial connection must not cancel a premature RPC")
-        assert.equal(attempts[0].success, true)
+         assert.equal(attempts.filter(attempt => attempt.success).length, 1, "Exactly one successful startup admission")
+         assert.equal(attempts.at(-1).success, true)
+         for (const attempt of attempts) {
+           assert.equal(attempt.aborted, false, "Initial connection must not cancel a premature RPC")
+           if (!attempt.success) assert.equal(attempt.error.type, "rpc.unavailable", "Only not-yet-loaded companion discovery may precede admission")
+         }
       }
       const { TextRenderable } = await import("@opentui/core")
       const { onCleanup } = await import("solid-js")
@@ -485,7 +495,7 @@ try {
   const serverPath = path.join(project, "opencode.json")
   await publish(controlPath, control)
   await publish(serverPath, serverConfig([{ package: target, options }]))
-  await publish(cliPath, cliConfig([{ package: scenario === "cold-startup" ? wrapper : target, options }, monitor]))
+  await publish(cliPath, cliConfig([...(scenario === "cold-startup" ? [wrapper] : []), monitor]))
   await publish(path.join(artifacts, "setup.json"), { version, temp, archive, manifest, fixture,
     socket: runtime.socket, supervisorPID: runtime.supervisorPID })
   await runtime.start("-d", "-s", "v2-lifecycle", "-x", "160", "-y", "40", "-c", project, host, "--standalone", project)
@@ -511,13 +521,15 @@ try {
       return value?.setupReturned && value.publicConnection && value
     })
     assert.equal(cold.state.connectionID, cold.publicConnection.id, "Startup admits the independently observed actual public marker")
+    assert.equal(cold.state.inheritOptions, true, "Auto-loaded TUI reads options from its scoped server companion")
+    assert.equal(cold.state.config.model, "lifecycle-sentinel")
     await window()
     cold = await records("cli", "cold-startup")
     assert.deepEqual(cold.errors, [])
     for (const echo of cold.connections ?? []) assert.equal(echo.id, cold.state.connectionID,
       "Any native connection echo delivered during setup is the same admitted marker")
     const log = await readFile(path.join(env.XDG_DATA_HOME, "opencode/log/opencode.log"), "utf8")
-    assert.equal(log.split("\n").some(line => line.includes("http.url=/api/rpc/opencode-reviewer/handshake")
+    assert.equal(log.split("\n").some(line => line.includes("http.url=/api/rpc/opencode-reviewer/configuration")
       && line.includes("http.status=499")), false, "Cold startup must not cancel an early handshake")
     // Subsequent lifecycle controls still exercise the normal custom prompts.
     options.instructions = promptDirectory
@@ -609,7 +621,12 @@ try {
     assert.equal(record.schemaMatched, true)
     assert.deepEqual(record.errors, [])
     if (phase !== "partial-failure") {
-      const status = await command("status")
+      // Setup completion precedes publication of the host's new RPC registry.
+      // Observe that public boundary before asserting the generation identity.
+      const status = await until("published server RPC " + phase, async () => {
+        const value = await command("status")
+        return value.handshake && value
+      })
       assert.equal(status.handshake.epoch, record.state.epoch)
       assert.ok(!epochs.includes(status.handshake.epoch), "Reload acquires a fresh server epoch")
       epochs.push(status.handshake.epoch)
@@ -629,7 +646,7 @@ try {
   await until("monitor cleanup", async () => (await readMonitor())?.cleaned)
   await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, cold, archiveFiles, installations, epochs,
     cycles, registryRequests, network,
-    assertions: ["Actual repository npm archive with unchanged five files and shared exports", "Default package configured in server and global CLI before embedding controls",
+     assertions: ["Actual repository npm archive with unchanged five files and shared exports", "Default package loads both roles from one server config entry before embedding controls",
       ...(cold ? ["Real initial client/native marker identity admits one successful startup handshake without HTTP 499"] : []),
       "Public scoped protocol-1 handshake and exact archived RPC schema", "Production CLI option parsing and rejected user-config dependency key",
       "Three CLI disable/reload cycles retain server epoch", "Owned real slot/listener/timer cleanup after abort, repeated cleanup and partial setup failure",

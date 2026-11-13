@@ -172,7 +172,7 @@ test("V2 archives retain five files and require the current engine contract and 
     assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, exports } })))
   for (const target of [undefined, "1.18.35", "2.0.26", "2.0.28", ">=2.0.26", "^2.0.26", "2.0.26 || 2.0.28", "2.0.27-beta.1"])
     assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, engines: { ...pkg.engines, opencode: target } } })), /API generation/)
-  for (const target of [undefined, ">=20", "22.22.2", ">=24"])
+  for (const target of [undefined, ">=20", ">=22", "22.22.2", ">=24", ">=26", ">=26.3.0"])
     assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, engines: { ...pkg.engines, node: target } } })), /Node runtime engine/)
 })
 

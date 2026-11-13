@@ -9,7 +9,7 @@ import { runtimeInventory } from "../scripts/runtime-inventory.mjs"
 
 const read = async (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8")
 
-test("extended host checks are explicitly manual, read-only, and use maintained Node majors and the latest stable V2", async () => {
+test("extended host checks are explicitly manual, read-only, and use the Node floor, latest Node 26 and latest stable V2", async () => {
   const workflow = await read(".github/workflows/ci.yml")
   assert.match(workflow, /^name: Extended host checks\n/)
   assert.match(workflow, /\non:\n  workflow_dispatch:\n/)
@@ -17,7 +17,7 @@ test("extended host checks are explicitly manual, read-only, and use maintained 
   assert.match(workflow, /\npermissions:\n  contents: read\n/)
   assert.doesNotMatch(workflow, /pull_request_target|contents: write|id-token:|secrets\.|GH_TOKEN|NODE_AUTH_TOKEN|npm publish/)
   assert.match(workflow, /persist-credentials: false/)
-  assert.match(workflow, /node: \["22", "24"\]/)
+  assert.match(workflow, /node: \["26\.4\.0", "26"\]/)
   assert.match(workflow, /node-version: \$\{\{ matrix\.node \}\}/)
   const pins = { checkout: "3d3c42e5aac5ba805825da76410c181273ba90b1", "setup-node": "949feb2413d6458794dcd2491c4babbbce0c15c1",
     "upload-artifact": "cf430e030ddbb5b0abf93d22962f4752f3646cd9" }
@@ -45,7 +45,9 @@ test("extended host checks are explicitly manual, read-only, and use maintained 
   assert.match(runtime, /path: \.runtime\//)
   assert.doesNotMatch(runtime, /matrix:|matrix\.host|2\.0\.26|2\.0\.27/)
   assert.match(runtime, /name: latest-v2-runtime/)
-  assert.match(runtime, /node-version: 24\n/)
+  assert.match(runtime, /node-version: 26\n/)
+  const release = await read(".github/workflows/release.yml")
+  assert.deepEqual([...release.matchAll(/node-version: (\S+)/g)].map(match => match[1]), ["26", "26"])
   assert.equal([...workflow.matchAll(/runs-on: ubuntu-24\.04/g)].length, 3)
   assert.doesNotMatch(workflow, /ubuntu-latest/)
   assert.match(check, /needs: workflows/)
@@ -69,9 +71,11 @@ test("normal checks aggregate every pure helper while keeping host and built-pac
   assert.equal(pkg.scripts["test:runtime-cleanup"], "node --test test/smoke-runtime.test.mjs")
   assert.equal(pkg.scripts["test:runtime"], "node scripts/test-runtime.mjs --profile v2-acceptance")
   assert.equal(pkg.scripts["test:runtime-permissions"], "node scripts/test-runtime.mjs --profile v2-permissions")
-  assert.equal(pkg.devEngines.runtime.version, "^22.22.2 || ^24.15.0")
+  assert.equal(pkg.devEngines.runtime.version, ">=26.4.0")
   assert.equal(pkg.devEngines.runtime.onFail, "error")
-  assert.equal(pkg.engines.node, ">=22", "development floors are independent of distributed runtime metadata")
+  assert.equal(pkg.engines.node, ">=26.4.0")
+  assert.equal((await read(".nvmrc")).trim(), "26")
+  assert.match(pkg.devDependencies["@types/node"], /^26\./)
   assert.equal(lock.packages[""].engines.node, pkg.engines.node)
   assert.ok(!Object.keys(pkg.devDependencies).some(name => name.startsWith("@opencode-ai/")))
   assert.equal(pkg.devDependencies["@opentui/keymap"], undefined, "no unused direct OpenTUI dependency")
@@ -81,7 +85,7 @@ test("normal checks aggregate every pure helper while keeping host and built-pac
     assert.match(lock.packages[`node_modules/${name}`].version, /^2\.\d+\.\d+$/)
   }
   assert.equal(lock.packages["node_modules/@opencode/client"].version, lock.packages["node_modules/@opencode/plugin"].version)
-  for (const name of ["@opentui/core", "@opentui/solid"]) assert.equal(pkg.devDependencies[name], "0.8.1")
+  for (const name of ["@opentui/core", "@opentui/solid"]) assert.equal(pkg.devDependencies[name], "0.8.4")
   assert.equal(pkg.devDependencies["solid-js"], "1.9.17")
   assert.equal(pkg.overrides.seroval, "1.6.12", "The patched serializer must also override peer-owned installations")
   const serializers = Object.entries(lock.packages).filter(([name]) => name === "node_modules/seroval" || name.endsWith("/node_modules/seroval"))
@@ -93,8 +97,7 @@ test("normal checks aggregate every pure helper while keeping host and built-pac
   assert.deepEqual([...inventory].sort(), pure, "the shared inventory must cover every current pure helper")
   for (const file of ["README.md", "AGENTS.md"]) {
     const docs = await read(file)
-    assert.match(docs, /24\.15\.0\+|>=24\.15\.0/)
-    assert.match(docs, /22\.22\.2\+|>=22\.22\.2/)
+    assert.match(docs, /26\.4\.0\+|>=26\.4\.0/)
     assert.match(docs, /npm run test:helpers/)
   }
 })

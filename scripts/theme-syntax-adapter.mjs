@@ -7,13 +7,13 @@ import path from "node:path"
 const fingerprints = {
   "index.js": "4f9360a53406c11a0c90ad684999ed6fb4a3c18c8ef7340c2f0d7744cad7f694",
   "schema.js": "d35764264d8de3b8c3a35cdec2750f07f2878525474b08ae59c07ca06d29c77a",
-  "syntax.js": "d31a110203ddfb4849440522951f82f02de1d5028f9a4174cfb45ee0a6e69358",
+  "syntax.js": "6b96cee07d0a806ecad0446687873e4d8843e60acf2fd0b004a8c9cc1ce434b2",
 }
 
 export function verifyThemeSyntaxInputs(manifest, digests) {
   if (manifest?.name !== "@opencode/theme" || !/^2\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(manifest.version)
     || manifest.exports?.["./tui"]?.import !== "./dist/tui/index.js"
-    || manifest.dependencies?.["@opentui/core"] !== "0.8.1"
+    || manifest.dependencies?.["@opentui/core"] !== "0.8.4"
     || manifest.dependencies?.effect !== "4.1.0") {
     throw new Error("Pinned theme package identity or public barrel changed")
   }
@@ -23,15 +23,6 @@ export function verifyThemeSyntaxInputs(manifest, digests) {
   for (const [file, digest] of Object.entries(fingerprints)) {
     if (digests[file] !== digest) throw new Error(`Pinned theme build input changed: ${file}`)
   }
-}
-
-export function adaptThemeSyntax(source) {
-  const signature = "export function generateSyntax(theme, owner) {"
-  const factory = "return SyntaxStyle.fromTheme(rules, owner);"
-  if (typeof source !== "string" || source.split(signature).length !== 2 || source.split(factory).length !== 2) {
-    throw new Error("Pinned theme syntax source changed")
-  }
-  return source
 }
 
 export const themeSyntaxOnlyPlugin = {
@@ -48,7 +39,7 @@ export const themeSyntaxOnlyPlugin = {
       ]))
       verifyThemeSyntaxInputs(manifest, digests)
       if (path.basename(target) === "syntax.js") {
-        return { contents: adaptThemeSyntax(sources["syntax.js"]), loader: "js" }
+        return { contents: sources["syntax.js"], loader: "js" }
       }
       // The public barrel eagerly initializes Effect schemas and theme parsers.
       // Replace only that barrel; reviewed syntax.js forwards the SyntaxStyle owner.

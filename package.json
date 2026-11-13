@@ -34,13 +34,13 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
-    "node": ">=22",
+    "node": ">=26.4.0",
     "opencode": ">=2.0.0 <3"
   },
   "devEngines": {
     "runtime": {
       "name": "node",
-      "version": "^22.22.2 || ^24.15.0",
+      "version": ">=26.4.0",
       "onFail": "error"
     }
   },
@@ -62,9 +62,9 @@
     "@opencode/client": "^2.0.0",
     "@opencode/plugin": "^2.0.0",
     "@opencode/theme": "^2.0.0",
-    "@opentui/core": "0.8.1",
-    "@opentui/solid": "0.8.1",
-    "@types/node": "24.12.2",
+    "@opentui/core": "0.8.4",
+    "@opentui/solid": "0.8.4",
+    "@types/node": "26.6.6",
     "babel-preset-solid": "1.9.16",
     "esbuild": "0.28.2",
     "mpg123-decoder": "1.0.3",

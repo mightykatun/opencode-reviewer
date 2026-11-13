@@ -79,16 +79,16 @@ const startupLocation = { directory: "/server/project", workspaceID: "workspace"
 const startupHandshake = () => ({ protocol: 2, hostVersion: "development", epoch: "10000000-1000-4000-8000-100000000000",
   location: { ...startupLocation }, project: { id: "project", directory: "/server", canonical: "/server" } })
 function startup(t: TestContext, handshake: (signal: AbortSignal, attempt: number) => Promise<unknown>, options = {},
-  event = connectedEvents as { subscribe(options: { signal: AbortSignal }): AsyncIterable<{ type: string; id?: string }> }) {
+  event = connectedEvents as { subscribe(options: { signal: AbortSignal }): AsyncIterable<{ type: string; id?: string }> }, inherit = false) {
   let now = 0, connected: ((event: { id: string }) => void) | undefined, removed = 0
   t.mock.method(performance, "now", () => now)
   t.mock.timers.enable({ apis: ["setTimeout"] })
   const life = new PluginLifecycle(), calls: { location: unknown; signal: AbortSignal }[] = []
-  const context = { location: startupLocation, options: { baseURL: "http://localhost:40999/v1", model: "reviewer", notify: true, ...options },
+  const context = { location: startupLocation, options: inherit ? {} : { baseURL: "http://localhost:40999/v1", model: "reviewer", notify: true, ...options },
     data: { on: (type: string, listener: (event: { id: string }) => void) => {
       assert.equal(type, "server.connected"); assert.equal(connected, undefined); connected = listener
       return () => { removed++; connected = undefined }
-    } }, client: { event, rpc: () => ({ handshake: (location: unknown, request: { signal: AbortSignal; location: unknown }) => {
+    } }, client: { event, rpc: () => ({ [inherit ? "configuration" : "handshake"]: (location: unknown, request: { signal: AbortSignal; location: unknown }) => {
       assert.deepEqual(request.location, startupLocation); calls.push({ location, signal: request.signal })
       return handshake(request.signal, calls.length)
     } }) } } as unknown as Plugin.Context
@@ -98,6 +98,105 @@ function startup(t: TestContext, handshake: (signal: AbortSignal, attempt: numbe
 }
 const untilAbort = (signal: AbortSignal) => new Promise<never>((_, reject) => {
   signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+})
+
+test("empty terminal options inherit scoped review and notification settings", async t => {
+  const options = { baseURL: "http://localhost:40999/v1", model: "inherited", autoApprove: true,
+    notify: true, notifySound: false, staleReminderSeconds: 17, notifications: { approved: { banner: false, sound: true } } }
+  const f = startup(t, async () => ({ handshake: startupHandshake(), options }), {}, connectedEvents, true)
+  try {
+    await f.advance()
+    const state = await f.pending
+    assert.equal(state.inheritOptions, true)
+    assert.deepEqual(state.companion, startupHandshake())
+    assert.equal(state.config?.model, "inherited")
+    assert.equal(state.config?.autoApprove, true)
+    assert.equal(state.notificationConfig?.notifySound, false)
+    assert.equal(state.notificationConfig?.staleReminderSeconds, 17)
+    assert.deepEqual(state.notificationConfig?.notifications.approved, { banner: false, sound: true })
+    assert.deepEqual(f.calls.map(call => call.location), [startupLocation])
+  } finally { await f.life.stop() }
+})
+
+test("nonempty terminal settings use handshake and completely override companion options", async () => {
+  const life = new PluginLifecycle()
+  let handshakes = 0, configurations = 0
+  const context = { location: startupLocation, options: { model: "terminal", baseURL: "http://localhost:40999/v1", notify: false },
+    data: { on: () => () => {} }, client: { event: connectedEvents, rpc: () => ({
+      handshake: async () => { handshakes++; return startupHandshake() },
+      configuration: async () => { configurations++; return { handshake: startupHandshake(), options: { model: "server", autoApprove: true } } },
+    }) } } as unknown as Plugin.Context
+  try {
+    const state = await setupCli(context, life, { adapterOnly: true })
+    assert.equal(handshakes, 1); assert.equal(configurations, 0)
+    assert.equal(state.inheritOptions, false)
+    assert.equal(state.config?.model, "terminal"); assert.equal(state.config?.autoApprove, false)
+    assert.equal(state.notificationConfig?.notify, false)
+    assert.deepEqual(state.companion, startupHandshake())
+  } finally { await life.stop() }
+})
+
+test("malformed or wrong-scope inherited configuration admits no settings", async t => {
+  const options = { model: "inherited", baseURL: "http://localhost:40999/v1", notify: true }
+  for (const response of [null, { handshake: startupHandshake() }, { handshake: startupHandshake(), options: [] },
+    { handshake: startupHandshake(), options, extra: true },
+    { handshake: { ...startupHandshake(), location: { ...startupLocation, workspaceID: "other" } }, options }]) {
+    const f = startup(t, async () => response, {}, connectedEvents, true)
+    try {
+      await f.advance()
+      const state = await f.pending
+      assert.equal(state.companion, undefined); assert.equal(state.config, undefined)
+      assert.equal(state.notificationConfig, undefined); assert.equal(state.configError, undefined)
+      assert.equal(f.calls.length, 1)
+    } finally { await f.life.stop(); t.mock.restoreAll(); t.mock.timers.reset() }
+  }
+})
+
+test("invalid inherited review settings preserve independently valid notifications", async t => {
+  const f = startup(t, async () => ({ handshake: startupHandshake(),
+    options: { model: "", notify: true, notifySound: false, staleReminderSeconds: 23 } }), {}, connectedEvents, true)
+  try {
+    await f.advance()
+    const state = await f.pending
+    assert.deepEqual(state.companion, startupHandshake())
+    assert.equal(state.config, undefined); assert.ok(state.configError)
+    assert.equal(state.notificationConfig?.notify, true)
+    assert.equal(state.notificationConfig?.notifySound, false)
+    assert.equal(state.notificationConfig?.staleReminderSeconds, 23)
+  } finally { await f.life.stop() }
+})
+
+test("replacement connection discards late inherited settings from the old connection", async t => {
+  let release!: (value: unknown) => void
+  const held = new Promise(resolve => { release = resolve })
+  const f = startup(t, (_signal, attempt) => attempt === 1 ? held : Promise.reject(Error("replacement unavailable")),
+    {}, connectedEvents, true)
+  try {
+    await f.advance(); f.connect()
+    assert.equal(f.calls[0]!.signal.aborted, true)
+    release({ handshake: startupHandshake(), options: { model: "old", baseURL: "http://localhost:40999/v1", notify: true } })
+    await f.advance(); await f.advance(250)
+    const state = await f.pending
+    assert.equal(state.companion, undefined); assert.equal(state.config, undefined)
+    assert.equal(state.notificationConfig, undefined); assert.equal(state.configError, undefined)
+    assert.equal(state.connectionID, "evt_reconnected"); assert.equal(f.calls.length, 2)
+  } finally { release(undefined); await f.life.stop() }
+})
+
+test("unload aborts inherited configuration and cannot admit its late response", async t => {
+  let release!: (value: unknown) => void
+  const held = new Promise(resolve => { release = resolve })
+  const f = startup(t, async () => held, {}, connectedEvents, true)
+  try {
+    const rejected = assert.rejects(f.pending, error => error === f.life.signal.reason)
+    await f.advance()
+    const stopping = f.life.stop()
+    await rejected
+    assert.equal(f.calls[0]!.signal.aborted, true)
+    release({ handshake: startupHandshake(), options: { model: "late", notify: true } })
+    await stopping
+    assert.equal(f.calls.length, 1)
+  } finally { release(undefined); await f.life.stop() }
 })
 
 test("startup waits for the real initial connection before dispatching its first handshake", async t => {
