@@ -12,6 +12,9 @@ import type { HistoryEvent, HistoryReview } from "../src/history-records.js"
 import { HistorySQL } from "../src/history-schema.js"
 import { HistoryRefresh } from "../src/history-refresh.js"
 import { privateDatabase } from "../src/history-storage-worker.js"
+import type { HistoryTotals } from "../src/history-schema.js"
+import { empty } from "../src/lifetime.js"
+import { build } from "esbuild"
 
 const context: HistoryReview = { scope: "/project", root: "root", session: "root", permission: "permission", review: "review",
   category: "bash", configuredModel: "model", provider: "https://example.com/v1" }
@@ -127,6 +130,54 @@ test("invalid initialization retries after exactly two seconds and retains new a
   assert.equal(store.pendingOperations, 0); assert.equal(store.retainedBytes, 0)
   assert.equal(store.admit(event), true); await turn()
   assert.deepEqual(applied.map(message => message.sequence), [1, 2, 3])
+})
+
+test("a real worker read waits within its deadline while another connection briefly holds the write lock", async t => {
+  const directory = mkdtempSync(path.join(tmpdir(), "history-open-busy-"))
+  const file = path.join(directory, "opencode-reviewer/history-v1.sqlite")
+  privateDatabase(file)
+  new HistorySQL(new DatabaseSync(file)).close()
+  const source = (await build({ entryPoints: ["src/history-storage-worker.ts"], bundle: true, write: false,
+    platform: "node", format: "cjs", external: ["bun:sqlite", "node:sqlite"] })).outputFiles[0]!.text
+  const lock = new DatabaseSync(file), store = new HistoryStore(directory, { source, adapter: "node" })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  t.after(async () => { clearTimeout(timer); await store.dispose(); lock.close(); rmSync(directory, { recursive: true, force: true }) })
+  // Longer than SQLite's 250 ms busy wait, well inside the 3 s read deadline.
+  lock.exec("BEGIN IMMEDIATE")
+  let released = false
+  timer = setTimeout(() => { lock.exec("ROLLBACK"); released = true }, 700)
+  const result = await store.query({ type: "totals" }) as HistoryTotals
+  assert.equal(released, true, "The read completed only after the competing lock was released")
+  assert.deepEqual(result.totals, empty())
+})
+
+test("a write lock held past the read deadline still ends the read at its existing timeout", async t => {
+  const directory = mkdtempSync(path.join(tmpdir(), "history-open-held-"))
+  const file = path.join(directory, "opencode-reviewer/history-v1.sqlite")
+  privateDatabase(file)
+  new HistorySQL(new DatabaseSync(file)).close()
+  const source = (await build({ entryPoints: ["src/history-storage-worker.ts"], bundle: true, write: false,
+    platform: "node", format: "cjs", external: ["bun:sqlite", "node:sqlite"] })).outputFiles[0]!.text
+  const lock = new DatabaseSync(file), store = new HistoryStore(directory, { source, adapter: "node" })
+  t.after(async () => { await store.dispose(); lock.close(); rmSync(directory, { recursive: true, force: true }) })
+  lock.exec("BEGIN IMMEDIATE")
+  const started = performance.now(), read = store.query({ type: "totals" })
+  await assert.rejects(read, /History read timeout/)
+  assert.ok(performance.now() - started >= 2900)
+  lock.exec("ROLLBACK")
+  await read.settled
+  assert.deepEqual((await store.query({ type: "totals" }) as HistoryTotals).totals, empty())
+})
+
+test("a worker open that fails for any other reason still rejects the read immediately", async t => {
+  let opens = 0
+  const store = new HistoryStore("/state", { transport: () => ({ async call(message) {
+    if (message.type === "open") { opens++; throw new Error("History initialization unavailable") }
+    return {}
+  }, async terminate() {} }) })
+  t.after(() => store.dispose(performance.now() - 3500))
+  await assert.rejects(store.query({ type: "totals" }), /History initialization unavailable/)
+  assert.equal(opens, 1)
 })
 
 test("invalid admitted apply permanently retains the FIFO and rejects new admissions", async t => {

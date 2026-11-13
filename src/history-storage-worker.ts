@@ -3,6 +3,7 @@ import { HistorySQL } from "./history-schema.js"
 import type { HistoryDatabase } from "./history-schema.js"
 import { HistoryInvalid } from "./history-records.js"
 import { privateDatabase } from "./history-private-path.js"
+import { sqliteBusy } from "./history-sqlite-init.js"
 export { privateDatabase } from "./history-private-path.js"
 
 export function openHistoryDatabase(file: string, adapter: "node" | "bun", construct?: (file: string) => HistoryDatabase): HistorySQL {
@@ -35,7 +36,8 @@ if (parentPort) {
       parentPort!.postMessage({ id: message.id, value })
     } catch (error) {
       // Fixed diagnostics only. Never reflect database contents/report text.
-      parentPort!.postMessage({ id: message.id, error: message.type === "open" ? "initialization" : error instanceof HistoryInvalid ? "invalid" : "storage" })
+      parentPort!.postMessage({ id: message.id, error: message.type === "open" ? sqliteBusy(error) ? "busy" : "initialization"
+        : error instanceof HistoryInvalid ? "invalid" : "storage" })
     }
   })
 }

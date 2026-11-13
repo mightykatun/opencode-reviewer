@@ -2,6 +2,13 @@ import type { HistoryDatabase } from "./history-schema.js"
 
 const pause = new Int32Array(new SharedArrayBuffer(4))
 
+/** SQLITE_BUSY and its extended codes from either public adapter, never LOCKED. */
+export function sqliteBusy(error: unknown): boolean {
+  const value = error as { code?: unknown; errcode?: unknown } | null
+  return !!value && (value.code === "SQLITE_BUSY" || (value.code === "ERR_SQLITE_ERROR"
+    && typeof value.errcode === "number" && Number.isInteger(value.errcode) && value.errcode >= 0 && (value.errcode & 255) === 5))
+}
+
 /** WAL negotiation can return BUSY without invoking SQLite's busy handler.
  * Retry only those connection-local, idempotent settings, sharing the original
  * 250 ms wait budget rather than resetting it for each competing initializer.
@@ -17,9 +24,7 @@ export function initializeHistoryPragmas(db: HistoryDatabase): void {
         db.exec(`PRAGMA busy_timeout=${remaining}; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=256`)
         return
       } catch (error) {
-        const value = error as { code?: unknown; errcode?: unknown } | null
-        if (!value || (value.code !== "SQLITE_BUSY" && !(value.code === "ERR_SQLITE_ERROR"
-          && typeof value.errcode === "number" && Number.isInteger(value.errcode) && value.errcode >= 0 && (value.errcode & 255) === 5))) throw error
+        if (!sqliteBusy(error)) throw error
         busy = error
         const left = end - performance.now()
         if (left <= 0) throw error

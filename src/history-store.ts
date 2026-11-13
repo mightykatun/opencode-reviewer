@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { Worker } from "node:worker_threads"
-import { encodeEvent, HISTORY_OPERATION_OVERHEAD, HISTORY_QUEUE_BYTES, HISTORY_RETRY_MS, HistoryInvalid, rootID, snapshotQuery } from "./history-records.js"
+import { encodeEvent, HISTORY_OPERATION_OVERHEAD, HISTORY_QUEUE_BYTES, HISTORY_RETRY_MS, HistoryBusy, HistoryInvalid, rootID, snapshotQuery } from "./history-records.js"
 import type { HistoryEvent, HistoryQuery } from "./history-records.js"
 import type { HistoryResult } from "./history-schema.js"
 
@@ -32,6 +32,7 @@ export class HistoryWorker implements HistoryTransport {
       if (message.id !== this.pending?.id) return
       const pending = this.pending!; this.pending = undefined
       if (message.error) pending.reject(message.error === "invalid" ? new HistoryInvalid("Invalid history operation")
+        : message.error === "busy" ? new HistoryBusy("History initialization busy")
         : new Error(message.error === "initialization" ? "History initialization unavailable" : "History storage unavailable"))
       else pending.resolve(message.value)
     })
@@ -209,7 +210,11 @@ export class HistoryStore {
         this.queue.shift(); this.bytes -= item.bytes; this.retryAt = 0; this.writeFailed = false; this.preferRead = true; this.notify(this.commits)
       }
     } catch (error) {
-      if (cleanup) this.cleanupNeeded = true // Cleanup failure cannot poison event replay/accounting.
+      // Another connection's commit or checkpoint briefly held the lock while
+      // opening. The read was never attempted, so it waits again within its own
+      // deadline. Each attempt already spends SQLite's 250 ms busy wait.
+      if (read && !this.opened && error instanceof HistoryBusy) { if (!read.finished) this.reads.unshift(read) }
+      else if (cleanup) this.cleanupNeeded = true // Cleanup failure cannot poison event replay/accounting.
       else if (read) read.reject(error as Error)
       else if (bootstrap && this.queue[0]?.root !== bootstrap) {
         this.bootstraps.delete(bootstrap)

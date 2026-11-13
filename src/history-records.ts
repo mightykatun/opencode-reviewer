@@ -34,6 +34,8 @@ export const HISTORY_RECORD_BYTES = {
       timedReviews: numberBytes, meanFullReportMs: numberBytes, meanRatingMs: numberBytes, since: numberBytes }) }),
 } as const
 export class HistoryInvalid extends Error {}
+/** Opening found another connection holding SQLite's lock. Nothing was attempted. */
+export class HistoryBusy extends Error {}
 export interface HistoryScope { scope: string; root: string; session: string }
 export interface HistoryReview extends HistoryScope {
   permission: string; review: string; category: "bash" | "edit" | "mcp" | "custom" | "external_directory" | "skill" | "registered-tool" | "tool"
