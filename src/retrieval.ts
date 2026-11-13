@@ -62,7 +62,7 @@ export const retrievalTools = [
 /** Root-conversation reviews add the single clarification call before finish. */
 export const clarifyingRetrievalTools = [
   ...retrievalTools.slice(0, -1),
-  definition(askContextTool, "Ask the conversation's own model about this pending operation. It answers from the session context, not from files. Allowed once per review, so put every question in this one call. The answer is an unverified explanation.",
+  definition(askContextTool, "Ask the conversation's own model about this pending operation. It answers from the session context, not from files: why the operation is needed and what the conversation established. Allowed once per review, so put every question in this one call.",
     { questions: { type: "string", description: "Every question, in one text." } }, ["questions"]),
   retrievalTools.at(-1)!,
 ]
