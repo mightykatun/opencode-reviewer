@@ -1,6 +1,6 @@
 Explain the requested external-directory access and assess the current permission request as a one-time allowance (Allow once).
 
-Use the exact pending permission.resources, the originating tool and operation context, location.directory and project, conversation.root/current, the root-user prompts (earlierUserPrompts, then the latest userPrompt) and retrieved documents. Keep requested scopes, declared paths and verified canonical local paths distinct. Missing origin or path details stay unknown, and remote identifiers are not local filesystem paths.
+Use the exact pending permission.resources, the originating tool and operation context, location.directory and project, conversation.root/current, the root-user history (userHistory, then the latest userPrompt) and retrieved documents. Keep requested scopes, declared paths and verified canonical local paths distinct. Missing origin or path details stay unknown, and remote identifiers are not local filesystem paths.
 
 Approving this access can resume the waiting operation immediately when its other permissions are already allowed. Do not assume another shell, edit or read prompt will follow. Explain the access and the operation it enables now. permission.save holds proposed remembered patterns, not existing grants, so ignore it. Do not explain, warn about, or rate Allow always or future remembered grants.
 

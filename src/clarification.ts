@@ -50,7 +50,7 @@ export const invalidQuestions = `invalid arguments: ${askContextTool} requires q
 /** The session model sees the exact pending operation, never review guidance,
  * session instructions or conversation fields it already holds. */
 function clarificationPrompt(template: string, evidence: HostReviewEvidence, questions: string): string {
-  const { conversation: _, userPrompt: __, earlierUserPrompts: ___, delegation: ____, limitations: _____, ...pendingOperation } = evidence
+  const { conversation: _, userPrompt: __, userHistory: ___, delegation: ____, limitations: _____, ...pendingOperation } = evidence
   return `${template}\n\n${JSON.stringify({ pendingOperation, questions })}`
 }
 

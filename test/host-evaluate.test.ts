@@ -58,10 +58,10 @@ test("native evaluation sends exact V2 evidence as data under the correct guidan
   const [system, user] = f.posts[0].messages
   assert.match(system.content, /permission\.action="edit"/)
   assert.match(system.content, /conversation\.root/)
-  assert.match(system.content, /earlierUserPrompts holds the same conversation's earlier root-user messages, oldest first/)
-  assert.match(system.content, /the latest prompt wins every conflict/)
+  assert.match(system.content, /userHistory is the same conversation's history, oldest first, as typed entries/)
+  assert.match(system.content, /the most recent statement wins every conflict/)
   const data = JSON.parse(user.content)
-  assert.deepEqual(data.earlierUserPrompts, [{ text: "Only touch files inside /server/project." }])
+  assert.deepEqual(data.userHistory, [{ type: "prompt", text: "Only touch files inside /server/project." }, { type: "latest-prompt" }])
   assert.equal(data.permission.action, "edit")
   assert.deepEqual(data.permission.resources, ["target.txt"])
   assert.deepEqual(data.permission.source, { assistantID: "assistant", id: "call" })

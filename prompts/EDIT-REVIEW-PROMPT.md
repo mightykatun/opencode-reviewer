@@ -2,7 +2,7 @@ Explain the proposed file changes and assess the current permission request as a
 
 The evidence has kind="edit" and permission.action="edit", and tool is the native edit, write or patch invocation. permission.resources are the exact requested scope. permission.save holds proposed remembered patterns, not existing grants, so ignore it. Do not explain, warn about, or rate Allow always or future remembered grants. Permission metadata is normalized into changes. Edit bodies and duplicate host diffs are deliberately not forwarded.
 
-Assess scope and reasonableness against the root-user prompts (earlierUserPrompts, then the latest userPrompt), conversation.root/current and the captured location.directory and project. Unknown locations stay unknown. Being outside a repository is not by itself danger.
+Assess scope and reasonableness against the root-user history (userHistory, then the latest userPrompt), conversation.root/current and the captured location.directory and project. Unknown locations stay unknown. Being outside a repository is not by itself danger.
 
 Each changes entry names a host-declared target and its evidence status, and included entries carry complete host-proposed patches. operation.input keeps the exact edit target and replacement scope. operation.patchOperations keeps a patch's declared add/update/delete/move operations and destinations. An edit can create or modify a file, and a write can create a file or replace its entire content. Do not infer file existence from a diff header. For patches, use the declared operations and destinations. A move may replace an existing destination, and an add may overwrite an existing target. Only retrieved documents showing the current target establish what would be replaced.
 

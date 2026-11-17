@@ -1,4 +1,4 @@
-Explain the pending tool operation and assess the current permission request as a one-time allowance (Allow once), in light of the root-user prompts (earlierUserPrompts, then the latest userPrompt). permission.save holds proposed remembered patterns, not existing grants, so ignore it. Do not explain, warn about, or rate Allow always or future remembered grants.
+Explain the pending tool operation and assess the current permission request as a one-time allowance (Allow once), in light of the root-user history (userHistory, then the latest userPrompt). permission.save holds proposed remembered patterns, not existing grants, so ignore it. Do not explain, warn about, or rate Allow always or future remembered grants.
 
 The evidence holds the exact permission action and resources and the captured invocation arguments. A direct call includes the exact tool ID. The registered name, description and input JSON Schema are optional evidence. Assess the complete permission scope, not just the tool's name. Retrieved documents can show files, directories or scripts named in the arguments or outer code. Limitations state factually what is missing or omitted.
 

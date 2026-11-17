@@ -1,7 +1,8 @@
 import type { OpenCodeClient, SessionInfo, SessionMessageUser } from "@opencode/client"
 import { remainingTime, withDeadline } from "./deadline.js"
+import { readQuestionHistory } from "./host-questions.js"
 import { transportOwnership } from "./transport-ownership.js"
-import { leadingLines, lineCount } from "./truncate.js"
+import { buildUserHistory, type UserHistoryEntry } from "./user-history.js"
 
 /** Bind this reader to the invocation's captured connection, never a mutable active client. */
 export interface HostContextReader {
@@ -11,30 +12,22 @@ export interface HostContextReader {
 
 export type HostContextScope = { sessionID: string; location: SessionInfo["location"] }
 export type HostContextSession = Pick<SessionInfo, "id" | "parentID" | "projectID" | "location">
-/** One earlier delivered root-user message. Text is exact (trimmed), an exact
- * leading-line prefix when truncated, or null with a factual reason. */
-export interface EarlierUserPrompt {
-  text: string | null
-  truncated?: { includedLines: number; omittedLines: number }
-  reason?: string
-}
 export interface HostConversationContext {
   current: HostContextSession
   root: HostContextSession
   userPrompt: string | null
-  /** Earlier delivered root-user messages, oldest first, excluding the latest. */
-  earlierUserPrompts: EarlierUserPrompt[]
+  /** Oldest first: earlier root-user prompts, the latest prompt's position and
+   * the question calls the user settled in the root conversation. */
+  userHistory: UserHistoryEntry[]
   rootMessageID?: string
   delegation?: { sessionID: string; parentSessionID: string; messageID: null; prompt: null }
   limitations: string[]
 }
 
 const latestBytes = 65536
-/** Page size, page count and byte budgets for earlier root-user prompts. */
+/** Page size and page count for delivered root-user messages. */
 const pageSize = 100
 const maxPages = 4
-const earlierBytes = 65536
-const earlierPromptBytes = 8192
 
 class InvalidHistory extends Error {}
 
@@ -72,35 +65,9 @@ async function deliveredUserPage(reader: HostContextReader, sessionID: string, c
   return { messages: result.data as SessionMessageUser[], ...(next && result.data.length ? { next } : {}) }
 }
 
-/** Newest-first earlier messages into an oldest-first, byte-bounded list. */
-function earlierPrompts(messages: SessionMessageUser[], limitations: string[]): EarlierUserPrompt[] {
-  const kept: EarlierUserPrompt[] = []
-  let remaining = earlierBytes, index = 0
-  for (; index < messages.length; index++) {
-    const text = messages[index]!.text.trim()
-    if (!text) { kept.push({ text: null, reason: "No nonempty text (empty or attachment-only message)." }); continue }
-    const size = Buffer.byteLength(text)
-    const cap = Math.min(earlierPromptBytes, remaining)
-    if (size <= cap) { kept.push({ text }); remaining -= size; continue }
-    const prefix = leadingLines(text, cap)
-    if (prefix.lines) {
-      kept.push({ text: prefix.text, truncated: { includedLines: prefix.lines, omittedLines: lineCount(text) - prefix.lines } })
-      remaining -= prefix.bytes
-    } else if (cap === earlierPromptBytes) {
-      kept.push({ text: null, reason: "Omitted whole: its first line exceeds the 8 KiB per-prompt limit." })
-    } else break
-  }
-  if (kept.some(prompt => prompt.truncated)) {
-    limitations.push("Some earlier root user prompts exceed the 8 KiB per-prompt or 64 KiB total limit; they keep exact leading lines with omitted line counts.")
-  }
-  if (index < messages.length) {
-    limitations.push(`The ${messages.length - index} oldest earlier root user prompts that were read are omitted because earlier prompts exceed the 64 KiB total limit.`)
-  }
-  return kept.reverse()
-}
-
-/** Read only public, session-scoped metadata and delivered root intent.
- * Scope/ancestry/history failures reject; optional prompt omissions are factual.
+/** Read only public, session-scoped metadata, delivered root intent and the
+ * question calls the user settled in the root conversation.
+ * Scope, ancestry and history failures reject. Optional prompt and question omissions are factual.
  * The existing deadline carries physical ownership through late client settlement.
  */
 export async function loadHostConversationContext(scope: HostContextScope, reader: HostContextReader, signal: AbortSignal): Promise<HostConversationContext> {
@@ -162,12 +129,16 @@ export async function loadHostConversationContext(scope: HostContextScope, reade
       userPrompt = message.text.trim() || null
       if (userPrompt === null) limitations.push("Latest delivered root user message has no nonempty text; no older prompt was substituted.")
     }
-    const earlierUserPrompts = earlierPrompts(older, limitations)
+    // Questions settled before the oldest prompt read belong to unread history.
+    const oldest = messages.at(-1)?.time?.created
+    const questions = await readQuestionHistory(reader, root.id, Number.isFinite(oldest) ? oldest : undefined, contextSignal)
+    const userHistory = buildUserHistory(message, older, questions.calls, limitations)
+    limitations.push(...questions.limitations)
     const delegation = current.parentID === undefined ? undefined
       : { sessionID: current.id, parentSessionID: current.parentID, messageID: null, prompt: null }
     if (delegation) limitations.push("Exact immediate subagent delegation is unavailable from the public V2 invocation linkage; delegation text is omitted.")
     contextSignal.throwIfAborted()
-    return { current, root, userPrompt, earlierUserPrompts, ...(message ? { rootMessageID: message.id } : {}),
+    return { current, root, userPrompt, userHistory, ...(message ? { rootMessageID: message.id } : {}),
       ...(delegation ? { delegation } : {}), limitations }
   }, "Conversation context lookup")
 }

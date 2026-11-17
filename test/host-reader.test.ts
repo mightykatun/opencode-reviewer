@@ -40,7 +40,10 @@ function fixture() {
       } },
       get: async () => { calls.push("session"); return { id: "session", projectID: "project", location: scope.location } },
     },
-    message: { list: async () => { calls.push("user"); return { data: [{ id: "user", type: "user", text: "Inspect the task" }], cursor: {} } } },
+    message: { list: async (input: { type?: string }) => {
+      calls.push(input.type === "assistant" ? "questions" : "user")
+      return { data: input.type === "assistant" ? [] : [{ id: "user", type: "user", text: "Inspect the task" }], cursor: {} }
+    } },
   }
   return { client: client as unknown as OpenCodeClient, rawClient: client, state, calls }
 }
@@ -51,7 +54,7 @@ test("reader joins actual source and root intent, then rechecks pending identity
   assert.equal(result?.invocation.input.command, "python3 task.py")
   assert.equal(result?.conversation.userPrompt, "Inspect the task")
   assert.equal(result?.conversation.rootMessageID, "user")
-  assert.deepEqual(f.calls, ["capture", "message", "session", "user", "permission", "handshake"])
+  assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "permission", "handshake"])
 })
 
 test("preparation owns capture binding and conversation, while explicit finalization performs only fresh identity and epoch checks", async () => {
@@ -60,9 +63,9 @@ test("preparation owns capture binding and conversation, while explicit finaliza
   assert.ok(prepared)
   assert.equal(prepared.snapshot, snapshot)
   assert.equal(prepared.conversation.userPrompt, "Inspect the task")
-  assert.deepEqual(f.calls, ["capture", "message", "session", "user"])
+  assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions"])
   assert.equal(await finalizePendingInvocation(f.client, prepared, abort.signal), prepared)
-  assert.deepEqual(f.calls, ["capture", "message", "session", "user", "permission", "handshake"])
+  assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "permission", "handshake"])
 })
 
 test("missing source and changed capture request cannot dispatch message/context lookups", async () => {
@@ -121,7 +124,7 @@ test("request previews and invocation arguments each receive their own 16 MiB RP
   const result = await readPendingInvocation(f.client, scope, pending, new AbortController().signal)
   assert.equal(result?.invocation.input.command, command)
   assert.deepEqual(result?.snapshot.request.metadata, pending.metadata)
-  assert.deepEqual(f.calls, ["capture", "message", "session", "user", "permission", "handshake"])
+  assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "permission", "handshake"])
 })
 
 test("invalid invocation envelope framing and over-cap components stop before source/context reads", async () => {
@@ -184,6 +187,6 @@ test("standalone final reads remain owned through cancellation and cannot yield 
     resolve(stage === "permission" ? f.state.current
       : { protocol: 2, epoch: scope.epoch, location: scope.location, project: invocation().project })
     await actual
-    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "permission", ...(stage === "handshake" ? ["handshake"] : [])])
+    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "permission", ...(stage === "handshake" ? ["handshake"] : [])])
   }
 })

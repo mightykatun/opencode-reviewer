@@ -59,7 +59,10 @@ async function fixture(pending = request, proposed: Record<string, string> = inp
     }),
     session: { get: async (...args: Parameters<typeof server.session.get>) => { calls.push("session"); return server.session.get(...args) },
       message: { get: async () => { calls.push("message"); return state.durable } } },
-    message: { list: async () => { calls.push("user"); return { data: [{ id: "user", type: "user", text: "Update target.txt" }], cursor: {} } } },
+    message: { list: async (input: { type?: string }) => {
+      calls.push(input.type === "assistant" ? "questions" : "user")
+      return { data: input.type === "assistant" ? [] : [{ id: "user", type: "user", text: "Update target.txt" }], cursor: {} }
+    } },
     permission: { get: async () => { calls.push("permission"); return state.current } },
   }
   return { lifecycle, client: client as unknown as OpenCodeClient, raw: client, queries, state, reads, calls, scope: { epoch: handshake.epoch, location } }
@@ -77,7 +80,7 @@ test("server evidence RPC receives only owned identity and collection options, t
     assert.deepEqual(Object.keys(f.queries[0]).sort(), ["epoch", "location", "options", "requestID", "sessionID", "timeoutMs"])
     assert.ok(f.queries[0].timeoutMs > 0 && f.queries[0].timeoutMs <= 5000)
     assert.deepEqual(f.queries[0].options, options)
-    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "evidence", "permission", "handshake"])
+    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "handshake"])
   } finally { await f.lifecycle.stop() }
 })
 
@@ -88,7 +91,7 @@ test("unbound or ambiguous durable calls dispatch no evidence RPC or filesystem 
   try {
     assert.equal((await readHostEvidence(bound.client, bound.scope, shell, options, new AbortController().signal))?.result.status, "ready")
     assert.ok(bound.reads.length > 0)
-    assert.deepEqual(bound.calls, ["capture", "message", "session", "user", "evidence", "permission", "handshake"])
+    assert.deepEqual(bound.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "handshake"])
   } finally { await bound.lifecycle.stop() }
   for (const change of ["missing", "duplicate", "nested", "input", "name", "status", "message"] as const) {
     const f = await fixture(shell, proposed, "shell")
@@ -134,7 +137,7 @@ test("full evidence transaction shares one outer signal and budget across captur
     assert.equal(signals.length, 4)
     assert.ok(signals.every(signal => signal === signals[0]))
     assert.ok(f.queries[0].timeoutMs > 0 && f.queries[0].timeoutMs <= 1000, "Collection must inherit the original enclosing deadline")
-    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "evidence", "permission", "handshake"])
+    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "handshake"])
   } finally { await f.lifecycle.stop() }
 })
 
@@ -143,11 +146,11 @@ test("disabled edits bypass evidence work and pending mutation after collection 
   try {
     const value = await readHostEvidence(f.client, f.scope, request, { ...options, reviewEdits: false }, new AbortController().signal)
     assert.equal(value?.result.status, "disabled")
-    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "evidence", "permission", "handshake"])
+    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "handshake"])
     f.calls.length = 0
     f.state.changeAfterCollection = true
     assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal), undefined)
-    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "evidence", "permission"])
+    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission"])
     assert.deepEqual(f.reads, [])
   } finally { await f.lifecycle.stop() }
 })
@@ -175,7 +178,7 @@ test("returned evidence cannot change mandatory source/targets or substitute a r
         } }
       }
       assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal), undefined, change)
-      assert.deepEqual(f.calls, ["capture", "message", "session", "user", "evidence"], change)
+      assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence"], change)
     } finally { await f.lifecycle.stop() }
   }
 })
@@ -222,7 +225,7 @@ test("evidence RPC admits a separately bounded result larger than 16 MiB without
     }
     const value = await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal)
     assert.deepEqual(value?.result, { status: "unsupported", reason })
-    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "evidence", "permission", "handshake"])
+    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "handshake"])
     f.state.changeAfterCollection = true
     assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal), undefined)
   } finally { await f.lifecycle.stop() }
@@ -248,7 +251,7 @@ test("evidence RPC rejects extra fields, accessors, proxies, over-cap components
         return { ...methods, evidence: async (...args: Parameters<typeof methods.evidence>) => change(await methods.evidence(...args)) }
       }
       assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal), undefined)
-      assert.deepEqual(f.calls, ["capture", "message", "session", "user", "evidence"])
+      assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence"])
     } finally { await f.lifecycle.stop() }
   }
   assert.equal(accessed, 0)
@@ -269,7 +272,7 @@ test("companion replacement or cancellation after collection prevents final evid
       const reading = readHostEvidence(f.client, f.scope, request, options, abort.signal)
       if (change === "epoch") assert.equal(await reading, undefined)
       else await assert.rejects(reading, /Stop collected evidence/)
-      assert.deepEqual(f.calls, ["capture", "message", "session", "user", "evidence", ...(change === "epoch" ? ["permission", "handshake"] : [])])
+      assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", ...(change === "epoch" ? ["permission", "handshake"] : [])])
     } finally { await f.lifecycle.stop() }
   }
 })
@@ -291,7 +294,7 @@ test("evidence contention regenerates its budget and retains invalid-data and co
       assert.equal(value?.result.status, change === "none" ? "ready" : undefined)
       assert.equal(timeouts.length, 2, "Invalid data and replaced companions are not retried")
       assert.ok(timeouts[0]! <= 1000 && timeouts[1]! > 0 && timeouts[1]! < timeouts[0]!)
-      assert.deepEqual(f.calls, ["capture", "message", "session", "user", "evidence",
+      assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence",
         ...(change === "invalid" ? [] : ["permission", "handshake"])])
     } finally { await f.lifecycle.stop() }
   }
@@ -331,7 +334,7 @@ test("cancellation during evidence or final reads retains actual RPC ownership a
       assert.equal(settled, false, stage)
       resolve()
       await actual
-      assert.deepEqual(f.calls, ["capture", "message", "session", "user", "evidence",
+      assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence",
         ...(stage !== "evidence" ? ["permission"] : []), ...(stage === "handshake" ? ["handshake"] : [])])
     } finally { resolve(); await ownership.settled(); await f.lifecycle.stop() }
   }

@@ -30,7 +30,7 @@ export function shellEvidence(overrides: Partial<HostShellEvidence> = {}): HostS
       source: { assistantID: "assistant", id: "call" }, metadataStatus: "Exact native request scope" },
     operation: { input: { command }, inputStatus: "Complete captured invocation arguments" },
     location, project: { id: "project", directory: cwd, canonical: cwd },
-    conversation: { current, root: current, rootMessageID: "user" }, earlierUserPrompts: [], userPrompt: "Show cwd",
+    conversation: { current, root: current, rootMessageID: "user" }, userHistory: [], userPrompt: "Show cwd",
     execution: { tool: "shell", requestedWorkdir: null, canonicalCwd: cwd, cwdSource: "invocation.location.directory" },
     ...overrides,
   }
@@ -69,7 +69,7 @@ export function nativeInvocation(tool: string, input: JSONObject, metadata?: JSO
     ...scope, project: { id: "project", directory, canonical: directory } })
   if (!snapshot || !invocation) throw Error("Invalid native test fixture")
   const current = { id: "root", projectID: "project", location: scope.location }
-  return { snapshot, invocation, conversation: { current, root: current, userPrompt: "Inspect the fixture", earlierUserPrompts: [], rootMessageID: "user", limitations: [] } }
+  return { snapshot, invocation, conversation: { current, root: current, userPrompt: "Inspect the fixture", userHistory: [], rootMessageID: "user", limitations: [] } }
 }
 
 type SessionGenerate = (input: { sessionID: string; prompt: string }, options: { signal: AbortSignal }) => Promise<{ text: string }>
@@ -98,6 +98,7 @@ export function nativeClient(owned: HostInvocationRead, files: FileAccess,
         { id: invocation.callID, type: "tool", name: invocation.tool, state: { status: "running", input: invocation.input } },
       ] }) },
     },
-    message: { list: async () => ({ data: [{ id: "user", type: "user", text: conversation.userPrompt ?? "" }], cursor: {} }) },
+    message: { list: async (input: { type?: string }) => ({ data: input.type === "assistant" ? []
+      : [{ id: "user", type: "user", text: conversation.userPrompt ?? "" }], cursor: {} }) },
   } as unknown as OpenCodeClient
 }

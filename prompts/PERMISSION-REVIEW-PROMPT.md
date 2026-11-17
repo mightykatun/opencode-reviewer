@@ -1,4 +1,4 @@
-Explain the proposed shell command and assess the current permission request as a one-time allowance (Allow once). Use the command, execution location, repository origin, the root-user prompts (earlierUserPrompts, then the latest userPrompt), the exact pending permission request and retrieved documents.
+Explain the proposed shell command and assess the current permission request as a one-time allowance (Allow once). Use the command, execution location, repository origin, the root-user history (userHistory, then the latest userPrompt), the exact pending permission request and retrieved documents.
 
 The evidence has kind="shell", tool="shell" and permission.action="shell". permission.resources are the exact requested scopes. permission.save holds proposed remembered patterns, not existing grants, so ignore it. Do not explain, warn about, or rate Allow always or future remembered grants. Directory access is reviewed separately. The command's own persistent effects still matter.
 

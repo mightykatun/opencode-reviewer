@@ -135,7 +135,7 @@ function owned(tool = "write", input: object = nativeInput, request: object = na
   assert.ok(invocation)
   const current = { id: invocation.sessionID, projectID: project.id, location }
   return { snapshot, invocation, conversation: { current, root: current,
-    userPrompt: "Run the isolated W3 evidence probe. Use w3-evidence only if requested by the fixture.", earlierUserPrompts: [], rootMessageID: "root-user", limitations: [] } }
+    userPrompt: "Run the isolated W3 evidence probe. Use w3-evidence only if requested by the fixture.", userHistory: [], rootMessageID: "root-user", limitations: [] } }
 }
 
 function shell(command: string, workdir?: string): HostInvocationRead {
@@ -480,13 +480,15 @@ test("root intent and factual unavailable immediate delegation survive evidence 
   value.conversation.current = { ...value.conversation.current, parentID: "parent" }
   value.conversation.root = { ...value.conversation.root, id: "root" }
   value.conversation.userPrompt = "Preserve this root request exactly."
-  value.conversation.earlierUserPrompts = [{ text: "Never touch production." }, { text: null, reason: "No nonempty text (empty or attachment-only message)." }]
+  value.conversation.userHistory = [{ type: "prompt", text: "Never touch production." },
+    { type: "questions", questions: [{ header: "Scope", question: "Touch staging?", options: ["Yes", "No"], answer: ["No"] }] },
+    { type: "prompt", text: null, reason: "No nonempty text (empty or attachment-only message)." }, { type: "latest-prompt" }]
   value.conversation.delegation = { sessionID: value.invocation.sessionID, parentSessionID: "parent", messageID: null, prompt: null }
   value.conversation.limitations = ["Exact immediate subagent delegation is unavailable from the public V2 invocation linkage; delegation text is omitted."]
   const evidence = await ready(value)
   assert.equal(evidence.userPrompt, "Preserve this root request exactly.")
-  assert.deepEqual(evidence.earlierUserPrompts, value.conversation.earlierUserPrompts)
-  assert.equal(Object.hasOwn(evidence.conversation, "earlierUserPrompts"), false)
+  assert.deepEqual(evidence.userHistory, value.conversation.userHistory)
+  assert.equal(Object.hasOwn(evidence.conversation, "userHistory"), false)
   assert.deepEqual(evidence.delegation, value.conversation.delegation)
   assert.equal(evidence.conversation.rootMessageID, "root-user")
   assert.ok(evidence.limitations.includes(value.conversation.limitations[0]!))

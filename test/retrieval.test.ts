@@ -289,7 +289,7 @@ test("a root review asks the conversation once, and the answer is selectable evi
   const sent = JSON.parse(payload)
   assert.equal(sent.questions, questions)
   assert.equal(sent.pendingOperation.command, "./run.sh")
-  for (const key of ["conversation", "userPrompt", "earlierUserPrompts", "delegation", "limitations"]) assert.equal(Object.hasOwn(sent.pendingOperation, key), false)
+  for (const key of ["conversation", "userPrompt", "userHistory", "delegation", "limitations"]) assert.equal(Object.hasOwn(sent.pendingOperation, key), false)
   assert.deepEqual(JSON.parse(h.bodies[1].messages[3].content),
     { id: "c1", tool: "ask_context", questions, status: "ok", content: "The user asked to clear build output." })
   assert.equal(JSON.parse(h.bodies[2].messages.at(-1).content).reason, "not executed: ask_context is allowed once per review")

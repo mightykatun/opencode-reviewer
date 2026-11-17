@@ -13,7 +13,7 @@ function evidence(kind: HostReviewEvidence["kind"], options: { session?: string;
   const current = { id: options.session ?? "session", projectID: "p", location: { directory: "/p" } }
   const root = { ...current, id: options.root ?? current.id }
   const base = { permission: { id: "x", sessionID: current.id, action: kind, resources: ["/outside"], metadataStatus: "" }, location: { directory: "/p" },
-    project: { id: "p", directory: "/p", canonical: "/p" }, limitations: [], userPrompt: null, earlierUserPrompts: [],
+    project: { id: "p", directory: "/p", canonical: "/p" }, limitations: [], userPrompt: null, userHistory: [],
     conversation: { current, root, ...(options.rootMessageID ? { rootMessageID: options.rootMessageID } : {}) } }
   if (kind === "shell") return { ...base, kind, tool: "shell", operation: { input: { command: "rm -rf build" }, inputStatus: "" }, command: "rm -rf build", cwd: "/p",
     execution: { tool: "shell", requestedWorkdir: null, canonicalCwd: "/p", cwdSource: "invocation.location.directory" } } as HostReviewEvidence
