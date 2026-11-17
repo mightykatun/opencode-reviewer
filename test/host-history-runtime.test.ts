@@ -90,7 +90,7 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
       project: { id: "project", directory: "/server", canonical: "/server" },
     } }
       : { config: config() }) }
-  const compose = (pluginState: CliPluginState) => setupCliReconnect(ctx, pluginState, life, { locations: () => [location],
+  const compose = (pluginState: CliPluginState) => setupCliReconnect(ctx, pluginState, life, { locations: () => [{ location, members: [] }],
     install: (context, state, child) => setupHostHistoryOnly(context, state, child, { transport: () => transport }) }).current()!
   return { life, ctx, state, compose, commands, layers, slots, renderer, sessions, wire, serverReads, unexpected, server,
     mode: (value: string) => { mode = value },

@@ -55,11 +55,11 @@ export function setupHostHistory(context: Plugin.Context, pluginState: CliPlugin
   // never its mode load gate. No session-mode files are read or written here.
   const ancestry = options.ancestry ?? new SessionAncestry(async (id, signal) => {
       signal.throwIfAborted()
-      // Native session.get is session-addressed, with no location input. Validate
-      // its public location afterward rather than inventing a request option.
+      // Native session.get is session-addressed, with no location input. A
+      // parent may live at another location. Callers decide root ownership.
       const session = await owned(client.session.get({ sessionID: id }, { signal }))
       signal.throwIfAborted()
-      if (session.id !== id || session.location.directory !== location.directory) throw Error("History session scope unavailable")
+      if (session.id !== id) throw Error("History session unavailable")
       return session
     })
   const root: AncestryReader = (id, parent) => {

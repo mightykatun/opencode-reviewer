@@ -105,7 +105,7 @@ test("session instructions selects one installed production host with the existi
 
 test("V2 acceptance includes each production review case exactly once and retains explicit synthetic classifications", () => {
   const cases = profilePlan("v2-acceptance")
-  assert.equal(cases.length, 58, "Includes separate retrieval models, Code Mode decisions, instructions, recovery, location tabs and steering")
+  assert.equal(cases.length, 59, "Includes separate retrieval models, Code Mode decisions, instructions, recovery, location tabs, steering and worktree subagents")
   assert.equal(cases.length, new Set(cases.map(value => value.id)).size)
   const reviews = cases.filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs")
   const expectedReviews = ["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "normal-retrieval", "normal-retrieval-model", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant",
@@ -117,6 +117,9 @@ test("V2 acceptance includes each production review case exactly once and retain
   const steering = cases.filter(value => value.entrypoint === "scripts/smoke-v2-steering.mjs")
   assert.deepEqual(steering.map(value => value.scenario).sort(), ["fast-steering", "normal-steering", "normal-steering-cap", "normal-steering-follow-up"])
   assert.ok(steering.every(value => value.classification === "production-host" && value.hosts === 1 && value.timeoutMs === 240000))
+  const worktree = cases.filter(value => value.entrypoint === "scripts/smoke-v2-worktree.mjs")
+  assert.deepEqual(worktree.map(value => value.scenario), ["normal-worktree-descendant"])
+  assert.ok(worktree.every(value => value.classification === "production-host" && value.hosts === 1 && value.requires.includes("bundle")))
   assert.ok(cases.every(value => value.hostMajor === 2 && value.hosts <= 2))
   assert.deepEqual(profilePlan("ci").map(value => value.id).sort(), cases.map(value => value.id).sort(),
     "The retained ci profile contains the exact manual acceptance selection")

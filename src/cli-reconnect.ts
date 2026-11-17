@@ -6,7 +6,7 @@ import { withDeadline } from "./deadline.js"
 import { TransportOwnership } from "./transport-ownership.js"
 import timers from "node:timers/promises"
 import { companionHandshake } from "./companion-handshake.js"
-import { hostLocation, locationKey, type ReviewLocation } from "./host-locations.js"
+import { hostLocation, locationKey, type ReviewHome, type ReviewLocation } from "./host-locations.js"
 import { readCliConfiguration, type CliConfiguration } from "./cli-configuration.js"
 import { BUILTIN_PROMPTS } from "./prompts.js"
 
@@ -16,10 +16,12 @@ type Client = Plugin.Context["client"]
 interface Connection { id: string; client: Client }
 
 export interface ReconnectOptions<T> {
-  /** Ordered, deduplicated and bounded locations that should hold a composition.
-   * The first is the current host location. Read again on every wake. */
-  locations(): readonly ReviewLocation[]
-  /** Build one scope-pinned composition for exactly this location. */
+  /** Ordered, deduplicated and bounded homes that should hold a composition,
+   * each with its member locations. The first is the current host location.
+   * Read again on every wake. */
+  locations(): readonly ReviewHome[]
+  /** Build one scope-pinned composition for exactly this home location. A
+   * reviewer state also carries the member handshakes admitted with it. */
   install(context: Plugin.Context, state: CliPluginState, life: PluginLifecycle, location: ReviewLocation): T
   /** Capture continuity before a composition is disposed. A failure stops admission for that location. */
   checkpoint?(runtime: T, location: ReviewLocation): void
@@ -41,12 +43,21 @@ function marker(id: unknown): id is string {
   return typeof id === "string" && id.length > 0 && id.length <= 1024 && !id.includes("\0")
 }
 
-/** Replace whole scope-pinned compositions for one location, never revive an
- * old controller. Every location admits independently on the shared connection
- * and drains only its own retired generations before admitting another. */
+/** Exact member scopes, in order: each location with its companion epoch. */
+function memberScopes(members: readonly CompanionHandshake[] | undefined) {
+  return JSON.stringify((members ?? []).map(member => [locationKey(member.location), member.epoch]))
+}
+
+/** Replace whole scope-pinned compositions for one home, never revive an old
+ * controller. Every home admits independently on the shared connection and
+ * drains only its own retired generations before admitting another. A
+ * composition is pinned to its home and member scopes, so a changed member set
+ * or epoch replaces it exactly like a changed home epoch. */
 class LocationAdmission<T> {
   /** Whether the current location set still includes this location. */
   private wanted = false
+  /** Member locations the current location set assigns to this home. */
+  private members: readonly ReviewLocation[] = []
   private active?: { life: PluginLifecycle; runtime: T; id?: string; client: Client; companion?: CompanionHandshake; state: CliPluginState }
   /** A connection whose admission failed. Health checks cannot promote its fallback. */
   private manualConnection?: string
@@ -65,8 +76,11 @@ class LocationAdmission<T> {
   get companion(): CompanionHandshake | undefined { return this.active?.companion }
   get connectionID(): string | undefined { return this.active?.id }
 
-  want() {
+  want(members: readonly ReviewLocation[] = []) {
     this.wanted = true
+    // A different member set is checked at the next wake, not after a probe delay.
+    if (JSON.stringify(members.map(locationKey)) !== JSON.stringify(this.members.map(locationKey))) this.probeAt = 0
+    this.members = members
   }
 
   /** Leave the location set. Continuity is checkpointed for a later return. */
@@ -160,6 +174,7 @@ class LocationAdmission<T> {
       const abort = new AbortController()
       this.admission = abort
       let companion: CompanionHandshake | undefined
+      let members: CompanionHandshake[] = []
       let configuration: CliConfiguration | undefined
       let terminal = false
       let rebind = false
@@ -170,26 +185,33 @@ class LocationAdmission<T> {
             !!(this.active?.state ?? this.host.state).config || !!inherit, { configuration: inherit })
           terminal = result?.terminal ?? false
           if (result?.options) configuration = await readCliConfiguration(result.options, signal, this.reads)
+          // Settings come from the home alone. One attempt per member and probe:
+          // a member that fails stays manual until a later probe admits it.
+          if (result?.companion) for (const member of this.members) {
+            const admitted = await companionHandshake(() => connection.client, member, this.reads, signal, false)
+            if (admitted?.companion) members.push(admitted.companion)
+          }
           return result?.companion
         }, "Companion reconnection")
-      } catch { /* Failed admission leaves this connection manual. */ }
+      } catch { members = [] /* Failed admission leaves this connection manual. */ }
       if (!abort.signal.aborted && (terminal || (!companion && !this.active))) this.manualConnection = connection.id
       // A caller deadline is not physical settlement and never permits overlap.
       await this.reads.settled()
       if (!abort.signal.aborted && this.current(connection)) {
         const previous = this.active
-        if (previous?.companion && companion?.epoch === previous.companion.epoch) {
+        if (previous?.companion && companion?.epoch === previous.companion.epoch
+          && memberScopes(members) === memberScopes(previous.state.members)) {
           // A read-only health check cannot re-review or reset a countdown.
         } else if (previous && (companion || terminal)) {
           this.retire(false)
           await this.draining
           if (!abort.signal.aborted && this.current(connection)) {
             if (companion) { this.dirty = true; rebind = true } // Bind again after the old critical work settled.
-            else this.start(connection.client, { ...previous.state, companion: undefined, connectionID: connection.id })
+            else this.start(connection.client, { ...previous.state, companion: undefined, members: undefined, connectionID: connection.id })
           }
         } else if (!previous) this.start(connection.client, { ...this.host.state,
           ...(this.host.state.inheritOptions ? { config: undefined, configError: undefined, notificationConfig: undefined, reviewerOptions: undefined,
-            prompts: BUILTIN_PROMPTS, ...configuration } : {}), companion, connectionID: connection.id })
+            prompts: BUILTIN_PROMPTS, ...configuration } : {}), companion, members: companion ? members : undefined, connectionID: connection.id })
       }
       this.probeAt = rebind ? 0 : performance.now() + 2000
       if (this.admission === abort) this.admission = undefined
@@ -200,8 +222,8 @@ class LocationAdmission<T> {
 /** One public connection observer shared by independent location admissions.
  * The public client stream detects loss. The native bridge independently
  * identifies which connection owns its caches. Both must agree before any
- * location admits a fresh composition. Every open tab's location keeps its own
- * composition, so a background conversation is reviewed wherever it lives.
+ * location admits a fresh composition. Every home keeps its own composition, so
+ * a background conversation is reviewed wherever it and its subagents live.
  *
  * Embedding inspection: `state.companion`, `state.connectionID` and `current()`
  * describe the current host location's composition. */
@@ -233,13 +255,13 @@ export function setupCliReconnect<T>(context: Plugin.Context, state: CliPluginSt
   }
   /** Follow the current location set. A host accessor failure keeps the previous set. */
   const reconcile = () => {
-    let locations: readonly ReviewLocation[]
-    try { locations = options.locations() } catch { return }
-    if (!locations.length) return
-    const wanted = new Set(locations.map(locationKey))
+    let homes: readonly ReviewHome[]
+    try { homes = options.locations() } catch { return }
+    if (!homes.length) return
+    const wanted = new Set(homes.map(home => locationKey(home.location)))
     for (const [key, value] of admissions) if (!wanted.has(key)) value.release()
-    for (const location of locations) admission(location).want()
-    primary = locationKey(locations[0]!)
+    for (const home of homes) admission(home.location).want(home.members)
+    primary = locationKey(homes[0]!.location)
     publish()
   }
   const retireAll = () => { for (const value of admissions.values()) value.retire() }

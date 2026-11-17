@@ -9,8 +9,9 @@ export function notificationWorkEvent(event: OpenCodeEvent) {
 
 /** Notification-only reads. Tool completion is not process completion after V2
  * backgrounds a blocking tool. Shell ownership is native metadata.sessionID;
- * persistent terminals have an explicit sessionID. Never use cwd or titles. */
-export async function hostBackgroundIdle(client: OpenCodeClient, location: LocationRef,
+ * persistent terminals have an explicit sessionID. Never use cwd or titles.
+ * Shells are listed per location, so every location the family lives in is read. */
+export async function hostBackgroundIdle(client: OpenCodeClient, locations: readonly LocationRef[],
   family: readonly string[], signal: AbortSignal) {
   signal.throwIfAborted()
   if (!family.length || family.length > 16384 || family.some(id => !id) || new Set(family).size !== family.length) return false
@@ -22,12 +23,15 @@ export async function hostBackgroundIdle(client: OpenCodeClient, location: Locat
     if (!id || value?.type !== "running") return false
     if (members.has(id)) return false
   }
-  const shells = await client.shell.list({ location }, { signal })
-  signal.throwIfAborted()
-  if (shells.location?.directory !== location.directory || !Array.isArray(shells.data) || shells.data.length > 16384) return false
-  for (const shell of shells.data) {
-    if (!shell.id || !["running", "exited", "timeout", "killed"].includes(shell.status)) return false
-    if (shell.status === "running" && members.has(shell.metadata?.sessionID as string)) return false
+  if (!locations.length) return false
+  for (const location of locations) {
+    const shells = await client.shell.list({ location }, { signal })
+    signal.throwIfAborted()
+    if (shells.location?.directory !== location.directory || !Array.isArray(shells.data) || shells.data.length > 16384) return false
+    for (const shell of shells.data) {
+      if (!shell.id || !["running", "exited", "timeout", "killed"].includes(shell.status)) return false
+      if (shell.status === "running" && members.has(shell.metadata?.sessionID as string)) return false
+    }
   }
   // Background shell, subagent and image jobs outlive the foreground turn. The
   // native list holds active and unconsumed jobs, whose result will wake the

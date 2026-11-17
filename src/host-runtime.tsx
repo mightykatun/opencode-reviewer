@@ -11,11 +11,10 @@ import { SteeringFollowUps, followUpCategory } from "./steering-follow-up.js"
 import { PendingRefresh } from "./pending-refresh.js"
 import { SessionModes, SessionModeStore } from "./session-mode.js"
 import { conversationRoot, RouteSessions } from "./route-approval.js"
-import type { HostPendingRequest, HostPendingSnapshot, HostRequestSnapshot } from "./host-types.js"
+import type { HostPendingRequest, HostPendingSnapshot, HostRequestSnapshot, HostScope } from "./host-types.js"
 import { uiText } from "./ui-text.js"
 import type { CliPluginState } from "./cli-plugin.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
-import { sameLocation } from "./companion-protocol.js"
 import { HostReviewPanel } from "./host-review-panel.js"
 import { setupHostHistory, setupHostHistoryOnly } from "./host-history-runtime.js"
 import { setupHostNotifications, type HostNotificationCheckpoint, type HostNotifications } from "./host-notifications.js"
@@ -32,7 +31,7 @@ import { setupCliReconnect } from "./cli-reconnect.js"
 import { configuredEvidenceBytes } from "./config.js"
 import { SessionInstructionsStore } from "./session-instructions.js"
 import { setupHostSessionInstructions } from "./host-session-instructions.js"
-import { locationKey, reviewLocations, routeAtLocation, sessionAtLocation, type ReviewLocation } from "./host-locations.js"
+import { atLocation, locationKey, reviewHomes, routeAtLocation, sessionAtLocation, type ReviewLocation } from "./host-locations.js"
 
 type KeymapLayerFactory = Parameters<Plugin.Context["keymap"]["layer"]>[0]
 type KeymapLayer = ReturnType<KeymapLayerFactory>
@@ -75,8 +74,8 @@ function locationContext(context: Plugin.Context, location: ReviewLocation) {
   }
 }
 
-/** Every open tab's location holds its own scope-pinned composition, so a
- * background conversation is reviewed wherever it lives. Own setup commands in
+/** Every home holds its own scope-pinned composition, so a background
+ * conversation is reviewed wherever it and its subagents live. Own setup commands in
  * a native component, where Keymap.Provider is available. A detached Solid root
  * has no native providers. Plugin-setup ownership alone would instead retain
  * every old generation's commands until plugin reload. */
@@ -84,7 +83,7 @@ export function setupHostRecovery(ctx: Plugin.Context, state: CliPluginState, li
   // One entry per location this terminal has reviewed, matching its admissions.
   const continuity = new Map<string, LocationContinuity>()
   const recovery = setupCliReconnect<HostComposition>(ctx, state, life, {
-    locations: () => reviewLocations(ctx),
+    locations: () => reviewHomes(ctx),
     install: (context, next, child, location) => {
       const scope = locationContext(context, location)
       const notifications: { previous?: HostNotificationCheckpoint; current?: HostNotifications } =
@@ -148,8 +147,12 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     life.addCleanup(() => modes.flush())
     return
   }
-  const scope = { epoch: companion.epoch, location: companion.location }
-  const transport = hostPermissionTransport(ctx.client, scope)
+  // The home scope owns this composition's conversations, history, modes and
+  // panel. Member scopes supply only the permissions of their subagents.
+  const scope: HostScope = { epoch: companion.epoch, location: companion.location }
+  const scopes: HostScope[] = [scope, ...(state.members ?? []).map(member => ({ epoch: member.epoch, location: member.location }))]
+  const transports = new Map(scopes.map(value => [locationKey(value.location), hostPermissionTransport(ctx.client, value)]))
+  const transport = (at: HostScope) => transports.get(locationKey(at.location))
   const snapshots = new Map<string, HostRequestSnapshot>()
   const eventOwners = new Map<string, string>()
   const reads = new TransportOwnership()
@@ -159,11 +162,12 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   life.addCleanup(() => permissionReads.settled())
   const routes = new RouteSessions(id => ctx.data.session.get(id))
   const store = new SessionModeStore(path.join(state.stateRoot, "session-mode-v2"), JSON.stringify(scope.location))
+  // Sessions are addressed by ID, and a parent may live at another location.
+  // Ownership of a whole conversation is decided by its root's location below.
   const ancestry = new SessionAncestry(async (id, signal) => {
-    const options = { location: scope.location, signal }
-    const session = await owned(ctx.client.session.get({ sessionID: id }, options))
+    const session = await owned(ctx.client.session.get({ sessionID: id }, { signal }))
     signal.throwIfAborted()
-    if (session.id !== id || session.location.directory !== scope.location.directory) return
+    if (session.id !== id) return
     routes.remember(session)
     return session
   })
@@ -234,6 +238,34 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     },
   })
   if (continuity) continuity.current = notifications
+  /** A conversation is reviewed by the composition at its root's location. A
+   * home request stays unless its root is proven elsewhere. A member request
+   * joins only once its root is proven to live at this home. */
+  const belongs = async (value: HostPendingSnapshot, signal: AbortSignal) => {
+    const home = atLocation(value.scope.location, scope.location)
+    try {
+      const root = await records.history.root(value.request.sessionID, signal)
+      signal.throwIfAborted()
+      const at = ancestry.location(root)
+      return at ? atLocation(at, scope.location) : home
+    } catch {
+      signal.throwIfAborted()
+      return home
+    }
+  }
+  /** Every scope's complete snapshot, read in order, limited to this home's
+   * conversations. Any scope failure fails the whole read. */
+  const pendingSnapshots = async (signal: AbortSignal) => {
+    const values: HostPendingSnapshot[] = [], ids = new Set<string>()
+    for (const value of transports.values()) {
+      for (const snapshot of await owned(value.pendingScope(signal))) {
+        if (ids.has(snapshot.request.id)) throw Error("Pending permission repeated across locations")
+        ids.add(snapshot.request.id)
+        if (await belongs(snapshot, signal)) values.push(snapshot)
+      }
+    }
+    return values
+  }
   // Memory only and per composition: reconnection and disposal drop every open steering.
   const followUps = new SteeringFollowUps()
   life.addCleanup(() => followUps.clear(), false)
@@ -275,14 +307,15 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       || (request.action === "edit" && config.reviewEdits) || (request.action === "external_directory" && config.reviewExternalDirectories)
       || (request.action === "skill" && config.reviewSkills) || config.reviewTools),
     nativeApproval: {
-      list: async signal => (await owned(transport.pendingScope(signal))).map(value => value.request),
+      list: async signal => (await pendingSnapshots(signal)).map(value => value.request),
+      // Each reply goes through the transport of the scope its snapshot was read from.
       once: (request, signal, dispatch) => {
-        const snapshot = snapshots.get(request.id)
-        return snapshot ? owned(transport.once(snapshot, signal, dispatch)) : Promise.resolve({ status: "unavailable" as const })
+        const snapshot = snapshots.get(request.id), scoped = snapshot && transport(snapshot.scope)
+        return scoped ? owned(scoped.once(snapshot, signal, dispatch)) : Promise.resolve({ status: "unavailable" as const })
       },
       reject: (request, signal, dispatch, message) => {
-        const snapshot = snapshots.get(request.id)
-        return snapshot ? owned(transport.reject(snapshot, signal, dispatch, message)) : Promise.resolve({ status: "unavailable" as const })
+        const snapshot = snapshots.get(request.id), scoped = snapshot && transport(snapshot.scope)
+        return scoped ? owned(scoped.reject(snapshot, signal, dispatch, message)) : Promise.resolve({ status: "unavailable" as const })
       },
     },
   })
@@ -334,7 +367,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     },
   }, signal => permissionReads.track(owned((async () => {
     signal.throwIfAborted()
-    const all = await owned(transport.pendingScope(signal))
+    const all = await pendingSnapshots(signal)
     // Public native caches must be refreshed as well as the server snapshot.
     const route = ctx.ui.router.current()
     const roots = await refreshNativeFamilies(new Set([...all.map(value => value.request.sessionID),
@@ -355,7 +388,9 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     // The supervisor checkpoints before aborting, even when general native
     // listeners run first. Child observers never revoke on their own marker.
     if (life.signal.aborted || event.type === "server.connected") return
-    if (event.location && !sameLocation(event.location, scope.location)) return
+    // A move can change which home owns a conversation, wherever it was observed.
+    if (event.type === "session.moved") ancestry.deleted(event.data.sessionID)
+    if (event.location && !scopes.some(value => atLocation(event.location, value.location))) return
     const interrupted = event.type === "session.step.failed" && event.data.error.type === "aborted"
     if (interrupted || event.type === "permission.asked" || event.type === "permission.replied"
       || event.type === "session.deleted" || notificationWorkEvent(event) || event.type.startsWith("form.")) {
@@ -377,7 +412,9 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     } else if (event.type === "permission.replied") {
       events++
       if (eventOwners.get(event.data.requestID) === event.data.sessionID) {
-        transport.resolved({ sessionID: event.data.sessionID, requestID: event.data.requestID, decision: event.data.reply })
+        // Only the transport that dispatched this request holds its reservation.
+        for (const value of transports.values())
+          value.resolved({ sessionID: event.data.sessionID, requestID: event.data.requestID, decision: event.data.reply })
         try { records.history.reply(event.data) } catch {}
         followUps.replied(event.data.sessionID, event.data.requestID, event.data.reply)
         controller.permissionReplied({ sessionID: event.data.sessionID, requestID: event.data.requestID, decision: event.data.reply })

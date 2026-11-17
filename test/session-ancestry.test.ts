@@ -225,3 +225,24 @@ test("ancestry cancellation before dispatch reserves no abandoned read", async t
   const next = f.ancestry.root("root", signal()); await settle(); f.finish(0)
   assert.equal(await next, "root")
 })
+
+test("a root's location comes from the read that proved it a root, across parent locations", async () => {
+  const sessions: Record<string, { id: string; parentID?: string; location: { directory: string } }> = {
+    root: { id: "root", location: { directory: "/project" } },
+    child: { id: "child", parentID: "root", location: { directory: "/worktree" } },
+    grandchild: { id: "grandchild", parentID: "child", location: { directory: "/other-worktree" } },
+  }
+  const ancestry = new SessionAncestry(async id => sessions[id])
+  assert.equal(ancestry.location("root"), undefined, "Unresolved roots have no known location")
+  assert.equal(await ancestry.root("grandchild", signal()), "root")
+  assert.deepEqual(ancestry.location("root"), { directory: "/project" })
+  assert.equal(ancestry.location("child"), undefined, "Only roots carry a home")
+  assert.equal(await ancestry.root("child", signal()), "root", "A cached suffix keeps the root's location")
+  assert.deepEqual(ancestry.location("root"), { directory: "/project" })
+  // A move changes where the root lives. Invalidation rereads it.
+  sessions.root = { id: "root", location: { directory: "/moved" } }
+  ancestry.deleted("root")
+  assert.equal(ancestry.location("root"), undefined)
+  assert.equal(await ancestry.root("child", signal()), "root")
+  assert.deepEqual(ancestry.location("root"), { directory: "/moved" })
+})

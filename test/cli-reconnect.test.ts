@@ -53,9 +53,10 @@ function fixture(t: TestContext, options: { read?: (signal: AbortSignal, attempt
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] })
   const life = new PluginLifecycle(), source = events(), calls: AbortSignal[] = [], handshakes: Location[] = [], configurations: Location[] = []
   const installations: { signal: AbortSignal; client: unknown; state: CliPluginState; cleaned: boolean; location: Location }[] = []
-  const locations = { current: options.locations ?? [location] }
+  const locations = { current: options.locations ?? [location], members: {} as Record<string, Location[]> }
+  const wanted = () => [...locations.current, ...Object.values(locations.members).flat()]
   const client = { event: source, rpc: () => ({ handshake: (at: Location, request: { location: unknown; signal: AbortSignal }) => {
-    assert.ok(locations.current.some(value => value.directory === at.directory)); assert.deepEqual(request.location, at)
+    assert.ok(wanted().some(value => value.directory === at.directory)); assert.deepEqual(request.location, at)
     calls.push(request.signal); handshakes.push(at)
     return options.read?.(request.signal, calls.length, at) ?? Promise.resolve(handshake(undefined, at))
    }, configuration: (at: Location, request: { location: unknown }) => {
@@ -70,7 +71,8 @@ function fixture(t: TestContext, options: { read?: (signal: AbortSignal, attempt
   const state = { connectionID: "initial", companion: options.initialFallback ? undefined : handshake(), config: {}, dependencies: {},
     inheritOptions: !!options.configuration } as CliPluginState
   const checkpoints: unknown[] = []
-  const recovery = setupCliReconnect(ctx, state, life, { locations: () => locations.current, install: (context, next, child, at) => {
+  const recovery = setupCliReconnect(ctx, state, life, { locations: () => locations.current.map(value =>
+    ({ location: value, members: locations.members[value.directory] ?? [] })), install: (context, next, child, at) => {
     const value = { signal: child.signal, client: context.client, state: next, cleaned: false, location: at }
     installations.push(value)
     child.addCleanup(async () => { await options.cleanup?.(at); value.cleaned = true })
@@ -441,4 +443,55 @@ test("a connection change retires every location, and each drains only its own g
   assert.equal(at(f, other).length, 1)
   held.resolve(); await f.advance()
   assert.equal(at(f, other).length, 2); assert.equal(at(f, other)[1]!.state.connectionID, "next")
+})
+
+/** A subagent's worktree, a member location of the home's conversation. */
+const worktree: Location = { directory: "/server/project-worktree" }
+
+test("a home admits its member locations with their own handshakes and never their settings", async t => {
+  const f = fixture(t, { configuration: async at => ({ handshake: handshake(undefined, at), options: { baseURL: "http://localhost:40999/v1", model: "home" } }) })
+  f.locations.members[location.directory] = [worktree]
+  f.source.marker("initial"); await f.advance(); await f.advance()
+  assert.equal(at(f, location).length, 2, "The startup composition had no members, so the pinned scope set changed")
+  assert.equal(at(f, location)[0]!.signal.aborted, true)
+  assert.deepEqual(f.checkpoints, [at(f, location)[0]], "Replacement carries continuity like any other re-admission")
+  assert.deepEqual(at(f, location)[1]!.state.members, [handshake(undefined, worktree)])
+  assert.equal(f.recovery.runtime(worktree), undefined, "A member is not a composition of its own")
+  assert.equal(f.configurations.some(value => value.directory === worktree.directory), false, "Settings come from the home alone")
+  await f.advance(2000); await f.advance(2000)
+  assert.equal(at(f, location).length, 2, "Unchanged member scopes keep the composition")
+})
+
+test("a changed member epoch replaces the composition, and a member that stops answering is dropped once", async t => {
+  let member: "first" | "second" | "gone" = "first"
+  const f = fixture(t, { read: async (_signal, _attempt, value) => {
+    if (value.directory !== worktree.directory) return handshake(undefined, value)
+    if (member === "gone") throw Error("Companion refused")
+    return handshake(member === "first" ? undefined : "20000000-1000-4000-8000-100000000000", value)
+  } })
+  f.locations.members[location.directory] = [worktree]
+  f.source.marker("initial"); await f.advance(); await f.advance()
+  assert.equal(at(f, location).length, 2)
+  member = "second"; await f.advance(2000); await f.advance()
+  assert.equal(at(f, location).length, 3)
+  assert.equal(at(f, location)[2]!.state.members?.[0]?.epoch, "20000000-1000-4000-8000-100000000000")
+  member = "gone"; await f.advance(2000); await f.advance()
+  assert.equal(at(f, location).length, 4)
+  assert.deepEqual(at(f, location)[3]!.state.members, [], "The home keeps reviewing while the member stays manual")
+  assert.deepEqual(at(f, location)[3]!.state.companion?.location, location)
+  await f.advance(2000); await f.advance(2000)
+  assert.equal(at(f, location).length, 4, "A member that keeps failing cannot churn the composition")
+})
+
+test("a member set change replaces the composition, and dropping every member returns to the home alone", async t => {
+  const f = fixture(t)
+  f.source.marker("initial"); await f.advance()
+  assert.equal(at(f, location).length, 1)
+  f.locations.members[location.directory] = [worktree]
+  await f.advance(2000); await f.advance()
+  assert.deepEqual(at(f, location).at(-1)!.state.members, [handshake(undefined, worktree)])
+  delete f.locations.members[location.directory]
+  await f.advance(2000); await f.advance()
+  assert.deepEqual(at(f, location).at(-1)!.state.members, [])
+  assert.equal(at(f, location).filter(value => !value.signal.aborted).length, 1)
 })

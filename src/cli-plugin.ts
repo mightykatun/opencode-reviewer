@@ -17,6 +17,9 @@ export interface CliPluginState extends CliConfiguration {
   /** Empty native TUI options inherit configuration from each scoped companion. */
   inheritOptions?: boolean
   companion?: CompanionHandshake
+  /** Member locations this composition also reads permissions from, each with
+   * its own companion handshake. Only a reviewer composition has members. */
+  members?: readonly CompanionHandshake[]
   /** The public connected marker already admitted by startup, not a host epoch. */
   connectionID?: string
   dependencies: PluginDependencies
@@ -32,8 +35,8 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
   const reads = new TransportOwnership()
   lifecycle.addCleanup(() => reads.settled())
   if (!state.inheritOptions) Object.assign(state, await readCliConfiguration(context.options, lifecycle.signal, reads))
-  // Startup admits the current host location. Recovery admits every other
-  // location an open tab needs, each with its own handshake.
+  // Startup admits the current host location. Recovery admits every other home
+  // and each home's member locations, each with its own handshake.
   const location = hostLocation(context)
   // Load before admission so no asynchronous import separates the scoped
   // handshake from installing the runtime's connection fence and recovery owner.

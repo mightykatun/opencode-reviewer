@@ -42,6 +42,8 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
   const forms = new Map<string, FormInfo[] | undefined>()
   const background = { active: new Set<string>(), shells: [] as ShellInfo[], terminals: [] as PersistentPtyInfo[] }
   const syncs: string[] = [], unexpected: string[] = []
+  /** Further members of root's native family, such as a subagent in a worktree. */
+  const family: string[] = []
   let listener: ((event: { details: OpenCodeEvent }) => void) | undefined
   let native: ((event: OpenCodeEvent) => void) | undefined
   let current = "root", serial = 0, backendDisposed = 0
@@ -65,7 +67,7 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
       listen: (callback: NonNullable<typeof listener>) => { listener = callback; return () => { listener = undefined } },
       session: {
         list: () => [...sessions.values()], get: (id: string) => sessions.get(id),
-        family: (root: string) => root === "root" ? ["deep", "child"] : [],
+        family: (root: string) => root === "root" ? ["deep", "child", ...family] : [],
         status: (id: string) => background.active.has(id) ? "running" : "idle",
         sync: async (id: string) => { syncs.push(`session:${id}`); await hooks.sync(id) },
         permission: {
@@ -96,7 +98,7 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
   const records = { location, history: { root: (id: string, signal: AbortSignal) => hooks.ancestry(id, signal) } } as unknown as ReturnType<typeof setupHostHistory>
   let runtime: NonNullable<ReturnType<typeof setupHostNotificationOnly>>
   const compose = (pluginState: CliPluginState) => {
-    runtime = setupCliReconnect(ctx, pluginState, life, { locations: () => [location],
+    runtime = setupCliReconnect(ctx, pluginState, life, { locations: () => [{ location, members: [] }],
       install: (context, state, child) => setupHostNotificationOnly(context, state, child, records)! }).current()!
     assert.ok(runtime)
     return runtime
@@ -118,7 +120,7 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
     emit("form.replied", { id: value.id, sessionID: value.sessionID, answer: {} })
   }
   const flush = async () => { await tick(); await runtime.refresh.refresh(); await tick() }
-  return { life, compose, state, ctx, sessions, permissions, forms, background, banners, signals, syncs, unexpected, hooks,
+  return { life, compose, state, ctx, sessions, family, permissions, forms, background, banners, signals, syncs, unexpected, hooks,
     emit, ask, reply, formReply, flush, listening: () => !!listener, backendDisposed: () => backendDisposed,
     route: (id: string) => { current = id; runtime.visit(id) } }
 }
@@ -326,14 +328,17 @@ test("full-family metadata synchronization handles a deep member listed before i
   assert.deepEqual(f.banners.map(value => value.kind), ["attention"])
 })
 
-test("off-scope events are ignored and later visits cannot replay earlier births", async t => {
+test("another home's events are ignored wherever they occur, and later visits cannot replay earlier births", async t => {
   const f = fixture(); t.after(() => f.life.stop()); await f.flush()
-  const wrong = permission("wrong")
-  f.permissions.set("root", [wrong]); f.ask(wrong, { ...location, workspaceID: "other" })
-  await f.flush(); assert.equal(f.banners.length, 0)
   const foreign = permission("foreign", "foreign")
-  f.permissions.set("foreign", [foreign]); f.ask(foreign)
-  await f.flush(); assert.equal(f.banners.length, 0)
+  f.permissions.set("foreign", [foreign])
+  for (const scope of [location, { ...location, workspaceID: "foreign" }]) {
+    f.ask(foreign, scope)
+    await f.flush(); assert.equal(f.banners.length, 0, "The root's location decides, not the event's")
+  }
+  const unknown = permission("unknown", "uncached")
+  f.permissions.set("uncached", [unknown]); f.ask(unknown, { ...location, workspaceID: "other" })
+  await f.flush(); assert.equal(f.banners.length, 0, "An uncached session at another location is not this home's")
   const early = permission("early", "unvisited")
   f.permissions.set("unvisited", [early]); f.ask(early); await f.flush()
   f.route("unvisited"); await f.flush(); assert.equal(f.banners.length, 0)
@@ -425,4 +430,15 @@ test("notification backend setup failure does not acquire listeners, polling or 
   assert.equal(setupHostNotificationOnly(f.ctx, f.state, f.life, records), undefined)
   assert.equal(f.listening(), false)
   assert.deepEqual(f.unexpected, [])
+})
+
+test("a subagent's permission at another location belongs to its conversation's home", async t => {
+  const f = fixture(); t.after(() => f.life.stop()); await f.flush()
+  const worktree = { ...location, directory: "/server/project-worktree" }
+  f.sessions.set("tree", { id: "tree", parentID: "root", title: "Tree", location: worktree })
+  f.family.push("tree")
+  const moved = permission("moved", "tree")
+  f.permissions.set("tree", [moved]); f.ask(moved, worktree); await f.flush()
+  assert.deepEqual(f.banners.map(value => [value.kind, value.sessionID]), [["attention", "root"]],
+    "A family spanning locations stays healthy and notifies its root")
 })

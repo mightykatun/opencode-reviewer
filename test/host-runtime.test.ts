@@ -18,6 +18,8 @@ import type { FormInfo } from "@opencode/client"
 const location = { directory: "/server/project" }
 /** A second directory whose root conversation "elsewhere" is open as a tab. */
 const elsewhere = { directory: "/server/elsewhere" }
+/** A git worktree the root conversation's subagent "sub" moved into. */
+const worktree = { directory: "/server/project-worktree" }
 const companion = { protocol: 2 as const, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location,
   project: { id: "project", directory: "/server", canonical: "/server" } }
 const pending = (id: string, sessionID = "root") => ({ id, sessionID, action: "unknown", resources: ["scope"] })
@@ -25,7 +27,9 @@ type Location = { directory: string; workspaceID?: string }
 async function fixture(options: { notify?: boolean; reminderSeconds?: number; formSync?: (id: string) => Promise<void>; sessionSync?: (id: string) => Promise<void>;
   backend?: NotificationBackend; unavailable?: "configuration" | "companion"; connectionID?: string;
   startupFailure?: "companion" | "configuration" | "unobserved" | "conflicting";
-  location?: Location; reverseEvents?: boolean; elsewhere?: boolean } = {}) {
+  location?: Location; reverseEvents?: boolean; elsewhere?: boolean
+  /** Root's subagent "sub" lives in a worktree, and "stray" at this location belongs to "elsewhere". */
+  worktree?: boolean } = {}) {
   const location: Location = options.location ?? companion.location
   const scopedCompanion = { ...companion, location: { directory: location.directory,
     ...(location.workspaceID ? { workspaceID: location.workspaceID } : {}) } }
@@ -37,16 +41,20 @@ async function fixture(options: { notify?: boolean; reminderSeconds?: number; fo
   const listeners = new Set<(event: any) => void>()
   const slots = new Set<unknown>(), markers: string[] = []
   let markerAvailable = () => {}
-  const state = { requests: [pending("first")], epoch: companion.epoch, list: async () => ({ location, data: state.requests }),
+  const state = { requests: [pending("first"), ...(options.worktree ? [pending("stray-request", "stray")] : [])],
+    epoch: companion.epoch, list: async () => ({ location, data: state.requests }),
     elsewhereRequests: [pending("away", "elsewhere")],
+    worktreeRequests: options.worktree ? [pending("sub-request", "sub")] : [],
     nativeRequests: undefined as ReturnType<typeof pending>[] | undefined,
     forms: [] as FormInfo[],
     route: { type: "home" } as { type: "home" } | { type: "session"; sessionID: string },
     /** The host's current location follows the focused conversation. */
     current: location,
     tabs: options.elsewhere ? [{ sessionID: "root", active: true }, { sessionID: "elsewhere", active: false }] : [] }
-  const sessionLocation = (id: string) => id === "elsewhere" ? elsewhere : location
-  const session = (id: string) => ({ id, location: sessionLocation(id), ...(id === "child" ? { parentID: "root" } : {}) })
+  const sessionLocation = (id: string) => id === "elsewhere" ? elsewhere : id === "sub" ? worktree : location
+  const parents: Record<string, string> = { child: "root", sub: "root", stray: "elsewhere" }
+  const session = (id: string) => ({ id, location: sessionLocation(id), ...(parents[id] ? { parentID: parents[id] } : {}) })
+  const families: Record<string, string[]> = options.worktree ? { root: ["root", "sub"], elsewhere: ["elsewhere", "stray"] } : {}
   const ctx = {
     get location() { return state.current },
     client: { event: { async *subscribe({ signal }: { signal: AbortSignal }) {
@@ -65,17 +73,19 @@ async function fixture(options: { notify?: boolean; reminderSeconds?: number; fo
     } }, rpc: () => ({ handshake: async (at: Location) => ({ ...scopedCompanion, location: { ...at }, epoch: state.epoch }) }),
       session: { get: async ({ sessionID }: { sessionID: string }) => { ancestryReads.push(sessionID); return session(sessionID) } },
       permission: { request: { list: (input: { location: Location }) => input.location.directory === elsewhere.directory
-        ? Promise.resolve({ location: elsewhere, data: state.elsewhereRequests }) : state.list() } } },
+        ? Promise.resolve({ location: elsewhere, data: state.elsewhereRequests })
+        : input.location.directory === worktree.directory ? Promise.resolve({ location: worktree, data: state.worktreeRequests })
+        : state.list() } } },
     data: { listen: (callback: (event: any) => void) => { listeners.add(callback); return () => { listeners.delete(callback); calls.push("off") } },
       on: (type: string, callback: (event: any) => void) => {
         const listen = ({ details }: { details: { type: string } }) => { if (details.type === type) callback(details) }
         listeners.add(listen); return () => { listeners.delete(listen) }
       },
       session: { list: () => [{ id: "root", location }],
-         get: session, family: (id: string) => [id],
+         get: session, family: (id: string) => families[id] ?? [id],
          sync: async (id: string) => { calls.push("session:" + id); await options.sessionSync?.(id) },
         permission: { invalidate: (id: string) => calls.push("invalidate:" + id), sync: async (id: string) => { calls.push("sync:" + id) },
-            list: (id: string) => (state.nativeRequests ?? state.requests).filter(value => value.sessionID === id) }, form: { sync: async (id: string) => { calls.push("form"); await options.formSync?.(id) },
+            list: (id: string) => [...state.nativeRequests ?? state.requests, ...state.worktreeRequests].filter(value => value.sessionID === id) }, form: { sync: async (id: string) => { calls.push("form"); await options.formSync?.(id) },
              list: (id: string) => id === "root" ? state.forms : [] } } },
     keymap: { mode: { current: () => "base" }, layer: (factory: () => { commands: typeof commands; enabled?: boolean | (() => boolean) }) => {
       const value = factory(), owned = value.commands
@@ -766,4 +776,24 @@ test("a connection change retires every location and re-admits each with its own
   assert.notEqual(nextAway, away); assert.notEqual(nextHere, here)
   assert.deepEqual(nextAway.controller.pendingViews.map(view => view.request.id), ["away"])
   assert.equal(f.pluginState.connectionID, "event-next")
+})
+
+test("a subagent in another location is reviewed by its conversation's home, and no request is reviewed twice", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] })
+  const f = await fixture({ elsewhere: true, worktree: true })
+  t.after(async () => { await f.life.stop(); await f.life.settled() })
+  await advance(t, 2000)
+  const ids = (runtime: NonNullable<ReturnType<typeof f.recovery.runtime>>) => runtime.controller.pendingViews.map(view => view.request.id).sort()
+  const here = await admitted(f, location, runtime => ids(runtime).includes("sub-request"))
+  assert.deepEqual(ids(here), ["first", "sub-request"], "The worktree subagent joins its root, the stray request stays out")
+  assert.deepEqual(here.scope.location, location, "History, modes and the panel stay keyed by the home")
+  assert.equal(f.recovery.runtime(worktree), undefined, "A member location is not a composition of its own")
+  const away = await admitted(f, elsewhere, runtime => ids(runtime).includes("stray-request"))
+  assert.deepEqual(ids(away), ["away", "stray-request"], "A request at another home's location still belongs to its own root")
+  // A member's native reply still reaches the home's controller.
+  f.state.worktreeRequests = []
+  for (const listen of f.listeners) listen({ details: { type: "permission.replied", data: { sessionID: "sub", requestID: "sub-request", reply: "once" },
+    location: worktree, id: "event-member-reply", created: 1, durable: { aggregateID: "sub", seq: 1, version: 1 } } })
+  await advance(t, 0)
+  assert.deepEqual(ids(here), ["first"])
 })

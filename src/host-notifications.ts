@@ -51,6 +51,8 @@ export class HostNotifications {
   readonly policy: NotificationPolicy<RequestIdentity>
   private clock: NotificationClock
   private location: LocationRef
+  /** The home and member locations whose shells can belong to a tracked family. */
+  private locations: readonly LocationRef[]
   private abort = new AbortController()
   private stopped = false
   private disposal?: Promise<void>
@@ -79,6 +81,7 @@ export class HostNotifications {
     if (!config) throw new Error("Notification configuration unavailable")
     this.clock = options.clock ?? notificationClock
     this.location = state.companion?.location ?? context.location ?? context.data.location.default()
+    this.locations = [this.location, ...(state.members ?? []).map(member => member.location)]
     const click: NotificationClick = (sessionID, target) => this.beginClick(sessionID, target).commit()
     click.begin = (sessionID, target) => this.beginClick(sessionID, target)
     const backend = state.dependencies.notifications?.(click, config)
@@ -255,7 +258,7 @@ export class HostNotifications {
     const family = [...queue.family], revision = this.activityRevision
     let worker: Promise<boolean> | undefined
     const read = withDeadline(AbortSignal.any([this.abort.signal, this.options.signal]), 5000, signal => {
-      worker = hostBackgroundIdle(this.context.client, this.location, family, signal)
+      worker = hostBackgroundIdle(this.context.client, this.locations, family, signal)
       return worker
     }).then(idle => this.guard(() => {
       if (!idle || revision !== this.activityRevision || this.executions.get(root) !== execution || execution.done

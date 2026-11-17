@@ -352,7 +352,9 @@ steering rejection, below.
   background. A report that is still open shows when you return to that tab,
   and completed reports are saved to history.
 - The current directory and the directories of open tabs are reviewed at the
-  same time, up to eight. Requests in tabs past that limit stay manual.
+  same time. A subagent working in another directory, such as a git worktree it
+  moved into, is reviewed with its conversation. Up to eight directories are
+  covered in total. Requests past that limit stay manual.
 - A held countdown keeps its deadline. If it has expired, approval runs as soon
   as the request is eligible again.
 - Selecting Allow always or Reject in the native prompt, or typing a rejection

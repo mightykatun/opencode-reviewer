@@ -6,7 +6,7 @@ import type { View } from "./controller.js"
 import type { setupHostHistory } from "./host-history-runtime.js"
 import type { HostRequest } from "./host-types.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
-import { sameLocation } from "./companion-protocol.js"
+import { atLocation } from "./host-locations.js"
 import { hostQueueSnapshot, hostPermissionIdentities } from "./host-queue.js"
 import { refreshNativeFamilies } from "./host-native-observations.js"
 import { setupHostNotifications, type HostNotificationCheckpoint } from "./host-notifications.js"
@@ -37,10 +37,17 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   let views: View<HostRequest>[] = []
   const owned = <T>(work: Promise<T>) => reads.track(work)
   const settled = () => reads.settled()
+  // A family can span locations, for example a subagent moved into a worktree.
+  // Its sessions are read wherever they live. The root's location owns them.
   const session = (id: string) => {
     if (deleted.has(id)) return
     const value = ctx.data.session.get(id)
-    return value?.id === id && sameLocation(value.location, location) ? value : undefined
+    return value?.id === id ? value : undefined
+  }
+  /** A known root decides by its own location. Otherwise the observed location does. */
+  const here = (id: string, observed: unknown) => {
+    const root = conversationRoot(id, session), value = root ? session(root) : undefined
+    return atLocation(value ? value.location : observed, location)
   }
   const permissions = (id: string) => {
     return hostPermissionIdentities(id, ctx.data.session.permission.list(id))
@@ -115,8 +122,8 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
       notifications.routeChanged()
       if (!id) { visited = undefined; return }
       if (deleted.has(id)) return
-      const cached = ctx.data.session.get(id)
-      if (cached && !sameLocation(cached.location, location)) return
+      const cached = session(id)
+      if (cached && !here(id, cached.location)) return
       notifications.visit(id)
       if (visited !== id) { visited = id; revision++; publish(false); void refresh.refresh() }
     } catch { publish(false) }
@@ -150,21 +157,19 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   off = ctx.data.listen(({ details: event }) => {
     // Connection revocation belongs to the supervisor, after its checkpoint.
     if (stopped || signal.aborted || event.type === "server.connected") return
-    if (event.location && !sameLocation(event.location, location)) return
     if (event.type !== "permission.asked" && event.type !== "permission.replied" && event.type !== "session.deleted"
       && !event.type.startsWith("form.") && !notificationWorkEvent(event)) return
     try {
-      observeRoute()
       let id: string | undefined
       if (event.type === "form.created") id = event.data.form.sessionID
       else if ("sessionID" in event.data && typeof event.data.sessionID === "string") id = event.data.sessionID
       else if (!notificationWorkEvent(event) || !event.location) return
       if (id && id !== "global") {
-        const cached = ctx.data.session.get(id)
-        if (cached && !session(id)) return
-        if (!event.location && !session(id)) return
         if (deleted.has(id)) return
-      }
+        // A session event belongs to the home of its conversation, wherever it occurred.
+        if (!here(id, session(id)?.location ?? event.location)) return
+      } else if (event.location && !atLocation(event.location, location)) return
+      observeRoute()
       // Revoke stale native ownership before publishing births or terminal facts.
       revision++; publish(false)
       notifications.event(event)
