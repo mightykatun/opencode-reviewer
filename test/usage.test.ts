@@ -12,7 +12,7 @@ test("usage requires both actual endpoint counts; malformed or missing usage is 
     assert.equal(responseUsage({ usage }, "fixture"), undefined)
   }
   assert.deepEqual(responseUsage(response(0, 0), "fixture"), { input: 0, output: 0 })
-  assert.equal(usageText(responseUsage(response(), "fixture")!), "tokens: 1000 in 100 out")
+  assert.equal(usageText(responseUsage(response(), "fixture")!), "tokens: 1000 in 100 out\ncost: $0.0000")
 })
 
 test("cost uses per-million input/output, cached reads/writes and returns four decimal places", () => {
@@ -75,12 +75,14 @@ test("rejected asynchronous usage observers are consumed without delaying finali
   assert.equal(calls, 1)
 })
 
-test("correction totals include every request and never silently undercount partial data", () => {
+test("correction totals sum available costs with missing costs treated as zero", () => {
   assert.deepEqual(sumUsage({ input: 10, output: 5, cost: 0.01 }, { input: 20, output: 10, cost: 0.02 }), { input: 30, output: 15, cost: 0.03 })
-  assert.deepEqual(sumUsage({ input: 10, output: 5, cost: 0.01 }, { input: 20, output: 10 }), { input: 30, output: 15 })
-  assert.equal(sumUsage(undefined, { input: 10, output: 5 }), undefined)
-  assert.equal(sumUsage({ input: 10, output: 5 }, undefined), undefined)
-  assert.equal(sumUsage({ input: Number.MAX_SAFE_INTEGER, output: 0 }, { input: 1, output: 0 }), undefined)
+  assert.deepEqual(sumUsage({ input: 10, output: 5, cost: 0.01 }, { input: 20, output: 10 }), { input: 30, output: 15, cost: 0.01 })
+  assert.deepEqual(sumUsage(undefined, { input: 10, output: 5 }), { cost: 0 })
+  assert.deepEqual(sumUsage({ input: 10, output: 5 }, undefined), { cost: 0 })
+  assert.deepEqual(sumUsage(undefined, undefined), { cost: 0 })
+  assert.deepEqual(sumUsage({ input: Number.MAX_SAFE_INTEGER, output: 0 }, { input: 1, output: 0 }), { cost: 0 })
+  assert.equal(usageText({}), "cost: $0.0000")
 })
 
 test("exact normalized OpenRouter uses reported cost independently of tokens and never consults catalog pricing", () => {
@@ -154,12 +156,12 @@ test("attempt finalization retains received cost on cancellation/failure, but ne
   }
 })
 
-test("report completeness and overflow are independent for tokens and cost across correction attempts", () => {
+test("missing tokens do not discard costs across correction attempts and overflow stays bounded", () => {
   assert.deepEqual(sumUsage({ cost: 0.01 }, { cost: 0.02, input: 10, output: 2 }), { cost: 0.03 })
-  assert.deepEqual(sumUsage({ input: 10, output: 2 }, { input: 20, output: 3, cost: 0.01 }), { input: 30, output: 5 })
-  assert.equal(sumUsage({ cost: 0.01 }, { input: 10, output: 2 }), undefined)
-  assert.equal(sumUsage({ cost: 0.01 }, undefined), undefined)
-  assert.equal(sumUsage(undefined, { cost: 0.01 }), undefined)
+  assert.deepEqual(sumUsage({ input: 10, output: 2 }, { input: 20, output: 3, cost: 0.01 }), { input: 30, output: 5, cost: 0.01 })
+  assert.deepEqual(sumUsage({ cost: 0.01 }, { input: 10, output: 2 }), { cost: 0.01 })
+  assert.deepEqual(sumUsage({ cost: 0.01 }, undefined), { cost: 0.01 })
+  assert.deepEqual(sumUsage(undefined, { cost: 0.01 }), { cost: 0.01 })
   assert.deepEqual(sumUsage({ input: Number.MAX_SAFE_INTEGER, output: 0, cost: 0 }, { input: 1, output: 0, cost: 0.01 }), { cost: 0.01 })
   assert.deepEqual(sumUsage({ input: 1, output: 2, cost: Number.MAX_VALUE }, { input: 2, output: 3, cost: Number.MAX_VALUE }), { input: 3, output: 5 })
 })

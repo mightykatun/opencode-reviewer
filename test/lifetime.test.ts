@@ -19,19 +19,22 @@ test("pure aggregate helpers retain weighted means and exact compact presentatio
   assert.equal(totals.since, 2); assert.equal(totals.ratingsSince, 1)
 })
 
-test("empty, unpriced, zero cost and independent coverage keep their exact meanings", () => {
+test("missing costs count as zero without pricing labels while token coverage stays independent", () => {
   assert.equal(lifetimeCost(empty()), "lifetime: no recorded usage")
-  assert.equal(lifetimeReport(empty()), ["Reviews: 0", "Retries: 0", "Tokens: unavailable", "Tool calls: 0", "Cost: unavailable", "",
+  assert.equal(lifetimeReport(empty()), ["Reviews: 0", "Retries: 0", "Tokens: unavailable", "Tool calls: 0", "Cost: $0.0000", "",
     "Safe: 0 (n/a)", "Unsafe: 0 (n/a)", "Auto-approved: 0 (n/a)", "Manually approved: 0 (n/a)", "Auto-rejected: 0 (n/a)", "Rejected: 0 (n/a)", "",
     "Average time to full report: unavailable", "Average time to rating: unavailable"].join("\n"))
   const unpriced = { ...empty(), requests: 1, tokenRequests: 1, input: 10, output: 2, since: 1 }
-  assert.equal(lifetimeCost(unpriced), "lifetime: cost unavailable")
+  assert.equal(lifetimeCost(unpriced), "lifetime: $0.0000")
   const zero = { ...empty(), requests: 1, priced: 1, since: 1 }
   assert.equal(lifetimeCost(zero), "lifetime: $0.0000")
   assert.match(lifetimeReport(zero), /Tokens: unavailable/)
   const mixed = add(unpriced, zero)
-  assert.equal(lifetimeCost(mixed), "lifetime: $0.0000 (partial pricing)")
+  assert.equal(lifetimeCost(mixed), "lifetime: $0.0000")
   assert.match(lifetimeReport(mixed), /Tokens: 10 in 2 out \(partial coverage\)/)
+  const paid = add(mixed, { ...empty(), requests: 1, priced: 1, cost: 0.25, since: 1 })
+  assert.equal(lifetimeCost(paid), "lifetime: $0.2500")
+  assert.ok(lifetimeReport(paid).split("\n").includes("Cost: $0.2500"))
 })
 
 test("invalid aggregate components and overflow fail explicitly", () => {

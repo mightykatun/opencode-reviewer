@@ -72,7 +72,7 @@ test("the agent reads a script, selects it with notes, and the separate verdict 
   assert.deepEqual(evidence.retrieval.items.map((item: any) => [item.id, item.content]), [["c1", script]])
   assert.equal(evidence.retrieval.trace[0].forwarded, "full")
   assert.deepEqual(h.executed, [{ call: { tool: "read", arguments: { path: "run.sh", limit: 100 } }, base: "/fixture" }])
-  assert.deepEqual(result.usage, { input: 30, output: 6 })
+  assert.deepEqual(result.usage, { input: 30, output: 6, cost: 0 })
   assert.deepEqual(h.events.filter(event => event.type === "dispatched").map(event => event.retry), ["initial", "initial", "initial"])
   assert.equal(h.events.filter(event => event.type === "finalized").length, 3)
   assert.deepEqual(h.events.filter(event => event.type === "toolDispatched"), [{ type: "toolDispatched", review: "review-1", call: "1", tool: "read" }])
@@ -231,11 +231,11 @@ test("OpenRouter retrieval requests mark the stable system and evidence prefix f
   assert.equal(typeof h.bodies[1].messages[0].content, "string", "the verdict request shape is unchanged")
 })
 
-test("unknown retrieval usage keeps the report usage unknown rather than zero", async () => {
+test("missing retrieval usage leaves tokens unknown and contributes zero cost", async () => {
   const unknown = { choices: [{ index: 0, message: { role: "assistant", tool_calls: [call("f", "finish", { items: [] })] }, finish_reason: "tool_calls" }] }
   const h = harness([unknown, verdict()])
   const result = await review(shellEvidence(), h.config, signal(), h.deps)
-  assert.equal(result.usage, undefined)
+  assert.deepEqual(result.usage, { cost: 0 })
 })
 
 test("host evaluation runs the agent's reads through the scoped companion against the shell launch directory", async t => {

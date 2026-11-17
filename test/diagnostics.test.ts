@@ -86,7 +86,7 @@ test("correction attempts emit separate ordinals and dispatch-relative clocks", 
     const content = ++calls === 1 ? '{"safe":true,"reason":"Decisive reason.","desc":"PRIVATE_DESCRIPTION","extra":1}' : JSON.stringify(safe)
     return new Response(frame(content.slice(0, 13)) + frame(content.slice(13)) + finish, { headers: { "Content-Type": "text/event-stream" } })
   }, environment: {}, onDiagnostics: (event) => { events.push(event) } })
-  assert.deepEqual(result, { ...safe, toolCalls: 0, metadata: result.metadata })
+  assert.deepEqual(result, { ...safe, toolCalls: 0, metadata: result.metadata, usage: { cost: 0 } })
   assert.equal(calls, 2)
   for (const attempt of [0, 1]) {
     const group = events.filter((event) => event.attempt === attempt)

@@ -49,7 +49,7 @@ test("retrieval retries and forced finish stay on their own connection, then ver
     { input: 10, output: 2, cost: 0.000014 }, { input: 10, output: 2, cost: 0.000014 },
     { input: 10, output: 2, cost: 0.0014 }, { input: 10, output: 2, cost: 0.0014 },
   ])
-  assert.equal(result.usage, undefined, "The unmetered 503 still leaves the total incomplete")
+  assert.deepEqual(result.usage, { cost: 0.000014 + 0.000014 + 0.0014 + 0.0014 })
   assert.equal(result.metadata?.configuredModel, "judge")
   assert.equal(result.metadata?.provider, base.baseURL)
 })
@@ -141,6 +141,22 @@ test("OpenRouter caching and reported costs follow each stage's endpoint", async
     const costs = retrievalBaseURL === router ? [0.5, 0.0014] : [0.000014, 0.5]
     assert.deepEqual(amounts.map(amount => amount.cost), costs)
     assert.deepEqual(result.usage, { input: 20, output: 4, cost: costs[0]! + costs[1]! })
+  }
+})
+
+test("mixed endpoints retain reported cost when the other stage has no pricing", async () => {
+  const router = "https://openrouter.ai/api/v1", local = "http://ollama.invalid:11434/v1"
+  for (const retrievalBaseURL of [router, local]) {
+    const baseURL = retrievalBaseURL === router ? local : router
+    const result = await review(shellEvidence(), parseConfig({ baseURL, model: "judge", retrievalBaseURL, retrievalModel: "scout" }), signal(), {
+      retrieval: executor,
+      fetcher: async (url, init) => {
+        const body = JSON.parse(String(init?.body))
+        return Response.json({ ...(body.tools ? finish() : verdict()),
+          usage: { ...usage, ...(String(url).startsWith(router) ? { cost: 0.5 } : {}) } })
+      },
+    })
+    assert.deepEqual(result.usage, { input: 20, output: 4, cost: 0.5 })
   }
 })
 

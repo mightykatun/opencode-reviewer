@@ -42,7 +42,7 @@ test("per execution and POST identity, actual retry kind and exactly-once normal
   assert.equal(value.metadata?.reportedModel, "successful-model")
   assert.equal(value.metadata?.configuredModel, "configured")
   assert.equal(value.metadata?.provider, config.baseURL)
-  assert.equal(value.usage, undefined, "missing first POST usage prevents complete report coverage")
+  assert.deepEqual(value.usage, { cost: 0.03 }, "missing first POST usage contributes zero cost")
 })
 
 for (const model of [undefined, "", "  ", null, 4, "x\0y", "x".repeat(4097)]) test(`final model falls back without leaking a failed attempt: ${String(model).slice(0, 12)}`, async () => {

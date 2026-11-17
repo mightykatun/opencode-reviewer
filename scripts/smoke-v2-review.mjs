@@ -855,13 +855,14 @@ const savedHistory = async () => {
   assert.equal(row.approving, row.review)
   assert.equal(payload.desc, description, "Final validated description saved exactly")
   assert.equal(payload.safe, true)
-  assert.deepEqual(payload.usage, { input: reviewUsage.prompt_tokens, output: reviewUsage.completion_tokens })
+  const verdictUsage = { input: reviewUsage.prompt_tokens, output: reviewUsage.completion_tokens }
+  assert.deepEqual(payload.usage, { ...verdictUsage, ...(posts > 1 ? { cost: 0 } : {}) })
   assert.equal(payload.toolCalls, expectedToolCalls, "Saved count includes failed reads and finish attachment reads, but not finish itself or model POSTs")
   assert.equal(JSON.parse(row.accepted).safe, true)
   assert.ok(value.attempts.every(attempt => attempt.review === row.review && JSON.parse(attempt.dispatched).retry === "initial"))
   const verdictAttempts = value.attempts.filter(attempt => JSON.parse(attempt.finalized).usage?.input === reviewUsage.prompt_tokens)
   assert.equal(verdictAttempts.length, 1)
-  assert.deepEqual(JSON.parse(verdictAttempts[0].finalized).usage, payload.usage)
+  assert.deepEqual(JSON.parse(verdictAttempts[0].finalized).usage, verdictUsage)
   assert.equal(value.approvals[0].review, row.review)
    assert.equal(value.approvals[0].entry, row.entry)
   assert.equal(value.approvals[0].automatic, 1)
@@ -2226,9 +2227,9 @@ createInterface({input:process.stdin}).on('line',line=>{
          const metadata = (await observations()).metadata["reviewer.review.metadata"]
          assert.ok(metadata, "Live usage uses the shared measured metadata component")
          assert.equal(metadata.wrapMode, "none")
-         assert.equal(metadata.height, 1)
-          assert.equal(metadata.text, "tokens: 23 in 11 out")
-         assert.ok(capture().includes(metadata.text), "Live usage is actually painted")
+         assert.equal(metadata.height, 2)
+          assert.equal(metadata.text, "tokens: 23 in 11 out\ncost: $0.0000")
+         for (const line of metadata.text.split("\n")) assert.ok(capture().includes(line), "Live usage is actually painted")
        }
        if (visibilityLoss) {
          const before = (await observations()).frame

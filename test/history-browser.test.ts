@@ -45,7 +45,7 @@ test("history has independent exact copy and extreme footer layouts", () => {
   assert.equal(historyLayout("Manually approved", "12345678/123456789").label, "Manu..ved")
 })
 test("historical metadata order, fallback, usage independence and control sanitization", () => {
-  assert.equal(historyMetadata(selection.record!), "model: m\nprovider: https://example.com")
+  assert.equal(historyMetadata(selection.record!), "cost: $0.0000\nmodel: m\nprovider: https://example.com")
   assert.equal(historyMetadata({ ...selection.record!, payload: { ...selection.record!.payload, reportedModel: "reported",
     usage: { input: 12, output: 3, cost: 0.0001 }, timing: { ratingMs: 1250, fullReportMs: 3500 } } }),
     "tokens: 12 in 3 out\ncost: $0.0001\nmodel: reported\nprovider: https://example.com\nTime to first rating: 1.25s\nTime to full report: 3.50s")

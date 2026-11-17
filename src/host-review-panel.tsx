@@ -317,8 +317,8 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
       <Show when={unavailable()}><text fg={context.theme.text.base} width="100%" flexShrink={0}>
         {displayText(view().error ?? uiText.review.failed)}
       </text></Show>
-      <Show when={view().assessment?.usage}>{usage => <>
-        <HostReviewMetadata context={context} id="reviewer.review.metadata" marginTop={1} text={usageText(usage())} />
+      <Show when={view().assessment}>{assessment => <>
+        <HostReviewMetadata context={context} id="reviewer.review.metadata" marginTop={1} text={usageText(assessment().usage ?? {})} />
         <Show when={props.lifetimeText?.()}>{text => <HostReviewMetadata context={context} id="reviewer.review.lifetime" text={text()} />}</Show>
       </>}</Show>
     </scrollbox>

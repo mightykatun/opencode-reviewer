@@ -98,8 +98,7 @@ export { empty }
 
 export function lifetimeCost(totals: LifetimeTotals): string {
   if (!totals.requests) return uiText.lifetime.empty
-  if (!totals.priced) return uiText.lifetime.costUnavailable
-  return uiText.lifetime.cost(totals.cost.toFixed(4), totals.priced < totals.requests)
+  return uiText.lifetime.cost(totals.cost.toFixed(4))
 }
 
 export interface LifetimeReportPart { text: string; rating?: "safe" | "unsafe" }
@@ -114,7 +113,7 @@ export function lifetimeReportParts(totals: LifetimeTotals): LifetimeReportPart[
   return [{ text: [uiText.lifetime.dialogReviews(reviews), uiText.lifetime.dialogRetries(activity.retries),
     totals.tokenRequests ? uiText.lifetime.dialogTokens(totals.input, totals.output, totals.tokenRequests < totals.requests) : uiText.lifetime.dialogTokensUnavailable,
     uiText.lifetime.dialogToolCalls(activity.toolCalls),
-    uiText.lifetime.dialogCost(totals.priced ? totals.cost.toFixed(4) : undefined, totals.priced < totals.requests),
+    uiText.lifetime.dialogCost(totals.cost.toFixed(4)),
     "", uiText.lifetime.dialogSafeLabel].join("\n") },
     { text: uiText.lifetime.dialogRating(totals.safe, percentage(totals.safe)), rating: "safe" },
     { text: `\n${uiText.lifetime.dialogUnsafeLabel}` },

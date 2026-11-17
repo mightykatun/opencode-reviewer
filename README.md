@@ -483,7 +483,8 @@ rejected by automatic steering shows **Auto rejected** and the steering that was
 sent.
 
 The model and provider identify the verdict request. Token and cost totals
-include retrieval.
+include retrieval. Costs are summed across requests, treating missing cost
+information as zero.
 
 A validated report is saved when its permission is approved or rejected. This
 includes Unsafe reports and repeated reviews of the same permission. Pending

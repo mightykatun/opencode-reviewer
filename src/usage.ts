@@ -94,15 +94,14 @@ export function usageAttempt(baseURL: string, requestedModel: string, pricing?: 
   }
 }
 
-/** Report components must cover every POST, including transport recovery and corrections. */
+/** Sum costs across POSTs with missing costs treated as zero. Tokens require complete coverage. */
 export function sumUsage(previous: Usage | undefined, next: Usage | undefined): Usage | undefined {
-  if (!previous || !next) return
   const result: Usage = {}
-  if (count(previous.input) && count(previous.output) && count(next.input) && count(next.output)) {
+  if (previous && next && count(previous.input) && count(previous.output) && count(next.input) && count(next.output)) {
     const input = previous.input + next.input, output = previous.output + next.output
     if (count(input) && count(output)) { result.input = input; result.output = output }
   }
-  const cost = previous.cost !== undefined && next.cost !== undefined ? previous.cost + next.cost : undefined
+  const cost = (previous?.cost ?? 0) + (next?.cost ?? 0)
   if (rate(cost)) result.cost = cost
   return Object.keys(result).length ? result : undefined
 }
@@ -111,6 +110,6 @@ export function usageText(usage: Usage, toolCalls?: number): string {
   return [
     ...(count(usage.input) && count(usage.output) ? [uiText.usage.tokens(usage.input, usage.output)] : []),
     ...(toolCalls === undefined ? [] : [uiText.usage.toolCalls(toolCalls)]),
-    ...(usage.cost === undefined ? [] : [uiText.usage.cost(usage.cost.toFixed(4))]),
+    uiText.usage.cost((usage.cost ?? 0).toFixed(4)),
   ].join("\n")
 }

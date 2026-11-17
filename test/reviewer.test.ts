@@ -92,7 +92,7 @@ test("transient HTTP failures recover with byte-identical POSTs and independent 
   let retries = 0
   const result = await review(evidence, config, signal(), { fetcher: fetch, environment: {}, prompts: BUILTIN_PROMPTS,
     onProgress: p => { progress.push(p) }, onRetry: () => { retries++ } })
-  assert.deepEqual(result, { safe: true, reason: "Decisive reason.", desc: "Recovered." })
+  assert.deepEqual(result, { safe: true, reason: "Decisive reason.", desc: "Recovered.", usage: { cost: 0 } })
   assert.equal(requests.length, 4)
   assert.equal(retries, 3, "count both transport retries and format corrections at dispatch")
   assert.deepEqual(requests[0]!.body, requests[1]!.body)
@@ -160,7 +160,7 @@ test("a disconnected non-streaming body restarts the exact POST rather than join
       else writer.error(Object.assign(new Error("PRIVATE"), { code: "UND_ERR_SOCKET" }))
     } }))
   } })
-  assert.deepEqual(result, { safe: false, reason: "Decisive reason.", desc: "Fresh response." })
+  assert.deepEqual(result, { safe: false, reason: "Decisive reason.", desc: "Fresh response.", usage: { cost: 0 } })
   assert.equal(calls, 2)
   assert.equal(bodies[0], bodies[1])
 })
@@ -204,7 +204,7 @@ test("backoff cancellation and insufficient review time never dispatch another P
   assert.equal(requests.length, 1)
 })
 
-test("failed POSTs finalize received-only usage before backoff without inventing complete report totals", async () => {
+test("failed POSTs finalize received usage before backoff and missing costs contribute zero", async () => {
   const config = parseConfig({ baseURL: "https://openrouter.ai/api/v1", model: "fixture", stream: true })
   const observed: Usage[] = [], requests: string[] = []
   let aborted = false
@@ -233,7 +233,7 @@ test("failed POSTs finalize received-only usage before backoff without inventing
     if (++calls === 1) return new Response(null, { status: 503 })
     return Response.json({ choices: [{ message: { content: '{"safe":true,"reason":"Decisive reason.","desc":"Recovered."}' } }], usage: { cost: 0.02 } })
   }, environment: {}, prompts: BUILTIN_PROMPTS, onUsage: u => { observed.push(u) } })
-  assert.equal(recovered.usage, undefined, "an unreported failed attempt is not free")
+  assert.deepEqual(recovered.usage, { cost: 0.02 }, "an unreported failed attempt contributes zero cost")
   assert.equal(observed.length, 3, "the successful POST still contributes to lifetime")
 })
 
@@ -415,7 +415,7 @@ test("malformed assessment in an assistant stop envelope still gets format corre
   const { config, requests } = await endpoint(t, (index, res) => res.end(JSON.stringify({
     choices: [{ finish_reason: "stop", message: { role: "assistant", content: index ? '{"safe":true,"reason":"Decisive reason.","desc":"Counts fruits."}' : "bad format" } }],
   })))
-  assert.deepEqual(await review(evidence, config, signal()), { safe: true, reason: "Decisive reason.", desc: "Counts fruits." })
+  assert.deepEqual(await review(evidence, config, signal()), { safe: true, reason: "Decisive reason.", desc: "Counts fruits.", usage: { cost: 0 } })
   assert.deepEqual(requests.map((request) => request.target), ["/v1/chat/completions", "/v1/chat/completions"])
   assert.deepEqual(requests[1]!.body.messages[2], { role: "assistant", content: "bad format" })
   assert.match(requests[1]!.body.messages[3].content, /Format validation failed: Invalid JSON/)
@@ -477,7 +477,7 @@ test("sends textual source, genuine user prompt, fixed schema and optional beare
 test("inline API key authenticates requests and corrections without entering model evidence", async (t) => {
   const { config, requests } = await endpoint(t, (index, res) => res.end(envelope(index ? '{"safe":true,"reason":"Decisive reason.","desc":"Counts fruits."}' : "bad format")))
   const cfg = parseConfig({ ...config, apiKey: "  inline-fixture-key  " })
-  assert.deepEqual(await review(evidence, cfg, signal(), { fetcher: fetch, environment: {} }), { safe: true, reason: "Decisive reason.", desc: "Counts fruits." })
+  assert.deepEqual(await review(evidence, cfg, signal(), { fetcher: fetch, environment: {} }), { safe: true, reason: "Decisive reason.", desc: "Counts fruits.", usage: { cost: 0 } })
   assert.equal(requests.length, 2)
   for (const request of requests) {
     assert.equal(request.authorization, "Bearer inline-fixture-key")
@@ -491,7 +491,7 @@ test("environment API keys match inline normalization on requests and correction
   const padded = " \t\n fixture-environment-key \r\n\u00a0"
   for (const options of [{ apiKey: padded }, { apiKeyEnv: "TEST_REVIEW_KEY" }]) {
     const cfg = parseConfig({ ...config, ...options })
-    assert.deepEqual(await review(evidence, cfg, signal(), { fetcher: fetch, environment: { TEST_REVIEW_KEY: padded } }), { safe: true, reason: "Decisive reason.", desc: "Counts fruits." })
+    assert.deepEqual(await review(evidence, cfg, signal(), { fetcher: fetch, environment: { TEST_REVIEW_KEY: padded } }), { safe: true, reason: "Decisive reason.", desc: "Counts fruits.", usage: { cost: 0 } })
   }
   assert.deepEqual(requests.map((request) => request.target), Array(4).fill("/v1/chat/completions"))
   for (const request of requests) {
@@ -807,13 +807,13 @@ test("review usage sums correction requests outside assessment JSON and evidence
   assert.throws(() => parseAssessment('{"safe":true,"reason":"Decisive reason.","desc":"x","usage":{"prompt_tokens":10}}'))
 })
 
-test("missing usage in either correction response omits the report usage line", async (t) => {
+test("missing usage in either correction response leaves a zero cost report", async (t) => {
   for (const missing of [0, 1]) {
     const { config } = await endpoint(t, (index, res) => res.end(JSON.stringify({
       ...(index === missing ? {} : { usage: { prompt_tokens: 10, completion_tokens: 5 } }),
       choices: [{ message: { content: index ? '{"safe":true,"reason":"Decisive reason.","desc":"Visible effects."}' : "bad format" } }],
     })))
-    assert.deepEqual(await review(evidence, config, signal()), { safe: true, reason: "Decisive reason.", desc: "Visible effects." })
+    assert.deepEqual(await review(evidence, config, signal()), { safe: true, reason: "Decisive reason.", desc: "Visible effects.", usage: { cost: 0 } })
   }
 })
 
@@ -878,7 +878,7 @@ test("OpenRouter cost-only corrections accumulate report cost and finalize each 
   assert.equal(calls, 2)
 })
 
-test("OpenRouter incomplete report components do not suppress known lifetime contributions", async () => {
+test("OpenRouter missing costs contribute zero to reports without suppressing lifetime contributions", async () => {
   for (const missing of [0, 1]) for (const tokens of [false, true]) {
     const config = parseConfig({ baseURL: "https://openrouter.ai/api/v1", model: "fixture" })
     const observed: Usage[] = []
@@ -892,7 +892,7 @@ test("OpenRouter incomplete report components do not suppress known lifetime con
     }
     const result = await review(evidence, config, signal(), { fetcher, environment: {}, prompts: BUILTIN_PROMPTS,
       pricing: () => { assert.fail("missing reported cost must not trigger estimation") }, onUsage: (usage) => observed.push(usage) })
-    assert.deepEqual(result, { safe: true, reason: "Decisive reason.", desc: "Bounded effects.", ...(tokens ? { usage: { input: 20, output: 4 } } : {}) })
+    assert.deepEqual(result, { safe: true, reason: "Decisive reason.", desc: "Bounded effects.", usage: { ...(tokens ? { input: 20, output: 4 } : {}), cost: 0 } })
     assert.equal(calls, 2)
     assert.equal(observed.length, tokens ? 2 : 1)
     assert.deepEqual(observed.filter((usage) => usage.cost !== undefined), [{ ...(tokens ? { input: 10, output: 2 } : {}), cost: 0 }])
@@ -1425,7 +1425,7 @@ test("complete SSE reviews discard stale estimates from report and lifetime but 
       } } })
     const expected = { input: 100, output, ...(reported ? { cost: 0.000102 } : {}) }
     assert.deepEqual(result, { safe: true, reason: "Decisive reason.", desc: "Bounded effects.", usage: expected })
-    assert.equal(usageText(result.usage!), `tokens: 100 in ${output} out${reported ? "\ncost: $0.0001" : ""}`)
+    assert.equal(usageText(result.usage!), `tokens: 100 in ${output} out\ncost: $${reported ? "0.0001" : "0.0000"}`)
     assert.deepEqual(observed, [expected], "one final accounting observation, not cumulative-frame increments")
     assert.equal(calls, 1)
     const totals = (store.query({ type: "totals" }) as HistoryTotals).totals
@@ -1434,7 +1434,7 @@ test("complete SSE reviews discard stale estimates from report and lifetime but 
     assert.equal(activity.reviews, 0)
     assert.deepEqual({ ...usageTotals, since: null }, { requests: 1, tokenRequests: 1, input: 100, output,
       priced: reported ? 1 : 0, cost: reported ? 0.000102 : 0, since: null, safe: 0, unsafe: 0, ratingsSince: null })
-    assert.equal(lifetimeCost(totals), reported ? "lifetime: $0.0001" : "lifetime: cost unavailable")
+    assert.equal(lifetimeCost(totals), reported ? "lifetime: $0.0001" : "lifetime: $0.0000")
   })
 })
 
