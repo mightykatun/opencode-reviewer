@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile, open, type FileHandle
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { execFileSync } from "node:child_process"
-import { BUILTIN_PROMPTS, CONTRACT, CORRECTION, correctionPrompt, loadPrompts, RETRIEVAL_CONTRACT, reviewContract } from "../src/prompts.js"
+import { BUILTIN_PROMPTS, CONTRACT, CORRECTION, correctionPrompt, loadPrompts, RETRIEVAL_CONTRACT, reviewContract, STEERING_REJECTION_CONTRACT } from "../src/prompts.js"
 import inventory from "../src/prompt-files.json" with { type: "json" }
 import { parseConfig } from "../src/config.js"
 import fs from "node:fs/promises"
@@ -76,6 +76,8 @@ test("all review kinds use named assessment files and one fixed correction contr
   assert.equal(BUILTIN_PROMPTS.retrieval, (await readFile(new URL("../prompts/RETRIEVAL-PROMPT.md", import.meta.url), "utf8")).trim())
   assert.equal(RETRIEVAL_CONTRACT, (await readFile(new URL("../contracts/RETRIEVAL-CONTRACT.md", import.meta.url), "utf8")).trim())
   assert.match(RETRIEVAL_CONTRACT, /finish/)
+  assert.equal(STEERING_REJECTION_CONTRACT, (await readFile(new URL("../contracts/STEERING-REJECTION-CONTRACT.md", import.meta.url), "utf8")).trim())
+  assert.equal(STEERING_REJECTION_CONTRACT.split("{{call}}").length, 3, "the rejection contract names the call twice")
   assert.match(CONTRACT, /retrieval section/)
   for (const kind of ["shell", "edit", "external-directory", "skill", "tool"] as const)
     assert.doesNotMatch(BUILTIN_PROMPTS[kind].instructions, /literal argument|cat\/head|L-prefixed|excerpt|No directory enumeration|were not inspected/)

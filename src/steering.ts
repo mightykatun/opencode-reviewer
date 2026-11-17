@@ -1,3 +1,4 @@
+import { STEERING_REJECTION_CONTRACT } from "./prompts.js"
 import type { AssessmentPreview, ReviewKind } from "./types.js"
 
 /** Prefix of the native reject message the requesting agent reads. The prefix
@@ -8,10 +9,10 @@ export const STEERING_PREFIX = "Rejected by opencode-reviewer:"
 const calls: Record<ReviewKind, string> = { shell: "shell tool call", edit: "edit tool call",
   "external-directory": "external directory tool call", skill: "skill tool call", tool: "registered tool call" }
 
-/** Fixed closing sentence sent only to the requesting agent, never shown in the UI. */
+/** Fixed closing sentences from STEERING-REJECTION-CONTRACT.md, sent only to the requesting agent, never shown in the UI. */
 export function steeringFollowUpSentence(category?: ReviewKind): string {
-  const call = `next ${category ? calls[category] : "tool call of the same type"}`
-  return `Please start by resolving this. Ideally, the ${call} you execute should fix this review issue. You may gather additional context before.`
+  const call = category ? calls[category] : "tool call of the same type"
+  return STEERING_REJECTION_CONTRACT.replace(/\s+/g, " ").replaceAll("{{call}}", () => call)
 }
 
 /** One line: whitespace runs, including newlines, collapse to single spaces. */

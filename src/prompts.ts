@@ -37,6 +37,8 @@ export const CONTRACT = reviewContract(false)
 export const RETRIEVAL_CONTRACT = prompt("retrievalContract")
 /** Fixed guidance, included only when a verdict carries steeringFollowUp. */
 export const STEERING_FOLLOW_UP_CONTRACT = prompt("steeringFollowUp")
+/** Fixed closing sentences of the native steering reject message. `{{call}}` names the request's tool call. */
+export const STEERING_REJECTION_CONTRACT = prompt("steeringRejection")
 export const CORRECTION = prompt("correction")
 const STEERING_CORRECTION = prompt("steeringCorrection")
 

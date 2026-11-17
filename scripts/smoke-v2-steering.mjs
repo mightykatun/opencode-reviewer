@@ -123,8 +123,10 @@ const answer = (pending, message, finish = "stop") => {
 }
 const reason = "The requested command exceeds the allowed scope.", steering = "Use a read-only inspection instead."
 const assessment = { safe: false, reason, steering, desc: "The fixture command writes a marker." }
-const message = `Rejected by opencode-reviewer: ${reason} ${steering} Please start by resolving this. Ideally, the next shell tool call`
-  + " you execute should fix this review issue. You may gather additional context before."
+const message = `Rejected by opencode-reviewer: ${reason} ${steering} Please start by resolving this issue. Ideally, the immediate next shell tool call`
+  + " you execute should fix this review issue. You may gather additional context before. Please precede your next tool call by one or two short"
+  + " justification sentences. If you really need this action executed as is, you may ask the user for permission via the questions tool before"
+  + " re-running the shell tool call. Then continue working towards your goal."
 const followUpText = "I will inspect the project read-only instead.", followUpCommand = "ls"
 const finishReview = index => {
   const res = reviews[index].res

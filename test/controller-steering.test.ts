@@ -65,8 +65,10 @@ test("Unsafe steering arms the shared countdown, rejects natively with the exact
   const work = f.controller.approveNow("a", true)
   await settle(); await settle()
   assert.deepEqual(f.writes, [{ kind: "reject", id: "a", message }])
-  assert.equal(message, "Rejected by opencode-reviewer: Deletes the whole build tree. Please remove only build/cache. Please start by resolving this."
-    + " Ideally, the next shell tool call you execute should fix this review issue. You may gather additional context before.")
+  assert.equal(message, "Rejected by opencode-reviewer: Deletes the whole build tree. Please remove only build/cache. Please start by resolving this issue."
+    + " Ideally, the immediate next shell tool call you execute should fix this review issue. You may gather additional context before."
+    + " Please precede your next tool call by one or two short justification sentences. If you really need this action executed as is,"
+    + " you may ask the user for permission via the questions tool before re-running the shell tool call. Then continue working towards your goal.")
   assert.equal(f.facts[0]?.message, message, "the dispatched fact carries the exact native message")
   assert.equal(f.view("a")?.autoApproval?.status, "allowing")
   f.reply(request, "reject"); await work; await settle()
@@ -176,9 +178,11 @@ test("fast mode rejects once reason and steering are closed in the preview, befo
 
 test("the steering message closes with a category sentence and always ends the steering sentence", () => {
   assert.equal(steeringMessage("Too broad", "Please narrow it", "external-directory"),
-    "Rejected by opencode-reviewer: Too broad. Please narrow it. Please start by resolving this. Ideally, the next external directory tool call"
-    + " you execute should fix this review issue. You may gather additional context before.")
-  assert.match(steeringMessage("Too broad.", "Please narrow it.", "tool"), /the next registered tool call you execute/)
-  assert.match(steeringMessage("Too broad.", "Please narrow it."), /the next tool call of the same type you execute/)
+    "Rejected by opencode-reviewer: Too broad. Please narrow it. Please start by resolving this issue. Ideally, the immediate next external directory tool call"
+    + " you execute should fix this review issue. You may gather additional context before. Please precede your next tool call by one or two short"
+    + " justification sentences. If you really need this action executed as is, you may ask the user for permission via the questions tool before"
+    + " re-running the external directory tool call. Then continue working towards your goal.")
+  assert.match(steeringMessage("Too broad.", "Please narrow it.", "tool"), /the immediate next registered tool call you execute.*re-running the registered tool call\./)
+  assert.match(steeringMessage("Too broad.", "Please narrow it."), /the immediate next tool call of the same type you execute.*re-running the tool call of the same type\./)
   assert.doesNotMatch(steeringMessage("a\nb", "c\n d"), /\n/)
 })
