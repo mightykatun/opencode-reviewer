@@ -1160,7 +1160,7 @@ const committedInstructions = async () => {
     return text
   } catch (error) { if (error.code === "ENOENT") return null; throw error }
 }
-const exerciseInstructions = async cli => {
+const exerciseInstructions = async (cli, startupCli) => {
   const send = (...keys) => runtime.tmux("send-keys", "-t", "v2-review", ...keys)
   const inputID = "reviewer.instructions.input"
   instructionsEvidence = { editor: [], judge: [] }
@@ -1231,7 +1231,7 @@ const exerciseInstructions = async cli => {
   assert.equal(await committedInstructions(), instructionsText, "Ctrl+S applies and closes")
   await saveCapture("instructions-committed")
   // Public unload/reload rereads durable state, never fixture-created drafts.
-  await publish(cliPath, { ...cli, plugins: ["-opencode-reviewer", ...cli.plugins] })
+  await publish(cliPath, startupCli)
   await until("production instructions command unloads", async () => !(await command({ type: "keymap", id: "reviewer.instructions" })).registered)
   await publish(cliPath, cli)
   await until("production instructions command reloads", async () => (await command({ type: "keymap", id: "reviewer.instructions" })).registered)
@@ -1579,9 +1579,7 @@ createInterface({input:process.stdin}).on('line',line=>{
  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result})+'\\n');
 });
 `)
-  const config = { $schema: "https://opencode.ai/config.json", model: "fixture/fixture", update: "disable",
-    ...(registeredTool ? { mcp: { servers: { fixture: { type: "local", command: [process.execPath, mcpFile] } } } } : {}),
-    plugins: [{ package: reviewer, options: { baseURL: origin + "/review", model: "v2-production-reviewer",
+  const reviewerEntry = { package: reviewer, options: { baseURL: origin + "/review", model: "v2-production-reviewer",
         ...(retrievalModelCase ? { apiKey: "verdict-only-key", retrievalBaseURL: `http://127.0.0.1:${retrievalServer.address().port}/v1`,
           retrievalModel: "v2-retrieval-only", retrievalApiKey: "retrieval-only-key" } : {}),
         stream: streaming, autoApprove: automatic, fastMode: fast, autoApproveDelaySeconds: approvalDelaySeconds,
@@ -1590,7 +1588,10 @@ createInterface({input:process.stdin}).on('line',line=>{
          ...(registeredTool ? { reviewTools: true, maxEvidenceBytes: fast ? 131072 : 2048 } : {}),
          ...(largeSource ? { maxEvidenceBytes: 2048 } : {}),
        timeoutMs: evidenceTimeout ? 1 : 120000, notify: notificationCase, notifySound: false, staleReminderSeconds: 0,
-       ...(notificationCase ? { notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } : {}) } }, observer], permissions: [{ action: "*", resource: "*", effect: "allow" },
+       ...(notificationCase ? { notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } : {}) } }
+  const config = { $schema: "https://opencode.ai/config.json", model: "fixture/fixture", update: "disable",
+    ...(registeredTool ? { mcp: { servers: { fixture: { type: "local", command: [process.execPath, mcpFile] } } } } : {}),
+    plugins: [reviewer, observer], permissions: [{ action: "*", resource: "*", effect: "allow" },
       ...(editCase ? editActions.map(action => ({ action, resource: "*", effect: "ask" })) : [{ action: registeredTool ? "fixture_lookup" : skillCase ? "skill" : "shell", resource: "*", effect: "ask" }])],
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: origin + "/v1", apiKey: "synthetic-only" },
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } }
@@ -1600,7 +1601,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   // Native autoaccept is explicitly disabled.
   const cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, attention: { notifications: false, sound: false },
      ...(automatic ? { mouse: !mouseOff } : {}),
-    session: { permissions: "prompt" }, plugins: [monitor] }
+    session: { permissions: "prompt" }, plugins: [reviewerEntry, monitor] }
   const startupCli = { ...cli, plugins: ["-opencode-reviewer", monitor] }
   await publish(path.join(project, "opencode.json"), config); await publish(cliPath, startupCli)
   await publish(path.join(artifacts, "setup.json"), { version, scenario, temp, archive, packed, installed,
@@ -1724,7 +1725,7 @@ createInterface({input:process.stdin}).on('line',line=>{
      assert.deepEqual((await command({ type: "status" })).handshake, handshake, "No restart or new capture epoch")
      await publish(path.join(artifacts, "warmup-model-calls.json"), warmupCalls)
    }
-     if (instructionsCase) await exerciseInstructions(cli)
+     if (instructionsCase) await exerciseInstructions(cli, startupCli)
      if (locationTab) {
        // The permission does not exist yet. It is first asked while its tab is
        // in the background and the active tab belongs to another directory.
@@ -3088,7 +3089,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   // Notification acceptance also verifies production/backend teardown while the
   // host is alive. Other cases disable only the independent observer as before.
    await publish(cliPath, { ...cli, ...(keyboardMouseOffCase ? { mouse: false } : {}), plugins: notificationCase ? ["-opencode-reviewer", "-fixture.review.monitor"]
-     : ["-fixture.review.monitor"] })
+     : [reviewerEntry, "-fixture.review.monitor"] })
   const cleaned = await until("monitor final flush/close", record => record?.cleaned && record)
   if (notificationCase) {
     notificationEvidence.cleaned = await until("production notification backend disposed and publisher closed", async () => {

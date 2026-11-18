@@ -28,11 +28,7 @@ function handshakeDefinition() {
     }, required: ["protocol", "hostVersion", "epoch", "location", "project"], additionalProperties: false },
     errors: { scope: { type: "object", properties: {}, additionalProperties: false } },
   }
-  return { id: "opencode-reviewer", methods: { handshake, configuration: {
-    input: location, output: { type: "object", properties: { handshake: handshake.output, options: { type: "object" } },
-      required: ["handshake", "options"], additionalProperties: false },
-    errors: { scope: { type: "object", properties: {}, additionalProperties: false } },
-  }, invocation: {
+  return { id: "opencode-reviewer", methods: { handshake, invocation: {
     input: { type: "object", properties: { location, epoch: text, sessionID: text, requestID: text },
       required: ["location", "epoch", "sessionID", "requestID"], additionalProperties: false },
     output: { anyOf: [{ type: "null" }, { type: "object", properties: {
@@ -167,14 +163,13 @@ async function observedSetup(ctx) {
       return definition => {
         assert.deepEqual(definition, handshakeDefinition())
         const rpc = target.rpc(definition)
-        const method = phase === "cold-startup" ? "configuration" : "handshake"
-        return { ...rpc, [method]: async (...args) => {
+        return { ...rpc, handshake: async (...args) => {
           if (phase === "cold-startup") {
             const attempt = { started: performance.now() - started, startup: result.readyCalls === undefined }
             const attempts = result.handshakes ??= []
             attempts.push(attempt)
             try {
-              const value = await rpc.configuration(...args)
+              const value = await rpc.handshake(...args)
               attempt.success = true
               return value
             } catch (error) {
@@ -255,6 +250,10 @@ async function observedSetup(ctx) {
       if (phase === "invalid-config") {
         assert.match(ready.state.configError, /Unknown opencode-reviewer setting: fileIO/)
         assert.equal(ready.state.config, undefined)
+      } else if (phase === "empty-cli") {
+        assert.match(ready.state.configError, /baseURL/)
+        assert.equal(ready.state.config, undefined)
+        assert.equal(ready.state.runtime?.controller, undefined)
       } else {
         assert.equal(ready.state.configError, undefined)
         assert.equal(ready.state.config.baseURL, fixture.endpoint + "/review")
@@ -494,8 +493,8 @@ try {
       settings: { baseURL: endpoint + "/main" }, models: { fixture: { name: "Lifecycle sentinel" } } } } })
   const serverPath = path.join(project, "opencode.json")
   await publish(controlPath, control)
-  await publish(serverPath, serverConfig([{ package: target, options }]))
-  await publish(cliPath, cliConfig([...(scenario === "cold-startup" ? [wrapper] : []), monitor]))
+  await publish(serverPath, serverConfig([target]))
+  await publish(cliPath, cliConfig([{ package: scenario === "cold-startup" ? wrapper : target, options }, monitor]))
   await publish(path.join(artifacts, "setup.json"), { version, temp, archive, manifest, fixture,
     socket: runtime.socket, supervisorPID: runtime.supervisorPID })
   await runtime.start("-d", "-s", "v2-lifecycle", "-x", "160", "-y", "40", "-c", project, host, "--standalone", project)
@@ -521,7 +520,6 @@ try {
       return value?.setupReturned && value.publicConnection && value
     })
     assert.equal(cold.state.connectionID, cold.publicConnection.id, "Startup admits the independently observed actual public marker")
-    assert.equal(cold.state.inheritOptions, true, "Auto-loaded TUI reads options from its scoped server companion")
     assert.equal(cold.state.config.model, "lifecycle-sentinel")
     await window()
     cold = await records("cli", "cold-startup")
@@ -529,7 +527,8 @@ try {
     for (const echo of cold.connections ?? []) assert.equal(echo.id, cold.state.connectionID,
       "Any native connection echo delivered during setup is the same admitted marker")
     const log = await readFile(path.join(env.XDG_DATA_HOME, "opencode/log/opencode.log"), "utf8")
-    assert.equal(log.split("\n").some(line => line.includes("http.url=/api/rpc/opencode-reviewer/configuration")
+    assert.ok(!log.includes("/api/rpc/opencode-reviewer/configuration"), "Cold startup never requests server settings")
+    assert.equal(log.split("\n").some(line => line.includes("http.url=/api/rpc/opencode-reviewer/handshake")
       && line.includes("http.status=499")), false, "Cold startup must not cancel an early handshake")
     // Subsequent lifecycle controls still exercise the normal custom prompts.
     options.instructions = promptDirectory
@@ -563,7 +562,8 @@ try {
   }
   const cliOn = async phase => {
     await setPhase("cli", phase)
-    await publish(cliPath, cliConfig([{ package: wrapper, options: phase === "invalid-config" ? { ...options, fileIO: {} } : options }, monitor]))
+    const entry = phase === "empty-cli" ? wrapper : { package: wrapper, options: phase === "invalid-config" ? { ...options, fileIO: {} } : options }
+    await publish(cliPath, cliConfig([entry, monitor]))
     return until("CLI " + phase, async () => {
       const record = await records("cli", phase)
       if (!record) return
@@ -601,7 +601,7 @@ try {
     cycles.push(await cliOff(phase))
     assert.equal((await command("status")).handshake.epoch, initial.handshake.epoch)
   }
-  for (const phase of ["invalid-config", "response-epoch", "response-location", "response-workspace", "response-version", "response-protocol", "partial-failure"]) {
+  for (const phase of ["empty-cli", "invalid-config", "response-epoch", "response-location", "response-workspace", "response-version", "response-protocol", "partial-failure"]) {
     await cliOn(phase)
     await cliOff(phase)
     assert.equal((await command("status")).handshake.epoch, initial.handshake.epoch)
@@ -613,7 +613,7 @@ try {
   const epochs = [initial.handshake.epoch]
   for (const phase of ["server-1", "server-2", "partial-failure"]) {
     await setPhase("server", phase)
-    await publish(serverPath, serverConfig([{ package: wrapper, options }]))
+    await publish(serverPath, serverConfig([wrapper]))
     const record = await until("server " + phase, async () => {
       const value = await records("server", phase)
       return (phase === "partial-failure" ? value?.cleaned : value?.setupReturned) && value
@@ -646,9 +646,9 @@ try {
   await until("monitor cleanup", async () => (await readMonitor())?.cleaned)
   await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, cold, archiveFiles, installations, epochs,
     cycles, registryRequests, network,
-     assertions: ["Actual repository npm archive with unchanged five files and shared exports", "Default package loads both roles from one server config entry before embedding controls",
+     assertions: ["Actual repository npm archive with unchanged five files and shared exports", "Separate server and CLI entries load both roles with reviewer options only in the CLI",
       ...(cold ? ["Real initial client/native marker identity admits one successful startup handshake without HTTP 499"] : []),
-      "Public scoped protocol-1 handshake and exact archived RPC schema", "Production CLI option parsing and rejected user-config dependency key",
+      "Public scoped protocol-2 handshake and exact archived RPC schema", "Empty terminal options disable review with a healthy companion", "Production CLI option parsing and rejected user-config dependency key",
       "Three CLI disable/reload cycles retain server epoch", "Owned real slot/listener/timer cleanup after abort, repeated cleanup and partial setup failure",
       "A canceled first CLI handshake recovers to an actual production controller through a second scoped RPC",
       "Invalid epoch/location/workspace/version/protocol response controls", "Server unload removes RPC and reload creates new epoch",
@@ -656,7 +656,7 @@ try {
     limits: ["Lifecycle and recovered production-controller construction only; no permission review, approval, notification or history activity is exercised.",
       "One standalone host and terminal; no shared-service, multi-terminal, disconnect or authoritative deletion proof.",
       cold ? "Cold CLI uses a read-only embedding observer of the installed archive and an independent public connection subscription. A native echo may precede observer registration; any delivered echo is checked against the admitted marker. Markers and RPC responses are not injected or delayed."
-        : "Default CLI is loaded through global configuration; its inert setup has no public per-plugin completion observer.",
+        : "The default CLI entry has no public per-plugin completion observer.",
       "Response mismatch controls alter a real public handshake response in the fixture wrapper, not the server implementation.",
       "Startup recovery injects a first client-side read held until its real production timeout; it does not delay host initialization or exercise an active-runtime reconnect.",
       "Current with* helpers do not compose with withPluginSetup, so injected state.dependencies identity is not observable through the archive seam.",

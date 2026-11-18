@@ -505,9 +505,8 @@ try {
     timeoutMs: 120000, notify: true, notifySound: false, staleReminderSeconds: reminderMs / 1000,
     notifications: Object.fromEntries(["attention", "unsafe", "question", "approved", "ended", "error"].map(kind => [kind,
        { banner: kind === "attention" || kind === "question" || scenario === "execution" && ["ended", "error"].includes(kind), sound: false }])) }
-  config.plugins = [{ package: reviewer, options: { ...options, ...(phase === "invalid" ? { fileIO: {} } : {}) } }, title]
   cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, attention: { notifications: false, sound: false },
-    session: { permissions: "prompt" }, plugins: [monitor] }
+    session: { permissions: "prompt" }, plugins: [{ package: reviewer, options: phase === "invalid" ? { ...options, fileIO: {} } : options }, monitor] }
   await publish(setupControl, { phase })
   // Behavioral checks activate a fresh generation after the actual
   // initial connection. Native receipt of an exact real probe birth establishes

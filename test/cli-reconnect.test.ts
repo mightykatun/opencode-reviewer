@@ -5,6 +5,9 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { setupCliReconnect } from "../src/cli-reconnect.js"
 import type { CliPluginState } from "../src/cli-plugin.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
+import { parseConfig } from "../src/config.js"
+import { parseNotificationConfig } from "../src/notification-config.js"
+import { BUILTIN_PROMPTS } from "../src/prompts.js"
 
 type Location = { directory: string; workspaceID?: string }
 const location: Location = { directory: "/server/project", workspaceID: "workspace" }
@@ -45,7 +48,7 @@ function events() {
     } }
 }
 function fixture(t: TestContext, options: { read?: (signal: AbortSignal, attempt: number, at: Location) => Promise<unknown>;
-  configuration?: (at: Location) => Promise<unknown>;
+  invalidConfig?: boolean;
   cleanup?: (at: Location) => Promise<void>; optionalCleanup?: () => Promise<void>; checkpoint?: () => void; initialFallback?: boolean;
   locations?: Location[] } = {}) {
   let native!: (event: { id: string }) => void, now = 0
@@ -59,17 +62,17 @@ function fixture(t: TestContext, options: { read?: (signal: AbortSignal, attempt
     assert.ok(wanted().some(value => value.directory === at.directory)); assert.deepEqual(request.location, at)
     calls.push(request.signal); handshakes.push(at)
     return options.read?.(request.signal, calls.length, at) ?? Promise.resolve(handshake(undefined, at))
-   }, configuration: (at: Location, request: { location: unknown }) => {
-     assert.deepEqual(request.location, at); configurations.push(at)
-     assert.ok(options.configuration, "Explicit terminal options must never request inherited configuration")
-     return options.configuration(at)
+   }, configuration: async (at: Location) => {
+     configurations.push(at)
+     return { handshake: handshake(undefined, at), options: { baseURL: "http://server.invalid/v1", model: "server", autoApprove: true } }
    } }) }
   const ctx = { location, client, data: { on: (type: string, listener: typeof native) => {
     assert.equal(type, "server.connected"); native = listener
     return () => { native = () => {} }
   } } } as unknown as Plugin.Context
-  const state = { connectionID: "initial", companion: options.initialFallback ? undefined : handshake(), config: {}, dependencies: {},
-    inheritOptions: !!options.configuration } as CliPluginState
+  const state: CliPluginState = { connectionID: "initial", companion: options.initialFallback ? undefined : handshake(),
+    ...(options.invalidConfig ? { configError: "Invalid model" } : { config: parseConfig({ baseURL: "http://localhost:40999/v1", model: "terminal" }) }),
+    notificationConfig: parseNotificationConfig({ notify: false }), dependencies: {}, stateRoot: "/state", prompts: BUILTIN_PROMPTS }
   const checkpoints: unknown[] = []
   const recovery = setupCliReconnect(ctx, state, life, { locations: () => locations.current.map(value =>
     ({ location: value, members: locations.members[value.directory] ?? [] })), install: (context, next, child, at) => {
@@ -84,65 +87,59 @@ function fixture(t: TestContext, options: { read?: (signal: AbortSignal, attempt
     async advance(ms = 0) { now += ms; t.mock.timers.tick(ms); await settle(); await settle() } }
 }
 
-test("new locations inherit their own settings and never the active location's configuration", async t => {
-  const f = fixture(t, { locations: [location, other], configuration: async at => ({
-    handshake: handshake(undefined, at), options: { baseURL: "http://localhost:40999/v1", model: at.directory, notify: false },
-  }) })
+test("new locations and their health probes use terminal settings", async t => {
+  const f = fixture(t, { locations: [location, other] })
   f.source.marker("initial"); await f.advance()
   const background = f.recovery.runtime(other)
-  assert.equal(background?.state.config?.model, other.directory)
-  assert.equal(background?.state.config?.notify, false)
-  assert.deepEqual(f.configurations, [other])
+  assert.equal(background?.state.config?.model, "terminal")
+  assert.deepEqual(background.state.companion, handshake(undefined, other))
   await f.advance(2000)
-  assert.deepEqual(f.configurations, [other], "Health probes do not reread settings or custom prompt files")
+  assert.deepEqual(f.configurations, [])
   assert.equal(f.recovery.runtime(other), background)
 })
 
-test("a new companion epoch reloads inherited settings only after retiring the old composition", async t => {
-  let epoch = "20000000-1000-4000-8000-100000000000", model = "first"
-  const f = fixture(t, { read: async () => handshake(epoch), configuration: async at => ({
-    handshake: handshake(epoch, at), options: { baseURL: "http://localhost:40999/v1", model, notify: false },
-  }) })
+test("a new companion epoch cannot replace terminal settings", async t => {
+  let epoch = "20000000-1000-4000-8000-100000000000"
+  const f = fixture(t, { read: async () => ({ ...handshake(epoch), options: { model: "server" } }) })
   f.source.marker("initial"); await f.advance(2000); await f.advance()
-  assert.equal(f.recovery.current()?.state.config?.model, "first")
+  assert.equal(f.recovery.current()?.state.config?.model, "terminal")
   const previous = f.recovery.current()!
-  epoch = "30000000-1000-4000-8000-000000000000"; model = "second"
+  epoch = "30000000-1000-4000-8000-000000000000"
   await f.advance(2000); await f.advance()
   assert.equal(previous.signal.aborted, true)
   assert.equal(previous.cleaned, true)
-  assert.equal(previous.state.config?.model, "first")
-  assert.equal(f.recovery.current()?.state.config?.model, "second")
+  assert.equal(f.recovery.current()?.state.config?.model, "terminal")
   assert.equal(f.recovery.current()?.state.companion?.epoch, epoch)
-  assert.equal(f.configurations.length, 2)
+  assert.deepEqual(f.configurations, [])
 })
 
-test("a location's notification fallback retains only that location's accepted settings", async t => {
+test("a location's notification fallback retains terminal settings", async t => {
+  let unavailable = false
   const f = fixture(t, { locations: [location, other], read: async (_signal, _attempt, at) =>
-    at.directory === other.directory ? null : handshake(undefined, at),
-  configuration: async at => ({ handshake: handshake(undefined, at),
-    options: { baseURL: "http://localhost:40999/v1", model: "background", notify: false } }) })
+    unavailable && at.directory === other.directory ? null : handshake(undefined, at) })
   f.source.marker("initial"); await f.advance()
   const previous = f.recovery.runtime(other)!
+  unavailable = true
   await f.advance(2000)
   assert.equal(previous.signal.aborted, true)
   const fallback = f.recovery.runtime(other)!
   assert.notEqual(fallback, previous)
   assert.equal(fallback.state.companion, undefined)
-  assert.equal(fallback.state.config?.model, "background")
+  assert.equal(fallback.state.config?.model, "terminal")
   assert.equal(fallback.state.notificationConfig?.notify, false)
 })
 
-test("known invalid inherited settings do not retry a companion health failure", async t => {
-  const f = fixture(t, { locations: [location, other], read: async (_signal, _attempt, at) => {
+test("invalid terminal settings do not retry admission at a new location", async t => {
+  const f = fixture(t, { locations: [location, other], invalidConfig: true, read: async (_signal, _attempt, at) => {
     if (at.directory === other.directory) throw { type: "rpc.unavailable" }
     return handshake(undefined, at)
-  }, configuration: async at => ({ handshake: handshake(undefined, at),
-    options: { baseURL: "http://localhost:40999/v1", model: "", notify: false } }) })
+  } })
   f.source.marker("initial"); await f.advance()
   assert.equal(f.recovery.runtime(other)?.state.config, undefined)
-  assert.match(f.recovery.runtime(other)!.state.configError!, /model must be a nonempty string/)
+  assert.equal(f.recovery.runtime(other)!.state.configError, "Invalid model")
   await f.advance(2000); await f.advance(250)
   assert.equal(f.handshakes.filter(at => at.directory === other.directory).length, 1)
+  assert.deepEqual(f.configurations, [])
 })
 
 test("the continuous public subscriber and delayed native echo leave the admitted generation untouched", async t => {
@@ -449,7 +446,7 @@ test("a connection change retires every location, and each drains only its own g
 const worktree: Location = { directory: "/server/project-worktree" }
 
 test("a home admits its member locations with their own handshakes and never their settings", async t => {
-  const f = fixture(t, { configuration: async at => ({ handshake: handshake(undefined, at), options: { baseURL: "http://localhost:40999/v1", model: "home" } }) })
+  const f = fixture(t)
   f.locations.members[location.directory] = [worktree]
   f.source.marker("initial"); await f.advance(); await f.advance()
   assert.equal(at(f, location).length, 2, "The startup composition had no members, so the pinned scope set changed")
@@ -457,7 +454,7 @@ test("a home admits its member locations with their own handshakes and never the
   assert.deepEqual(f.checkpoints, [at(f, location)[0]], "Replacement carries continuity like any other re-admission")
   assert.deepEqual(at(f, location)[1]!.state.members, [handshake(undefined, worktree)])
   assert.equal(f.recovery.runtime(worktree), undefined, "A member is not a composition of its own")
-  assert.equal(f.configurations.some(value => value.directory === worktree.directory), false, "Settings come from the home alone")
+  assert.deepEqual(f.configurations, [])
   await f.advance(2000); await f.advance(2000)
   assert.equal(at(f, location).length, 2, "Unchanged member scopes keep the composition")
 })

@@ -27,7 +27,8 @@ test("shared fixture RPC schema preserves the independent wire contract and seri
       required: ["location", "epoch", "sessionID", "requestID"], additionalProperties: false },
     output: { anyOf: [{ type: "null" }, { type: "object", properties: {
       request: { type: "object" }, invocation: { type: "object" },
-    }, required: ["request", "invocation"], additionalProperties: false }] }, errors },
+    }, required: ["request", "invocation"], additionalProperties: false }] },
+    errors: { ...errors, capacity_busy: { type: "object", properties: {}, additionalProperties: false } } },
   }, events: {} }
   assert.deepEqual(rpcDefinition(), expected)
   assert.deepEqual(new Function(`${rpcDefinition}\nreturn rpcDefinition()`)(), expected)
@@ -50,6 +51,8 @@ test("lifecycle's independent RPC definition matches production read errors with
   const definition = fixtureAST.program.body.find(node => node.type === "FunctionDeclaration" && node.id.name === "handshakeDefinition")
   assert.ok(definition)
   const rpc = new Function(`${fixture.slice(definition.start, definition.end)}\nreturn handshakeDefinition()`)()
+  assert.deepEqual(Object.keys(rpc.methods).sort(), ["evidence", "handshake", "invocation", "retrieve"])
+  for (const [name, method] of Object.entries(rpcDefinition().methods)) assert.deepEqual(method, rpc.methods[name])
   const source = await readFile(new URL("../src/companion-protocol.ts", import.meta.url), "utf8")
   const ast = parseSync(source, { sourceType: "module", babelrc: false, configFile: false, parserOpts: { plugins: ["typescript"] } })
   const declarations = ast.program.body.flatMap(node => {

@@ -124,7 +124,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   life.addCleanup(() => instructions.flush(), false)
   const setupInstructions = (root: () => string | undefined) => {
     let maxBytes: number
-    try { maxBytes = configuredEvidenceBytes(state.reviewerOptions ?? ctx.options) } catch { return }
+    try { maxBytes = configuredEvidenceBytes(ctx.options) } catch { return }
     setupHostSessionInstructions(ctx, life, { root, maxBytes,
       read: (id, signal) => instructions.read(id, maxBytes, signal, true), write: (id, text) => instructions.write(id, text) })
   }

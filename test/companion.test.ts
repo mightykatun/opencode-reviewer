@@ -11,36 +11,40 @@ import { monotonicTimers } from "./reviewer-clock.js"
 const skillOptions = { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
   reviewSkills: true, reviewTools: true, maxFiles: 6, maxEvidenceBytes: 131072 }
 
-test("configuration is scoped and returns independent clones of the setup options and handshake", async () => {
+test("the companion never reads server options or exposes them through RPC", async () => {
   const life = new PluginLifecycle()
   let handlers: any
   const location = { directory: "/project", workspaceID: "workspace" }
-  const options = { model: "original", notifications: { approved: { sound: true } } }
-  const context = { app: { version: "development" }, options,
+  const secret = "server-only-key-sentinel"
+  let optionReads = 0
+  const context = { app: { version: "development" }, get options() { optionReads++; return { apiKey: secret } },
     location: { ...location, project: { id: "project", directory: "/project", canonical: "/project" } },
     tool: { hook: async () => ({ dispose() {} }) },
-    rpc: { register: async (_definition: unknown, value: unknown) => { handlers = value; return { dispose() {} } } },
+    rpc: { register: async (definition: { methods: object }, value: object) => {
+      for (const methods of [definition.methods, value]) {
+        assert.deepEqual(Object.keys(methods).sort(), ["evidence", "handshake", "invocation", "retrieve"])
+      }
+      handlers = value
+      return { dispose() {} }
+    } },
   } as unknown as Plugin.Context
   const handshake = await setupCompanion(context, life)
   const call = { signal: life.signal, error: (type: string, message: string, data: unknown) => {
     throw Object.assign(Error(message), { type, data })
   } }
   try {
-    options.model = "changed"; options.notifications.approved.sound = false
-    const first = await handlers.configuration(location, call)
-    assert.deepEqual(first, { handshake, options: { model: "original", notifications: { approved: { sound: true } } } })
-    first.options.notifications.approved.sound = false
-    first.handshake.project.id = "changed"
-    assert.deepEqual(await handlers.configuration(location, call),
-      { handshake, options: { model: "original", notifications: { approved: { sound: true } } } })
-    assert.deepEqual(await handlers.handshake(location, call), handshake)
-    assert.equal("options" in await handlers.handshake(location, call), false)
+    const first = await handlers.handshake(location, call)
+    assert.deepEqual(first, handshake)
+    assert.equal(JSON.stringify(first).includes(secret), false)
+    assert.equal("options" in first, false)
+    first.project.id = "changed"
+    assert.equal((await handlers.handshake(location, call)).project.id, "project")
     for (const wrong of [{ directory: "/other", workspaceID: "workspace" }, { directory: "/project", workspaceID: "other" }]) {
-      await assert.rejects(handlers.configuration(wrong, call), { type: "scope" })
       await assert.rejects(handlers.handshake(wrong, call), { type: "scope" })
     }
     const aborted = new AbortController(); aborted.abort()
-    await assert.rejects(handlers.configuration(location, { ...call, signal: aborted.signal }))
+    await assert.rejects(handlers.handshake(location, { ...call, signal: aborted.signal }))
+    assert.equal(optionReads, 0)
   } finally { await life.stop() }
 })
 

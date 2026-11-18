@@ -15,6 +15,7 @@ export function rpcDefinition() {
     output: { anyOf: [{ type: "null" }, { type: "object", properties: {
       request: { type: "object" }, invocation: { type: "object" },
     }, required: ["request", "invocation"], additionalProperties: false }] },
-    errors: { scope: { type: "object", properties: {}, additionalProperties: false } } },
+    errors: { scope: { type: "object", properties: {}, additionalProperties: false },
+      capacity_busy: { type: "object", properties: {}, additionalProperties: false } } },
   }, events: {} }
 }

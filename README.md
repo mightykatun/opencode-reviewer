@@ -21,25 +21,34 @@ For OpenCode V2 on Linux.
 
 ## Install and config
 
-Add the [npm package](https://www.npmjs.com/package/opencode-reviewer) and its options
-to the `plugins` array in global `opencode.json`, under `~/.config/opencode/` or
-`$XDG_CONFIG_HOME/opencode/`. OpenCode loads both the server companion and terminal
-component from this one entry.
+Add the [npm package](https://www.npmjs.com/package/opencode-reviewer) to two files
+in `~/.config/opencode/` (or `$XDG_CONFIG_HOME/opencode/`).
+For a remote connection, configure `opencode.json` on the server and `cli.json`
+on the machine running the terminal.
 
+**`opencode.json`** loads the server companion:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-reviewer@latest"]
+}
+```
+
+**`cli.json`** configures the reviewer. Choose a model available at your endpoint
+and set `OPENCODE_REVIEWER_API_KEY` in the terminal environment before launch.
+Only `baseURL` and `model` are required. Omit `apiKeyEnv` for an unauthenticated
+endpoint. The review and notification switches below show the defaults.
+
+```json
+{
+  "$schema": "https://opencode.ai/v2/cli.json",
   "plugins": [
     {
       "package": "opencode-reviewer@latest",
       "options": {
         "baseURL": "https://openrouter.ai/api/v1",
         "model": "your-model",
-        "retrievalBaseURL": "https://openrouter.ai/api/v1",
-        "retrievalModel": "your-retrieval-model",
-        "apiKey": "your-api-key",
         "apiKeyEnv": "OPENCODE_REVIEWER_API_KEY",
-        "instructions": "/absolute/path/to/reviewer-prompts",
         "stream": false,
         "formatRetries": 1,
         "maxOutputTokens": 4096,
@@ -79,32 +88,28 @@ component from this one entry.
           "steered": { "banner": true, "sound": true },
           "error": { "banner": true, "sound": true },
           "ended": { "banner": true, "sound": true }
-        },
-        "notificationSoundDirectory": "/absolute/path/to/notification-sounds"
+        }
       }
     }
   ]
 }
 ```
 
-Rwo-entry setup is also supported: keep the companion in `opencode.json`
-and the reviewer options in `cli.json`. Nonempty terminal options take precedence
-as a complete override. To switch to one entry, move those options into the
-`opencode.json` entry and remove the reviewer entry from `cli.json`.
-Keep OpenCode's `keybinds` and other terminal preferences in `cli.json`.
-Configuration edits reload automatically.
+If you previously put reviewer options in `opencode.json`, move the whole
+`options` object to the reviewer entry in `cli.json`. Leave just the package
+name in `opencode.json`. Without valid terminal settings, review and automatic
+permission replies stay off. Configuration edits reload automatically.
 
-Only `baseURL` and `model` are required. Use any OpenAI-compatible Chat Completions
-endpoint: `/chat/completions` is appended to the base URL. Choose a model available
-at that endpoint. Retrieval uses non-streaming tool calls.
+Use an OpenAI-compatible Chat Completions endpoint. The reviewer appends
+`/chat/completions` to the base URL. Retrieval uses non-streaming tool calls.
 Optional `retrievalBaseURL` and `retrievalModel` select a separate retriever.
 Omit them to reuse the reviewer endpoint and model. A different retrieval endpoint
 uses its own `retrievalApiKey` or `retrievalApiKeyEnv`, or no authentication if both
 are omitted.
-Replace `apiKey`, or remove it and set the variable named by `apiKeyEnv` before
-launching OpenCode. The inline key takes precedence. Omit both for an unauthenticated
-endpoint. Remove `instructions` to use the built-in prompts and
-`notificationSoundDirectory` to use the bundled sounds.
+An inline `apiKey` takes precedence over `apiKeyEnv`. Omit both for an
+unauthenticated endpoint. The terminal sends operation evidence to the configured
+providers while the native permission is pending. Retrieval can include file
+contents in those requests, even when the native permission is later rejected.
 
 ### Opencode docs
 
@@ -113,7 +118,7 @@ endpoint. Remove `instructions` to use the built-in prompts and
 
 ## Options reference
 
-These are options inside the plugin's `options` object in global `opencode.json`.
+These are options inside the plugin's `options` object in the terminal's `cli.json`.
 Defaults apply only to omitted options. `null` is invalid. Boolean and integer
 options require JSON booleans and numbers, not quoted strings. Integer ranges are
 inclusive, fractions are invalid, and the maximum safe integer is

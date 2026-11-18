@@ -7,8 +7,6 @@ import { TransportOwnership } from "./transport-ownership.js"
 import timers from "node:timers/promises"
 import { companionHandshake } from "./companion-handshake.js"
 import { hostLocation, locationKey, type ReviewHome, type ReviewLocation } from "./host-locations.js"
-import { readCliConfiguration, type CliConfiguration } from "./cli-configuration.js"
-import { BUILTIN_PROMPTS } from "./prompts.js"
 
 type Client = Plugin.Context["client"]
 
@@ -175,17 +173,14 @@ class LocationAdmission<T> {
       this.admission = abort
       let companion: CompanionHandshake | undefined
       let members: CompanionHandshake[] = []
-      let configuration: CliConfiguration | undefined
       let terminal = false
       let rebind = false
       try {
         companion = await withDeadline(AbortSignal.any([this.host.signal, abort.signal]), 10000, async signal => {
-          const inherit = this.host.state.inheritOptions && !this.active
           const result = await companionHandshake(() => connection.client, this.location, this.reads, signal,
-            !!(this.active?.state ?? this.host.state).config || !!inherit, { configuration: inherit })
+            !!this.host.state.config)
           terminal = result?.terminal ?? false
-          if (result?.options) configuration = await readCliConfiguration(result.options, signal, this.reads)
-          // Settings come from the home alone. One attempt per member and probe:
+          // One attempt per member and probe:
           // a member that fails stays manual until a later probe admits it.
           if (result?.companion) for (const member of this.members) {
             const admitted = await companionHandshake(() => connection.client, member, this.reads, signal, false)
@@ -210,8 +205,7 @@ class LocationAdmission<T> {
             else this.start(connection.client, { ...previous.state, companion: undefined, members: undefined, connectionID: connection.id })
           }
         } else if (!previous) this.start(connection.client, { ...this.host.state,
-          ...(this.host.state.inheritOptions ? { config: undefined, configError: undefined, notificationConfig: undefined, reviewerOptions: undefined,
-            prompts: BUILTIN_PROMPTS, ...configuration } : {}), companion, members: companion ? members : undefined, connectionID: connection.id })
+          companion, members: companion ? members : undefined, connectionID: connection.id })
       }
       this.probeAt = rebind ? 0 : performance.now() + 2000
       if (this.admission === abort) this.admission = undefined

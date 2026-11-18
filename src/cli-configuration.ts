@@ -6,7 +6,6 @@ import type { TransportOwnership } from "./transport-ownership.js"
 import { uiText } from "./ui-text.js"
 
 export interface CliConfiguration {
-  reviewerOptions?: Readonly<Record<string, unknown>>
   config?: Config
   configError?: string
   notificationConfig?: NotificationConfig
@@ -18,7 +17,7 @@ export interface CliConfiguration {
 export async function readCliConfiguration(options: Record<string, unknown>, signal: AbortSignal,
   reads: TransportOwnership): Promise<CliConfiguration> {
   signal.throwIfAborted()
-  const state: CliConfiguration = { reviewerOptions: options, prompts: BUILTIN_PROMPTS }
+  const state: CliConfiguration = { prompts: BUILTIN_PROMPTS }
   try { state.notificationConfig = parseNotificationConfig(options) } catch { /* Invalid desktop options disable notifications only. */ }
   try { state.config = parseConfig(state.notificationConfig ? options : { ...options,
     notify: false, notifySound: false, notificationSoundDirectory: undefined, staleReminderSeconds: 0, notifications: {} }) }

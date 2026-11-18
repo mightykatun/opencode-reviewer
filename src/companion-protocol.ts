@@ -1,7 +1,6 @@
 import { Rpc } from "@opencode/plugin/rpc"
 import path from "node:path"
 import { evidenceOptionsSchema } from "./host-evidence-options.js"
-import { boundedHostJSON } from "./host-request.js"
 
 export const companionProtocol = 2
 /** Model-chosen read-only operations the companion executes for retrieval. */
@@ -41,16 +40,6 @@ export const companionRpc = Rpc.define({
     handshake: {
       input: location,
       output: handshakeSchema,
-      errors: scopeErrors,
-    },
-    // Native TUI discovery loads the package but does not forward its options.
-    // Configuration is separate from evidence and bound to the owning epoch.
-    configuration: {
-      input: location,
-      output: {
-        type: "object", properties: { handshake: handshakeSchema, options: { type: "object" } },
-        required: ["handshake", "options"], additionalProperties: false,
-      },
       errors: scopeErrors,
     },
     invocation: {
@@ -106,15 +95,4 @@ export function readHandshake(value: unknown, expected: CompanionHandshake["loca
     || ![expected.directory, project.directory, project.canonical].every(item => path.isAbsolute(item as string))) return
   return { protocol: companionProtocol, hostVersion: record.hostVersion, epoch: record.epoch,
     location: { ...expected }, project: { id: project.id as string, directory: project.directory as string, canonical: project.canonical as string } }
-}
-
-/** Keep configuration validation separate from transport and operation evidence. */
-export function readCompanionConfiguration(value: unknown, expected: CompanionHandshake["location"]) {
-  const record = boundedHostJSON(value)
-  if (!record || typeof record !== "object" || Array.isArray(record) || Object.keys(record).length !== 2
-    || !("handshake" in record) || !("options" in record)) return
-  const options = record.options
-  if (!options || typeof options !== "object" || Array.isArray(options)) return
-  const companion = readHandshake(record.handshake, expected)
-  if (companion) return { companion, options: options as Record<string, unknown> }
 }

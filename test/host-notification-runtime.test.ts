@@ -161,7 +161,7 @@ test("notification-only fallback retires inactive visits without losing a live r
   assert.equal(f.runtime.notifications.trackedSessions().size, 256)
 })
 
-for (const failure of ["companion", "configuration", "timeout", "unobserved", "conflicting"] as const) {
+for (const failure of ["companion", "configuration", "empty", "timeout", "unobserved", "conflicting"] as const) {
   test(`failed CLI ${failure} state composes attention with only its verified initial echo exempted`, async t => {
     const f = contextFixture(); t.after(() => f.life.stop())
     let now = 0, handshakes = 0
@@ -169,7 +169,7 @@ for (const failure of ["companion", "configuration", "timeout", "unobserved", "c
       t.mock.method(performance, "now", () => now)
       t.mock.timers.enable({ apis: ["setTimeout"] })
     }
-    const cli = { ...f.ctx, options: { baseURL: "http://fixture.invalid/v1", model: failure === "configuration" ? "" : "unused",
+    const cli = { ...f.ctx, options: failure === "empty" ? {} : { baseURL: "http://fixture.invalid/v1", model: failure === "configuration" ? "" : "unused",
       notifySound: false, staleReminderSeconds: 0 },
       client: { ...f.ctx.client, event: { async *subscribe() {
         if (failure !== "unobserved") yield { type: "server.connected", id: "event-initial" }

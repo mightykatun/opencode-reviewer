@@ -3,7 +3,6 @@ import type { CompanionHandshake } from "./companion-protocol.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
 import type { PluginDependencies } from "./plugin-dependencies.js"
 import { localStateRoot } from "./local-state.js"
-import { BUILTIN_PROMPTS } from "./prompts.js"
 import { remainingTime, withDeadline } from "./deadline.js"
 import { TransportOwnership } from "./transport-ownership.js"
 import { loadHostRuntime } from "./host-runtime-loader.js"
@@ -14,8 +13,6 @@ import { hostLocation } from "./host-locations.js"
 import { readCliConfiguration, type CliConfiguration } from "./cli-configuration.js"
 
 export interface CliPluginState extends CliConfiguration {
-  /** Empty native TUI options inherit configuration from each scoped companion. */
-  inheritOptions?: boolean
   companion?: CompanionHandshake
   /** Member locations this composition also reads permissions from, each with
    * its own companion handshake. Only a reviewer composition has members. */
@@ -30,11 +27,10 @@ export interface CliPluginState extends CliConfiguration {
 
 /** Configuration and handshake precede scope-pinned production admission. */
 export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecycle, dependencies: PluginDependencies): Promise<CliPluginState> {
-  const state: CliPluginState = { dependencies, stateRoot: localStateRoot(), prompts: BUILTIN_PROMPTS,
-    inheritOptions: Object.keys(context.options).length === 0 }
   const reads = new TransportOwnership()
   lifecycle.addCleanup(() => reads.settled())
-  if (!state.inheritOptions) Object.assign(state, await readCliConfiguration(context.options, lifecycle.signal, reads))
+  const state: CliPluginState = { dependencies, stateRoot: localStateRoot(),
+    ...await readCliConfiguration(context.options, lifecycle.signal, reads) }
   // Startup admits the current host location. Recovery admits every other home
   // and each home's member locations, each with its own handshake.
   const location = hostLocation(context)
@@ -77,19 +73,11 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
         || (nativeID !== undefined && !initialConnectionEcho(connected, nativeID))) return
       markerID = connected
       connectionVerified = true
-      const result = await companionHandshake(() => context.client, location, reads, signal,
-        state.inheritOptions || !!state.config, { connection: () => connection.signal, configuration: state.inheritOptions })
-      if (!result) return
-      const configuration = result.options
-        ? await readCliConfiguration(result.options, AbortSignal.any([signal, result.connection]), reads) : undefined
-      return { ...result, configuration }
+      return companionHandshake(() => context.client, location, reads, signal, !!state.config, () => connection.signal)
     }, "Companion startup")
     // Deadline callbacks produce data only. Fence the final promise handoff
     // before installing the runtime's connection fence and recovery owner.
-    if (admission?.connection === connection.signal) {
-      if (admission.configuration) Object.assign(state, admission.configuration)
-      state.companion = admission.companion
-    }
+    if (admission?.connection === connection.signal) state.companion = admission.companion
   } catch { lifecycle.signal.throwIfAborted() }
   finally {
     // Companion failure does not invalidate an independently observed connection.

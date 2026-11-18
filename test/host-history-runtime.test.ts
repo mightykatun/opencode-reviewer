@@ -114,10 +114,10 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", o
   return { ...f, runtime: f.compose(f.state) }
 }
 
-for (const failure of ["companion", "configuration", "unobserved", "conflicting"] as const) {
+for (const failure of ["companion", "configuration", "empty", "unobserved", "conflicting"] as const) {
   test(`failed CLI ${failure} state composes history with only its verified initial echo exempted`, async t => {
     const f = contextFixture(); t.after(() => f.life.stop())
-    const cli = { ...f.ctx, options: { baseURL: "http://fixture.invalid/v1", model: failure === "configuration" ? "" : "unused" },
+    const cli = { ...f.ctx, options: failure === "empty" ? {} : { baseURL: "http://fixture.invalid/v1", model: failure === "configuration" ? "" : "unused" },
       client: { ...f.ctx.client, event: { async *subscribe() {
         if (failure !== "unobserved") yield { type: "server.connected", id: "event-initial" }
       } }, rpc: () => ({ handshake: async () => { throw Error("Companion unavailable") } }) },
@@ -127,7 +127,7 @@ for (const failure of ["companion", "configuration", "unobserved", "conflicting"
       } },
     } as unknown as Plugin.Context
     const state = await setupCli(cli, f.life, { adapterOnly: true })
-    const verified = failure === "companion" || failure === "configuration"
+    const verified = failure !== "unobserved" && failure !== "conflicting"
     assert.equal(state.companion, undefined)
     assert.equal(state.connectionID, verified ? "event-initial" : undefined)
     const runtime = f.compose({ ...state, stateRoot: f.state.stateRoot })
