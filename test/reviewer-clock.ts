@@ -3,10 +3,10 @@ import timers from "node:timers/promises"
 
 /** Fake setTimeout and performance.now on one integer clock, so a deadline armed
  * with Math.ceil(end - now) fires on exactly its own tick. Date and waits stay real. */
-export function monotonicTimers(t: TestContext) {
+export function monotonicTimers(t: TestContext, intervals = false) {
   let now = 0
   t.mock.method(performance, "now", () => now)
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  t.mock.timers.enable({ apis: intervals ? ["setTimeout", "setInterval"] : ["setTimeout"] })
   return { tick(ms: number) { now += ms; t.mock.timers.tick(ms) } }
 }
 

@@ -1,5 +1,6 @@
 import { test, type TestContext } from "node:test"
 import assert from "node:assert/strict"
+import { monotonicTimers } from "./reviewer-clock.js"
 import { setImmediate as settle } from "node:timers/promises"
 import { remainingTime } from "../src/deadline.js"
 import { parseConfig } from "../src/config.js"
@@ -167,14 +168,14 @@ for (const removal of ["cancel", "reply", "delete", "dispose"] as const) for (co
   })
 }
 test("verification timeout retains physical ownership, recovers only after settlement, and preserves expired countdown", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const f = fixture(t), held = deferred<HostRequest[]>(), recovery = deferred<HostRequest[]>(); let reads = 0, actual = 0, maximum = 0
   f.state.read = async () => {
     maximum = Math.max(maximum, ++actual)
     try { return await (++reads === 1 ? held.promise : reads === 2 ? recovery.promise : Promise.resolve([request()])) }
     finally { actual-- }
   }
-  await f.add(); f.clock.jump(2200); await settle(); t.mock.timers.tick(5000); await settle()
+  await f.add(); f.clock.jump(2200); await settle(); clock.tick(5000); await settle()
   assert.equal(f.reads[0]?.aborted, true)
   for (let i = 0; i < 20; i++) { f.controller.reconcile([request()], f.controller.revision); f.wake() }
   assert.equal(reads, 1); held.resolve([request()]); await settle(); assert.equal(reads, 2)
@@ -182,22 +183,22 @@ test("verification timeout retains physical ownership, recovers only after settl
   assert.equal(reads, 3); assert.equal(maximum, 1); assert.equal(f.writes.length, 1)
 })
 test("stale-read retry shares the original five-second budget and never overlaps unsettled I/O", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const f = fixture(t), first = deferred<HostRequest[]>(), second = deferred<HostRequest[]>(); let reads = 0
   f.state.read = () => ++reads === 1 ? first.promise : reads === 2 ? second.promise : Promise.resolve([request()])
-  await f.add(); const attempt = f.controller.approveNow("review"); await settle(); t.mock.timers.tick(4000)
+  await f.add(); const attempt = f.controller.approveNow("review"); await settle(); clock.tick(4000)
   f.controller.replied("unrelated"); first.resolve([request()]); await settle()
-  assert.equal(reads, 2); assert.equal(f.reads[0], f.reads[1]); t.mock.timers.tick(1000); await attempt
+  assert.equal(reads, 2); assert.equal(f.reads[0], f.reads[1]); clock.tick(1000); await attempt
   assert.equal(reads, 2); assert.equal(f.reads[1]?.aborted, true); assert.equal(f.writes.length, 0)
   second.resolve([request()]); await settle(); assert.equal(reads, 3)
 })
 test("fresh read and native ACK share one deadline; late acknowledgement never retries or confirms", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const f = fixture(t), read = deferred<HostRequest[]>(), ack = deferred<OnceSubmission>(); let reads = 0
   f.state.read = () => ++reads === 1 ? read.promise : Promise.resolve([request()]); f.state.write = () => ack.promise
-  await f.add(); const attempt = f.controller.approveNow("review"); await settle(); t.mock.timers.tick(4000)
+  await f.add(); const attempt = f.controller.approveNow("review"); await settle(); clock.tick(4000)
   read.resolve([request()]); await settle(); assert.equal(f.writes.length, 1)
-  t.mock.timers.tick(1000); await attempt; assert.equal(f.writes[0]?.aborted, true); assert.equal(f.view()?.autoApproval?.status, "failed")
+  clock.tick(1000); await attempt; assert.equal(f.writes[0]?.aborted, true); assert.equal(f.view()?.autoApproval?.status, "failed")
   ack.resolve({ status: "submitted" }); await settle(); f.wake(); await f.controller.approveNow("review"); assert.equal(f.writes.length, 1)
   assert.equal(f.facts.filter(f => f.type === "confirmed").length, 0)
 })
@@ -221,7 +222,7 @@ for (const outcome of ["resolve", "reject"] as const) test(`cancelled old verifi
   await next; await settle(); assert.equal(reads, 2); assert.equal(maximum, 1); assert.equal(actual, 0); assert.equal(f.writes.length, 1)
 })
 test("old resolved read-slot timeout recovers a newer request only after the old I/O settles", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const f = fixture(t), oldRead = deferred<HostRequest[]>(); let reads = 0, actual = 0, maximum = 0
   f.state.read = async () => {
     maximum = Math.max(maximum, ++actual)
@@ -229,7 +230,7 @@ test("old resolved read-slot timeout recovers a newer request only after the old
   }
   await f.add(); const old = f.controller.approveNow("review", true); await settle(); f.controller.replied("review"); await old
   f.state.pending = [request("new")]; await f.add(request("new")); const next = f.controller.approveNow("new", true)
-  await settle(); t.mock.timers.tick(5000); await next
+  await settle(); clock.tick(5000); await next
   assert.equal(reads, 1); assert.equal(f.writes.length, 0)
   for (let i = 0; i < 20; i++) { f.controller.reconcile([request("new")], f.controller.revision); f.wake() }
   assert.equal(reads, 1); oldRead.resolve([request()]); await settle(); assert.equal(reads, 2); assert.equal(maximum, 1)

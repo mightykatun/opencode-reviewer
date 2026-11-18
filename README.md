@@ -175,7 +175,7 @@ Normal retrieval turns are not counted as retries.
 
 | Option | Type | Default | Accepted values and behavior |
 | --- | --- | --- | --- |
-| `autoApprove` | boolean | `false` | Allow Safe reviews once automatically. Normally waits for completion, validation and the countdown. Works throughout the current conversation, including subagent browsing and hidden/covered reports. Home, dashboards, unrelated conversations and native permission decision editing wait without cancellation. |
+| `autoApprove` | boolean | `false` | Allow Safe reviews once automatically. Normally waits for completion, validation and the countdown. Works in the routed conversation or any open conversation tab, including hidden/covered reports. Native permission decision editing holds only that routed conversation. |
 | `autoRejectSteering` | boolean | `false` | Independent of `autoApprove`. Requires steering text with every Unsafe rating. Missing, null or blank steering triggers format-correction retries. Valid Unsafe reports start the same countdown, then answer the native prompt with Reject and a message the agent reads: the reason, the steering and a fixed closing sentence. See Automatic steering rejection. |
 | `maxSteeringRejections` | integer | `1` | `1`–`100`. Consecutive automatic rejections per session. After that, Unsafe requests in that session wait for you until any permission in it is approved. |
 | `fastMode` | boolean | `false` | Requires `autoApprove: true` for approvals. Approve an eligible, front-of-queue request as soon as a Safe rating is parsed, bypassing the countdown. With `autoRejectSteering: true`, also reject as soon as an Unsafe rating, its reason and its steering are parsed. Respects `stream`. With `stream: false`, waits for the complete validated response. Finish the report and save it in the background after the reply. |
@@ -344,11 +344,10 @@ steering rejection, below.
 - Click the countdown to approve right away, or click Cancel to keep the request
   manual.
 - The request must be first in OpenCode's permission queue.
-- You must be viewing the request's conversation or one of its subagents. The
-  panel doesn't need to be visible.
-- Home, the dashboard and unrelated conversations hold approval. With OpenCode
-  tabs, an open background tab of the request's conversation is enough, even
-  when the active tab is in another directory. Its review runs in the
+- You must be viewing the request's conversation or one of its subagents, or
+  have a tab of that conversation open. The panel doesn't need to be visible.
+- An open conversation tab is enough on home, the dashboard or another
+  conversation, even when the active tab is in another directory. Its review runs in the
   background. A report that is still open shows when you return to that tab,
   and completed reports are saved to history.
 - The current directory and the directories of open tabs are reviewed at the
@@ -357,15 +356,17 @@ steering rejection, below.
   covered in total. Requests past that limit stay manual.
 - A held countdown keeps its deadline. If it has expired, approval runs as soon
   as the request is eligible again.
-- Selecting Allow always or Reject in the native prompt, or typing a rejection
-  reason, holds approval. Moving back to Allow once resumes it.
+- Selecting Allow always or Reject in the routed conversation's native prompt,
+  or typing a rejection reason, holds that conversation's approval. Moving back
+  to Allow once resumes it. Other conversations' open tabs continue independently.
 - Cancel, `/reviewer-disable` and native rejection or interruption stop
   automation for that request. Returning or re-enabling review doesn't restart it.
 - If the plugin can't confirm that an approval went through, it never resends it.
   The request stays manual.
 
 The panel shows **Allowed in Ns** during the countdown, then **Checking…** and
-**Allowing…**. It shows **Auto-approval waiting** while approval is held and
+**Allowing…**. Before dispatch, waits retain a disabled **Checking…** button
+beside **Cancel**, including before the countdown first starts. It shows
 **Auto-approval canceled** after Cancel. If approval fails, it shows
 **Auto-approval unavailable. Use native controls.**
 
@@ -395,8 +396,8 @@ it normally appears red, but text matching native denial phrases such as
 `rejected permission` can appear muted.
 
 - The panel shows **Steering:** and the text in red italics while the rejection
-  is armed or sent, and **Rejected in Ns**, **Rejecting…**, **Auto-rejection
-  waiting**, **Auto-rejection canceled** or **Auto-rejection unavailable. Use
+  is armed or sent, and **Rejected in Ns**, **Checking…**, **Rejecting…**,
+  **Auto-rejection canceled** or **Auto-rejection unavailable. Use
   native controls.** like automatic approval.
 - Missing, null or blank steering on an Unsafe response triggers correction up to
   `formatRetries`. Exhausting those attempts shows Analysis unavailable and leaves

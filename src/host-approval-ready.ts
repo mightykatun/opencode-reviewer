@@ -39,13 +39,13 @@ export function nativeDecisionPending(tree: NativeDecisionNode, selected: RGBA):
   try { return visit(tree) } catch { return true }
 }
 
-/** UI presentation is deliberately absent. A known open background tab can
- * approve, but home, unknown routes and unrelated navigation without tabs wait. */
+/** A proven open conversation tab is independent of the active route. Native
+ * decision controls belong only to the routed conversation, never another tab. */
 export function hostApprovalReady(request: Pick<HostRequest, "sessionID">, root: string | undefined,
   route: { type: string; sessionID?: string }, session: (id: string) => SessionLocation | undefined,
   decisionPending: () => boolean, tabs: readonly { sessionID: string; active: boolean }[] = []): boolean {
-  if (!root || route.type !== "session" || conversationRoot(request.sessionID, session) !== root || decisionPending()) return false
-  const active = conversationRoot(route.sessionID, session)
-  return active === root || !!active && tabs.some(tab => tab.active && tab.sessionID === route.sessionID)
-    && tabs.some(tab => !tab.active && conversationRoot(tab.sessionID, session) === root)
+  if (!root || conversationRoot(request.sessionID, session) !== root) return false
+  const active = route.type === "session" ? conversationRoot(route.sessionID, session) : undefined
+  if (active === root) return !decisionPending()
+  return tabs.some(tab => conversationRoot(tab.sessionID, session) === root)
 }

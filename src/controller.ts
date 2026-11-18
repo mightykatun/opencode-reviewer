@@ -302,7 +302,8 @@ export class Controller<R extends RequestIdentity = HostRequest> {
 
   cancelAutoApproval(id: string) {
     const entry = this.entries.get(id)
-    if (!entry || !entry.approvalArmed || entry.approvalDispatched || this.manual.has(id)) return
+    if (!entry || !this.active(entry) || entry.view.resolved || entry.approvalDispatched || this.manual.has(id)
+      || (!entry.approvalArmed && !this.automatic(entry))) return
     this.lifecycleFact({ type: "cancelled", request: entry.view.request, reason: "explicit" })
     entry.cancelTimer?.()
     entry.cancelTimer = undefined

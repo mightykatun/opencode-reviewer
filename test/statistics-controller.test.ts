@@ -1,5 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { monotonicTimers } from "./reviewer-clock.js"
 import { setImmediate as settle } from "node:timers/promises"
 import { StatisticsController, type StatisticsClock } from "../src/statistics-controller.js"
 import { empty } from "../src/lifetime.js"
@@ -147,12 +148,12 @@ test("Conversation retries transient ancestry failures every two seconds without
 })
 
 for (const outcome of ["resolve", "reject"] as const) test(`timed-out noncooperative ancestry starts retry delay only after late ${outcome} and settled ownership end`, async t => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] })
+  const clock = monotonicTimers(t, true)
   const time = fakeClock(), root = deferred<string>(), cleanup = deferred<void>(); let count = 0
   const f = fixture(t, () => ++count === 1 ? Object.assign(root.promise, { settled: cleanup.promise }) : Promise.resolve("root"), time.clock)
   f.finish(0); await settle()
   f.controller.open("child"); f.controller.select("conversation"); await settle()
-  t.mock.timers.tick(5000); await settle()
+  clock.tick(5000); await settle()
   assert.equal(f.state().ancestry, "unavailable")
   for (let i = 0; i < 20; i++) { f.controller.select("conversation"); time.tick(2000); await settle() }
   assert.equal(count, 1); assert.equal(time.pending.size, 0)
@@ -294,7 +295,7 @@ test("production ancestry composition retains physical ownership through statist
 })
 
 for (const outcome of ["resolve", "reject"] as const) test(`production statistics deadline and disposal retain actual ancestry through late ${outcome}`, async t => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] })
+  const clock = monotonicTimers(t, true)
   const actual = deferred<{ id: string }>(), cleanup = deferred<void>(); let calls = 0
   const ancestry = new SessionAncestry(async () => {
     calls++; try { return await actual.promise } finally { await cleanup.promise }
@@ -303,8 +304,8 @@ for (const outcome of ["resolve", "reject"] as const) test(`production statistic
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
     f.finish(0); await settle(); f.controller.open("old"); f.controller.select("conversation"); await settle()
-    t.mock.timers.tick(5000); await settle(); assert.equal(f.state().ancestry, "unavailable")
-    for (let n = 0; n < 10; n++) { f.controller.select("conversation"); t.mock.timers.tick(5000); await settle() }
+    clock.tick(5000); await settle(); assert.equal(f.state().ancestry, "unavailable")
+    for (let n = 0; n < 10; n++) { f.controller.select("conversation"); clock.tick(5000); await settle() }
     assert.equal(calls, 1)
     if (outcome === "resolve") actual.resolve({ id: "old" }); else actual.reject(Error("late failure"))
     await settle(); assert.equal(calls, 1)

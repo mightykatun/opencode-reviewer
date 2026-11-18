@@ -1,5 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { setImmediate as settle } from "node:timers/promises"
 import { parseConfig, configuredEvidenceBytes } from "../src/config.js"
 import { review } from "../src/reviewer.js"
 import { BUILTIN_PROMPTS, CONTRACT, sessionInstructionsPrompt } from "../src/prompts.js"
@@ -85,6 +86,34 @@ test("timed-out optional reads retain physical ownership through actual settleme
   release("late rules")
   await evaluation.settled
   assert.equal(settled, true)
+})
+
+test("an early inherited read timer cannot turn the enclosing review deadline into optional success", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  let now = 0, release!: (value: string) => void, enter!: () => void
+  t.mock.method(performance, "now", () => now)
+  const wait = new Promise<string>(resolve => { release = resolve })
+  const entered = new Promise<void>(resolve => { enter = resolve })
+  const evaluation = ownedReview(new AbortController().signal, 20, signal => {
+    // The nested wait has 19 ms remaining and its timer is delivered first.
+    now = 1
+    return sessionInstructionsSnapshot(() => { enter(); return wait }, signal)
+  })
+  let visible = false, physical = false
+  void evaluation.then(() => { visible = true }, () => { visible = true })
+  void evaluation.settled?.then(() => { physical = true })
+  const rejected = assert.rejects(evaluation, { name: "DeadlineError" })
+  await entered
+  now = 19.9; t.mock.timers.tick(19)
+  await settle()
+  assert.equal(visible, false, "the early nested timer must not produce empty optional guidance")
+  assert.equal(physical, false)
+  now = 20; t.mock.timers.tick(1)
+  await rejected
+  assert.equal(physical, false, "deadline expiry still owns the unresolved physical read")
+  release("late rules")
+  await evaluation.settled
+  assert.equal(physical, true)
 })
 
 test("the same byte-limit parser supports local editing despite unrelated invalid config", () => {

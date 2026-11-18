@@ -1,5 +1,6 @@
 import { test, type TestContext } from "node:test"
 import assert from "node:assert/strict"
+import { monotonicTimers } from "./reviewer-clock.js"
 import { setImmediate as settle } from "node:timers/promises"
 import type { HostRequest } from "../src/host-types.js"
 import { PendingRefresh } from "../src/pending-refresh.js"
@@ -67,16 +68,16 @@ test("refresh bursts coalesce into one follow-up without discarding a valid acti
 })
 
 for (const outcome of ["resolve", "reject"] as const) test(`expired noncooperative read owns capacity until late ${outcome}, then coalesces recovery`, async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const f = fixture(t)
   const first = f.refresh.refresh()
   await settle()
   await f.refresh.refresh()
-  t.mock.timers.tick(4999)
+  clock.tick(4999)
   await settle()
   assert.equal(f.calls[0]!.signal.aborted, false)
   assert.equal(f.calls.length, 1)
-  t.mock.timers.tick(1)
+  clock.tick(1)
   await first
   await settle()
   assert.equal(f.calls[0]!.signal.aborted, true)

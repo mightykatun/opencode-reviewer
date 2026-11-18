@@ -1,5 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { setImmediate as settle } from "node:timers/promises"
 import { DeadlineError, remainingTime, reviewStage, withDeadline } from "../src/deadline.js"
 
 const signal = () => new AbortController().signal
@@ -133,3 +134,58 @@ test("local timer expiry aborts the child at its own budget and leaves the paren
     assert.equal(remainingTime(parent), 90)
   })
 })
+
+test("early timer delivery rearms against the original end and uses the latest stage", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  let now = 0, bounded!: AbortSignal, enter!: () => void
+  t.mock.method(performance, "now", () => now)
+  const entered = new Promise<void>(resolve => { enter = resolve })
+  const pending = withDeadline(signal(), 20, async child => {
+    bounded = child
+    enter()
+    return new Promise(() => {})
+  })
+  const rejected = assert.rejects(pending, { name: "DeadlineError", message: "Latest stage timed out" })
+  await entered
+  now = 19.1; t.mock.timers.tick(20)
+  await settle()
+  assert.equal(bounded.aborted, false)
+  assert.ok(remainingTime(bounded) > 0)
+  reviewStage(bounded, "Latest stage")
+  now = 19.9; t.mock.timers.tick(1)
+  await settle()
+  assert.equal(bounded.aborted, false, "repeated early delivery never expires the deadline")
+  now = 20; t.mock.timers.tick(1)
+  await rejected
+  assert.equal(bounded.aborted, true)
+})
+
+for (const outcome of ["success", "failure", "cancel"] as const) {
+  test(`an early timer's replacement is cleared on ${outcome} and late callbacks cannot rearm`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] })
+    let now = 0, enter!: () => void, release!: () => void, fail!: (error: Error) => void
+    t.mock.method(performance, "now", () => now)
+    const timers = t.mock.method(globalThis, "setTimeout")
+    const cleared = t.mock.method(globalThis, "clearTimeout")
+    const parent = new AbortController(), reason = new Error("Stopped")
+    const entered = new Promise<void>(resolve => { enter = resolve })
+    const work = new Promise<void>((resolve, reject) => { release = resolve; fail = reject })
+    const pending = withDeadline(parent.signal, 20, async () => { enter(); return work })
+    const expected = outcome === "success" ? pending : assert.rejects(pending, error => error === reason)
+    await entered
+    now = 19.9; t.mock.timers.tick(20)
+    assert.equal(timers.mock.callCount(), 2)
+    const replacement = timers.mock.calls[1]!
+    if (outcome === "success") release()
+    else if (outcome === "failure") fail(reason)
+    else parent.abort(reason)
+    await expected
+    assert.equal(cleared.mock.calls.at(-1)!.arguments[0], replacement.result)
+    // Model a callback already dequeued when cleanup cleared its timer.
+    const callback = replacement.arguments[0] as () => void
+    callback()
+    assert.equal(timers.mock.callCount(), 2)
+    release()
+    await work.catch(() => {})
+  })
+}

@@ -1291,7 +1291,7 @@ const limits = [
       : editCase ? "One actual native write, exact direct source linkage and pending native diff. Outside-project access, when selected, automatically resumes that same write into a distinct edit permission. Each stage holds the real reviewer response, proves no mutation, paints a full normal countdown and receives one production once reply. Read-only SQLite proves per-stage accepted reports, qualifying resolutions, categories and both aggregate scopes. Production history opens through painted palette activation. No native edit/patch variant, formatter, descendant-owned queue, notification, multi-client or live-provider judgment acceptance."
        : projectTransition ? "Four genuine native shell permissions: nongit root, migrated root, migrated descendant and root after local disable/re-enable. Each review uses captured source linkage and the current registered project metadata. Held reviewer responses and disabled-state observation windows prove no execution; exact native once replies, completed tool results and worker-saved reports prove continuation. No claim that filesystem Git changes alone trigger immediate host discovery."
        : locationTab ? "The review conversation is a background tab behind an active session tab in another directory, which another server location owns, before its genuine shell permission is first asked. The reviewer POST, full countdown, one native once reply, execution, saved report and aggregates all happen while that other tab stays active and no panel is painted on it. No return to the review tab, tab-limit, tab-close or multi-terminal acceptance."
-       : routeWait ? "A started normal countdown waits on native home and a public plugin dashboard, then automatically approves while its tab remains open behind an unrelated active session tab. Saved report and aggregates are verified."
+       : routeWait ? "A started normal countdown automatically approves while the native route stays on home and the conversation tab remains open. Saved report and aggregates are verified."
       : decisionCase ? "Actual Right/Left native keyboard input selects Always then Once. Automatic approval waits without cancellation while Always is selected, then resumes with the original delay or fast preview semantics. No persistent native grant is submitted; saved automatic report is verified. Rejection editing is separately source-tested, not host-accepted here."
       : dialogCase ? "Stock command.palette.show owns a real native modal. Normal and fast automatic replies proceed underneath it without closing it; final report and usage are verified in SQLite. No other modal-family acceptance."
       : visibilityLoss ? "One actual normal countdown continues through native sidebar hide or a real 160x8 tmux window. A single native once reply and saved report occur without restoring presentation first. No other geometry-family acceptance."
@@ -2291,21 +2291,16 @@ createInterface({input:process.stdin}).on('line',line=>{
            await until("native Always choice owns the pending decision", record => record?.choices.always === true && record.choices.once === false)
            await negativeWindow("Always selection waits past the original countdown without cancellation", [request], [], null, 1,
              approvalDelaySeconds * 1000 + 1500, record => { assert.equal(record.choices.always, true); assert.doesNotMatch(capture(), /Auto-approval canceled/) })
-           assert.match(capture(), /Auto-approval waiting/)
+           assert.ok(capture().split("\n").some(line => line.includes("Checking…") && line.includes("Cancel")),
+             "A held approval retains both footer buttons on the same row")
+           assert.doesNotMatch(capture(), /Auto-approval waiting/)
           } else {
-            for (const destination of ["home", "dashboard"]) {
-              const away = await command({ type: "away", destination })
-              assert.notDeepEqual(away, { type: "session", sessionID })
-              await negativeWindow(`${destination} waits without cancelling the Safe request`, [request], [], null, 1,
-                approvalDelaySeconds * 1000 + 1500, record => assert.deepEqual(record.route, away))
-            }
             allowWrites = true
-            const away = await command({ type: "away", destination: "other", sessionID })
+            const away = await command({ type: "away", destination: "home", sessionID })
             backgroundRoute = away
-            await until("native background review tab and unrelated active tab", record =>
-              record?.tabs?.some(tab => tab.sessionID === sessionID && !tab.active)
-              && record.tabs.some(tab => tab.sessionID === away.sessionID && tab.active), 5000)
-            await until("background session tab approves without changing the active route", async record => {
+            await until("native review tab stays open on home", record =>
+              record?.tabs?.some(tab => tab.sessionID === sessionID), 5000)
+            await until("open session tab approves while the active route remains home", async record => {
               assert.deepEqual(record?.route, away)
               return record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n"
             })

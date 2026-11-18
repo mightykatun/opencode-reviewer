@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { monotonicTimers } from "./reviewer-clock.js"
 import { getEventListeners } from "node:events"
 import { test } from "node:test"
 import { setImmediate as settle } from "node:timers/promises"
@@ -99,14 +100,14 @@ test("native owner: first non-once cannot be replaced by a later once", async ()
 })
 
 for (const earlyEvent of [false, true]) test(`native owner: timeout seals uncertainty against late ACK/event, early event ${earlyEvent}`, async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const clock = monotonicTimers(t)
   const f = fixture()
   f.preparation.resolve()
   const work = f.start()
   const rejected = assert.rejects(work)
   await settle()
   if (earlyEvent) assert.equal(f.transaction.resolved(once), true)
-  t.mock.timers.tick(5000); await rejected; await settle()
+  clock.tick(5000); await rejected; await settle()
   assert.equal(f.transaction.state, "uncertain")
   assert.equal(getEventListeners(f.verification(), "abort").length, 0)
   assert.equal(f.transaction.resolved(once), false)

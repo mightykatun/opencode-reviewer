@@ -185,10 +185,10 @@ function HostReviewFooter(props: Pick<HostReviewPanelProps, "context" | "onAppro
   const label = () => { const current = state(); return current?.status === "countdown" ? copy().countdown(current.seconds) : copy().checking }
   return <Show when={props.enabled && ((props.approvals && props.view.assessment?.safe) || !!state())}>
     <box ref={props.ref} marginTop={1} paddingTop={1} minHeight={3} flexShrink={0} border={["top"]} borderColor={props.context.theme.border.base}>
-      <Switch fallback={<text fg={props.context.theme.text.muted}>{copy().checking}</text>}>
-        <Match when={state()?.status === "countdown" || state()?.status === "checking"}>
+      <Switch>
+        <Match when={!state() || state()?.status === "countdown" || state()?.status === "checking" || state()?.status === "waiting"}>
           <box flexDirection="row" gap={1}>
-            <HostReviewButton context={props.context} label={label()} disabled={state()?.status === "checking"}
+            <HostReviewButton context={props.context} label={label()} disabled={state()?.status !== "countdown"}
               selected={selected() === "approve"} onHover={() => setSelected("approve")}
               onClick={() => { void props.onApprove(props.view.request.id) }} />
             <HostReviewButton context={props.context} label={copy().cancel} selected={selected() === "cancel"}
@@ -199,8 +199,6 @@ function HostReviewFooter(props: Pick<HostReviewPanelProps, "context" | "onAppro
           <HostReviewButton context={props.context} label={copy().allowing} disabled onClick={() => {}} />
         </Match>
         <Match when={state()?.status === "approved"}><text fg={props.context.theme.text.muted}>{copy().finishing}</text></Match>
-        <Match when={state()?.status === "waiting"}><text fg={props.context.theme.text.muted}>{copy().waiting}</text>
-          <HostReviewButton context={props.context} label={copy().cancel} onClick={() => props.onCancel(props.view.request.id)} /></Match>
         <Match when={state()?.status === "cancelled"}><text fg={props.context.theme.text.muted}>{copy().cancelled}</text></Match>
         <Match when={state()?.status === "failed"}><text fg={props.context.theme.text.feedback.warning.base}>{copy().unavailable}</text></Match>
       </Switch>

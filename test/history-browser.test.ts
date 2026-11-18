@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { monotonicTimers } from "./reviewer-clock.js"
 import { test } from "node:test"
 import { setImmediate as settle } from "node:timers/promises"
 import { HistoryController, type HistoryViewState } from "../src/history-controller.js"
@@ -274,7 +275,7 @@ test("production ancestry composition coalesces history reopen storms until the 
 })
 
 for (const outcome of ["resolve", "reject"] as const) test(`production history deadline retries retain ancestry cleanup through late ${outcome} and close`, async t => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] })
+  const clock = monotonicTimers(t, true)
   let release!: (v: { id: string }) => void, reject!: (e: Error) => void, cleanup!: () => void, calls = 0
   const actual = new Promise<{ id: string }>((yes, no) => { release = yes; reject = no })
   const cleaning = new Promise<void>(yes => { cleanup = yes })
@@ -284,14 +285,14 @@ for (const outcome of ["resolve", "reject"] as const) test(`production history d
   const h = new HistoryCoordinator("/project", { admit: () => true, query: async () => ({ revision: 0, total: 0, rank: 0 }), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
-    f.controller.open("old"); await settle(); t.mock.timers.tick(5000); await settle()
+    f.controller.open("old"); await settle(); clock.tick(5000); await settle()
     assert.equal(f.controller.state.status, "error")
-    for (let n = 0; n < 10; n++) { t.mock.timers.tick(2000); await settle() }
+    for (let n = 0; n < 10; n++) { clock.tick(2000); await settle() }
     assert.equal(calls, 1)
     if (outcome === "resolve") release({ id: "old" }); else reject(Error("late failure"))
     await settle(); assert.equal(calls, 1)
     f.controller.close(); cleanup(); await settle()
-    t.mock.timers.tick(10000); await settle()
+    clock.tick(10000); await settle()
     assert.equal(calls, 1); assert.equal(f.pending.length, 0); assert.equal(f.controller.state.open, false)
   } finally { f.controller.dispose(); h.dispose(); release({ id: "old" }); cleanup(); await settle() }
 })

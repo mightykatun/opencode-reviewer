@@ -40,7 +40,15 @@ export async function withDeadline<T>(parent: AbortSignal, ms: number, run: (sig
   states.set(signal, state)
   const ownership = transportOwnership(parent)
   if (ownership) bindTransportOwnership(signal, ownership)
-  const timer = setTimeout(() => controller.abort(new DeadlineError(state.stage)), Math.ceil(duration))
+  const expire = () => {
+    if (signal.aborted) return
+    const remaining = state.end - performance.now()
+    // Timer delivery can precede the monotonic deadline. Keep the original end
+    // and own only the replacement timer until expiry or cleanup.
+    if (remaining > 0) { timer = setTimeout(expire, Math.ceil(remaining)); return }
+    controller.abort(new DeadlineError(state.stage))
+  }
+  let timer = setTimeout(expire, Math.ceil(duration))
   let abort = () => {}
   try {
     const worker = Promise.resolve().then(async () => {

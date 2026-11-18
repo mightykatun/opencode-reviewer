@@ -4,6 +4,7 @@ import { setImmediate as settle } from "node:timers/promises"
 import { Controller, type ApprovalClock, type ApprovalFact, type ReviewLifecycleFact } from "../src/controller.js"
 import type { HostRequest } from "../src/host-types.js"
 import type { ReviewProgress, ReviewResult } from "../src/types.js"
+import { hostApprovalReady } from "../src/host-approval-ready.js"
 
 const request: HostRequest = { id: "request", sessionID: "root", action: "shell", resources: ["pwd"],
   source: { assistantID: "assistant", id: "call" } }
@@ -31,7 +32,7 @@ class Clock implements ApprovalClock {
     this.value = end
   }
 }
-async function fixture(fast = false, heldPreparation = false, heldVerification = false, delay = 2, ready = true) {
+async function fixture(fast = false, heldPreparation = false, heldVerification = false, delay = 2, ready = true, policy?: () => boolean) {
   const clock = new Clock(), assessment = deferred<ReviewResult>(), preparation = deferred<void>()
   const verification = deferred<HostRequest[]>()
   if (!heldPreparation) preparation.resolve()
@@ -49,7 +50,7 @@ async function fixture(fast = false, heldPreparation = false, heldVerification =
     }
     return assessment.promise
   }, () => {}, { clock, candidate: () => true, nativeFront: () => { if (state.frontError) throw Error("Cache unavailable"); return state.front },
-    approvalReady: () => state.ready,
+    approvalReady: () => state.ready && (policy?.() ?? true),
     modes: { root: async () => "root", load: async () => {}, enabled: () => state.enabled },
     reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, fastMode: fast, stream: true, autoApproveDelaySeconds: delay },
     nativeApproval: {
@@ -156,6 +157,18 @@ test("normal: a newly eligible background tab starts a full countdown and approv
   assert.equal(f.state.writes, 1)
 })
 
+test("Cancel before first eligibility remains manual when a background tab becomes eligible", async t => {
+  const f = await fixture(false, false, false, 2, false); t.after(() => f.dispose())
+  await f.complete()
+  assert.equal(f.view()?.autoApproval, undefined)
+  f.controller.cancelAutoApproval(request.id)
+  assert.equal(f.view()?.autoApproval?.status, "cancelled")
+  f.state.ready = true
+  f.wake(); f.clock.jump(10000); await settle()
+  assert.equal(f.state.writes, 0)
+  assert.equal(f.view()?.autoApproval?.status, "cancelled")
+})
+
 test("fast: a background tab allows preview approval without a countdown", async t => {
   const f = await fixture(true, false, false, 2, false); t.after(() => f.dispose())
   assert.equal(f.view()?.autoApproval, undefined)
@@ -165,6 +178,38 @@ test("fast: a background tab allows preview approval without a countdown", async
 })
 
 for (const fast of [false, true]) {
+  test(`${fast ? "fast" : "normal"}: actual tab policy ignores another conversation's native decision through dispatch`, async t => {
+    let route: { type: string; sessionID?: string } = { type: "session", sessionID: "other" }
+    const tabs = [{ sessionID: "root", active: false }, { sessionID: "other", active: true }]
+    let decisionReads = 0
+    const policy = () => hostApprovalReady(request, "root", route, id => ({ id }),
+      () => { decisionReads++; return true }, tabs)
+    const f = await fixture(fast, true, false, 2, true, policy); t.after(() => f.dispose())
+    if (!fast) { await f.complete(); f.clock.jump(2200) }
+    await settle()
+    assert.equal(f.state.preparations, 1)
+    route = { type: "home" }
+    f.wake()
+    f.preparation.resolve(); await settle()
+    assert.equal(f.state.writes, 1)
+    assert.equal(decisionReads, 0)
+    await f.complete()
+    assert.equal(f.facts.filter(fact => fact.type === "confirmed").length, 1)
+  })
+
+  test(`${fast ? "fast" : "normal"}: closing the qualifying tab during preparation prevents dispatch`, async t => {
+    const tabs = [{ sessionID: "root", active: false }]
+    const policy = () => hostApprovalReady(request, "root", { type: "home" }, id => ({ id }), () => false, tabs)
+    const f = await fixture(fast, true, false, 2, true, policy); t.after(() => f.dispose())
+    if (!fast) { await f.complete(); f.clock.jump(2200) }
+    await settle()
+    assert.equal(f.state.preparations, 1)
+    tabs.length = 0
+    f.wake(); f.preparation.resolve(); await settle()
+    assert.equal(f.state.writes, 0)
+    assert.notEqual(f.view()?.autoApproval?.status, "cancelled")
+  })
+
   test(`${fast ? "fast" : "normal"}: a route/form change during awaited preparation blocks the synchronous write and recovers`, async t => {
     const f = await fixture(fast, true); t.after(() => f.dispose())
     if (!fast) { await f.complete(); f.clock.jump(2200) }

@@ -1,5 +1,6 @@
 import { test, type TestContext } from "node:test"
 import assert from "node:assert/strict"
+import { monotonicTimers } from "./reviewer-clock.js"
 import { setImmediate as settle } from "node:timers/promises"
 import { Controller, type ApprovalFact, type ControllerOptions } from "../src/controller.js"
 import type { HostRequest } from "../src/host-types.js"
@@ -117,13 +118,13 @@ for (const fastMode of [false, true]) test(`${fastMode ? "fast" : "normal"} sust
 })
 for (const fastMode of [false, true]) for (const failure of ["GET 503", "GET timeout"] as const) {
   test(`${fastMode ? "fast" : "normal"} ${failure} stays silent through actual settlement and bounded recovery`, async t => {
-    t.mock.timers.enable({ apis: ["setTimeout"] })
+    const clock = monotonicTimers(t)
     const f = fixture(t, fastMode), held = deferred<HostRequest[]>(), recovery = deferred<HostRequest[]>(); let reads = 0
     f.state.list = () => ++reads === 1 ? failure === "GET 503" ? Promise.reject(Error("503")) : held.promise
       : reads === 2 ? recovery.promise : Promise.resolve([request])
     f.add(); await settle(); const attempt = f.controller.approveNow("p", true); await settle()
     if (failure === "GET timeout") {
-      t.mock.timers.tick(5000); await attempt
+      clock.tick(5000); await attempt
       for (let i = 0; i < 20; i++) { f.controller.reconcile([request], f.controller.revision); f.wake() }
       assert.equal(reads, 1); assert.equal(f.messages.length, 0); held.resolve([request]); await settle()
     }
