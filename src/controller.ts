@@ -42,6 +42,8 @@ export type Evaluate<R extends RequestIdentity = HostRequest> = (request: R, sig
   execution?: { review: string; root?: string }) => ReviewEvaluation<ReviewResult | null>
 interface Entry<R extends RequestIdentity = HostRequest> {
   view: View<R>; abort: AbortController; root?: string; gateRevision: number
+  /** Holds the same pending request's cache during a fresh ancestry check. */
+  previousModeRoot?: string
   suspension?: "mode" | "unavailable"
   cancelTimer?: () => void; deadline?: number; approvalAbort?: AbortController
   attempt: number; progressGeneration: number; pendingProgress?: ReviewProgress; cancelProgress?: () => void
@@ -184,6 +186,17 @@ export class Controller<R extends RequestIdentity = HostRequest> {
   get reconciling() { return this.reconciliation > 0 }
   get views() { return [...this.entries.values()].map((entry) => entry.view) }
   get pendingViews() { return this.views.filter(view => !view.resolved) }
+  modeRoots() {
+    const roots = new Set<string>()
+    for (const entry of this.entries.values()) {
+      const root = entry.root ?? entry.previousModeRoot
+      if (root && !entry.view.resolved && entry.view.status !== "unrelated") roots.add(root)
+    }
+    return roots
+  }
+  private releaseMode(root?: string) {
+    if (root && !this.modeRoots().has(root)) this.modes?.forget?.(root)
+  }
   checkpoint(): ControllerCheckpoint<R> {
     const pending = new Map(this.previous)
     for (const [id, entry] of this.entries)
@@ -706,6 +719,10 @@ export class Controller<R extends RequestIdentity = HostRequest> {
   }
 
   asked(request: R) {
+    this.startRequest(request)
+  }
+
+  private startRequest(request: R, previousModeRoot?: string) {
     if (this.stopped || this.entries.has(request.id)) return
     this.version++
     const error = this.unavailable?.(request)
@@ -717,6 +734,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
       review: randomUUID(),
       attempt: -1, progressGeneration: 0,
       gateRevision: this.version,
+      previousModeRoot,
       ...(previous && isDeepStrictEqual(previous.request, request) ? { deadline: previous.deadline } : {}),
       view: {
         request,
@@ -726,7 +744,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     }
     this.entries.set(request.id, entry)
     this.publish()
-    if (entry.view.status === "unrelated") return
+    if (entry.view.status === "unrelated") { this.releaseMode(previousModeRoot); return }
     const active = () => !this.stopped && !entry.abort.signal.aborted && this.entries.get(request.id) === entry
     const worker = Promise.resolve().then(async () => {
       entry.abort.signal.throwIfAborted()
@@ -735,13 +753,19 @@ export class Controller<R extends RequestIdentity = HostRequest> {
           const root = await this.modes.root(request.sessionID, entry.abort.signal)
           if (!active()) return null
           entry.root = root
+          entry.previousModeRoot = undefined
+          if (previousModeRoot !== root) this.releaseMode(previousModeRoot)
           await this.modes.load(root, entry.abort.signal)
           if (!active()) return null
           if (!this.modes.enabled(root) || (this.modeChanges.get(root) ?? 0) > entry.gateRevision) {
             this.suspend(entry); this.publish(); return null
           }
         } catch {
-          if (active()) { this.suspend(entry, "unavailable"); this.publish() }
+          if (active()) {
+            entry.previousModeRoot = undefined
+            this.releaseMode(previousModeRoot)
+            this.suspend(entry, "unavailable"); this.publish()
+          }
           return null
         }
       }
@@ -764,6 +788,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
       if (active()) {
         entry.view = assessment ? { ...entry.view, status: "complete", assessment, progress: undefined }
           : { ...entry.view, status: "unrelated", progress: undefined }
+        if (!assessment) this.releaseMode(entry.root)
         if (this.automatic(entry) === "reject") entry.view = { ...entry.view, steerable: true }
         if (!this.matches(entry)) this.pauseRating(entry)
         // Count final accepted reviews, not previews, transport attempts or UI
@@ -803,6 +828,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     if (entry?.fastApproval && resolved) {
       if (entry.retainedResolution !== "resolved") entry.retainedResolution = reason
       entry.view = { ...entry.view, resolved: true }
+      this.releaseMode(entry.root)
       this.publish()
       this.finishFast(entry)
       return
@@ -811,7 +837,10 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     if (entry) this.clearProgress(entry)
     this.entries.get(id)?.abort.abort(resolved ? permissionResolved : undefined)
     if (!resolved || reason !== "reconciled") { this.manual.delete(id); this.previous.delete(id) }
-    if (this.entries.delete(id)) this.publish()
+    if (this.entries.delete(id)) {
+      this.releaseMode(entry?.root ?? entry?.previousModeRoot)
+      this.publish()
+    }
   }
 
   /** Feed only events admitted by the connected host's location/epoch boundary.
@@ -908,8 +937,8 @@ export class Controller<R extends RequestIdentity = HostRequest> {
           // A failed saved-mode read is unknown, not a cached disabled choice.
           // Only an accepted fresh snapshot may retry the gate, never enrichment directly.
           this.entries.delete(request.id)
-        }
-        this.asked(request)
+          this.startRequest(request, entry.root)
+        } else this.asked(request)
       }
     } finally {
       this.reconciliation--

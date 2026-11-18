@@ -201,6 +201,84 @@ test("disable then enable during unresolved ancestry requires a post-switch snap
   controller.reconcile([request("a", "child")], controller.revision); await settle(); assert.equal(calls, 1)
 })
 
+test("the last pending request releases its root mode before a new request can reuse it", async t => {
+  let shared = true, reads = 0
+  const gate = modes(async () => { reads++; return shared }), evaluated: string[] = []
+  const controller = new Controller(async req => { evaluated.push(req.id); return safe }, () => {}, { ...options, modes: gate })
+  t.after(() => controller.dispose())
+  controller.asked(request("first"))
+  controller.asked(request("second", "child"))
+  await settle()
+  assert.deepEqual(controller.modeRoots(), new Set(["root"]))
+  assert.equal(reads, 1)
+  shared = false
+  controller.replied("first")
+  assert.equal(gate.enabled("root"), true)
+  controller.replied("second")
+  assert.equal(gate.enabled("root"), false)
+  controller.asked(request("third"))
+  await settle()
+  assert.equal(reads, 2)
+  assert.deepEqual(evaluated, ["first", "second"])
+  assert.equal(controller.views[0]?.status, "suspended")
+})
+
+test("a fresh snapshot applies a local enable to its existing request before persistence settles", async t => {
+  const saving = deferred<void>(), evaluated: string[] = []
+  let reads = 0
+  const gate = new SessionModes({ read: async () => { reads++; return false }, write: () => saving.promise, flush: async () => {} },
+    new SessionAncestry(async id => ({ id })))
+  const controller = new Controller(async req => { evaluated.push(req.id); return safe }, () => {}, { ...options, modes: gate })
+  t.after(() => controller.dispose())
+  const req = request("pending")
+  controller.asked(req)
+  await settle()
+  assert.equal(controller.views[0]?.status, "suspended")
+  const savingMode = gate.set("root", true)
+  controller.modeChanged("root")
+  controller.reconcile([req], controller.revision)
+  await settle()
+  assert.deepEqual(evaluated, ["pending"])
+  assert.equal(reads, 1)
+  saving.resolve()
+  await savingMode
+})
+
+test("a mode refresh deadline cancels an armed approval while the store still holds the read", async t => {
+  const clock = monotonicTimers(t), held = deferred<boolean>()
+  let blocked = false, writes = 0
+  const gate = modes(async () => blocked ? held.promise : true)
+  const req = request("a")
+  const controller = new Controller(async () => safe, () => {}, {
+    ...options, modes: gate, approvalReady: () => true,
+    reviewOptions: { reviewBash: true, reviewEdits: true, autoApprove: true, autoApproveDelaySeconds: 10 },
+    nativeApproval: { list: async () => [req], once: async () => { writes++; return { status: "uncertain" } } },
+  })
+  t.after(async () => { held.resolve(true); await controller.dispose() })
+  controller.asked(req)
+  await settle()
+  assert.equal(controller.views[0]?.autoApproval?.status, "countdown")
+  blocked = true
+  const poll = () => gate.refresh(new AbortController().signal, controller.modeRoots(), root => controller.modeChanged(root))
+  poll()
+  await settle()
+  clock.tick(5000)
+  await settle()
+  assert.equal(controller.views[0]?.status, "suspended")
+  clock.tick(10000)
+  await controller.approveNow(req.id)
+  assert.equal(writes, 0)
+  held.resolve(true)
+  await gate.refreshSettled()
+  assert.equal(gate.enabled("root"), false)
+  blocked = false
+  poll()
+  await gate.refreshSettled()
+  controller.reconcile([req], controller.revision)
+  await settle()
+  assert.equal(controller.views[0]?.autoApproval?.status, "cancelled")
+})
+
 for (const enabled of [false, true]) test(`unavailable saved mode recovers to ${enabled} only through current reconciliation`, async t => {
   let available = false, reads = 0, calls = 0
   const gate = modes(async () => { reads++; if (!available) throw Error("unavailable"); return enabled })

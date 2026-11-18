@@ -450,11 +450,10 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     void refresh.refresh()
     // Another terminal may switch a shared conversation mode. Apply it through
     // the same cancellation path as the local command.
-    void modes.refresh(life.signal).then(roots => {
-      if (!roots.length || life.signal.aborted) return
-      for (const root of roots) controller.modeChanged(root)
+    modes.refresh(life.signal, controller.modeRoots(), root => {
+      controller.modeChanged(root)
       void refresh.refresh()
-    }, () => {})
+    })
   }, 2000)
   life.addCleanup(() => clearInterval(timer))
   life.addCleanup(ctx.ui.slot({ append: "app", render: () => {

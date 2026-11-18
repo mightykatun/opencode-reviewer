@@ -2,13 +2,16 @@ import { constants } from "node:fs"
 import { open } from "node:fs/promises"
 import { createHash } from "node:crypto"
 import path from "node:path"
-import { withDeadline } from "./deadline.js"
+import { reviewStage, withDeadline } from "./deadline.js"
 import type { SessionAncestry, AncestryRead } from "./session-ancestry.js"
 import { privateRecordDirectory, readPrivateRecord, syncPrivateDirectory, validPrivateRecord, writePrivateRecord } from "./private-record.js"
 
 const MAX_MODE_READS = 2
+const MODE_READ_MS = 5000
 interface ModeRead {
   wait?: Promise<void>
+  physical?: Promise<unknown>
+  obsolete?: boolean
   settled: boolean
   finished: boolean
 }
@@ -17,6 +20,7 @@ export interface SessionModeGate {
   root(sessionID: string, signal: AbortSignal): AncestryRead
   load(root: string, signal: AbortSignal): Promise<void>
   enabled(root: string): boolean
+  forget?(root: string): void
 }
 export interface ModeStore {
   read(root: string, signal: AbortSignal): Promise<boolean>
@@ -69,82 +73,119 @@ export class SessionModeStore implements ModeStore {
 
 /** Only metadata needed to establish ownership is read before this gate opens. */
 export class SessionModes implements SessionModeGate {
-  private values = new Map<string, boolean>()
-  private changes = new Map<string, number>()
+  private values = new Map<string, { enabled: boolean }>()
+  private writes = new Map<string, Promise<void>>()
   private reads = new Map<string, ModeRead>()
+  private queue = new Map<string, { admit(): void; cancel(): void }>()
+  private refreshes = new Map<string, { before: { enabled: boolean }; end: number; wait: Promise<void> }>()
   constructor(private store: ModeStore, private ancestry: Pick<SessionAncestry, "root" | "deleted">) {}
   root(sessionID: string, signal: AbortSignal): AncestryRead { return this.ancestry.root(sessionID, signal) }
   async load(root: string, parent: AbortSignal) {
     parent.throwIfAborted()
     if (this.values.has(root)) return
     const pending = this.reads.get(root)
-    if (pending) return withDeadline(parent, 5000, () => pending.wait!, "Session mode loading")
+    if (pending?.obsolete) throw new Error("Previous mode read still draining")
+    if (pending) return withDeadline(parent, MODE_READ_MS, () => pending.wait!, "Session mode loading")
     if (this.reads.size >= MAX_MODE_READS) throw new Error("Session mode read capacity unavailable")
-    const read: ModeRead = { settled: true, finished: false }
-    this.reads.set(root, read)
-    // Reserve before dispatch. Concurrent callers share this bounded wait, while
-    // expired reads continue owning the root and instance slot through cleanup.
-    return read.wait = this.loadMode(root, parent, read)
+    return this.readMode(root, parent)
   }
-  private async loadMode(root: string, parent: AbortSignal, read: ModeRead) {
-    const revision = this.changes.get(root)
-    try {
-      const value = await withDeadline(parent, 5000, (signal) => {
-        read.settled = false
-        const worker = Promise.resolve().then(() => { signal.throwIfAborted(); return this.store.read(root, signal) })
-        const settled = () => { read.settled = true; this.releaseRead(root, read) }
-        void worker.then(settled, settled)
-        return worker
-      }, "Session mode loading")
-      parent.throwIfAborted()
-      // Only a successfully bounded read can populate mode state. Actual late
-      // settlement releases capacity but never publishes values or overrides a switch.
-      if (this.changes.get(root) === revision) this.values.set(root, value)
-    } finally {
+  private readMode(root: string, parent: AbortSignal, changed?: (root: string) => void) {
+    const read: ModeRead = { settled: true, finished: false }
+    const before = this.values.get(root)
+    let wake!: () => void
+    const permit = new Promise<void>(resolve => { wake = resolve })
+    const admit = () => {
+      this.reads.set(root, read)
+      wake()
+    }
+    const slot = { admit, cancel: () => { read.obsolete = true; wake() } }
+    if (changed) this.queue.set(root, slot)
+    else admit()
+    const publish = (enabled: boolean) => {
+      if (parent.aborted || read.obsolete || this.values.get(root) !== before) return
+      this.values.set(root, { enabled })
+      if (before && before.enabled !== enabled) changed?.(root)
+    }
+    read.wait = withDeadline(parent, MODE_READ_MS, async signal => {
+      if (changed) await permit
+      signal.throwIfAborted()
+      if (read.obsolete || this.values.get(root) !== before) return false
+      read.settled = false
+      const worker = Promise.resolve().then(async () => {
+        const saving = this.writes.get(root)
+        if (saving) await saving.catch(() => {})
+        reviewStage(signal, changed ? "Session mode refresh" : "Session mode loading")
+        return this.store.read(root, signal)
+      })
+      read.physical = worker
+      const settled = () => { read.settled = true; this.releaseRead(root, read) }
+      void worker.then(settled, settled)
+      return worker
+    }, changed ? "Session mode refresh" : "Session mode loading").then(publish, error => {
+      if (!changed) throw error
+      publish(false)
+    }).finally(() => {
+      if (this.queue.get(root) === slot) this.queue.delete(root)
+      wake()
       read.finished = true
       this.releaseRead(root, read)
-    }
+    })
+    if (changed) this.fillSlots()
+    return read.wait
   }
   private releaseRead(root: string, read: ModeRead) {
-    if (read.finished && read.settled && this.reads.get(root) === read) this.reads.delete(root)
-  }
-  enabled(root: string) { return this.values.get(root) === true }
-  /** Records are shared by every terminal of this user. Re-read cached roots one
-   * at a time so another terminal's switch reaches this one. A local switch made
-   * during a read wins. An unreadable record suspends like a disabled one. A
-   * timed-out read keeps this refresh slot until it physically settles. Returns
-   * roots whose effective state changed. */
-  refresh(parent: AbortSignal): Promise<string[]> {
-    return this.refreshing ??= this.refreshRoots(parent).finally(() => { this.refreshing = undefined })
-  }
-  private refreshing?: Promise<string[]>
-  private async refreshRoots(parent: AbortSignal) {
-    const changed: string[] = []
-    for (const root of [...this.values.keys()]) {
-      if (parent.aborted) break
-      const revision = this.changes.get(root), before = this.values.get(root)
-      let physical: Promise<unknown> = Promise.resolve(), value = false
-      try {
-        value = await withDeadline(parent, 5000, signal => {
-          const worker = Promise.resolve().then(() => this.store.read(root, signal))
-          physical = worker.catch(() => {})
-          return worker
-        }, "Session mode refresh")
-      } catch { await physical }
-      if (parent.aborted) break
-      if (this.changes.get(root) !== revision || !this.values.has(root) || this.reads.has(root)) continue
-      this.values.set(root, value)
-      if (value !== before) changed.push(root)
+    if (read.finished && read.settled && this.reads.get(root) === read) {
+      this.reads.delete(root)
+      this.fillSlots()
     }
-    return changed
+  }
+  private fillSlots() {
+    for (const [root, slot] of this.queue) {
+      if (this.reads.size >= MAX_MODE_READS) break
+      if (this.reads.has(root)) continue
+      this.queue.delete(root)
+      const value = this.values.get(root)
+      if (value) {
+        this.values.delete(root)
+        this.values.set(root, value)
+      }
+      slot.admit()
+    }
+  }
+  enabled(root: string) {
+    const value = this.values.get(root), refresh = this.refreshes.get(root)
+    return value?.enabled === true && !(refresh?.before === value && performance.now() >= refresh.end)
+  }
+  forget(root: string) {
+    this.values.delete(root)
+    const read = this.reads.get(root)
+    if (read) read.obsolete = true
+    this.queue.get(root)?.cancel()
+    this.queue.delete(root)
+  }
+  /** Each active root has one logical refresh budget including its wait for a
+   * physical slot. Serviced roots move behind skipped roots on the next tick. */
+  refresh(parent: AbortSignal, active: ReadonlySet<string>, changed: (root: string) => void) {
+    for (const root of this.values.keys()) if (!active.has(root)) this.forget(root)
+    if (parent.aborted) return
+    for (const [root, before] of [...this.values]) {
+      if (!active.has(root) || this.refreshes.has(root)) continue
+      const end = performance.now() + MODE_READ_MS
+      const wait = this.readMode(root, parent, changed).finally(() => this.refreshes.delete(root))
+      this.refreshes.set(root, { before, end, wait })
+    }
   }
   set(root: string, enabled: boolean): Promise<void> {
-    this.changes.set(root, (this.changes.get(root) ?? 0) + 1)
-    this.values.set(root, enabled)
-    return this.store.write(root, enabled)
+    this.values.set(root, { enabled })
+    const saving = this.store.write(root, enabled)
+    this.writes.set(root, saving)
+    return saving.finally(() => { if (this.writes.get(root) === saving) this.writes.delete(root) })
   }
   deleted(id: string) { this.ancestry.deleted(id) }
   flush() { return this.store.flush() }
   /** Optional cross-terminal refresh work, outside critical mode-write drains. */
-  async refreshSettled() { await this.refreshing?.catch(() => {}) }
+  async refreshSettled() {
+    await Promise.allSettled([...this.refreshes.values()].map(refresh => refresh.wait))
+    await Promise.allSettled([...this.reads.values()].map(read => read.physical))
+  }
 }
