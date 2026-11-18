@@ -35,8 +35,10 @@ export interface HostInvocation {
   readonly epoch: string
 }
 
-/** Observations sharing an outer Code Mode identity, not permission-to-call links.
- * Completed siblings may be present; later calls are not predicted. */
+/** Possible inner calls of an outer Code Mode invocation, not permission-to-call links.
+ * They share its identity or ran with their own ID in the same session and message
+ * while it ran. Completed, direct and concurrent-program calls may be present. Later
+ * calls are not predicted. */
 export interface CodeModeCandidates {
   readonly calls: readonly { readonly tool: string; readonly input: JSONObject }[]
   readonly omitted: number

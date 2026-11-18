@@ -252,9 +252,11 @@ messages.
   is reviewed separately from the operation that needs it.
 
 For tools called inside Code Mode, the reviewer gets the outer code, the pending
-permission and the captured inner calls. It is told when it can't know which
-inner call asked for the permission, and it may still rate the request Safe. A
-Safe rating approves only that one permission, not the whole program.
+permission and the calls captured while the program ran in the same session
+and message. Some of them may belong to another program running at the same
+time. It is told when it can't know which inner call asked for the permission,
+and it may still rate the request Safe. A Safe rating approves only that one
+permission, not the whole program.
 
 The reviewer assumes registered skill and tool definitions don't change while a
 permission is pending. It also assumes other plugins don't change what native

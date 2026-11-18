@@ -18,7 +18,7 @@ const pending = { id: "permission-A", sessionID: "session", action: "account_loo
   source: { type: "tool", messageID: "assistant", id: "outer" } }
 const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "judge", stream: false, notify: false, retrieval: false })
 
-async function fixture() {
+async function fixture(ids: "shared" | "distinct" = "shared") {
   const life = new PluginLifecycle(), hooks = new Map<string, (event: any) => void>()
   let handlers: any
   const state = { request: structuredClone(pending), epoch: "", registry: true, catalogReads: 0,
@@ -41,7 +41,9 @@ async function fixture() {
   state.epoch = handshake.epoch
   const outer = { sessionID: "session", messageID: "assistant", id: "outer", tool: "execute", input }
   hooks.get("execute.before")!(outer)
-  for (const account of ["A", "B"]) hooks.get("execute.before")!({ ...outer, tool: "account_lookup", input: { account } })
+  // OpenCode 2.3.1 and later give each inner call its own hook ID. Older hosts reuse the outer ID.
+  for (const account of ["A", "B"]) hooks.get("execute.before")!({ ...outer, tool: "account_lookup", input: { account },
+    ...(ids === "distinct" ? { id: `inner-${account}` } : {}) })
   const rpc = {
     handshake: async () => ({ ...handshake, epoch: state.epoch }),
     invocation: async (query: unknown, options: { signal: AbortSignal }) => handlers.invocation(query, options),
@@ -80,6 +82,27 @@ for (const safe of [true, false]) test(`uncertain parallel MCP linkage reaches t
     })
     assert.equal(result?.safe, safe); assert.equal(result?.metadata?.kind, "tool")
     assert.equal(posts, 1); assert.equal(f.state.catalogReads, 1)
+  } finally { await f.life.stop() }
+})
+
+test("distinct inner IDs reach the judge as possible candidates beside an overlapping outer, without a chosen parent", async () => {
+  const f = await fixture("distinct")
+  try {
+    const before = f.hooks.get("execute.before")!, after = f.hooks.get("execute.after")!
+    after({ ...f.outer, id: "inner-A", tool: "account_lookup" })
+    before({ ...f.outer, id: "outer-2", input: { code: "return await tools.account.lookup({account:\"C\"})" } })
+    before({ ...f.outer, id: "inner-C", tool: "account_lookup", input: { account: "C" } })
+    before({ ...f.outer, messageID: "other-assistant", id: "inner-D", tool: "account_lookup", input: { account: "D" } })
+    const value = await readHostEvidence(f.client, f.scope, pending, config, f.life.signal)
+    assert.ok(value?.result.status === "ready" && value.result.evidence.kind === "tool")
+    const evidence = value.result.evidence
+    assert.deepEqual(evidence.operation.input, input, "The outer program stays the exact mandatory evidence")
+    assert.equal(evidence.codeMode?.linkage, "unverified")
+    assert.deepEqual(evidence.codeMode?.candidates.map(value => value.input), [{ account: "A" }, { account: "B" }, { account: "C" }],
+      "Completed and concurrent-program calls in the same message stay possible, other messages are excluded")
+    assert.ok(evidence.codeMode?.candidates.every(value => value.definition?.id === "account_lookup"))
+    assert.ok(evidence.limitations.some(value => /No candidate has been selected/.test(value)))
+    assert.ok(evidence.limitations.some(value => /another concurrent Code Mode program/.test(value)))
   } finally { await f.life.stop() }
 })
 

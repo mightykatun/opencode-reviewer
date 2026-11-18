@@ -141,3 +141,98 @@ test("Code Mode candidate bounds omit whole calls without losing the exact outer
   captures.clear()
   assert.equal(captures.readCodeMode("session", "assistant", "outer"), undefined)
 })
+
+test("distinct-ID inner calls become possible candidates of the running outer and keep their own capture", () => {
+  const captures = new InvocationCapture(handshake())
+  const outer = { ...event("outer"), tool: "execute", input: { code: "opaque" } }
+  const inner = { ...event("inner"), tool: "account_lookup", input: { account: "A" } }
+  const otherMessage = { ...inner, id: "elsewhere", messageID: "other-assistant", input: { account: "M" } }
+  const otherSession = { ...inner, id: "elsewhere", sessionID: "other-session", input: { account: "S" } }
+  const before = { ...inner, id: "before-outer", input: { account: "early" } }
+  captures.before(before)
+  captures.before(outer)
+  captures.before(inner); captures.before(otherMessage); captures.before(otherSession)
+  inner.input.account = "rewritten"
+  assert.deepEqual(captures.readCodeMode("session", "assistant", "outer")?.candidates,
+    { calls: [{ tool: "account_lookup", input: { account: "A" } }], omitted: 0 }, "Only same session and message, while running")
+  assert.deepEqual(captures.read("session", "assistant", "inner")?.input, { account: "A" }, "The inner call keeps an exact direct capture")
+  assert.ok(captures.read("session", "assistant", "outer"), "Distinct IDs leave the outer capture exact")
+  captures.after(inner)
+  assert.equal(captures.read("session", "assistant", "inner"), undefined)
+  assert.equal(captures.readCodeMode("session", "assistant", "outer")?.candidates.calls.length, 1, "Completed calls stay possible candidates")
+  // A nested execute is never a candidate of another program.
+  captures.before({ ...outer, id: "nested-execute" })
+  assert.equal(captures.readCodeMode("session", "assistant", "outer")?.candidates.calls.length, 1)
+  captures.after(outer)
+  assert.equal(captures.readCodeMode("session", "assistant", "outer"), undefined)
+  captures.before({ ...inner, id: "after-outer" })
+  assert.equal(captures.readCodeMode("session", "assistant", "nested-execute")?.candidates.calls.length, 1)
+  captures.after({ sessionID: outer.sessionID, messageID: outer.messageID, id: "nested-execute" })
+  // Released outers leave no index behind: a reused message starts empty.
+  captures.before({ ...outer, id: "next" })
+  captures.before({ ...inner, id: "late" })
+  assert.equal(captures.readCodeMode("session", "assistant", "next")?.candidates.calls.length, 1)
+})
+
+test("overlapping outers in one message each get every possible candidate, with no parent chosen", () => {
+  const captures = new InvocationCapture(handshake())
+  const first = { ...event("outer-a"), tool: "execute", input: { code: "program A" } }
+  const second = { ...event("outer-b"), tool: "execute", input: { code: "program B" } }
+  const direct = { ...event("direct"), tool: "account_lookup", input: { account: "direct" } }
+  captures.before(first)
+  captures.before({ ...event("a-1"), tool: "account_lookup", input: { account: "A" } })
+  captures.before(second)
+  captures.before({ ...event("b-1"), tool: "account_lookup", input: { account: "B" } })
+  captures.before(direct)
+  const inputs = (id: string) => captures.readCodeMode("session", "assistant", id)?.candidates.calls.map(call => call.input)
+  assert.deepEqual(inputs("outer-a"), [{ account: "A" }, { account: "B" }, { account: "direct" }])
+  assert.deepEqual(inputs("outer-b"), [{ account: "B" }, { account: "direct" }], "Calls before an outer started are not its candidates")
+  assert.ok(captures.read("session", "assistant", "direct"), "Direct sibling captures stay exact")
+  captures.after(first)
+  captures.before({ ...event("b-2"), tool: "account_lookup", input: { account: "B2" } })
+  assert.equal(captures.readCodeMode("session", "assistant", "outer-a"), undefined)
+  assert.deepEqual(inputs("outer-b"), [{ account: "B" }, { account: "direct" }, { account: "B2" }])
+  captures.after(second)
+  assert.equal(captures.readCodeMode("session", "assistant", "outer-b"), undefined)
+})
+
+test("distinct-ID candidates respect slot and byte bounds without losing outers or direct captures", () => {
+  const captures = new InvocationCapture(handshake())
+  const outer = { ...event("outer"), tool: "execute", input: { code: "opaque" } }
+  captures.before(outer)
+  let accessed = false
+  const accessor = Object.defineProperty({}, "secret", { enumerable: true, get() { accessed = true; throw Error("unreadable") } })
+  captures.before({ ...event("bad"), tool: "lookup", input: accessor })
+  for (let index = 0; index < 66; index++) {
+    const call = { ...event(`inner-${index}`), tool: "lookup", input: { index } }
+    captures.before(call); captures.after(call)
+  }
+  const group = captures.readCodeMode("session", "assistant", "outer")!
+  assert.equal(accessed, false)
+  assert.equal(group.candidates.calls.length, 64)
+  assert.equal(group.candidates.omitted, 3)
+  assert.deepEqual(group.outer.input, outer.input)
+  // Each overlapping outer pays for its own copy within the shared byte bound.
+  const big = new InvocationCapture(handshake())
+  for (const id of ["a", "b"]) big.before({ ...event(id), tool: "execute", input: { code: id } })
+  big.before({ ...event("large"), tool: "lookup", input: { blob: "x".repeat(6 * 1024 * 1024) } })
+  assert.ok(big.read("session", "assistant", "large"), "Optional sibling evidence never displaces this call's mandatory capture")
+  big.before({ ...event("larger"), tool: "lookup", input: { blob: "y".repeat(6 * 1024 * 1024) } })
+  const counts = ["a", "b"].map(id => big.readCodeMode("session", "assistant", id)!.candidates)
+  assert.deepEqual(counts.map(value => value.calls.length + value.omitted), [2, 2])
+  assert.ok(counts.some(value => value.omitted > 0), "Copies past the byte bound are omitted whole")
+  big.after({ ...event("a"), tool: "execute" }); big.after({ ...event("b"), tool: "execute" })
+  big.after({ ...event("large"), tool: "lookup" }); big.after({ ...event("larger"), tool: "lookup" })
+  big.before(event("fresh"))
+  assert.ok(big.read("session", "assistant", "fresh"), "Released groups return their bytes")
+})
+
+test("shared-ID hosts keep exact outer grouping and are not fanned out to other outers", () => {
+  const captures = new InvocationCapture(handshake())
+  captures.before({ ...event("outer-a"), tool: "execute", input: { code: "A" } })
+  captures.before({ ...event("outer-b"), tool: "execute", input: { code: "B" } })
+  captures.before({ ...event("outer-a"), tool: "lookup", input: { shared: "A" } })
+  assert.deepEqual(captures.readCodeMode("session", "assistant", "outer-a")?.candidates.calls.map(call => call.input), [{ shared: "A" }])
+  assert.deepEqual(captures.readCodeMode("session", "assistant", "outer-b")?.candidates.calls, [])
+  assert.equal(captures.read("session", "assistant", "outer-a"), undefined, "A shared identity stays ambiguous for direct reads")
+})

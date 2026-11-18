@@ -21,7 +21,7 @@ export async function collectCodeModeCandidates(captured: CodeModeCandidates, lo
   let remainingBytes = bytes - initial.bytes, remainingValues = values - initial.values
   const limitations = [
     "The permission is linked exactly to the outer Code Mode invocation, but its individual inner tool call is unverified. No candidate has been selected as the operation being approved.",
-    "Candidates are captured tool calls sharing the outer identity before evidence collection. They may include completed or unrelated sibling calls; later calls are not included. Their order does not establish permission ownership.",
+    "Candidates are possible inner calls captured before evidence collection: calls sharing the outer call ID, and calls with their own ID observed in the same session and assistant message while the outer call was running. A candidate may be completed, a direct sibling call or a call of another concurrent Code Mode program, and later calls are not included. Shared messages, timing and order do not establish which program or call owns the permission.",
   ]
   for (const candidate of captured.calls) {
     reviewStage(signal, "Evidence collection")
