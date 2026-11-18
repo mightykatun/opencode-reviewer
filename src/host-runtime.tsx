@@ -5,7 +5,7 @@ import path from "node:path"
 import { Controller, visibleReview, type ControllerCheckpoint, type View } from "./controller.js"
 import { hostPermissionTransport } from "./host-permissions.js"
 import { hostQueueFront, hostQueueSnapshot, type HostQueueReader } from "./host-queue.js"
-import { refreshNativeFamilies } from "./host-native-observations.js"
+import { refreshNativeFamilies, refreshPermissionFamilies } from "./host-native-observations.js"
 import { evaluateHostReview } from "./host-evaluate.js"
 import { SteeringFollowUps, followUpCategory } from "./steering-follow-up.js"
 import { PendingRefresh } from "./pending-refresh.js"
@@ -31,7 +31,7 @@ import { setupCliReconnect } from "./cli-reconnect.js"
 import { configuredEvidenceBytes } from "./config.js"
 import { SessionInstructionsStore } from "./session-instructions.js"
 import { setupHostSessionInstructions } from "./host-session-instructions.js"
-import { atLocation, locationKey, reviewHomes, routeAtLocation, sessionAtLocation, type ReviewLocation } from "./host-locations.js"
+import { atLocation, locationKey, reviewHomes, reviewLocation, routeAtLocation, sessionAtLocation, type ReviewLocation } from "./host-locations.js"
 
 type KeymapLayerFactory = Parameters<Plugin.Context["keymap"]["layer"]>[0]
 type KeymapLayer = ReturnType<KeymapLayerFactory>
@@ -180,6 +180,8 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     permissions: id => ctx.data.session.permission.list(id),
   }
   let permissionRoots: ReadonlySet<string> = new Set(), formRoots: ReadonlySet<string> = new Set()
+  let rootHeads: ReadonlyMap<string, string> = new Map()
+  const invalidatePermissions = () => { permissionRoots = new Set(); rootHeads = new Map() }
   const front = (root: string) => hostQueueFront(root, queueReader)?.id
   // Only this location's own root conversations present its panel. Another
   // location's composition presents the rest.
@@ -292,7 +294,8 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
   }, values => { setViews(values); notifications?.snapshot(controller.pendingViews) }, {
     reviewOptions: config, modes, session: id => routes.get(id), checkpoint,
     unavailable: request => "unavailable" in request ? uiText.review.evidenceUnavailable : undefined,
-    approvalReady: (request, root) => !!root && permissionRoots.has(root) && hostApprovalReady(request, root, ctx.ui.router.current(), id => routes.get(id),
+    approvalReady: (request, root) => !!root && (permissionRoots.has(root) || (request.sessionID === root && rootHeads.get(root) === request.id))
+      && hostApprovalReady(request, root, ctx.ui.router.current(), id => routes.get(id),
       () => nativeDecisionPending(ctx.renderer.root, ctx.theme.background.action.primary.focused),
       ctx.ui.tabs.enabled() ? ctx.ui.tabs.list() : []),
     nativeFront: root => front(root),
@@ -347,10 +350,11 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     return refreshNativeFamilies(sessions, familyReader, signal, id => ctx.data.session.form.sync(id))
   })()), life.signal, healthy => { if (!healthy) formRoots = new Set(); notificationSnapshot() }) : undefined
   life.addCleanup(() => formRefresh?.dispose())
-  const refresh = new PendingRefresh<{ requests: readonly HostPendingSnapshot[]; roots: ReadonlySet<string> }>({ get revision() { return permissionRevision() },
-    reconcile({ requests, roots }, revision) {
+  const refresh = new PendingRefresh<{ requests: readonly HostPendingSnapshot[] } & Awaited<ReturnType<typeof refreshPermissionFamilies>>>({ get revision() { return permissionRevision() },
+    reconcile({ requests, roots, rootHeads: heads }, revision) {
       if (permissionRevision() !== revision) return
       permissionRoots = roots
+      rootHeads = heads
       snapshots.clear()
       for (const snapshot of requests) {
         if (!("unavailable" in snapshot.request)) snapshots.set(snapshot.request.id, snapshot as HostRequestSnapshot)
@@ -370,17 +374,23 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     const all = await pendingSnapshots(signal)
     // Public native caches must be refreshed as well as the server snapshot.
     const route = ctx.ui.router.current()
-    const roots = await refreshNativeFamilies(new Set([...all.map(value => value.request.sessionID),
+    const health = await refreshPermissionFamilies(new Set([...all.map(value => value.request.sessionID),
       ...controller.pendingViews.map(value => value.request.sessionID), ...(notifications?.activeSessions() ?? []),
       ...(notifications && route.type === "session" ? [route.sessionID] : [])]), familyReader, signal, async id => {
       signal.throwIfAborted()
       ctx.data.session.permission.invalidate(id)
       await owned(ctx.data.session.permission.sync(id))
       signal.throwIfAborted()
+    }, root => {
+      const first = hostQueueFront(root, queueReader)
+      return first?.sessionID === root ? first.id : undefined
+    }, id => {
+      const at = reviewLocation(ctx.data.session.get(id)?.location)
+      return !!at && !transports.has(locationKey(at))
     })
-    return { requests: all, roots }
+    return { requests: all, ...health }
   })())), life.signal, healthy => {
-    if (!healthy) permissionRoots = new Set()
+    if (!healthy) invalidatePermissions()
     notificationSnapshot()
     if (healthy) void formRefresh?.refresh()
   })
@@ -399,7 +409,7 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       // Optional form/activity churn invalidates observer health, not a settled
       // permission refresh or otherwise eligible automatic approval.
       if (interrupted || event.type.startsWith("permission.") || event.type === "session.deleted") {
-        permissionEvents++; permissionRoots = new Set()
+        permissionEvents++; invalidatePermissions()
       }
       formRoots = new Set()
       notificationSnapshot()

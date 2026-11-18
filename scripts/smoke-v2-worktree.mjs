@@ -68,6 +68,12 @@ async function monitorSetup(ctx) {
           await ctx.client.session.prompt({ sessionID: command.sessionID, text: command.text }, options())
         } else if (command.type === "pending") {
           value = await ctx.client.permission.list({ sessionID: command.sessionID }, options(command.location ?? location))
+        } else if (command.type === "evict-worktree") {
+          await ctx.client.debug.location.evict({ location: { directory: command.directory } }, options())
+        } else if (command.type === "child-queue") {
+          ctx.data.session.permission.invalidate(command.sessionID)
+          try { await ctx.data.session.permission.sync(command.sessionID); value = "readable" }
+          catch { value = "unreadable" }
         } else throw Error("Unknown worktree control")
         record.replies[command.sequence] = { value: value ?? null }
       }
@@ -96,6 +102,7 @@ async function reviewerSetup(ctx) {
 }
 
 const { scenario } = runtimeArguments("smoke-v2-worktree.mjs")
+const removed = scenario === "normal-removed-worktree"
 const root = path.resolve(import.meta.dirname, ".."), host = process.env.OPENCODE_BIN ?? "opencode"
 const version = execFileSync(host, ["--version"], { encoding: "utf8" }).trim()
 assertV2HostVersion(version)
@@ -209,8 +216,11 @@ try {
   await until("monitor", record => record, 60000)
   await connectionProbe({ create: budget => command({ type: "connection-probe", ...budget }),
     remove: (id, budget) => command({ type: "remove-probe", sessionID: id, ...budget }), observe, directory: project })
-  await publish(cliPath, cli)
-  await until("production runtime", () => command({ type: "ready" }))
+  const enableReviewer = async () => {
+    await publish(cliPath, cli)
+    await until("production runtime", () => command({ type: "ready" }))
+  }
+  if (!removed) await enableReviewer()
 
   // The root conversation lives in the project. Its first turn ends without tools.
   sessionID = (await command({ type: "start" })).id
@@ -229,36 +239,45 @@ try {
   assert.equal(moved.root, sessionID)
   assert.ok(moved.family.includes(child.id), "The native family still holds the moved subagent")
 
-  // The subagent asks for a shell permission at the worktree location.
-  await command({ type: "prompt", sessionID: child.id, text: "Run the fixture command in your worktree." })
-  await until("subagent main model", () => mains.length === 2)
+  const owner = removed ? sessionID : child.id, directory = removed ? project : worktree
+  const prompt = removed ? "Run the fixture command in the root project." : "Run the fixture command in your worktree."
+  if (removed) {
+    // Removing the checkout does not remove its session or its place in the native family.
+    await command({ type: "evict-worktree", directory: worktree })
+    git(["worktree", "remove", worktree])
+    assert.ok((await command({ type: "family", sessionID })).family.includes(child.id))
+    assert.equal(await command({ type: "child-queue", sessionID: child.id }), "unreadable")
+    await enableReviewer()
+  }
+  await command({ type: "prompt", sessionID: owner, text: prompt })
+  await until("permission owner's main model", () => mains.length === 2)
   answer(mains[1], { role: "assistant", content: null, tool_calls: [{ index: 0, id: "worktree-shell", type: "function",
     function: { name: "shell", arguments: JSON.stringify({ command: fixtureCommand }) } }] }, "tool_calls")
   const asked = await until("native worktree permission", record => record?.asked[0])
-  assert.equal(asked.sessionID, child.id)
-  assert.equal(asked.location?.directory, worktree, "The permission belongs to the worktree location")
+  assert.equal(asked.sessionID, owner)
+  assert.equal(asked.location?.directory, directory)
   await until("home composition review", () => reviews.length === 1, 30000)
   const evidence = JSON.parse(reviews[0].body.messages[1].content)
   assert.equal(evidence.command, fixtureCommand)
-  assert.equal(evidence.cwd, worktree, "Evidence comes from the worktree's own companion")
-  assert.equal(evidence.userPrompt, rootPrompt, "The root conversation in another location supplies the user's intent")
-  assert.equal(await marker(worktree), "", "Nothing runs before approval")
+  assert.equal(evidence.cwd, directory)
+  assert.equal(evidence.userPrompt, removed ? prompt : rootPrompt)
+  assert.equal(await marker(directory), "", "Nothing runs before approval")
   sse(reviews[0].res, { content: JSON.stringify({ safe: true, reason: "The command appends one fixture marker.", desc: "Appends a marker in the worktree." }) })
   sse(reviews[0].res, {}, "stop"); reviews[0].res.end("data: [DONE]\n\n")
   await until("countdown on the root route", () => /Allowed in \d+s/.test(capture()))
   assert.deepEqual((await observe()).route, { type: "session", sessionID }, "The user stays on the root conversation")
   await writeFile(path.join(artifacts, "countdown.txt"), capture())
   const reply = await until("automatic native once reply", record => record.replied[0])
-  assert.deepEqual(reply, { sessionID: child.id, requestID: asked.id, reply: "once" })
+  assert.deepEqual(reply, { sessionID: owner, requestID: asked.id, reply: "once" })
   await until("native continuation", () => completed === 1)
-  assert.equal(await marker(worktree), "executed\n")
-  assert.equal(await marker(project), "", "The command ran in the worktree only")
-  assert.deepEqual(await command({ type: "pending", sessionID: child.id, location: { directory: worktree } }), [])
+  assert.equal(await marker(directory), "executed\n")
+  if (!removed) assert.equal(await marker(project), "", "The command ran in the worktree only")
+  assert.deepEqual(await command({ type: "pending", sessionID: owner, location: { directory } }), [])
   const db = await until("saved report", async () => (await database())?.rows.length === 1 && database())
   assert.equal(db.reviews.length, 1, "Exactly one composition reviewed the request")
   const context = JSON.parse(db.reviews[0].context)
   assert.equal(context.scope, homeScope, "History is indexed by the conversation's home")
-  assert.equal(context.root, sessionID); assert.equal(context.session, child.id); assert.equal(context.permission, asked.id)
+  assert.equal(context.root, sessionID); assert.equal(context.session, owner); assert.equal(context.permission, asked.id)
   assert.deepEqual((await notifications()).filter(item => item.kind === "attention"), [], "An automatic approval never needs attention")
   const native = await observe()
   assert.equal(native.asked.length, 1); assert.equal(native.replied.length, 1)

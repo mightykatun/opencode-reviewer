@@ -94,7 +94,7 @@ export async function refreshNativeFamily(seeds: Iterable<string>, reader: Nativ
  * at this location. Each successful group still passes the complete strict family
  * refresh above. Abort/deadline failures always escape; physical reads stay owned. */
 export async function refreshNativeFamilies(seeds: Iterable<string>, reader: NativeFamilyReader,
-  signal: AbortSignal, refresh: (id: string) => Promise<void>): Promise<ReadonlySet<string>> {
+  signal: AbortSignal, refresh: (id: string, root: string) => Promise<void>): Promise<ReadonlySet<string>> {
   const unique = new Set<string>(), groups = new Map<string, Set<string>>()
   for (const id of seeds) {
     if (typeof id !== "string" || !id) throw Error("Native seeds unavailable")
@@ -125,7 +125,7 @@ export async function refreshNativeFamilies(seeds: Iterable<string>, reader: Nat
         observed.add(id)
         if (observed.size > nativeObservationLimit) throw Error("Native family limit reached")
         signal.throwIfAborted()
-        await reader.owned(refresh(id))
+        await reader.owned(refresh(id, root))
       }
       signal.throwIfAborted()
       healthy.add(root)
@@ -135,4 +135,31 @@ export async function refreshNativeFamilies(seeds: Iterable<string>, reader: Nat
     }
   }
   return healthy
+}
+
+/** A worktree may disappear while its child session remains in the native
+ * roster. An unreadable queue there cannot precede the root's own fresh head.
+ * Preserve that exact request only. Never mark the family healthy or infer an
+ * empty child queue from a failed read. */
+export async function refreshPermissionFamilies(seeds: Iterable<string>, reader: NativeFamilyReader, signal: AbortSignal,
+  sync: (id: string) => Promise<void>, rootHead: (root: string) => string | undefined, outsideScopes: (id: string) => boolean) {
+  const fresh = new Map<string, string>(), rootHeads = new Map<string, string>()
+  const synced = await refreshNativeFamilies(seeds, reader, signal, async (id, root) => {
+    try { await sync(id) } catch (error) {
+      signal.throwIfAborted()
+      const head = fresh.get(root)
+      if (id === root || !head || !outsideScopes(id)) throw error
+      rootHeads.set(root, head)
+      return
+    }
+    signal.throwIfAborted()
+    if (id === root) {
+      const head = rootHead(root)
+      if (head) fresh.set(root, head)
+    }
+  })
+  // A later failure in an admitted queue invalidates the partial proof too.
+  for (const root of rootHeads.keys()) if (!synced.has(root)) rootHeads.delete(root)
+  const roots = new Set([...synced].filter(root => !rootHeads.has(root)))
+  return { roots, rootHeads }
 }

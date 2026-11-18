@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { setImmediate as settle } from "node:timers/promises"
-import { refreshNativeFamily, refreshNativeFamilies, type NativeFamilyReader } from "../src/host-native-observations.js"
+import { refreshNativeFamily, refreshNativeFamilies, refreshPermissionFamilies, type NativeFamilyReader } from "../src/host-native-observations.js"
 import { TransportOwnership } from "../src/transport-ownership.js"
 import { nativeObservationLimit } from "../src/host-queue.js"
 import type { SessionLocation } from "../src/route-approval.js"
@@ -55,6 +55,30 @@ test("isolated refresh still propagates parent abort before touching another fam
   }), /Stop native reads/)
   assert.equal(f.calls.includes("sync:other"), false)
   await f.owner.settled()
+})
+
+test("an unreadable unadmitted child queue preserves only the root's freshly synchronized head", async () => {
+  const f = fixture()
+  let failure = "deep", head: string | undefined = "stale", outside = true
+  const read = () => refreshPermissionFamilies(["root", "other"], f.reader, f.abort.signal, async id => {
+    if (id === failure || (failure === "both" && (id === "deep" || id === "child"))) throw Error("Queue unavailable")
+    if (id === "root" && head === "stale") head = "after-sync"
+  }, id => id === "root" ? head : undefined, id => id === "deep" && outside)
+  const partial = await read()
+  assert.deepEqual([...partial.roots], ["other"], "Notification health still requires the whole family")
+  assert.deepEqual([...partial.rootHeads], [["root", "after-sync"]])
+  outside = false
+  assert.equal((await read()).rootHeads.size, 0, "An admitted member failure still holds the root")
+  outside = true; failure = "both"
+  assert.equal((await read()).rootHeads.size, 0, "An unreadable worktree cannot mask a later admitted queue failure")
+  failure = "root"
+  assert.equal((await read()).rootHeads.size, 0, "A stale head cannot survive a failed root sync")
+  head = undefined; failure = "deep"
+  assert.equal((await read()).rootHeads.size, 0, "No child inherits a root-only proof")
+  head = "new"; failure = ""
+  const recovered = await read()
+  assert.deepEqual([...recovered.roots], ["root", "other"])
+  assert.equal(recovered.rootHeads.size, 0)
 })
 
 test("family grouping cannot label a different freshly resolved conversation healthy", async () => {
