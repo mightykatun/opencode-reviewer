@@ -19,7 +19,7 @@ import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 async function monitorSetup(ctx) {
   const publisher = observationPublisher(fixture.monitor), abort = new AbortController()
   const [memory, update] = ctx.storage.memory("worktree-monitor", { initial: { sequence: 0,
-    record: { connectionBirths: [], connectionDeletes: [], asked: [], replied: [], replies: {}, errors: [] } } })
+    record: { connectionBirths: [], connectionDeletes: [], moves: [], asked: [], replied: [], replies: {}, errors: [] } } })
   const record = JSON.parse(JSON.stringify(memory.record)), location = { directory: fixture.project }
   const options = (at = location) => ({ location: at, signal: AbortSignal.timeout(15000) })
   const save = () => {
@@ -30,6 +30,7 @@ async function monitorSetup(ctx) {
   const off = ctx.data.listen(({ details }) => {
     if (details.type === "session.created") record.connectionBirths.push(details)
     if (details.type === "session.deleted") record.connectionDeletes.push(details)
+    if (details.type === "session.moved") record.moves.push(details.data)
     if (details.type === "permission.asked") record.asked.push({ ...details.data, location: details.location })
     if (details.type === "permission.replied") record.replied.push(details.data)
     void save()
@@ -59,6 +60,7 @@ async function monitorSetup(ctx) {
           value = await ctx.client.worktree.create({ projectID: session.projectID, name: "fixture-subagent" }, options())
         } else if (command.type === "move") {
           await ctx.client.session.move({ sessionID: command.sessionID, directory: command.directory }, options())
+        } else if (command.type === "family") {
           await ctx.data.session.sync(command.sessionID)
           const root = ctx.data.session.root(command.sessionID)
           value = { session: ctx.data.session.get(command.sessionID), root, family: ctx.data.session.family(root) }
@@ -218,7 +220,11 @@ try {
   assert.equal(child.parentID, sessionID)
   worktree = (await command({ type: "worktree", sessionID })).directory
   assert.ok(path.isAbsolute(worktree)); assert.notEqual(worktree, project)
-  const moved = await command({ type: "move", sessionID: child.id, directory: worktree })
+  await command({ type: "move", sessionID: child.id, directory: worktree })
+  // move() acknowledges inbox admission. The native session moves at a later step boundary.
+  await until("native session moved to the worktree", record =>
+    record?.moves.some(move => move.sessionID === child.id && move.location.directory === worktree))
+  const moved = await command({ type: "family", sessionID: child.id })
   assert.equal(moved.session.location.directory, worktree, "The subagent now lives in the worktree location")
   assert.equal(moved.root, sessionID)
   assert.ok(moved.family.includes(child.id), "The native family still holds the moved subagent")
