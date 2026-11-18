@@ -506,8 +506,10 @@ Reports can contain private text. They are stored in
 `$XDG_STATE_HOME/opencode/opencode-reviewer/`, or under `~/.local/state` when
 `XDG_STATE_HOME` is unset. If that directory isn't private enough, the plugin
 uses its own `opencode-reviewer-state/opencode-reviewer/` next to it and keeps
-using it. Enable and disable settings stay in the OpenCode state directory. A
-settings file that is unreadable or has unsafe ownership suspends review.
+using it. Enable and disable settings stay in the OpenCode state directory.
+While permissions are pending, each terminal checks their conversation settings
+every two seconds. If a check fails or takes more than five seconds, review
+for that conversation is suspended, even if the disk read is still running.
 
 Deleting a conversation keeps its saved reports and totals. Terminals that share
 a state directory share history. Reports not yet saved can be lost on shutdown.
