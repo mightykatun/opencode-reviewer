@@ -10,7 +10,7 @@ export const archiveIntegrity = (bytes) => `sha512-${createHash("sha512").update
 export const PUBLICATION_TIMEOUT_MS = 60 * 60 * 1000
 
 // Cache-Control alone did not bypass cached 404s during the first automated release.
-export function freshRegistryURL(url) {
+function freshRegistryURL(url) {
   const fresh = new URL(url)
   assert.equal(fresh.origin, "https://registry.npmjs.org", "Expected the npm registry")
   fresh.searchParams.set("release_check", randomUUID())

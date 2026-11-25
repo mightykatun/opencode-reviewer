@@ -41,12 +41,12 @@ export interface Config extends ModelConnection, Limits, NotificationConfig {
   maxOutputTokens: number
 }
 
-export const retrievalKinds = ["bash", "edit", "skill", "tool", "external_directory"] as const
+const retrievalKinds = ["bash", "edit", "skill", "tool", "external_directory"] as const
 export type RetrievalKind = typeof retrievalKinds[number]
 const retrievalDefaults: Record<RetrievalKind, boolean> = { bash: true, edit: false, skill: true, tool: true, external_directory: true }
 
 /** Config keys mirror saved history categories and native action names. */
-export function retrievalKind(kind: ReviewKind): RetrievalKind {
+function retrievalKind(kind: ReviewKind): RetrievalKind {
   return kind === "shell" ? "bash" : kind === "external-directory" ? "external_directory" : kind
 }
 

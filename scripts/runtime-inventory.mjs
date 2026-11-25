@@ -18,7 +18,7 @@ export const runtimeInventory = {
   "smoke-v2-worktree.mjs": host(["normal-worktree-descendant", "normal-removed-worktree"], [], { requires: ["linux", "git", "tmux", "bundle", "node-sqlite"] }),
   "smoke-notification-desktop.ts": { classification: "interactive", scenarios: ["default"], default: "default", flags: ["all", "sounds", "click", "critical"],
     rules: [], exactlyOne: ["all", "sounds", "click"], requires: ["linux", "desktop-bus", "audio-player", "source", "tsx"], hosts: 0, timeoutMs: 180000 },
-  ...Object.fromEntries(["smoke-runtime.mjs", "smoke-desktop-playback.mjs", "smoke-observations.mjs", "smoke-connection.mjs", "smoke-ui.mjs", "smoke-v2-review-support.mjs", "smoke-v2-rpc.mjs", "runtime-inventory.mjs", "runtime-runner.mjs", "runtime-summary.mjs", "test-runtime.mjs"]
+  ...Object.fromEntries(["smoke-runtime.mjs", "smoke-package.mjs", "smoke-desktop-playback.mjs", "smoke-observations.mjs", "smoke-connection.mjs", "smoke-ui.mjs", "smoke-v2-review-support.mjs", "smoke-v2-rpc.mjs", "runtime-inventory.mjs", "runtime-runner.mjs", "runtime-summary.mjs", "test-runtime.mjs"]
     .map(name => [name, { classification: "helper", internal: name === "smoke-runtime.mjs" ? ["--guard <absolute-socket>"]
       : name === "test-runtime.mjs" ? ["--list", "--plan [--profile <name> | <entrypoint> <scenario> <flags>]", "--profile <name>"] : [] }])),
 }

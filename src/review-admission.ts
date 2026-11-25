@@ -2,7 +2,7 @@ import { withDeadline } from "./deadline.js"
 import { bindTransportOwnership, TransportOwnership, transportOwnership } from "./transport-ownership.js"
 
 /** Per-controller bound on evidence collection and reviewer transport together. */
-export const MAX_REVIEW_EVALUATORS = 4
+const MAX_REVIEW_EVALUATORS = 4
 
 export type ReviewEvaluation<T> = Promise<T> & { settled?: Promise<unknown> }
 

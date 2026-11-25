@@ -4,7 +4,8 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { createServer } from "node:http"
-import { mkdir, mkdtemp, readFile, lstat, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { packFixtureArchive } from "./smoke-package.mjs"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -396,21 +397,7 @@ try {
   smokeGitInit(temp, project)
   await writeFile(path.join(project, "fixture.py"), script)
   if (scenario === "execution") await writeFile(path.join(project, "background.py"), "import time\ntime.sleep(120)\n")
-  const output = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--offline", "--pack-destination", temp], {
-    cwd: root, env: { ...env, npm_config_cache: path.join(temp, "npm-cache"), npm_config_ignore_scripts: "true" }, encoding: "utf8", timeout: 60000 }))
-  const packed = Array.isArray(output) ? output : Object.values(output)
-  assert.equal(packed.length, 1)
-  assert.deepEqual(packed[0].files.map(file => file.path).sort(), archiveFiles)
-  const archive = path.join(temp, packed[0].filename), install = path.join(temp, "installed")
-  await mkdir(install)
-  assert.deepEqual(execFileSync("tar", ["-tzf", archive], { env, encoding: "utf8", timeout: 10000 }).trim().split("\n").sort(),
-    archiveFiles.map(file => "package/" + file).sort())
-  execFileSync("tar", ["-xzf", archive, "-C", install], { env, timeout: 10000 })
-  const installed = path.join(install, "package")
-  for (const file of archiveFiles) {
-    assert.equal((await lstat(path.join(installed, file))).isSymbolicLink(), false)
-    assert.deepEqual(await readFile(path.join(installed, file)), await readFile(path.join(root, file)))
-  }
+   const { archive, packed, installed } = await packFixtureArchive({ root, temp, env, expectedFiles: archiveFiles })
   const manifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"))
   assert.equal(manifest.name, "opencode-reviewer")
   assert.deepEqual(manifest.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })

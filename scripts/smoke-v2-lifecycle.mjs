@@ -5,7 +5,8 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { createServer } from "node:http"
-import { mkdir, mkdtemp, readFile, readdir, lstat, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises"
+import { packFixtureArchive, verifyFixturePackage } from "./smoke-package.mjs"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -395,15 +396,6 @@ const command = async action => {
   return until("monitor " + action, async () => (await readMonitor())?.replies[control.id])
 }
 const window = async () => { await sleep(800); await quietCheck() }
-const walk = async (directory, prefix = "") => {
-  const files = []
-  for (const name of await readdir(directory)) {
-    const file = path.join(directory, name), stat = await lstat(file)
-    assert.equal(stat.isSymbolicLink(), false, "Archive install must not use source symlinks")
-    if (stat.isDirectory()) files.push(...await walk(file, prefix + name + "/")); else files.push(prefix + name)
-  }
-  return files.sort()
-}
 try {
   version = execFileSync(host, ["--version"], { env, encoding: "utf8", timeout: 10000 }).trim()
   assertV2HostVersion(version)
@@ -415,29 +407,15 @@ try {
   assert.equal(manifest.name, "opencode-reviewer")
   assert.equal(manifest.engines.opencode, ">=2.0.0 <3")
   assert.deepEqual(manifest.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })
-  const npmOptions = { env: { ...env, npm_config_cache: path.join(temp, "npm-cache"), npm_config_ignore_scripts: "true" },
-    encoding: "utf8", timeout: 60000 }
-  // The caller builds first. This packs the repository unchanged and never
-  // invokes prepack or constructs a substitute package.
-  const packOutput = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--offline", "--pack-destination", temp],
-    { ...npmOptions, cwd: root }))
-  const packed = Array.isArray(packOutput) ? packOutput : Object.values(packOutput)
-  assert.equal(packed.length, 1)
-  assert.deepEqual(packed[0].files.map(file => file.path).sort(), archiveFiles)
+  const { archive, packed, npmOptions } = await packFixtureArchive({ root, temp, env, expectedFiles: archiveFiles, extract: false })
   await publish(path.join(artifacts, "npm-pack.json"), packed)
-  const archive = path.join(temp, packed[0].filename)
-  assert.deepEqual(execFileSync("tar", ["-tzf", archive], { env, encoding: "utf8", timeout: 10000 }).trim().split("\n").sort(),
-    archiveFiles.map(file => "package/" + file).sort())
   const install = path.join(temp, "installed")
   await mkdir(install)
   await publish(path.join(install, "package.json"), { name: "phase1-private-install", version: "0.0.0", private: true })
   execFileSync("npm", ["install", "--ignore-scripts", "--offline", "--no-audit", "--no-fund", "--legacy-peer-deps", "--omit=optional", "--package-lock=false", archive],
     { ...npmOptions, cwd: install })
   const installed = path.join(install, "node_modules/opencode-reviewer")
-  const verifyPackage = async directory => {
-    assert.deepEqual(await walk(directory), archiveFiles)
-    for (const file of archiveFiles) assert.deepEqual(await readFile(path.join(directory, file)), await readFile(path.join(root, file)))
-  }
+  const verifyPackage = directory => verifyFixturePackage(root, directory, archiveFiles)
   await verifyPackage(installed)
   const archiveBytes = await readFile(archive)
   registry = createServer((request, response) => {

@@ -4,7 +4,7 @@ import type { AssessmentPreview, ReviewKind } from "./types.js"
 /** Prefix of the native reject message the requesting agent reads. The prefix
  * avoids native muted-denial phrases. Model text is preserved, so the host may
  * still render a message muted when that text contains a denial phrase. */
-export const STEERING_PREFIX = "Rejected by opencode-reviewer:"
+const STEERING_PREFIX = "Rejected by opencode-reviewer:"
 
 const calls: Record<ReviewKind, string> = { shell: "shell tool call", edit: "edit tool call",
   "external-directory": "external directory tool call", skill: "skill tool call", tool: "registered tool call" }

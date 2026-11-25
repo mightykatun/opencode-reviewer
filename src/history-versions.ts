@@ -1,7 +1,7 @@
 import type { HistoryDatabase } from "./history-schema.js"
 
 /** Fixed attribution for records made before version capture. Never advance on release. */
-export const legacyReviewerVersion = "2.7.0"
+const legacyReviewerVersion = "2.7.0"
 
 /** The caller owns BEGIN IMMEDIATE. Keep old table/JSON shapes so already-running
  * older workers can still read and write during an upgrade. The insert trigger

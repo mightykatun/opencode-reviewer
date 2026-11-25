@@ -4,7 +4,7 @@ import { historyDelta, replacePermissionStatistic, validatePermissionStatistic }
 import type { HistoryDatabase } from "./history-schema.js"
 
 export const HISTORY_BOOTSTRAP_STEPS = 128
-export const HISTORY_BOOTSTRAP_MS = 40
+const HISTORY_BOOTSTRAP_MS = 40
 export const migrationSchema = `CREATE TABLE IF NOT EXISTS conversation_bootstrap (
   id TEXT PRIMARY KEY, review TEXT NOT NULL, phase INTEGER NOT NULL, after TEXT NOT NULL,
   totals TEXT NOT NULL, partial INTEGER NOT NULL CHECK(partial IN (0,1)));`

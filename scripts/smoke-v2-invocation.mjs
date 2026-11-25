@@ -1,11 +1,12 @@
-// Archived production companion, invocation and evidence readers on OpenCode 2.0.26.
+// Archived production companion, invocation and evidence readers on stable OpenCode V2.
 // Default is read-only evidence; review adds one advisory reviewer response.
 // No flags; linux/git/python3/tmux/bundle/npm-pack/tar.
 // Build first. Host execution requires the inventory owner's explicit grant.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { createServer } from "node:http"
-import { mkdir, mkdtemp, readFile, readdir, lstat, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises"
+import { packFixtureArchive } from "./smoke-package.mjs"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -280,6 +281,9 @@ const serverPath = path.join(project, "opencode.json")
 const archiveFiles = ["dist/tui.js", "package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"].sort()
 const publishers = new Map(), calls = [], waiting = new Map(), errors = [], evidence = {}, negativeWindows = []
 const network = { reviewPOSTs: 0, mcpToolCalls: 0 }
+const backgroundCalls = new Set(["phase2-native-child", "phase2-native-nested", "phase2-native-resume"])
+const backgroundContinuations = new Map()
+const backgroundReports = []
 let expectedReviewPOSTs = 0
 let sequence = 0, version, modelServer, mcpServer
 const publish = async (file, value) => {
@@ -296,7 +300,9 @@ const observations = async () => {
   if (cli) { assert.deepEqual(cli.errors, []); assert.deepEqual(cli.replied, []) }
   for (const server of servers) {
     assert.deepEqual(server.errors, [])
-    assert.ok(server.after.every(item => item.tool === "execute" || item.status !== "completed"), "No held leaf may complete")
+    assert.ok(server.after.every(item => item.tool === "execute" || item.status !== "completed"
+      || (item.tool === "subagent" && backgroundCalls.has(item.id) && item.result?.output?.status === "running"
+        && typeof item.result.output.sessionID === "string")), "No held leaf may complete")
   }
   assert.equal(network.mcpToolCalls, 0)
   assert.ok(network.reviewPOSTs <= expectedReviewPOSTs, "No reviewer request outside its explicit advisory control")
@@ -417,21 +423,7 @@ try {
   smokeGitInit(temp, project)
   await writeFile(path.join(inputs, "fixture.py"), 'with open("executed", "a") as output:\n    output.write("PHASE2 UNEXPECTED EXECUTION\\n")\n')
   for (const target of targets) await writeFile(target, "PHASE2_BEFORE\n")
-  const packedOutput = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--offline", "--pack-destination", temp],
-    { cwd: root, env: { ...env, npm_config_cache: path.join(temp, "npm-cache"), npm_config_ignore_scripts: "true" }, encoding: "utf8", timeout: 60000 }))
-  const packed = Array.isArray(packedOutput) ? packedOutput : Object.values(packedOutput)
-  assert.equal(packed.length, 1)
-  assert.deepEqual(packed[0].files.map(file => file.path).sort(), archiveFiles)
-  const archive = path.join(temp, packed[0].filename), install = path.join(temp, "installed")
-  await mkdir(install)
-  assert.deepEqual(execFileSync("tar", ["-tzf", archive], { env, encoding: "utf8", timeout: 10000 }).trim().split("\n").sort(),
-    archiveFiles.map(file => "package/" + file).sort())
-  execFileSync("tar", ["-xzf", archive, "-C", install], { env, timeout: 10000 })
-  const installed = path.join(install, "package")
-  for (const file of archiveFiles) {
-    assert.equal((await lstat(path.join(installed, file))).isSymbolicLink(), false)
-    assert.deepEqual(await readFile(path.join(installed, file)), await readFile(path.join(root, file)))
-  }
+   const { archive, packed, installed } = await packFixtureArchive({ root, temp, env, expectedFiles: archiveFiles })
   const manifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"))
   assert.equal(manifest.name, "opencode-reviewer")
   assert.equal(manifest.engines.opencode, ">=2.0.0 <3")
@@ -468,6 +460,41 @@ try {
       for await (const chunk of req) { text += chunk; assert.ok(text.length < 8 * 1024 * 1024) }
       const body = JSON.parse(text), index = calls.length
       assert.ok(body.tools?.length, "The title hook suppresses auxiliary model requests")
+      const last = body.messages.at(-1)
+      const report = last?.role === "user" && typeof last.content === "string"
+        ? /^<background-result kind="subagent" sessionID="([^"]+)" state="(cancelled|completed)" description="Native evidence context probe">\n([\s\S]*)\n<\/background-result>$/.exec(last.content) : undefined
+      const submitted = last?.role === "tool" && backgroundCalls.has(last.tool_call_id)
+      if (submitted) {
+        assert.ok(body.messages.some(message => message.tool_calls?.some(call =>
+          call.id === last.tool_call_id && call.function.name === "subagent")))
+        assert.match(JSON.stringify(last.content), /subagent is working in the background/)
+        assert.ok(!backgroundContinuations.has(last.tool_call_id), "No retries of a background submission continuation")
+        backgroundContinuations.set(last.tool_call_id, body)
+        evidence.backgroundContinuations = [...backgroundContinuations.values()]
+      }
+      if (report) {
+        const monitor = await readObservation(monitorPath)
+        assert.ok(monitor.progress.some(event => backgroundCalls.has(event.id) && event.metadata?.sessionID === report[1]),
+          "Only a genuinely observed owned child may wake its parent")
+        if (report[2] === "completed") assert.equal(report[3], "Native background update acknowledged.",
+          "Only the fixture's exact acknowledgement can complete a child")
+        assert.ok(backgroundReports.length < 6, "Bounded native cancellation continuations")
+        backgroundReports.push(body)
+        evidence.backgroundReports = backgroundReports
+      }
+      if (submitted || report) {
+        const message = { role: "assistant", content: "Native background update acknowledged." }
+        if (body.stream) {
+          res.writeHead(200, { "Content-Type": "text/event-stream" })
+          for (const [delta, finish_reason] of [[message, null], [{}, "stop"]])
+            res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason }] })}\n\n`)
+          res.end("data: [DONE]\n\n")
+        } else {
+          res.writeHead(200, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ choices: [{ message, finish_reason: "stop" }] }))
+        }
+        return
+      }
       calls.push({ index, body }); waiting.set(index, { res, body })
       res.once("close", () => { if (waiting.has(index)) { calls[index].aborted = true; waiting.delete(index) } })
     } catch (error) { errors.push(String(error)); res.destroy() }
@@ -851,7 +878,7 @@ try {
   await negativeWindow(sessionID, [movedPending], "moved invocation uses new server files without execution")
   await interrupt(sessionID)
   await negativeWindow(sessionID, [], "all interrupted without replies or execution")
-  assert.equal(calls.length, 13, "Only the thirteen explicitly controlled native model requests were dispatched")
+  assert.equal(calls.length, 13, "Exactly thirteen explicitly controlled tool-producing model requests were dispatched")
   await publish(cliPath, { ...cli, plugins: ["*", "-fixture.invocation.monitor"] })
   const cleaned = await until("monitor cleanup", state => state.cli?.cleaned && state.cli)
   await sleep(300)

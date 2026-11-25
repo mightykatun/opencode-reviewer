@@ -195,7 +195,7 @@ Normal retrieval turns are not counted as retries.
 | `notifySound` | boolean | `true` | Master switch for notification audio. `false` silences every type and reminder without disabling enabled banners. |
 | `staleReminderSeconds` | integer | `60` | `0` through the maximum safe integer, in seconds. `0` disables reminders. Otherwise eligible pending human interactions repeat at this interval, limited to the native front-of-queue blocker per conversation. |
 | `notifications` | object | All banners enabled. All sounds enabled except `approved` | Keys: `attention`, `unsafe`, `question`, `approved`, `steered`, `error`, `ended`. Each entry is an object with optional `banner` and `sound` booleans. Omitted types/fields retain their defaults. Unknown types/fields are invalid. Controls also apply to reminders. |
-| `notificationSoundDirectory` | string | Unset (bundled sounds) | Absolute, NUL-free path, at most 4096 string code units. Use the six notification type names as basenames: usable `.wav` first, then `.mp3`, then the corresponding bundled sound. |
+| `notificationSoundDirectory` | string | Unset (bundled sounds) | Absolute, NUL-free path, at most 4096 string code units. Use the seven notification type names as basenames: usable `.wav` first, then `.mp3`, then the corresponding bundled sound. Six sounds are bundled, with `steered` sharing the attention sound. |
 
 Notification channels are independent: `banner: false, sound: true` is sound-only,
 `banner: true, sound: false` is banner-only, both `false` disable that type.
@@ -243,6 +243,12 @@ Limits the reviewer only infers are weighed against the actual risk. Earlier
 prompts never approve an operation on their own. The task a subagent received is
 not available, so the reviewer never guesses it from older tasks or queued
 messages.
+
+Settled question-tool answers and typed dismissal messages from the main
+conversation are interleaved with those prompts. Plain dismissals and unfinished
+questions are omitted. Question entries share a 32 KiB budget and each is capped
+at 4 KiB, dropping option labels before omitting an entry. Later answers can
+update earlier instructions just as later prompts can.
 
 - **Shell:** the command and its working directory.
 - **Edits:** the pending diff. An oversized diff keeps its leading complete lines
@@ -553,8 +559,9 @@ conversation baseline. Storage errors show unavailable, not zero.
 
 ### Privacy
 
-Before approval, reviews send the pending request, your prompts in the main
-conversation, diffs, skill instructions and tool arguments to the verdict
+Before approval, reviews send the pending request, your prompts and settled
+question answers or typed dismissals in the main conversation, diffs, skill
+instructions and tool arguments to the verdict
 endpoint and, when retrieval runs, the retrieval endpoint. The retrieval model
 receives its inspection results. The verdict receives selected results and
 direct attachments. Session instructions and steering follow-up context go only

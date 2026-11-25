@@ -13,7 +13,7 @@ export interface FileIO {
 export interface FileTiming { totalMs: number; pathMs: number; captureMs: number; concurrency: number }
 const defaults: FileTiming = { totalMs: 5000, pathMs: 500, captureMs: 1500, concurrency: 2 }
 
-export class FileAccessError extends Error {}
+class FileAccessError extends Error {}
 export function fileFailure(error: unknown): string {
   if (error instanceof DeadlineError || error instanceof FileAccessError) return error.message
   const code = (error as NodeJS.ErrnoException | null)?.code
@@ -72,7 +72,7 @@ export async function physicalPath(filename: string, io: FileIO, signal: AbortSi
 }
 
 /** One shared optional-filesystem budget and path snapshot per permission. */
-export class FileScope {
+class FileScope {
   private end: number | undefined
   private paths = new Map<string, Promise<CanonicalPath>>()
   constructor(readonly access: FileAccess, readonly signal: AbortSignal) {}

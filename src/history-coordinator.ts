@@ -48,8 +48,8 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
   }
   /** History browsing uses ancestry only, even with invalid/disabled review mode. */
   root(session: string, signal: AbortSignal) { return this.ancestry(session, signal) }
-  private admit(event: HistoryEvent) {
-    try { return this.store.admit(event.type === "sessionDeleted" ? event : { ...event, versions: { ...this.versions } }) } catch { return false }
+  private admit(event: Exclude<HistoryEvent, { type: "sessionDeleted" }>) {
+    try { return this.store.admit({ ...event, versions: { ...this.versions } }) } catch { return false }
   }
   observation(request: R, kind: ReviewKind, config: Config, execution: { review: string; root?: string }): ReviewObservation {
     const context: HistoryReview | undefined = execution.root ? { scope: this.scope, root: execution.root,

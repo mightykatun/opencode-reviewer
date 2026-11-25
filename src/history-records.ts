@@ -3,7 +3,7 @@ import path from "node:path"
 import type { Usage } from "./usage.js"
 import type { ReviewTiming } from "./types.js"
 
-export const HISTORY_EVENT_BYTES = 512 * 1024
+const HISTORY_EVENT_BYTES = 512 * 1024
 export const HISTORY_QUEUE_BYTES = 64 * 1024 * 1024
 export const HISTORY_OPERATION_OVERHEAD = 512
 export const HISTORY_RETRY_MS = 2000
@@ -48,7 +48,7 @@ export interface HistoryAccepted { safe: boolean; completedAt: number; reportedM
 export interface HistoryPayload extends HistoryAccepted { desc: string; usage?: Usage; toolCalls?: number }
 export type HistoryOutcome = "auto" | "manual" | "approved" | "rejected" | "cancelled"
 /** Dispatched retriever tool kinds. Calls recorded before kinds existed stay unknown. */
-export const retrievalCallTools = ["read", "list", "glob", "grep", "ask_context"] as const
+const retrievalCallTools = ["read", "list", "glob", "grep", "ask_context"] as const
 export type RetrievalCallTool = typeof retrievalCallTools[number]
 export type HistoryEvent = (
   | { type: "attemptDispatched"; context: HistoryReview; at: number; attempt: string; retry: "initial" | "transport" | "format" }

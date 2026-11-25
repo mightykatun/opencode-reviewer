@@ -34,7 +34,7 @@ export interface HostStatisticsViewProps {
 
 /** The native dialog owns frame, input mode and disposal. Its component layer
  * follows that ownership, never an inferred dialog.open or dialog.depth value. */
-export function HostStatisticsView(props: HostStatisticsViewProps) {
+function HostStatisticsView(props: HostStatisticsViewProps) {
   const { context, controller, token } = props
   const [hover, setHover] = createSignal<StatisticsScope>()
   const current = () => controller.current(token)

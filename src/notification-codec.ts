@@ -2,7 +2,7 @@ import { MPEGDecoder } from "mpg123-decoder"
 import { setImmediate as yieldTurn } from "node:timers/promises"
 
 export const MAX_SOUND_BYTES = 4 * 1024 * 1024
-export const MAX_SOUND_SECONDS = 10
+const MAX_SOUND_SECONDS = 10
 const MAX_RATE = 96000
 const MAX_SAMPLES = MAX_RATE * MAX_SOUND_SECONDS * 2
 export const SOUND_RMS = 0.1 // -20 dBFS, consistent defaults/custom files.
