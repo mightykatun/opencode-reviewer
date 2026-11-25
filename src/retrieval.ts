@@ -10,7 +10,7 @@ import { TransportOwnership, transportOwnership } from "./transport-ownership.js
 import { leadingLines, lineCount } from "./truncate.js"
 import { sumUsage, usageAttempt, type PricingLookup, type Usage } from "./usage.js"
 import type { ReviewAttemptEvent } from "./types.js"
-import type { RetrievalToolName } from "./retrieval-tools.js"
+import { retrievalArguments, type RetrievalToolName } from "./retrieval-arguments.js"
 import { askContext, askContextTool, clarificationEnabled, clarificationQuestions, invalidQuestions, type ContextAsker } from "./clarification.js"
 
 /** One read-only operation executed by the scoped server companion. */
@@ -38,7 +38,6 @@ export interface RetrievalOutcome { section: RetrievalSection; limitations: stri
 
 export const maxCallsPerRound = 10
 const OPENROUTER = "https://openrouter.ai/api/v1"
-const toolNames = ["read", "list", "glob", "grep"] as const
 
 const path = { type: "string", description: "Absolute, ~/..., or relative to the stated base directory." }
 const offset = { type: "integer", minimum: 1, description: "First line, 1-based." }
@@ -273,7 +272,9 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
         deps.progress("retrieving")
         try {
           const { calls } = await post({ type: "function", function: { name: "finish" } }, stage)
-          const finish = calls.find(call => call.name === "finish")
+          const finish = calls.slice(0, maxCallsPerRound).find(call => call.name === "finish")
+          for (const call of calls.slice(maxCallsPerRound)) record(rounds, call, call.arguments,
+            { status: "not-executed", reason: "not executed: per-round call limit" })
           const finished = finish && finishArgs(finish)
           if (finished) await finishSelection(finished, stage)
           else stopDetail = "The forced finish turn returned no valid finish call."
@@ -297,10 +298,11 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
           ...Object.fromEntries(continuation.filter(key => message[key] != null).map(key => [key, message[key]])),
           tool_calls: calls.map(call => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments },
             ...(call.extra ? { extra_content: call.extra } : {}) })) })
-        const finish = calls.find(call => call.name === "finish")
+        const finish = calls.slice(0, maxCallsPerRound).find(call => call.name === "finish")
         const finished = finish && finishArgs(finish)
         if (finished) {
-          for (const call of calls) if (call !== finish) record(rounds, call, call.arguments, { status: "not-executed", reason: "not executed: finish called" })
+          for (const [index, call] of calls.entries()) if (call !== finish) record(rounds, call, call.arguments,
+            { status: "not-executed", reason: index >= maxCallsPerRound ? "not executed: per-round call limit" : "not executed: finish called" })
           return finishSelection(finished, stage)
         }
         for (const [index, call] of calls.entries()) {
@@ -336,8 +338,9 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
             answer(call, { id, ...result })
             continue
           }
-          if (!toolNames.includes(call.name as RetrievalToolName) || typeof args !== "object" || args === null || Array.isArray(args)) {
-            const reason = toolNames.includes(call.name as RetrievalToolName) ? "invalid arguments: arguments must be a JSON object" : "unknown tool"
+          const validated = retrievalArguments(call.name, args)
+          if (!validated.ok) {
+            const reason = validated.reason
             const id = record(rounds, call, args, { status: "error", reason })
             answer(call, { id, tool: call.name, status: "error", reason })
             continue
@@ -346,7 +349,7 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
           if (timeout <= 0) throw new DeadlineError("Retrieval")
           stage.throwIfAborted()
           deps.observe({ type: "toolDispatched", review: deps.review, call: String(++toolCalls), tool: call.name as RetrievalToolName })
-          const requested = args as JSONObject
+          const requested = validated.args
           const inspection = { ...requested, limit: requested.limit === undefined ? (call.name === "read" ? 100 : 50) : requested.limit }
           const result = await execute({ tool: call.name as RetrievalToolName, arguments: inspection }, timeout, stage)
           stage.throwIfAborted()

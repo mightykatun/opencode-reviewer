@@ -5,13 +5,14 @@ import { Worker } from "node:worker_threads"
 import { fileFailure, physicalPath, type FileIO } from "./file-access.js"
 import type { JSONObject, JSONValue } from "./host-types.js"
 import { globMatcher } from "./retrieval-glob.js"
+import { maxRetrievalEntries as maxEntries, retrievalArguments, type RetrievalToolName } from "./retrieval-arguments.js"
+export { retrievalArguments, type RetrievalToolName } from "./retrieval-arguments.js"
 
 /** Server-side retrieval operations. Paths come from the reviewer model; every
  * result echoes what was tried so the model can correct itself. No skip list,
  * no directory descent through symlinks, no shell or subprocess. */
 import { retrievalToolNames } from "./companion-protocol.js"
 export { retrievalToolNames }
-export type RetrievalToolName = typeof retrievalToolNames[number]
 export interface RetrievalCall { tool: RetrievalToolName; arguments: JSONObject }
 export interface RetrievalContext {
   /** Absolute base for relative paths. */
@@ -24,7 +25,6 @@ export interface RetrievalContext {
   softEnd: number
 }
 
-export const maxEntries = 500
 const maxPatternLength = 1024
 const maxGrepFileBytes = 16 * 1024 * 1024
 const maxMatchText = 1000
@@ -32,33 +32,6 @@ const readChunk = 65536
 
 type Result = { [key: string]: JSONValue }
 const error = (tool: string, reason: string, paths: JSONObject = {}): Result => ({ tool, status: "error", ...paths, reason })
-
-/** Strict argument validation shared by every caller of the executor. */
-export function retrievalArguments(tool: string, value: unknown): { ok: true; args: JSONObject } | { ok: false; reason: string } {
-  if (!retrievalToolNames.includes(tool as RetrievalToolName)) return { ok: false, reason: "unknown tool" }
-  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, reason: "invalid arguments: expected an object" }
-  const args = value as JSONObject
-  const allowed: Record<RetrievalToolName, Record<string, "string" | "integer" | "boolean">> = {
-    read: { path: "string", offset: "integer", limit: "integer" },
-    list: { path: "string", limit: "integer" },
-    glob: { pattern: "string", path: "string", limit: "integer" },
-    grep: { pattern: "string", path: "string", include: "string", ignoreCase: "boolean", limit: "integer" },
-  }
-  const schema = allowed[tool as RetrievalToolName]
-  for (const [key, item] of Object.entries(args)) {
-    const type = schema[key]
-    if (!type) return { ok: false, reason: `invalid arguments: unknown field ${JSON.stringify(key)}` }
-    if (type === "integer" ? !Number.isSafeInteger(item) || (item as number) < 1 : typeof item !== type)
-      return { ok: false, reason: `invalid arguments: ${key} must be ${type === "integer" ? "a positive integer" : `a ${type}`}` }
-    if (key === "limit" && tool !== "read" && (item as number) > maxEntries)
-      return { ok: false, reason: `invalid arguments: limit must be at most ${maxEntries}` }
-    if (type === "string" && (!(item as string) || (item as string).includes("\0") || (item as string).length > 16384))
-      return { ok: false, reason: `invalid arguments: ${key} must be a nonempty string without NUL` }
-  }
-  const required = tool === "read" || tool === "list" ? "path" : "pattern"
-  if (typeof args[required] !== "string") return { ok: false, reason: `invalid arguments: ${required} is required` }
-  return { ok: true, args }
-}
 
 /** Absolute paths stay as given, ~ uses the server HOME, relative paths join the base
  * without lexical normalization (the physical lookup resolves .. after symlinks). */

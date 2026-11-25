@@ -188,3 +188,20 @@ test("a missing message or call, malformed data or a failed read yields no follo
   const cancelled: FollowUpReader = { message: { list: (async () => { abort.abort(); throw Error("aborted") }) as unknown as FollowUpReader["message"]["list"] } }
   await assert.rejects(readSteeringFollowUp(cancelled, record, x, abort.signal))
 })
+
+test("duplicate pages and cursors cannot duplicate evidence even when the rejected boundary eventually appears", async () => {
+  const current = { id: "a-3", type: "assistant", content: [tool("x")] }
+  const middle = { id: "a-2", type: "assistant", content: [{ type: "text", text: "Inspect first." }] }
+  const rejected = { id: "a-1", type: "assistant", content: [tool("rejected")] }
+  for (const pages of [[[current, middle], [middle, rejected]], [[current, rejected, current]]]) {
+    assert.equal(await readSteeringFollowUp(reader(pages), record, request("x", "a-3", "shell", "session", "x"),
+      new AbortController().signal), undefined)
+  }
+  let calls = 0
+  const repeatedCursor: FollowUpReader = { message: { list: (async () => ({
+    data: ++calls === 1 ? [current] : [middle, rejected], cursor: { next: "same" },
+  })) as unknown as FollowUpReader["message"]["list"] } }
+  assert.equal(await readSteeringFollowUp(repeatedCursor, record, request("x", "a-3", "shell", "session", "x"),
+    new AbortController().signal), undefined)
+  assert.equal(calls, 2)
+})

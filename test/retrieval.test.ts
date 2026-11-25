@@ -118,7 +118,7 @@ test("malformed calls return errors to the model; extra calls and calls beside f
   assert.equal(result.toolCalls, maxCallsPerRound)
   assert.equal(h.events.filter(event => event.type === "toolDispatched").length, maxCallsPerRound)
   const answers = h.bodies[1].messages.slice(3).map((message: any) => JSON.parse(message.content))
-  assert.deepEqual(answers.map((answer: any) => answer.reason), ["unknown tool", "invalid arguments: arguments must be a JSON object",
+  assert.deepEqual(answers.map((answer: any) => answer.reason), ["unknown tool", "invalid arguments: expected an object",
     "invalid arguments: finish requires items (result IDs or files with path and optional positive offset/limit) and optional notes (string)"])
   assert.equal(h.executed.length, maxCallsPerRound, "the eleventh call is not executed")
   const last = h.bodies[2].messages.at(-1)
@@ -510,9 +510,53 @@ test("inspection defaults are explicit at dispatch, larger requests survive and 
   tools(call("r2", "read", { path: "file", limit: 250 }), call("g2", "grep", { pattern: "effect", limit: 150 }),
     call("invalid", "read", { path: "file", limit: null })), tools(call("f", "finish", { items: [] })), verdict()])
   await review(shellEvidence(), h.config, signal(), h.deps)
-  assert.deepEqual(h.executed.map(item => item.call.arguments.limit), [100, 50, 50, 50, 250, 150, null])
+  assert.deepEqual(h.executed.map(item => item.call.arguments.limit), [100, 50, 50, 50, 250, 150])
   const trace = verdictEvidence(h.bodies[3]).retrieval.trace
   assert.deepEqual(trace.slice(0, 4).map((item: any) => item.arguments.limit), [undefined, undefined, undefined, undefined])
+  assert.match(trace.at(-1).reason, /positive integer/)
+  assert.equal(h.events.filter(event => event.type === "toolDispatched").length, 6)
+})
+
+test("ordinary and forced finish calls obey the same ten-position admission boundary", async () => {
+  for (const forced of [false, true]) for (const position of [10, 11]) {
+    const calls = Array.from({ length: position - 1 }, (_, index) => call(`r${index}`, "read", { path: `file-${index}` }))
+    calls.push(call("finish", "finish", { items: [{ path: "attachment" }] }))
+    const replies = forced ? [text("Finish now."), tools(...calls), verdict()]
+      : position === 10 ? [tools(...calls), verdict()] : [tools(...calls), tools(call("last", "finish", { items: [] })), verdict()]
+    const h = harness(replies)
+    const result = await review(shellEvidence(), h.config, signal(), h.deps)
+    const paths = h.executed.map(item => item.call.arguments.path)
+    assert.deepEqual(paths, position === 10 ? ["attachment"] : forced ? [] : Array.from({ length: 10 }, (_, i) => `file-${i}`))
+    assert.equal(result.toolCalls ?? 0, paths.length)
+    assert.equal(h.events.filter(event => event.type === "toolDispatched").length, paths.length)
+    if (position === 11) assert.ok(verdictEvidence(h.bodies.at(-1)).retrieval.trace.some((item: any) =>
+      item.tool === "finish" && item.reason === "not executed: per-round call limit"))
+  }
+})
+
+test("invalid inspection schemas are returned without companion dispatch or operation accounting", async () => {
+  const h = harness([tools(
+    call("zero", "read", { path: "file", limit: 0 }),
+    call("missing", "list", {}),
+    call("large", "glob", { pattern: "*", limit: 501 }),
+    call("boolean", "grep", { pattern: "x", ignoreCase: "yes" }),
+    call("unknown", "read", { path: "file", extra: true }),
+  ), tools(call("finish", "finish", { items: [] })), verdict()])
+  const result = await review(shellEvidence(), h.config, signal(), h.deps)
+  assert.deepEqual(h.executed, [])
+  assert.equal(result.toolCalls ?? 0, 0)
+  assert.equal(h.events.filter(event => event.type === "toolDispatched").length, 0)
+  assert.equal(h.bodies[1].messages.filter((message: any) => message.role === "tool").length, 5)
+})
+
+test("multiple finish calls retain first-finish selection without falling through malformed selection", async () => {
+  for (const malformed of [false, true]) {
+    const h = harness([tools(call("first", "finish", malformed ? { items: false } : { items: [{ path: "first" }] }),
+      call("second", "finish", { items: [{ path: "second" }] })),
+    ...(malformed ? [tools(call("last", "finish", { items: [] }))] : []), verdict()])
+    await review(shellEvidence(), h.config, signal(), h.deps)
+    assert.deepEqual(h.executed.map(item => item.call.arguments.path), malformed ? [] : ["first"])
+  }
 })
 
 test("scoped companion inspections page at 100 lines while direct attachment reaches the consequential tail", async t => {

@@ -338,6 +338,22 @@ function assistant(id: string, created: number, ...content: SessionMessageAssist
 }
 const scopeQuestion: Asked = [["Scope", "Touch staging too?", ["Yes", "No"]]]
 
+test("repeated assistant messages or cursors omit all questions without replacing root prompts", async () => {
+  const message = assistant("a1", 2, answered("q1", 3, scopeQuestion, [["No"]]))
+  for (const repeat of ["within-page", "message", "cursor"]) {
+    const first = page(message)
+    first.cursor.next = "next"
+    const second = page(repeat === "message" ? message : assistant("a2", 4, answered("q2", 5, scopeQuestion, [["Yes"]])))
+    if (repeat === "cursor") second.cursor.next = "next"
+    const f = fixture([session()], [page(user("u", "Keep staging untouched", 1))],
+      repeat === "within-page" ? [page(message, message)] : [first, second])
+    const result = await loadHostConversationContext(scope, f.reader, signal())
+    assert.equal(result.userPrompt, "Keep staging untouched")
+    assert.deepEqual(result.userHistory, [{ type: "latest-prompt" }])
+    assert.deepEqual(result.limitations, ["Questions the agent asked in the root conversation could not be read and are not included."])
+  }
+})
+
 test("settled questions interleave with prompts by settlement time, including after the latest prompt", async () => {
   const f = fixture([session()], [page(user("u3", "deploy it", 30), user("u2", "now fix the tests", 20), user("u1", "refactor the parser", 10))], [page(
     assistant("a4", 31, answered("q4", 35, [["Target", "Which environment?", ["staging", "production"]]], [["staging"]])),

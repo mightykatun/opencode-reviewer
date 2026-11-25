@@ -52,13 +52,17 @@ async function serverSetup(ctx) {
   const registrations = [], publisher = fixture.longSession ? observationPublisher(fixture.warmup) : undefined
   if (publisher) {
     const record = { before: 0, after: 0, completed: 0, pending: 0, maximum: 0, identities: {} }
+    const warmupMessages = new Set()
     registrations.push(await ctx.tool.transform(editor => {
       editor.namespace({ name: "fixture", description: "Isolated long-session fixture" })
       editor.add({ name: "noop", description: "Return a fixed marker without I/O", options: { namespace: "fixture", codemode: true },
         input: { type: "object", properties: {}, additionalProperties: false }, execute: async () => ({ content: "warmup" }) })
     }))
     for (const phase of ["before", "after"]) registrations.push(await ctx.tool.hook(`execute.${phase}`, event => {
-      if (!event.id.startsWith("warmup-")) return
+      const message = JSON.stringify([event.sessionID, event.messageID])
+      if (event.id.startsWith("warmup-")) warmupMessages.add(message)
+      // Count all hooks in these isolated warmup steps without inventing inner parent linkage.
+      if (!warmupMessages.has(message)) return
       record[phase]++
       record.pending += phase === "before" ? 1 : -1
       record.maximum = Math.max(record.maximum, record.pending)
@@ -1720,8 +1724,10 @@ createInterface({input:process.stdin}).on('line',line=>{
      })
      assert.equal(hooks.before, 1536); assert.equal(hooks.completed, 1536); assert.equal(hooks.pending, 0)
      assert.ok(hooks.maximum < 512, "This is cumulative history, not live capacity exhaustion")
-     assert.equal(Object.keys(hooks.identities).length, 512)
-     assert.ok(Object.values(hooks.identities).every(counts => counts.before === 3 && counts.after === 3))
+      const identities = Object.values(hooks.identities)
+      assert.ok(identities.length === 512 || identities.length === 1536, "Observe either shared or distinct native inner call IDs")
+      const perIdentity = identities.length === 512 ? 3 : 1
+      assert.ok(identities.every(counts => counts.before === perIdentity && counts.after === perIdentity))
      assert.deepEqual((await command({ type: "status" })).handshake, handshake, "No restart or new capture epoch")
      await publish(path.join(artifacts, "warmup-model-calls.json"), warmupCalls)
    }

@@ -219,6 +219,7 @@ export async function readSteeringFollowUp(reader: FollowUpReader, record: Steer
     return await withDeadline(signal, Math.min(5000, remainingTime(signal) / 3), async readSignal => {
       const between: Part[][] = []
       let cursor: string | undefined, foundCurrent = false
+      const messages = new Set<string>(), cursors = new Set<string>()
       for (let page = 0; page < maxPages; page++) {
         readSignal.throwIfAborted()
         const pending = reader.message.list(cursor === undefined
@@ -228,8 +229,17 @@ export async function readSteeringFollowUp(reader: FollowUpReader, record: Steer
         const result = await pending
         readSignal.throwIfAborted()
         if (!result || !Array.isArray(result.data) || result.data.length > pageSize) throw new InvalidOutput()
-        for (const raw of result.data as unknown[]) {
-          const message = parts(raw)
+        const next = result.cursor?.next
+        if (next !== undefined && next !== null) {
+          if (typeof next !== "string" || !next || cursors.has(next)) throw new InvalidOutput()
+          cursors.add(next)
+        }
+        const pageMessages = (result.data as unknown[]).map(parts)
+        for (const message of pageMessages) {
+          if (messages.has(message.id)) throw new InvalidOutput()
+          messages.add(message.id)
+        }
+        for (const message of pageMessages) {
           if (!foundCurrent) {
             if (message.id !== source.assistantID) continue
             foundCurrent = true
@@ -248,7 +258,6 @@ export async function readSteeringFollowUp(reader: FollowUpReader, record: Steer
           }
           between.push(message.content)
         }
-        const next = result.cursor?.next
         if (typeof next !== "string" || !next || !result.data.length) return undefined
         cursor = next
       }

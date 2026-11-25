@@ -88,13 +88,13 @@ function questionPart(part: JSONRecord): PartOutcome {
   return { kind: "settled", recorded: { settledAt: time.completed, call } }
 }
 
-type AssistantMessage = { created: number; parts: JSONRecord[] }
+type AssistantMessage = { id: string; created: number; parts: JSONRecord[] }
 
 function assistantMessage(message: unknown): AssistantMessage {
   if (!isRecord(message) || message.type !== "assistant" || !isString(message.id) || !message.id
     || !isRecord(message.time) || typeof message.time.created !== "number" || !Array.isArray(message.content)
     || !message.content.every(isRecord)) throw new InvalidQuestionHistory()
-  return { created: message.time.created, parts: message.content as JSONRecord[] }
+  return { id: message.id, created: message.time.created, parts: message.content as JSONRecord[] }
 }
 
 /** Settled question calls from the root session's assistant messages, newest
@@ -103,6 +103,7 @@ function assistantMessage(message: unknown): AssistantMessage {
 async function collect(reader: QuestionReader, sessionID: string, since: number | undefined, signal: AbortSignal): Promise<QuestionHistory> {
   const calls: RecordedQuestionCall[] = []
   let malformed = 0, cursor: string | undefined
+  const messages = new Set<string>(), cursors = new Set<string>()
   for (let page = 0; page < maxPages; page++) {
     signal.throwIfAborted()
     const pending = reader.message.list(cursor === undefined
@@ -112,9 +113,16 @@ async function collect(reader: QuestionReader, sessionID: string, since: number 
     const result = await pending
     signal.throwIfAborted()
     if (!result || !Array.isArray(result.data) || result.data.length > pageSize || !isRecord(result.cursor)) throw new InvalidQuestionHistory()
+    const next = result.cursor.next
+    if (next !== undefined && next !== null) {
+      if (!isString(next) || !next || cursors.has(next)) throw new InvalidQuestionHistory()
+      cursors.add(next)
+    }
     let reachedSince = false
     for (const raw of result.data as unknown[]) {
       const message = assistantMessage(raw)
+      if (messages.has(message.id)) throw new InvalidQuestionHistory()
+      messages.add(message.id)
       for (const part of message.parts) {
         if (part.type !== "tool" || part.name !== questionTool) continue
         const outcome = questionPart(part)
@@ -123,8 +131,6 @@ async function collect(reader: QuestionReader, sessionID: string, since: number 
       }
       if (since !== undefined && message.created < since) reachedSince = true
     }
-    const next = result.cursor.next
-    if (next !== undefined && next !== null && (!isString(next) || !next)) throw new InvalidQuestionHistory()
     if (reachedSince || !next || !result.data.length) return finish(calls, malformed, false)
     cursor = next
   }
