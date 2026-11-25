@@ -18,7 +18,7 @@ import type { PluginLifecycle } from "./plugin-lifecycle.js"
 import { HostReviewPanel } from "./host-review-panel.js"
 import { setupHostHistory, setupHostHistoryOnly } from "./host-history-runtime.js"
 import { setupHostNotifications, type HostNotificationCheckpoint, type HostNotifications } from "./host-notifications.js"
-import { notificationWorkEvent } from "./host-background-work.js"
+import { notificationEvent, notificationWorkEvent } from "./host-background-work.js"
 import { setupHostSidebar } from "./host-sidebar.js"
 import { hostPricingLookup } from "./host-pricing.js"
 import type { PricingLookup } from "./usage.js"
@@ -180,8 +180,14 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     permissions: id => ctx.data.session.permission.list(id),
   }
   let permissionRoots: ReadonlySet<string> = new Set(), formRoots: ReadonlySet<string> = new Set()
+  let notificationPermissionRoots: ReadonlySet<string> = new Set()
+  let permissionHealthAt = 0, formHealthAt = 0
   let rootHeads: ReadonlyMap<string, string> = new Map()
-  const invalidatePermissions = () => { permissionRoots = new Set(); rootHeads = new Map() }
+  const invalidatePermissions = (affected?: string, preserveNotificationHealth = false) => {
+    permissionRoots = new Set(); rootHeads = new Map()
+    if (!preserveNotificationHealth) notificationPermissionRoots = affected
+      ? new Set([...notificationPermissionRoots].filter(root => root !== affected)) : new Set()
+  }
   const front = (root: string) => hostQueueFront(root, queueReader)?.id
   // Only this location's own root conversations present its panel. Another
   // location's composition presents the rest.
@@ -335,11 +341,13 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     sync: (id: string) => ctx.data.session.sync(id), owned,
   }
   const notificationSnapshot = () => notifications?.snapshot(controller.pendingViews,
-    new Set([...permissionRoots].filter(root => formRoots.has(root))))
+    new Set([...notificationPermissionRoots].filter(root => formRoots.has(root)
+      && performance.now() - permissionHealthAt < 5000 && performance.now() - formHealthAt < 5000)),
+    Math.min(permissionHealthAt, formHealthAt) + 5000)
   // Forms are optional observer evidence. Their failures must never hold up
   // permission admission or an otherwise eligible automatic reply.
   const formRefresh = notifications ? new PendingRefresh<ReadonlySet<string>>({ get revision() { return revision() },
-    reconcile(roots) { formRoots = roots; notificationSnapshot() },
+    reconcile(roots) { formRoots = roots; formHealthAt = performance.now(); notificationSnapshot() },
   }, signal => owned((async () => {
     signal.throwIfAborted()
     const route = ctx.ui.router.current()
@@ -348,12 +356,14 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     await ctx.data.session.form.sync("global", scope.location)
     signal.throwIfAborted()
     return refreshNativeFamilies(sessions, familyReader, signal, id => ctx.data.session.form.sync(id))
-  })()), life.signal, healthy => { if (!healthy) formRoots = new Set(); notificationSnapshot() }) : undefined
+  })()), life.signal, (healthy, stale) => { if (!healthy && !stale) formRoots = new Set(); notificationSnapshot() }) : undefined
   life.addCleanup(() => formRefresh?.dispose())
   const refresh = new PendingRefresh<{ requests: readonly HostPendingSnapshot[] } & Awaited<ReturnType<typeof refreshPermissionFamilies>>>({ get revision() { return permissionRevision() },
     reconcile({ requests, roots, rootHeads: heads }, revision) {
       if (permissionRevision() !== revision) return
       permissionRoots = roots
+      notificationPermissionRoots = roots
+      permissionHealthAt = performance.now()
       rootHeads = heads
       snapshots.clear()
       for (const snapshot of requests) {
@@ -389,8 +399,8 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
       return !!at && !transports.has(locationKey(at))
     })
     return { requests: all, ...health }
-  })())), life.signal, healthy => {
-    if (!healthy) invalidatePermissions()
+  })())), life.signal, (healthy, stale) => {
+    if (!healthy) invalidatePermissions(undefined, stale)
     notificationSnapshot()
     if (healthy) void formRefresh?.refresh()
   })
@@ -402,19 +412,19 @@ export function setupHostRuntime(ctx: Plugin.Context, state: CliPluginState, lif
     if (event.type === "session.moved") ancestry.deleted(event.data.sessionID)
     if (event.location && !scopes.some(value => atLocation(event.location, value.location))) return
     const interrupted = event.type === "session.step.failed" && event.data.error.type === "aborted"
-    if (interrupted || event.type === "permission.asked" || event.type === "permission.replied"
-      || event.type === "session.deleted" || notificationWorkEvent(event) || event.type.startsWith("form.")) {
+    if (notificationEvent(event)) {
+      const affected = notifications?.activityRoot(event)
       // Withdraw deferred deliveries before publishing events against stale
       // native caches. Observer health remains separate from approval admission.
       // Optional form/activity churn invalidates observer health, not a settled
       // permission refresh or otherwise eligible automatic approval.
       if (interrupted || event.type.startsWith("permission.") || event.type === "session.deleted") {
-        permissionEvents++; invalidatePermissions()
+        permissionEvents++; invalidatePermissions(affected)
       }
-      formRoots = new Set()
+      formRoots = affected ? new Set([...formRoots].filter(root => root !== affected)) : new Set()
       notificationSnapshot()
+      notifications?.event(event)
     }
-    notifications?.event(event)
     if (event.type === "permission.asked") {
       events++
       // Admission uses the fresh scoped HTTP snapshot, not event origin guesses.

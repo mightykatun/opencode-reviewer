@@ -131,6 +131,57 @@ function fixture(unavailable: "configuration" | "companion" = "configuration", i
   return { ...f, runtime: f.compose(f.state) }
 }
 
+test("fallback completion reads shells at fresh family locations without companion membership", async t => {
+  const f = fixture(); t.after(() => f.life.stop())
+  const remote = { directory: "/server/worktree", workspaceID: "workspace" }
+  f.sessions.get("child")!.location = remote
+  const reads: string[] = []
+  let running = true
+  f.ctx.client.shell.list = async input => {
+    const scope = input!.location!
+    reads.push(scope.directory!)
+    return { location: scope, data: scope.directory === remote.directory && running
+      ? [{ id: "remote-shell", status: "running", metadata: { sessionID: "child" },
+        command: "fixture", cwd: "/unrelated", shell: "bash", file: "/unused", time: { started: 1 } }] : [] } as any
+  }
+  await f.flush()
+  f.emit("session.execution.started", { sessionID: "root" })
+  f.emit("session.execution.succeeded", { sessionID: "root" })
+  await f.flush()
+  assert.ok(reads.includes(remote.directory))
+  assert.equal(f.banners.length, 0, "remote shell blocks completion even with idle sessions and no jobs")
+  running = false
+  await f.flush()
+  assert.deepEqual(f.banners.map(value => value.kind), ["ended"])
+})
+
+test("fallback ignores unrelated text without extra reads and scopes current job activity to its owner", async t => {
+  for (const jobSession of ["unvisited", "child"]) {
+    const f = fixture(); t.after(() => f.life.stop())
+    await f.flush()
+    const pending = deferred<never[]>()
+    let reads = 0
+    const job = { kind: "image" as const, id: "job", sessionID: jobSession,
+      status: "running" as const, time: { started: 1 }, path: "/image", model: "model" }
+    f.ctx.client.experimental.job.list = async () => ++reads === 1 ? pending.promise : [job]
+    f.emit("session.execution.started", { sessionID: "root" })
+    f.emit("session.execution.succeeded", { sessionID: "root" })
+    await f.flush()
+    assert.equal(reads, 1)
+    const syncs = f.syncs.length
+    for (let ordinal = 0; ordinal < 100; ordinal++) f.emit("session.text.delta", {
+      sessionID: "unvisited", assistantMessageID: "message", ordinal, delta: "text",
+    })
+    assert.equal(f.syncs.length, syncs)
+    assert.equal(reads, 1, "unrelated deltas do not start another completion read")
+    f.emit("experimental.job.updated", { info: job }, undefined)
+    pending.resolve([])
+    await tick()
+    assert.deepEqual(f.banners.map(value => value.kind), jobSession === "unvisited" ? ["ended"] : [])
+    if (jobSession === "unvisited") assert.equal(reads, 1, "another conversation's job leaves this completion intact")
+  }
+})
+
 test("notification-only fallback isolates an unreadable independent conversation instead of silencing the current root", async t => {
   const f = fixture(); t.after(() => f.life.stop())
   await f.flush()

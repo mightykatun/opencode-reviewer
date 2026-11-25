@@ -12,8 +12,9 @@ import { NotificationPolicy, type NotificationAnnouncement } from "./notificatio
 import { notificationClock, type NotificationClock, type NotificationClick, type NotificationClickLease,
   type NotificationInteraction } from "./notification-types.js"
 import { uiText } from "./ui-text.js"
-import { hostBackgroundIdle } from "./host-background-work.js"
+import { hostBackgroundIdle, notificationEvent, notificationSession } from "./host-background-work.js"
 import { sameLocation } from "./companion-protocol.js"
+import { locationKey, MAX_REVIEW_LOCATIONS, reviewLocation } from "./host-locations.js"
 
 type Target = { root: string; sessionID: string; title: string }
 type Birth = { sessionID: string; received: number; root?: string; target?: Target; announced?: readonly NotificationAnnouncement[] }
@@ -51,8 +52,6 @@ export class HostNotifications {
   readonly policy: NotificationPolicy<RequestIdentity>
   private clock: NotificationClock
   private location: LocationRef
-  /** The home and member locations whose shells can belong to a tracked family. */
-  private locations: readonly LocationRef[]
   private abort = new AbortController()
   private stopped = false
   private disposal?: Promise<void>
@@ -70,8 +69,11 @@ export class HostNotifications {
   private executions = new Map<string, Execution>()
   private completionReads = new Map<string, Promise<void>>()
   private activityRevision = 0
+  private rootRevisions = new Map<string, number>()
   private views: readonly View<RequestIdentity>[] = []
   private healthy: boolean | ReadonlySet<string> = false
+  private healthyUntil = Infinity
+  private cancelHealth?: () => void
   private clickOwner?: ClickOwner
   private clickWait?: () => void
   private onAbort = () => { void this.dispose() }
@@ -81,7 +83,6 @@ export class HostNotifications {
     if (!config) throw new Error("Notification configuration unavailable")
     this.clock = options.clock ?? notificationClock
     this.location = state.companion?.location ?? context.location ?? context.data.location.default()
-    this.locations = [this.location, ...(state.members ?? []).map(member => member.location)]
     const click: NotificationClick = (sessionID, target) => this.beginClick(sessionID, target).commit()
     click.begin = (sessionID, target) => this.beginClick(sessionID, target)
     const backend = state.dependencies.notifications?.(click, config)
@@ -186,6 +187,7 @@ export class HostNotifications {
       if (inactive === undefined) return false
       this.roots.delete(inactive)
       this.executions.delete(inactive)
+      this.rootRevisions.delete(inactive)
     }
     // A repeated route observation can see native metadata before an earlier
     // asynchronous visit settles. Preserve the earliest actual visit boundary.
@@ -246,6 +248,26 @@ export class HostNotifications {
     const queue = this.options.nativeQueue(root)
     return queue.state === "empty" && !this.formFront(queue.family)
   }
+  /** Native family metadata has been refreshed before notification health is granted. */
+  private familyLocations(family: readonly string[]) {
+    const locations = new Map([[locationKey(this.location), this.location]])
+    for (const id of family) {
+      const session = this.context.data.session.get(id)
+      const location = reviewLocation(session?.location)
+      if (session?.id !== id || !location) return
+      locations.set(locationKey(location), location)
+      if (locations.size > MAX_REVIEW_LOCATIONS) return
+    }
+    return [...locations.values()]
+  }
+  activityRoot(event: OpenCodeEvent) {
+    const id = notificationSession(event)
+    return id && id !== "global" ? this.rootOf(id) : undefined
+  }
+  private changed(root?: string) {
+    if (!root) this.activityRevision++
+    else if (this.roots.has(root)) this.rootRevisions.set(root, (this.rootRevisions.get(root) ?? 0) + 1)
+  }
   private finish(root: string, execution: Execution) {
     if (execution.terminal === "error") {
       execution.done = true
@@ -255,22 +277,26 @@ export class HostNotifications {
     if (this.completionReads.has(root) || this.completionReads.size >= 2) return
     const queue = this.options.nativeQueue(root)
     if (queue.state !== "empty" || queue.family.some(id => this.context.data.session.status(id) !== "idle")) return
-    const family = [...queue.family], revision = this.activityRevision
+    const family = [...queue.family], revision = this.activityRevision, rootRevision = this.rootRevisions.get(root)
+    const locations = this.familyLocations(family)
+    if (!locations) return
+    const current = () => revision === this.activityRevision && rootRevision === this.rootRevisions.get(root)
+      && JSON.stringify(this.familyLocations(family)) === JSON.stringify(locations)
     let worker: Promise<boolean> | undefined
     const read = withDeadline(AbortSignal.any([this.abort.signal, this.options.signal]), 5000, signal => {
-      worker = hostBackgroundIdle(this.context.client, this.locations, family, signal)
+      worker = hostBackgroundIdle(this.context.client, locations, family, signal)
       return worker
     }).then(idle => this.guard(() => {
-      if (!idle || revision !== this.activityRevision || this.executions.get(root) !== execution || execution.done
+      if (!idle || !current() || this.executions.get(root) !== execution || execution.done
         || !this.clearQueue(root)) return
-      const current = this.options.nativeQueue(root)
-      if (current.state !== "empty" || current.family.length !== family.length
-        || current.family.some((id, index) => id !== family[index] || this.context.data.session.status(id) !== "idle")) return
+      const queue = this.options.nativeQueue(root)
+      if (queue.state !== "empty" || queue.family.length !== family.length
+        || queue.family.some((id, index) => id !== family[index] || this.context.data.session.status(id) !== "idle")) return
       execution.done = true
       this.policy.turn("ended", execution.id, this.target(root), () => {
         try {
           const queue = this.options.nativeQueue(root)
-          if (!this.stopped && revision === this.activityRevision && this.executions.get(root) === execution
+          if (!this.stopped && current() && this.executions.get(root) === execution
             && this.clearQueue(root) && queue.state === "empty" && queue.family.length === family.length
             && queue.family.every((id, index) => id === family[index] && this.context.data.session.status(id) === "idle")) return true
         } catch {}
@@ -308,7 +334,9 @@ export class HostNotifications {
       } catch {}
     }
   }
-  private isHealthy(root: string) { return this.healthy === true || (this.healthy !== false && this.healthy.has(root)) }
+  private isHealthy(root: string) {
+    return this.clock.now() < this.healthyUntil && (this.healthy === true || (this.healthy !== false && this.healthy.has(root)))
+  }
   /** Seeds that need fresh native family health now: live roots, unresolved
    * visits and births. Idle visited roots are refreshed by the optional form
    * observer, never on the approval-critical permission refresh. */
@@ -320,12 +348,26 @@ export class HostNotifications {
     return new Set([...this.roots.keys(), ...this.visits.keys(),
       ...[...this.permissions.values(), ...this.forms.values()].map(birth => birth.sessionID)])
   }
-  snapshot(views: readonly View<RequestIdentity>[], healthy?: boolean | ReadonlySet<string>) {
+  snapshot(views: readonly View<RequestIdentity>[], healthy?: boolean | ReadonlySet<string>, validUntil = Infinity) {
     this.guard(() => {
       this.routeChanged()
       if (healthy !== undefined) {
-        if (healthy === false) this.activityRevision++
+        if (healthy === false) this.changed()
+        else if (healthy !== true) for (const root of this.roots.keys()) {
+          if (this.isHealthy(root) && !healthy.has(root)) this.changed(root)
+        }
         this.healthy = typeof healthy === "boolean" ? healthy : new Set(healthy)
+        this.cancelHealth?.()
+        this.cancelHealth = undefined
+        this.healthyUntil = validUntil
+        if (healthy !== false && Number.isFinite(validUntil)) this.cancelHealth = this.clock.after(Math.max(0, validUntil - this.clock.now()), () => {
+          this.guard(() => {
+            if (this.clock.now() < this.healthyUntil) return
+            this.healthy = false
+            this.changed()
+            this.publish()
+          })
+        })
       }
       this.views = views.filter(view => !view.resolved && !view.retained)
       if (this.healthy) {
@@ -374,8 +416,10 @@ export class HostNotifications {
     this.policy.resolved(kind, id)
   }
   event(event: OpenCodeEvent) {
+    if (!notificationEvent(event)) return
     this.guard(() => {
-      if (!event.type.startsWith("session.execution.")) this.activityRevision++
+      const affected = this.activityRoot(event)
+      if (!event.type.startsWith("session.execution.")) this.changed(affected)
       if (event.type === "permission.asked" || event.type === "form.created") {
         const kind = event.type === "permission.asked" ? "permission" : "question"
         const value = event.type === "permission.asked" ? event.data : event.data.form
@@ -391,15 +435,15 @@ export class HostNotifications {
         const root = event.data.sessionID
         // Child failures may be recovered by the root. Never promote them.
         if (!this.roots.has(root) || conversationRoot(root, id => this.context.data.session.get(id)) !== root
-          || event.durable.aggregateID !== root) { this.activityRevision++; this.publish(); return }
+          || event.durable.aggregateID !== root) { this.changed(affected); this.publish(); return }
         const previous = this.executions.get(root)
         if (previous && event.durable.seq <= previous.seq) return
         if (event.type === "session.execution.started") {
-          this.activityRevision++
+          this.changed(affected)
           this.executions.set(root, { id: event.id, seq: event.durable.seq })
         }
         else if (previous && !previous.done && !previous.terminal) {
-          this.activityRevision++
+          this.changed(affected)
           previous.seq = event.durable.seq
           if (event.type === "session.execution.interrupted" || (event.type === "session.execution.failed" && event.data.error.type === "aborted")) previous.done = true
           else previous.terminal = event.type === "session.execution.failed" ? "error" : "ended"
@@ -459,6 +503,7 @@ export class HostNotifications {
       this.remember(this.deletedSessions, sessionID)
       if (this.clickOwner?.sessionID === sessionID || this.clickOwner?.history?.session === sessionID) this.clearClick()
       this.roots.delete(sessionID); this.executions.delete(sessionID)
+      this.rootRevisions.delete(sessionID)
       this.visits.delete(sessionID)
       for (const [id, root] of this.ancestry) if (id === sessionID || root === sessionID) this.ancestry.delete(id)
       for (const [id, birth] of this.permissions) if (birth.sessionID === sessionID || (birth.target?.root ?? birth.root) === sessionID) this.resolve("permission", id, birth.sessionID)
@@ -482,7 +527,9 @@ export class HostNotifications {
     this.stopped = true
     this.clearClick(); this.abort.abort()
     this.options.signal.removeEventListener("abort", this.onAbort)
+    this.cancelHealth?.()
     this.roots.clear(); this.permissions.clear(); this.forms.clear(); this.dispatches.clear(); this.executions.clear()
+    this.rootRevisions.clear()
     this.visits.clear(); this.ancestry.clear(); this.retryAt.clear(); this.closed.clear(); this.deletedSessions.clear(); this.views = []
     this.disposal = Promise.allSettled([this.policy.dispose(), ...this.completionReads.values(),
       ...[...this.reads.values()].map(read => read.settled)]).then(() => {})

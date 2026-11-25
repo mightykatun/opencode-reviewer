@@ -450,7 +450,7 @@ try {
       let tag = JSON.stringify(lastUser?.content).match(/NOTIFICATIONS:([a-z-]+)/)?.[1]
       if (!tag && scenario === "execution") {
         assert.ok(backgroundChildID)
-        assert.equal(lastUser?.content, `<subagent sessionID="${backgroundChildID}" state="completed" description="Background child">\nBackground child finished.\n</subagent>`,
+        assert.equal(lastUser?.content, `<background-result kind="subagent" sessionID="${backgroundChildID}" state="completed" description="Background child">\nBackground child finished.\n</background-result>`,
           "Only the owned child's exact native completion report may wake its parent")
         assert.ok(body.messages.some(message => message.role === "user" && message.content === prompt("ended")))
         tag = "child-report"

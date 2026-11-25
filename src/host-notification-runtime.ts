@@ -14,7 +14,7 @@ import { PendingRefresh } from "./pending-refresh.js"
 import { conversationRoot } from "./route-approval.js"
 import { TransportOwnership } from "./transport-ownership.js"
 import type { AncestryReader } from "./session-ancestry.js"
-import { notificationWorkEvent } from "./host-background-work.js"
+import { notificationEvent, notificationSession, notificationWorkEvent } from "./host-background-work.js"
 
 /** Native cache data supplies notification identity, not review provenance. */
 function request(value: PermissionRequest): HostRequest {
@@ -35,6 +35,8 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   let visited: string | undefined
   let revision = 0, stopped = false
   let views: View<HostRequest>[] = []
+  let healthyRoots: ReadonlySet<string> = new Set()
+  let healthAt = 0
   const owned = <T>(work: Promise<T>) => reads.track(work)
   const settled = () => reads.settled()
   // A family can span locations, for example a subagent moved into a worktree.
@@ -61,7 +63,13 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   // Failed/disabled desktop setup is isolated from the read-only history owner.
   if (!notifications) return
 
-  const publish = (healthy: boolean | ReadonlySet<string>) => notifications.snapshot(views, healthy)
+  const publish = (healthy: boolean | ReadonlySet<string>) => {
+    if (performance.now() - healthAt >= 5000) healthy = false
+    if (healthy === false) healthyRoots = new Set()
+    else if (healthy !== true) healthyRoots = healthy
+    notifications.snapshot(views, healthy, healthAt + 5000)
+  }
+  const invalidate = (root?: string) => publish(root ? new Set([...healthyRoots].filter(id => id !== root)) : false)
   const remember = (set: Set<string>, id: string) => {
     if (!id || set.has(id) || set.size >= 16384) return false
     set.add(id); return true
@@ -78,6 +86,7 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
     reconcile({ values, roots }, at) {
       if (stopped || at !== revision) return
       views = values.map(request => ({ request, status: state.config ? "suspended" : "unavailable" }))
+      healthAt = performance.now()
       publish(roots)
     },
   }, parent => owned((async () => {
@@ -113,7 +122,7 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
     parent.throwIfAborted()
     if (duplicate) throw Error("Native permission identities unavailable")
     return { values, roots }
-  })()), signal, healthy => { if (!healthy) publish(false) })
+  })()), signal, (healthy, stale) => { if (!healthy) publish(stale ? healthyRoots : false) })
 
   /** Also usable by the caller's existing app composition, without another slot. */
   const visit = (id?: string) => {
@@ -157,13 +166,10 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   off = ctx.data.listen(({ details: event }) => {
     // Connection revocation belongs to the supervisor, after its checkpoint.
     if (stopped || signal.aborted || event.type === "server.connected") return
-    if (event.type !== "permission.asked" && event.type !== "permission.replied" && event.type !== "session.deleted"
-      && !event.type.startsWith("form.") && !notificationWorkEvent(event)) return
+    if (!notificationEvent(event)) return
     try {
-      let id: string | undefined
-      if (event.type === "form.created") id = event.data.form.sessionID
-      else if ("sessionID" in event.data && typeof event.data.sessionID === "string") id = event.data.sessionID
-      else if (!notificationWorkEvent(event) || !event.location) return
+      const id = notificationSession(event)
+      if (!id && (!notificationWorkEvent(event) || !event.location)) return
       if (id && id !== "global") {
         if (deleted.has(id)) return
         // A session event belongs to the home of its conversation, wherever it occurred.
@@ -171,7 +177,7 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
       } else if (event.location && !atLocation(event.location, location)) return
       observeRoute()
       // Revoke stale native ownership before publishing births or terminal facts.
-      revision++; publish(false)
+      revision++; invalidate(notifications.activityRoot(event))
       notifications.event(event)
       if (event.type === "session.deleted") { remember(deleted, event.data.sessionID); if (visited === event.data.sessionID) visited = undefined }
       void refresh.refresh()

@@ -15,7 +15,7 @@ export class PendingRefresh<T = readonly HostRequest[]> {
   private abort = new AbortController()
   private signal: AbortSignal
   constructor(private pending: PendingState<T>, private read: (signal: AbortSignal) => Promise<T>, parent: AbortSignal,
-    private health?: (healthy: boolean) => void) {
+    private health?: (healthy: boolean, stale?: boolean) => void) {
     this.signal = AbortSignal.any([parent, this.abort.signal])
   }
 
@@ -26,12 +26,12 @@ export class PendingRefresh<T = readonly HostRequest[]> {
     const generation = ++this.generation
     const revision = this.pending.revision
     let worker: Promise<T> | undefined
-    const report = (healthy: boolean) => { if (!this.stopped && !this.signal.aborted) { try { this.health?.(healthy) } catch {} } }
+    const report = (healthy: boolean, stale = false) => { if (!this.stopped && !this.signal.aborted) { try { this.health?.(healthy, stale) } catch {} } }
     try {
       const requests = await withDeadline(this.signal, 5000, signal => worker = Promise.resolve().then(() => {
         signal.throwIfAborted(); return this.read(signal)
       }), "Pending permission refresh")
-      if (this.stopped || this.signal.aborted || this.generation !== generation || this.pending.revision !== revision) { report(false); return }
+      if (this.stopped || this.signal.aborted || this.generation !== generation || this.pending.revision !== revision) { report(false, true); return }
       this.pending.reconcile(requests, revision)
       report(true)
     } catch { report(false) }

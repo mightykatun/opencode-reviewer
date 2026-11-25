@@ -24,10 +24,11 @@ type EventOf<T extends OpenCodeEvent["type"]> = Extract<OpenCodeEvent, { type: T
 
 function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryReader = async id => id,
   backend?: NotificationBackend, dependencies?: PluginDependencies) {
-  const sessions = new Map<string, { id: string; parentID?: string; title: string }>([
+  const sessions = new Map<string, { id: string; parentID?: string; title: string; location?: { directory: string } }>([
     ["root", { id: "root", title: "Root title" }], ["child", { id: "child", parentID: "root", title: "Child" }],
     ["deep", { id: "deep", parentID: "child", title: "Deep" }], ["other", { id: "other", title: "Other" }],
   ])
+  for (const session of sessions.values()) session.location = { directory: "/project" }
   const permissions = new Map<string, HostRequest[] | undefined>()
   const forms = new Map<string, FormInfo[] | undefined>()
   const active = new Set<string>(), shells: ShellInfo[] = [], terminals: PersistentPtyInfo[] = []
@@ -540,6 +541,68 @@ test("completion checks retain physical ownership after timeout and fence activi
     assert.equal(f.banners.length, 0, change)
     if (disposal) { await disposal; assert.equal(disposed, true) }
   }
+})
+
+test("unrelated text and known-root activity cannot revoke another root's completion or add reads", async t => {
+  const f = fixture(); t.after(() => f.host.dispose())
+  let release!: (value: never[]) => void, reads = 0
+  f.work.jobs = () => { reads++; return new Promise(resolve => { release = resolve }) }
+  f.host.visit("root"); f.host.visit("other"); f.host.snapshot([], true)
+  f.emit("session.execution.started", { sessionID: "root" })
+  f.emit("session.execution.succeeded", { sessionID: "root" })
+  await settle()
+  assert.equal(reads, 1)
+  for (let ordinal = 0; ordinal < 100; ordinal++) f.emit("session.text.delta", {
+    sessionID: "other", assistantMessageID: "message", ordinal, delta: "text",
+  })
+  f.emit("experimental.job.updated", { info: { kind: "image", id: "job", sessionID: "other",
+    status: "running", time: { started: 1 }, path: "/image", model: "model" } })
+  release([])
+  await settle()
+  assert.deepEqual(f.banners.map(value => [value.kind, value.sessionID]), [["ended", "root"]])
+  for (let ordinal = 100; ordinal < 200; ordinal++) f.emit("session.text.delta", {
+    sessionID: "other", assistantMessageID: "message", ordinal, delta: "text",
+  })
+  await settle()
+  assert.equal(reads, 1, "irrelevant deltas cause zero extra completion reads")
+})
+
+test("same-family job events and unproven or changed member locations fence a completion", async t => {
+  for (const change of ["job", "missing", "move"] as const) {
+    const f = fixture(); t.after(() => f.host.dispose())
+    let release!: (value: never[]) => void
+    f.work.jobs = () => new Promise(resolve => { release = resolve })
+    f.host.visit("root"); f.host.snapshot([], true)
+    f.emit("session.execution.started", { sessionID: "root" })
+    f.emit("session.execution.succeeded", { sessionID: "root" })
+    await settle()
+    if (change === "job") f.emit("experimental.job.updated", { info: { kind: "image", id: "job", sessionID: "child",
+      status: "running", time: { started: 1 }, path: "/image", model: "model" } })
+    else f.sessions.get("child")!.location = change === "move" ? { directory: "/worktree" } : undefined
+    release([])
+    await settle()
+    assert.deepEqual(f.banners, [], change)
+  }
+})
+
+test("notification health expires without a new snapshot and revokes an outstanding completion", async t => {
+  const f = fixture(); t.after(() => f.host.dispose())
+  let release!: (value: never[]) => void
+  f.work.jobs = () => new Promise(resolve => { release = resolve })
+  f.host.visit("root"); f.host.snapshot([], true, 5000)
+  f.emit("session.execution.started", { sessionID: "root" })
+  f.emit("session.execution.succeeded", { sessionID: "root" })
+  await settle()
+  await f.advance(5000)
+  release([])
+  await settle()
+  assert.equal(f.banners.length, 0)
+  const value = request("after-expiry")
+  f.permissions.set("root", [value])
+  f.host.snapshot([{ request: value, status: "suspended" }])
+  f.ask(value)
+  await settle()
+  assert.equal(f.banners.length, 0, "a later view-only publication cannot renew expired health")
 })
 
 test("latest action lease waits for native keymap mode, clones targets and never blindly toggles sidebar", async () => {

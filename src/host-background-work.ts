@@ -5,6 +5,24 @@ export function notificationWorkEvent(event: OpenCodeEvent) {
   return event.type.startsWith("session.execution.") || event.type.startsWith("session.shell.")
     || event.type.startsWith("shell.") || event.type.startsWith("persistent-pty.")
     || event.type === "session.created" || event.type === "session.moved"
+    || event.type === "experimental.job.updated"
+}
+
+export function notificationEvent(event: OpenCodeEvent) {
+  return notificationWorkEvent(event) || event.type === "permission.asked" || event.type === "permission.replied"
+    || event.type === "session.deleted" || event.type.startsWith("form.")
+    || (event.type === "session.step.failed" && event.data.error.type === "aborted")
+}
+
+/** Only public ownership fields, never event timing or a shell's working directory. */
+export function notificationSession(event: OpenCodeEvent): string | undefined {
+  if (event.type === "form.created") return event.data.form.sessionID
+  if (event.type === "experimental.job.updated") return event.data.info.sessionID
+  if (event.type === "shell.created") {
+    const id = event.data.info.metadata?.sessionID
+    return typeof id === "string" ? id : undefined
+  }
+  if ("sessionID" in event.data && typeof event.data.sessionID === "string") return event.data.sessionID
 }
 
 /** Notification-only reads. Tool completion is not process completion after V2
