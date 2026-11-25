@@ -13,7 +13,7 @@ const fingerprints = {
 export function verifyThemeSyntaxInputs(manifest, digests) {
   if (manifest?.name !== "@opencode/theme" || !/^2\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(manifest.version)
     || manifest.exports?.["./tui"]?.import !== "./dist/tui/index.js"
-    || manifest.dependencies?.["@opentui/core"] !== "0.8.4"
+    || manifest.dependencies?.["@opentui/core"] !== "0.9.4"
     || manifest.dependencies?.effect !== "4.1.0") {
     throw new Error("Pinned theme package identity or public barrel changed")
   }

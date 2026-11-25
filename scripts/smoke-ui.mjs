@@ -30,7 +30,6 @@ export function renditionRows(ansi) {
 
 export function selectedPaletteResult(ansi, title) {
   const lines = renditionRows(ansi)
-  if (!lines.some(row => row.text.includes("Commands"))) return false
   const matches = lines.map((row, index) => ({ ...row, index, at: row.text.indexOf(title) })).filter(row => row.at >= 0)
   if (matches.length < 2) return false
   const input = matches[0]
@@ -58,9 +57,11 @@ export async function activatePalette({ send, capture, timeoutMs = 20000, interv
     throw new Error(`Palette ${phase} timed out for ${JSON.stringify(title)}\n${screen}`)
   }
   send("C-p")
-  await wait("opening", screen => screen.includes("Commands"))
+  const open = screen => renditionRows(screen).some(row => /Commands|Search commands/.test(row.text))
+  await wait("opening", open)
   send("C-u"); send("-l", title)
   await wait("selected result", screen => selectedPaletteResult(screen, title))
   send("Enter")
-  await wait("postcondition", screen => !screen.includes("Commands") && postcondition(screen.replace(/\x1b\[[\d;]*m/g, "")))
+  await wait("postcondition", screen => !open(screen) && !selectedPaletteResult(screen, title)
+    && postcondition(screen.replace(/\x1b\[[\d;]*m/g, "")))
 }

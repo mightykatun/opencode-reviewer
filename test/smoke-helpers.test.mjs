@@ -159,6 +159,16 @@ test("palette readiness rejects input echoes and unselected results, accepts the
   assert.equal(selectedPaletteResult(palette("Previous command", false), title), false)
   assert.equal(selectedPaletteResult(palette(title), title), true)
   assert.equal(selectedPaletteResult(palette(title + " extra"), title), false)
+  assert.equal(selectedPaletteResult(palette(title).replace("Commands\n", ""), title), true, "current palette has no persistent title")
+})
+
+test("current palette opens on its search placeholder and still requires a painted selected result", async () => {
+  let typed = false, entered = false
+  await activatePalette({
+    send: key => { if (key === "-l") typed = true; if (key === "Enter") entered = true },
+    capture: () => entered ? "Statistics shown" : typed ? palette(title).replace("Commands\n", "") : "Search commands",
+  }, title, text => text === "Statistics shown")
+  assert.equal(entered, true)
 })
 
 test("delayed palette filtering cannot send Enter early; activation waits for its postcondition", async () => {

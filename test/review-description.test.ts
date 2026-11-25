@@ -71,7 +71,7 @@ function fixture() {
   let dispose!: () => void, referenced: unknown
   solid.createRoot(stop => {
     dispose = stop
-    const result = module.exports.HostReviewDescription({ context: { renderer: { nativeScene }, get theme() { return theme() } },
+    const result = module.exports.HostReviewDescription({ context: { renderer: { nativeScene, idle: async () => {} }, get theme() { return theme() } },
       get text() { return text() }, get streaming() { return streaming() }, ref: (node: unknown) => { referenced = node } })
     assert.equal(result, markdown)
   })

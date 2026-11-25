@@ -23,7 +23,7 @@ export function HostReviewDescription(props: { context: Plugin.Context; text: st
         // the public API so even hidden descendants relinquish the old style.
         description.refreshStyles()
       }
-      void retireDefaultMarkdownStyle(previous, pending)
+      void retireDefaultMarkdownStyle(previous, pending, () => props.context.renderer.idle())
     }
     return syntax
   })
@@ -32,7 +32,7 @@ export function HostReviewDescription(props: { context: Plugin.Context; text: st
     // End future readers before releasing the final style. OpenTUI destruction
     // is idempotent; the JSX owner may subsequently dispose the same tree.
     description?.destroyRecursively()
-    void retireDefaultMarkdownStyle(style(), pending)
+    void retireDefaultMarkdownStyle(style(), pending, () => props.context.renderer.idle())
   })
   return <markdown ref={(value: MarkdownRenderable) => { description = value; props.ref?.(value) }} content={displayText(props.text)} syntaxStyle={style()} fg={props.context.theme.text.base} conceal={true} streaming={props.streaming} tableOptions={{ style: "grid" }} width="100%" flexShrink={0} />
 }
