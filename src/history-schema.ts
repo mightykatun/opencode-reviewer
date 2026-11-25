@@ -392,16 +392,22 @@ export class HistorySQL {
           (root!=? OR session!=? OR state NOT IN ('pending','confirmed','uncertain','not-sent') OR automatic NOT IN (-1,0,1)
           OR (state='confirmed' AND automatic=-1)) LIMIT 1`, entry, root, session)
         const invalidReview = this.get("SELECT 1 AS invalid FROM reviews WHERE entry=? AND (root!=? OR session!=?) LIMIT 1", entry, root, session)
+        const rejection = this.get(`SELECT a.root,a.session,r.entry AS reviewEntry,r.root AS reviewRoot,r.session AS reviewSession
+          FROM auto_rejections a LEFT JOIN reviews r ON r.id=a.review WHERE a.entry=?`, entry)
         const history = this.get(`SELECT CASE WHEN length(root)=64 THEN root END AS root,
           CASE WHEN length(session)=64 THEN session END AS session,
           CASE WHEN length(CAST(resolution AS BLOB))<=16 THEN resolution END AS resolution FROM history WHERE scope=? AND permission=? LIMIT 1`, q.scope, q.permission)
-        if (invalid || invalidReview || (history && (history.root !== root || history.session !== session
+        if (invalid || invalidReview || (rejection && (rejection.root !== root || rejection.session !== session
+          || rejection.reviewEntry !== entry || rejection.reviewRoot !== root || rejection.reviewSession !== session))
+          || (history && (history.root !== root || history.session !== session
           || !["auto", "manual", "approved", "rejected", "cancelled", "conflict"].includes(history.resolution)))) throw new HistoryInvalid("Invalid resolution ownership")
         const auto = !!this.get("SELECT id FROM approvals WHERE entry=? AND state='confirmed' AND automatic=1 LIMIT 1", entry)
         const manual = !!this.get("SELECT id FROM approvals WHERE entry=? AND state='confirmed' AND automatic=0 LIMIT 1", entry)
         const uncertain = !!this.get("SELECT id FROM approvals WHERE entry=? AND state IN ('pending','uncertain') LIMIT 1", entry)
-        const conflict = history?.resolution === "conflict" || (history?.resolution === "rejected" && (auto || manual))
-        const outcome = deleted || conflict ? undefined : auto ? "auto" : manual ? "manual"
+        const rejected = !!rejection || history?.resolution === "rejected"
+        const conflict = history?.resolution === "conflict" || (rejected && (auto || manual
+          || ["auto", "manual", "approved"].includes(history?.resolution)))
+        const outcome = deleted || conflict ? undefined : rejected ? "rejected" : auto ? "auto" : manual ? "manual"
           : ["auto", "manual", "approved", "rejected"].includes(history?.resolution) ? history!.resolution : undefined
         return { outcome, uncertain, conflict, deleted }
       }

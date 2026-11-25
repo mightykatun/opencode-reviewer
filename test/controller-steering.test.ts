@@ -5,6 +5,7 @@ import { Controller, type ApprovalFact, type NativeApproval } from "../src/contr
 import type { HostRequest } from "../src/host-types.js"
 import type { ReviewProgress, ReviewResult } from "../src/types.js"
 import { steeringFollowUpSentence, steeringMessage } from "../src/steering.js"
+import { automaticCopy } from "../src/review-lines.js"
 
 const make = (id: string, sessionID = "root"): HostRequest => Object.freeze({ id, sessionID, action: "shell", resources: Object.freeze(["rm -rf build"]),
   source: Object.freeze({ assistantID: "assistant", id: `call-${id}` }) })
@@ -154,6 +155,27 @@ test("Cancel tombstones an armed rejection and the native queue front gates it",
   await f.controller.approveNow("a", true)
   f.controller.refreshApprovalEligibility()
   assert.deepEqual(f.writes, [])
+})
+
+test("Cancel before arming preserves rejection intent and cannot be reversed by restored eligibility", async t => {
+  const f = fixture()
+  t.after(() => f.controller.dispose())
+  f.front(() => undefined)
+  await f.ask(make("held"))
+  assert.equal(f.view("held")?.steerable, true)
+  assert.equal(f.view("held")?.autoDecision, undefined)
+  assert.equal(f.view("held")?.autoApproval, undefined)
+  f.controller.cancelAutoApproval("held")
+  assert.equal(f.view("held")?.autoDecision, "reject")
+  assert.equal(automaticCopy(f.view("held")!).cancelled, "Auto-rejection canceled")
+  for (const front of [undefined, "held", undefined, "held"]) {
+    f.front(() => front)
+    f.controller.refreshApprovalEligibility()
+    await f.controller.approveNow("held", true)
+    assert.equal(f.view("held")?.autoApproval?.status, "cancelled")
+  }
+  assert.deepEqual(f.writes, [])
+  assert.deepEqual(f.facts, [])
 })
 
 test("fast mode rejects once reason and steering are closed in the preview, before desc completes", async t => {

@@ -157,7 +157,7 @@ test("hit ownership traverses children but never hidden or destroyed nodes", () 
 
 const require = createRequire(import.meta.url)
 const { transformAsync } = require("@babel/core")
-const universal = await transformAsync(await readFile(new URL("../src/host-review-panel.tsx", import.meta.url), "utf8"), {
+const universal = await transformAsync(await readFile(new URL("../src/host-review-panel.tsx", import.meta.url), "utf8") + "\nexport { HostReviewFooter }\n", {
   filename: "src/host-review-panel.tsx", babelrc: false, configFile: false,
   presets: [["babel-preset-solid", { moduleName: "@opentui/solid", generate: "universal" }],
     ["@babel/preset-typescript", { allExtensions: true, isTSX: true }]],
@@ -229,4 +229,51 @@ test("advisory panel observes real FRAME with a probe independently of autoAppro
   host.dispose()
   assert.equal(host.renderer.listenerCount(core.CliRenderEvents.FRAME), 0)
   assert.equal(host.renderer.listenerCount(core.CliRenderEvents.RESIZE), 0)
+})
+
+test("the production Unsafe footer renders Checking and working Cancel before arming, but not beyond the cap", () => {
+  for (const steerable of [true, false]) {
+    const elements: any[] = [], calls: string[] = []
+    const color = core.RGBA.fromInts(255, 255, 255)
+    const resolve = (value: any): any => typeof value === "function" ? resolve(value()) : value
+    const dependencies: Record<string, any> = {
+      "solid-js": { ...solid, Show: (props: any) => props.when ? props.children : undefined,
+        Match: (props: any) => props, Switch: (props: any) => props.children.find((child: any) => child.when)?.children },
+      "@opentui/core": core,
+      "@opentui/solid": {
+        createElement(type: string) { const node = { type, children: [] }; elements.push(node); return node },
+        createTextNode(text: string) { return text },
+        createComponent(component: any, props: any) { return component(props) },
+        insert(parent: any, value: any) { parent.children.push(resolve(value)) },
+        insertNode(parent: any, value: any) { parent.children.push(value) },
+        use(ref: any, value: any) { ref(value) },
+        setProp(node: any, key: string, value: any) { node[key] = value; return value },
+        effect(fn: any) { fn({}) }, memo: (fn: any) => fn,
+      },
+      "./controller.js": { displayText }, "./appearance.js": {},
+      "./review-description.js": {}, "./host-review-metadata.js": {},
+      "./review-geometry.js": {}, "./ui-text.js": { uiText }, "./usage.js": {}, "./review-lines.js": reviewLines,
+    }
+    const module = { exports: {} as any }
+    new Function("require", "module", "exports", compiled.code)((name: string) => {
+      assert.ok(name in dependencies, name)
+      return dependencies[name]
+    }, module, module.exports)
+    module.exports.HostReviewFooter({
+      context: { theme: { text: { muted: color, action: { primary: { focused: color } }, feedback: { warning: { base: color } } },
+        background: { raised: { high: color } }, border: { base: color } } },
+      view: { request: { id: "held" }, assessment: { safe: false }, steerable },
+      enabled: true, approvals: false, ref() {},
+      onApprove: () => calls.push("approve"), onCancel: (id: string) => calls.push(id),
+    })
+    const text = (node: any): string => typeof node === "string" ? node : (node?.children ?? []).map(text).join("")
+    const buttons = elements.filter(node => node.onMouseUp)
+    assert.deepEqual(buttons.map(text), steerable ? ["Checking…", "Cancel"] : [])
+    if (steerable) {
+      buttons[0].onMouseUp({ button: 0, stopPropagation() {} })
+      assert.deepEqual(calls, [], "Checking is genuinely disabled")
+      buttons[1].onMouseUp({ button: 0, stopPropagation() {} })
+      assert.deepEqual(calls, ["held"], "the actual Cancel handler addresses the pending request")
+    }
+  }
 })

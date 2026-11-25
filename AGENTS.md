@@ -49,6 +49,7 @@ Focused checks are `smoke-v2-review.mjs` scenarios unless another file is named:
 | Review modes | `advisory`, `normal`, `fast` |
 | Steering rejection and steered notifications | `smoke-v2-steering.mjs` `normal-steering`, `fast-steering`, `normal-steering-cap` |
 | Steering follow-up context | `smoke-v2-steering.mjs` `normal-steering-follow-up` |
+| Steering Cancel before arming | `smoke-v2-steering.mjs` `normal-steering-cancel-held` |
 | Retrieval | `normal-retrieval` (also the native `ask_context` clarification and Asking), `normal-retrieval-model` (separate endpoint, model and credentials), `normal-large-source`, `normal-long-session` |
 | Skills | `normal-skill`, `fast-skill` |
 | Registered tools and Code Mode | `normal-tool`, `fast-tool`, `normal-code-mode-tool`, `fast-code-mode-tool` |

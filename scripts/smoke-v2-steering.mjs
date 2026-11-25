@@ -18,7 +18,26 @@ async function monitorSetup(ctx) {
     record: { connectionBirths: [], connectionDeletes: [], asked: [], replied: [], replies: {}, errors: [] } } })
   const record = JSON.parse(JSON.stringify(memory.record)), location = { directory: fixture.project }
   const options = () => ({ location, signal: AbortSignal.timeout(15000) })
-  const save = () => { update(draft => { draft.record = JSON.parse(JSON.stringify(record)) }); return publisher.publish(record) }
+  const save = () => {
+    if (fixture.cancelHeld) {
+      record.route = JSON.parse(JSON.stringify(ctx.ui.router.current()))
+      record.mouse = ctx.renderer.useMouse
+      record.mode = ctx.keymap.mode.current()
+      record.choices = {}
+      let budget = 8192
+      const visit = node => {
+        if (--budget < 0 || !node.visible || node.isDestroyed) return
+        if (typeof node.id === "string" && node.id.startsWith("session.permission.action."))
+          record.choices[node.id.slice("session.permission.action.".length)] = node.backgroundColor?.equals(ctx.theme.background.action.primary.focused)
+        for (const child of node.getChildren()) visit(child)
+      }
+      visit(ctx.renderer.root)
+    }
+    update(draft => { draft.record = JSON.parse(JSON.stringify(record)) })
+    return publisher.publish(record)
+  }
+  const frame = () => { record.frame = ctx.renderer.frameId; void save() }
+  if (fixture.cancelHeld) ctx.renderer.on(CliRenderEvents.FRAME, frame)
   const off = ctx.data.listen(({ details }) => {
     if (details.type === "session.created") record.connectionBirths.push(details)
     if (details.type === "session.deleted") record.connectionDeletes.push(details)
@@ -46,6 +65,9 @@ async function monitorSetup(ctx) {
         else if (command.type === "pending") value = await ctx.client.permission.list({ sessionID: command.sessionID }, options())
         else if (command.type === "history") ctx.keymap.dispatch("reviewer.history")
         else if (command.type === "statistics") ctx.keymap.dispatch("reviewer.lifetime")
+        else if (command.type === "away") ctx.ui.router.navigate({ type: "home" })
+        else if (command.type === "navigate") ctx.ui.router.navigate({ type: "session", sessionID: command.sessionID })
+        else if (command.type === "interrupt") await ctx.client.session.interrupt({ sessionID: command.sessionID, continue: false }, options())
         else throw Error("Unknown steering control")
         record.replies[command.sequence] = { value: value ?? null }
       }
@@ -53,7 +75,11 @@ async function monitorSetup(ctx) {
       await sleep(40, undefined, { signal: abort.signal })
     }
   })().catch(error => { if (!abort.signal.aborted) { record.errors.push(String(error.stack)); void save() } })
-  return async () => { abort.abort(); off(); await loop; await save(); await publisher.close() }
+  return async () => {
+    abort.abort(); off()
+    if (fixture.cancelHeld) ctx.renderer.off(CliRenderEvents.FRAME, frame)
+    await loop; await save(); await publisher.close()
+  }
 }
 
 async function reviewerSetup(ctx) {
@@ -75,6 +101,7 @@ async function reviewerSetup(ctx) {
 
 const { scenario } = runtimeArguments("smoke-v2-steering.mjs")
 const fast = scenario === "fast-steering", cap = scenario === "normal-steering-cap", followUp = scenario === "normal-steering-follow-up"
+const cancelHeld = scenario === "normal-steering-cancel-held"
 const root = path.resolve(import.meta.dirname, ".."), host = process.env.OPENCODE_BIN ?? "opencode"
 const version = execFileSync(host, ["--version"], { encoding: "utf8" }).trim()
 assertV2HostVersion(version)
@@ -84,7 +111,7 @@ const temp = await mkdtemp("/tmp/opencode/reviewer-steering-"), env = smokeEnvir
 env.XDG_STATE_HOME = await mkdtemp("/tmp/reviewer-steering-state-")
 await mkdir(path.join(env.XDG_STATE_HOME, "opencode"), { mode: 0o700 })
 const project = path.join(temp, "project"), runtime = await smokeRuntime(temp)
-const fixture = { project, monitor: path.join(artifacts, "monitor.json"), control: path.join(artifacts, "control.json"),
+const fixture = { project, cancelHeld, monitor: path.join(artifacts, "monitor.json"), control: path.join(artifacts, "control.json"),
   notifications: path.join(artifacts, "notifications.json") }
 const publishers = new Map()
 const publish = async (file, value) => {
@@ -143,13 +170,14 @@ const database = async () => {
   } catch (error) { if (error.code === "ERR_SQLITE_ERROR" && ((error.errcode & 255) === 5 || error.errcode === 14)) return; throw error }
   finally { db?.close() }
 }
-const quiet = async (index, replies, milliseconds = 1500) => {
+const quiet = async (index, replies, milliseconds = 1500, check = async () => {}) => {
   const end = performance.now() + milliseconds
   do {
     const record = await observe()
     assert.equal(record.replied.length, replies)
     assert.equal(reviews.length, index + 1)
     assert.equal(await marker(), replies >= 2 ? "executed\n" : "")
+    await check(record)
     await sleep(50)
   } while (performance.now() < end)
 }
@@ -181,7 +209,7 @@ try {
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve))
   const origin = `http://127.0.0.1:${server.address().port}`
   const helpers = await readFile(new URL("./smoke-observations.mjs", import.meta.url), "utf8")
-  const prelude = helpers + '\nimport {setTimeout as sleep} from "node:timers/promises"\nconst fixture=' + JSON.stringify(fixture) + "\n"
+  const prelude = helpers + '\nimport {setTimeout as sleep} from "node:timers/promises"\nimport {CliRenderEvents} from "@opentui/core"\nconst fixture=' + JSON.stringify(fixture) + "\n"
   const monitor = path.join(temp, "monitor"), reviewer = path.join(temp, "reviewer"), title = path.join(temp, "title")
   for (const directory of [monitor, reviewer, title]) await mkdir(directory)
   const bundle = pathToFileURL(path.join(root, "dist/tui.js")).href
@@ -222,12 +250,49 @@ try {
     await quiet(index, index)
     assert.equal((await notifications()).filter(item => item.kind === "steered").length, index === 0 ? 0 : 1)
     if (!index) assert.deepEqual(await notifications(), [], "pending analysis stays silent")
+    if (cancelHeld) {
+      await until("painted native Once choice", record => record.frame && record.mouse && record.mode === "base"
+        && record.choices.once === true && !capture().includes("Finishing startup"))
+      runtime.tmux("send-keys", "-t", "steering", "Right")
+      await until("native Always hold before verdict", record => record.choices.always === true && record.choices.once === false)
+    }
     if (fast) {
       sse(reviews[index].res, { content: '{"safe":false,"reason":' + JSON.stringify(reason) + ',"steering":' + JSON.stringify(steering).slice(0, -1) })
       await quiet(index, index)
       assert.deepEqual(await notifications(), [], "an incomplete steering string cannot notify or reject")
       sse(reviews[index].res, { content: '","desc":"The fixture command writes a marker.' })
     } else finishReview(index)
+    if (cancelHeld) {
+      const pending = await command({ type: "pending", sessionID })
+      assert.equal(pending.length, 1)
+      await until("unarmed Unsafe Checking and Cancel", record => record.choices.always === true
+        && capture().includes("Reason for rejection:") && capture().split("\n").some(row => row.includes("Checking…") && row.includes("Cancel")))
+      const unchanged = async () => {
+        assert.deepEqual(await command({ type: "pending", sessionID }), pending)
+        assert.doesNotMatch(capture(), /Rejected in/)
+        assert.equal((await notifications()).filter(item => item.kind === "steered").length, 0)
+      }
+      await quiet(index, 0, 1500, async record => { assert.equal(record.choices.always, true); await unchanged() })
+      await writeFile(path.join(artifacts, "held-footer.txt"), capture())
+      const rows = capture().split("\n"), row = rows.findIndex(line => line.includes("Checking…") && line.includes("Cancel"))
+      assert.ok(row >= 0)
+      const x = Array.from(rows[row].slice(0, rows[row].indexOf("Cancel"))).length + 2, y = row + 1
+      runtime.tmux("send-keys", "-t", "steering", "-l", `\x1b[<0;${x};${y}M\x1b[<0;${x};${y}m`)
+      await until("Cancel while native Always remains selected", record => record.choices.always === true && capture().includes("Auto-rejection canceled"))
+      await command({ type: "away" })
+      await until("home route", record => record.route.type === "home")
+      await command({ type: "navigate", sessionID })
+      await until("canceled report restored", record => record.route.sessionID === sessionID && capture().includes("Auto-rejection canceled"))
+      if ((await observe()).choices.always) runtime.tmux("send-keys", "-t", "steering", "Left")
+      await until("native hold released", record => record.choices.once === true && record.choices.always === false && record.choices.reject === false)
+      await quiet(index, 0, 4500, async () => { await unchanged(); assert.match(capture(), /Auto-rejection canceled/) })
+      await writeFile(path.join(artifacts, "cancel-restored.txt"), capture())
+      await command({ type: "interrupt", sessionID })
+      await until("pending cleared by native stop", async () => (await command({ type: "pending", sessionID })).length === 0)
+      assert.equal((await observe()).replied.length, 0)
+      assert.equal(await marker(), "")
+      break
+    }
     if (cap && index === 1) {
       await until("cap holds Unsafe", () => capture().includes("Unsafe"))
       assert.doesNotMatch(capture(), /Rejected in|Steering:/)
@@ -259,7 +324,10 @@ try {
     assert.equal(await marker(), cap && index >= 1 ? "executed\n" : "")
     await writeFile(path.join(artifacts, `stage-${index}.txt`), capture())
   }
-  if (followUp) {
+  if (cancelHeld) {
+    await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, sessionID, native: await observe() })
+    console.log(`PASS V2 steering ${scenario}: ${artifacts}`)
+  } else if (followUp) {
     await until("follow-up review", () => reviews.length === 2)
     assert.ok(JSON.stringify(results[0]).includes(message), "exact steering message with the closing sentence reaches the agent")
     const [system, user] = reviews[1].body.messages, evidence = JSON.parse(user.content)

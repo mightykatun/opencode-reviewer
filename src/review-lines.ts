@@ -8,6 +8,7 @@ export interface ReviewLineSource {
   progress?: { preview?: AssessmentPreview }
   autoApproval?: { status: string }
   autoDecision?: "once" | "reject"
+  steerable?: boolean
   steering?: string
 }
 
@@ -33,7 +34,7 @@ export function historyOutcome(outcome: keyof typeof uiText.history.outcomes, st
   return outcome === "rejected" && steering ? uiText.history.autoRejected : uiText.history.outcomes[outcome]
 }
 
-/** Footer copy mirrors auto-approval for an armed steering rejection. */
+/** Footer copy includes pending steering intent before native eligibility. */
 export function automaticCopy(view: ReviewLineSource) {
-  return view.autoDecision === "reject" ? uiText.autoRejection : uiText.autoApproval
+  return view.autoDecision === "reject" || (!view.autoDecision && view.steerable) ? uiText.autoRejection : uiText.autoApproval
 }

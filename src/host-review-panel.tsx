@@ -183,7 +183,7 @@ function HostReviewFooter(props: Pick<HostReviewPanelProps, "context" | "onAppro
   const state = () => props.view.autoApproval
   const copy = () => automaticCopy(props.view)
   const label = () => { const current = state(); return current?.status === "countdown" ? copy().countdown(current.seconds) : copy().checking }
-  return <Show when={props.enabled && ((props.approvals && props.view.assessment?.safe) || !!state())}>
+  return <Show when={props.enabled && ((props.approvals && props.view.assessment?.safe) || props.view.steerable || !!state())}>
     <box ref={props.ref} marginTop={1} paddingTop={1} minHeight={3} flexShrink={0} border={["top"]} borderColor={props.context.theme.border.base}>
       <Switch>
         <Match when={!state() || state()?.status === "countdown" || state()?.status === "checking" || state()?.status === "waiting"}>

@@ -3,6 +3,7 @@ import { test, type TestContext } from "node:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { setImmediate as settle } from "node:timers/promises"
 import { DatabaseSync } from "node:sqlite"
 import { HistorySQL, type HistorySelection, type HistoryTotals } from "../src/history-schema.js"
 import { encodeEvent, type HistoryEvent, type HistoryReview } from "../src/history-records.js"
@@ -104,4 +105,51 @@ test("the coordinator saves the reason and records a confirmed steering rejectio
   assert.equal(value.totals.activity.rejected, 1)
   const record = selection(f.sql).record!
   assert.equal(historyOutcome(record.outcome, record.steering), "Auto rejected")
+})
+
+test("another coordinator recovers a confirmed fast rejection whose remaining report failed", async t => {
+  const f = fixture(t), secondSQL = f.open()
+  const coordinator = (sql: HistorySQL, writer: string) => {
+    let sequence = 0
+    const result = new HistoryCoordinator(context.scope, {
+      admit(event) { sql.apply(writer, ++sequence, encodeEvent(event)); return true },
+      query: async query => sql.query(query), onCommit: () => () => {},
+    }, async () => context.root, () => 100)
+    t.after(() => result.dispose())
+    return result
+  }
+  const first = coordinator(f.sql, "first"), second = coordinator(secondSQL, "second")
+  const request = { id: context.permission, sessionID: context.session, action: "shell", resources: ["rm -rf build"] } as HostRequest
+  const config = parseConfig({ baseURL: context.provider, model: context.configuredModel, autoRejectSteering: true, fastMode: true })
+  first.observation(request, "shell", config, { review: "first-review", root: context.root })
+  const fact = { request, automatic: true, approval: "steer-1", review: "first-review", decision: "reject" as const, steering: "Narrow it." }
+  first.approval({ ...fact, type: "dispatched" })
+  first.reply({ requestID: request.id, sessionID: request.sessionID, reply: "reject" })
+  first.approval({ ...fact, type: "confirmed" })
+  first.lifecycle({ type: "removed", request, reason: "resolved" })
+  assert.equal(selection(f.sql).record, undefined)
+  second.lifecycle({ type: "accepted", request, root: context.root, review: "second-review",
+    result: { safe: false, reason: "Broad command.", desc: "Independent completed report.",
+      metadata: { review: "second-review", kind: "shell", configuredModel: config.model, provider: config.baseURL } },
+    completedAt: 120, timing: { fullReportMs: 10, ratingMs: 10 } })
+  second.lifecycle({ type: "removed", request, reason: "resolved" })
+  await settle()
+  const record = selection(f.sql).record!
+  assert.equal(record.outcome, "rejected")
+  assert.equal(record.payload.desc, "Independent completed report.")
+  assert.equal(record.steering, undefined, "another review's steering is not attributed to this report")
+})
+
+test("shared rejection resolution validates exact ownership and conflicts only with proven approvals", t => {
+  const f = fixture(t)
+  f.apply(rejection())
+  const query = () => f.sql.query({ type: "resolution", scope: context.scope, root: context.root, session: context.session, permission: context.permission })
+  assert.deepEqual(query(), { outcome: "rejected", uncertain: false, conflict: false, deleted: false })
+  assert.equal((f.sql.query({ type: "resolution", scope: "/other", root: context.root, session: context.session, permission: context.permission }) as any).outcome, undefined)
+  f.apply({ type: "approvalDispatched", context, at: 120, approval: "pending", automatic: true })
+  assert.deepEqual(query(), { outcome: "rejected", uncertain: true, conflict: false, deleted: false })
+  f.apply({ type: "approvalConfirmed", context, at: 130, approval: "pending", automatic: true })
+  assert.deepEqual(query(), { outcome: undefined, uncertain: false, conflict: true, deleted: false })
+  f.db.exec("UPDATE auto_rejections SET review='missing'")
+  assert.throws(query, /Invalid resolution ownership/)
 })

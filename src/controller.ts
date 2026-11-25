@@ -321,8 +321,9 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     entry.cancelTimer?.()
     entry.cancelTimer = undefined
     entry.approvalAbort?.abort()
+    const decision = entry.view.autoDecision ?? this.automatic(entry)
     this.manual.set(id, "cancelled")
-    entry.view = { ...entry.view, autoApproval: { status: "cancelled" } }
+    entry.view = { ...entry.view, autoDecision: decision, autoApproval: { status: "cancelled" } }
     this.publish()
   }
 
