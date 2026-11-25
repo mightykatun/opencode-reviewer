@@ -5,8 +5,7 @@ import type { PluginDependencies } from "./plugin-dependencies.js"
 import { localStateRoot } from "./local-state.js"
 import { remainingTime, withDeadline } from "./deadline.js"
 import { TransportOwnership } from "./transport-ownership.js"
-import { loadHostRuntime } from "./host-runtime-loader.js"
-import type { setupHostRuntime } from "./host-runtime.js"
+import { setupHostRecovery, type setupHostRuntime } from "./host-runtime.js"
 import { initialConnectionEcho } from "./connection-marker.js"
 import { companionHandshake } from "./companion-handshake.js"
 import { hostLocation } from "./host-locations.js"
@@ -34,9 +33,6 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
   // Startup admits the current host location. Recovery admits every other home
   // and each home's member locations, each with its own handshake.
   const location = hostLocation(context)
-  // Load before admission so no asynchronous import separates the scoped
-  // handshake from installing the runtime's connection fence and recovery owner.
-  const runtime = dependencies.adapterOnly ? undefined : await loadHostRuntime()
   lifecycle.signal.throwIfAborted()
   let connection = new AbortController()
   let markerID: string | undefined, nativeID: string | undefined
@@ -86,9 +82,9 @@ export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecyc
     if (connectionVerified) state.connectionID = markerID
     stop()
   }
-  if (runtime) {
+  if (!dependencies.adapterOnly) {
     lifecycle.signal.throwIfAborted()
-    const recovery = runtime.setupHostRecovery(context, state, lifecycle)
+    const recovery = setupHostRecovery(context, state, lifecycle)
     Object.defineProperty(state, "runtime", { get: recovery.current })
   }
   return state

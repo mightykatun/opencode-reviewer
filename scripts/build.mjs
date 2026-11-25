@@ -2,9 +2,10 @@ import { build } from "esbuild"
 import { transformAsync } from "@babel/core"
 import { readFile } from "node:fs/promises"
 import { isBuiltin } from "node:module"
+import { fileURLToPath } from "node:url"
 import inventory from "../src/prompt-files.json" with { type: "json" }
-import { soundBanner } from "./bundled-sounds.mjs"
-import { historyWorkerBanner } from "./bundled-history-worker.mjs"
+import { soundBanner, assertNoBundledSounds } from "./bundled-sounds.mjs"
+import { historyWorkerBanner, assertNoBundledHistoryWorker } from "./bundled-history-worker.mjs"
 import { themeSyntaxOnlyPlugin, verifyThemeSyntaxBuild } from "./theme-syntax-adapter.mjs"
 
 const prompts = Object.fromEntries(await Promise.all(
@@ -79,53 +80,36 @@ const embeddedPromptsPlugin = {
       const source = await readFile(path, "utf8")
       const fallback = 'return readFileSync(new URL(`../${inventory[name]}`, import.meta.url), "utf8").trim()'
       if (source.split(fallback).length !== 2) throw Error("Source-only prompt fallback changed")
-      // Both distributed bundles embed every prompt. Keep filesystem discovery
-      // only in direct source tests, never in the terminal CJS payload.
+      // Only direct source tests read prompt files from the checkout.
       return { contents: source.replace(fallback, 'throw Error("Embedded prompts unavailable")'), loader: "ts" }
     })
   },
 }
 
-// A separate fixed CJS payload prevents esbuild hoisting terminal imports into
-// the shared ESM entrypoint. Theme helpers and non-host dependencies are bundled;
-// these four public imports are supplied lazily by the CLI loader.
-const hostModules = ["solid-js", "@opentui/core", "@opentui/solid", "@opencode/plugin/rpc"]
-const hostRuntime = await build({
-  entryPoints: ["src/host-runtime.tsx"], bundle: true, write: false, metafile: true,
-  platform: "node", format: "cjs", target: "es2023", external: hostModules,
-  define, plugins: [versionPlugin, decoderPlugin, themeSyntaxOnlyPlugin, jsxPlugin, embeddedPromptsPlugin],
+const common = { bundle: true, metafile: true, platform: "node", format: "esm", target: "es2023" }
+const server = await build({
+  ...common, entryPoints: ["src/server.ts"], outfile: "dist/server.js", external: ["@opencode/*"],
 })
-verifyThemeSyntaxBuild(hostRuntime.metafile)
-for (const output of Object.values(hostRuntime.metafile.outputs)) {
-  for (const dependency of output.imports) {
-    if (dependency.external && !hostModules.includes(dependency.path) && !isBuiltin(dependency.path)) {
-      throw new Error(`Unmapped host runtime dependency: ${dependency.path}`)
-    }
+const forbidden = /solid-js|@opentui\/|@opencode\/theme|mpeg_frame_decoder_create|mpg123-decoder/
+for (const input of Object.keys(server.metafile.inputs)) {
+  if (forbidden.test(input)) throw new Error(`Terminal dependency in server inputs: ${input}`)
+}
+for (const dependency of server.metafile.outputs["dist/server.js"].imports) {
+  if (forbidden.test(dependency.path) || (!isBuiltin(dependency.path) && !dependency.path.startsWith("@opencode/"))) {
+    throw new Error(`Unexpected server import: ${dependency.path}`)
   }
 }
+const source = await readFile("dist/server.js", "utf8")
+if (forbidden.test(source)) throw new Error("Terminal dependency in server bundle")
+assertNoBundledSounds(source)
+assertNoBundledHistoryWorker(source)
 
-const entrypoint = await build({
-  stdin: {
-    contents: 'export { default } from "./src/plugin.ts"; export * from "./src/plugin.ts"; export { HistoryStore, historyWorkerSource } from "./src/history-store.ts"; export { HistoryRefresh } from "./src/history-refresh.ts"',
-    resolveDir: process.cwd(),
-    sourcefile: "reviewer-entry.ts",
-    loader: "ts",
-  },
-  outfile: "dist/tui.js",
-  bundle: true,
-  metafile: true,
-  platform: "node",
-  format: "esm",
-  target: "es2023",
+const terminal = await build({
+  ...common, entryPoints: ["src/tui.ts"], outfile: "dist/tui.js",
   banner: { js: `${soundBanner(sounds)}\n${historyWorkerBanner(historyWorker.outputFiles[0].text)}` },
-  define: { ...define, __HOST_RUNTIME__: JSON.stringify(Buffer.from(hostRuntime.outputFiles[0].text).toString("base64")) },
+  define,
+  alias: { "@opencode/theme/tui": fileURLToPath(import.meta.resolve("@opencode/theme/tui")) },
   external: ["solid-js", "solid-js/*", "@opentui/*", "@opencode/*"],
-  plugins: [versionPlugin, decoderPlugin, jsxPlugin, embeddedPromptsPlugin],
+  plugins: [versionPlugin, decoderPlugin, themeSyntaxOnlyPlugin, jsxPlugin, embeddedPromptsPlugin],
 })
-for (const output of Object.values(entrypoint.metafile.outputs)) {
-  for (const dependency of output.imports) {
-    if (dependency.kind !== "dynamic-import" && /^(?:solid-js(?:\/|$)|@opentui\/|@opencode\/theme(?:\/|$))/.test(dependency.path)) {
-      throw new Error(`Eager terminal dependency in shared entrypoint: ${dependency.path}`)
-    }
-  }
-}
+verifyThemeSyntaxBuild(terminal.metafile)

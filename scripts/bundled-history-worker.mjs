@@ -5,8 +5,8 @@ import path from "node:path"
 const name = "__REVIEWER_HISTORY_WORKER__"
 const prefix = `const ${name} = `
 
-// Both compositions reference this production value, not an informational copy.
 export const historyWorkerBanner = source => `${prefix}${JSON.stringify(source)};`
+export const assertNoBundledHistoryWorker = bundle => assert.ok(!bundle.includes(name), "Unexpected history worker in bundle")
 
 function nodesOf(ast) {
   const nodes = []
@@ -48,9 +48,12 @@ function workerConsumer(nodes) {
   const writes = nodes.filter(node => node.type === "NewExpression" && node.start >= constructor.start && node.end <= constructor.end)
     .filter(node => /^Worker\d*$/.test(node.callee.name ?? "") || node.callee.property?.name === "Worker")
   assert.equal(writes.length, 1, "Expected one actual worker source consumer")
+  assert.equal(writes[0].arguments.length, 2)
   assert.equal(writes[0].arguments[0]?.name, parameter.left.name, "Actual worker must receive its source parameter")
   assert.equal(writes[0].arguments[1]?.type, "ObjectExpression")
   const options = writes[0].arguments[1].properties
+  assert.deepEqual(options.map(node => node.key?.name).sort(), ["env", "eval"])
+  assert.ok(options.every(node => node.type === "ObjectProperty" && !node.computed))
   assert.equal(options.find(node => node.key.name === "eval")?.value.value, true)
   assert.equal(options.find(node => node.key.name === "env")?.value.type, "ObjectExpression")
   assert.equal(options.find(node => node.key.name === "env").value.properties.length, 0)
@@ -72,44 +75,15 @@ export function verifyBundledHistoryWorker(bundle, expected) {
   // Resolve the validation toolchain from the checked-out package, including when
   // this helper itself comes from the active-policy sparse checkout.
   const { parseSync } = createRequire(path.resolve("package.json"))("@babel/core")
-  const parse = (text, sourceType) => nodesOf(parseSync(text, { sourceType, babelrc: false, configFile: false }))
-  const outer = parse(bundle, "module")
-  const definitions = outer.filter(node => node.type === "VariableDeclarator" && node.id.name === name)
+  const nodes = nodesOf(parseSync(bundle, { sourceType: "module", babelrc: false, configFile: false }))
+  const definitions = nodes.filter(node => node.type === "VariableDeclarator" && node.id.name === name)
   assert.equal(definitions.length, 1, "Expected one fixed worker definition")
   assert.equal(definitions[0].init?.value, source)
-  assert.equal(outer.filter(node => node.type === "StringLiteral" && node.value === source).length, 1,
+  assert.equal(nodes.filter(node => node.type === "StringLiteral" && node.value === source).length, 1,
     "Worker source must not be embedded twice")
-  const exported = outer.filter(node => node.type === "ExportSpecifier" && node.exported.name === "historyWorkerSource")
+  const exported = nodes.filter(node => node.type === "ExportSpecifier" && node.exported.name === "historyWorkerSource")
   assert.equal(exported.length, 1, "Missing public worker source export")
-  assert.equal(exported[0].local.name, workerConsumer(outer), "Public export must expose the actual worker default")
+  assert.equal(exported[0].local.name, workerConsumer(nodes), "Public export must expose the actual worker default")
 
-  const loaders = outer.filter(node => node.type === "NewExpression" && node.callee.name === "Function")
-  assert.equal(loaders.length, 1, "Expected one fixed terminal loader")
-  const loader = loaders[0]
-  assert.deepEqual(loader.arguments.slice(0, -1).map(node => node.value),
-    ["require", "module", "exports", "__REVIEWER_BUNDLED_SOUNDS__", name], "Loader arguments must stay fixed")
-  const calls = outer.filter(node => node.type === "CallExpression" && node.callee === loader)
-  assert.equal(calls.length, 1, "Missing actual terminal loader invocation")
-  assert.equal(calls[0].arguments.length, 5)
-  assert.equal(calls[0].arguments[3]?.name, "__REVIEWER_BUNDLED_SOUNDS__")
-  assert.equal(calls[0].arguments[4]?.name, name, "Terminal must receive the exact shared worker reference")
-
-  const payloads = outer.filter(node => node.type === "CallExpression" && node.callee.type === "MemberExpression"
-    && node.callee.object.name === "Buffer" && node.callee.property.name === "from"
-    && node.arguments[0]?.type === "StringLiteral" && node.arguments[1]?.value === "base64")
-  assert.equal(payloads.length, 1, "Expected one fixed opaque terminal payload")
-  const decode = outer.find(node => node.type === "CallExpression" && node.callee.object === payloads[0]
-    && node.callee.property.name === "toString" && node.arguments[0]?.value === "utf8")
-  const decoded = outer.find(node => node.type === "VariableDeclarator" && node.init === decode)
-  assert.ok(decoded, "Terminal payload must decode to a fixed local source")
-  assert.equal(loader.arguments.at(-1)?.name, decoded.id.name, "Loader must execute only the inspected payload")
-  const terminal = Buffer.from(payloads[0].arguments[0].value, "base64").toString("utf8")
-  assert.equal(Buffer.from(terminal).toString("base64"), payloads[0].arguments[0].value, "Invalid terminal encoding")
-  const inner = parse(terminal, "script")
-  assert.equal(inner.filter(node => node.type === "VariableDeclarator" && node.id.name === name).length, 0,
-    "Terminal must not define another worker source")
-  assert.ok(!inner.some(node => node.type === "StringLiteral" && node.value.includes(source)),
-    "Terminal must not embed the worker body")
-  workerConsumer(inner)
   return source
 }

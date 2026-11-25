@@ -5,7 +5,8 @@ import type { Plugin } from "@opencode/plugin"
 import { setupCompanion } from "../src/companion.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import type { FileIO } from "../src/file-access.js"
-import { withNotificationProcesses } from "../src/plugin.js"
+import * as server from "../src/server.js"
+import { withNotificationProcesses } from "../src/tui.js"
 import { monotonicTimers } from "./reviewer-clock.js"
 
 const skillOptions = { reviewBash: true, reviewEdits: true, reviewExternalDirectories: true,
@@ -116,7 +117,9 @@ test("skill registry reads are scoped, read-only and retain physical ownership a
 test("the public notification-process seam stays dormant in the server lifecycle", async () => {
   const disposed: string[] = []
   let constructed = 0
-  const plugin = withNotificationProcesses(() => { constructed++; throw Error("Server must never construct desktop processes") })
+  const terminal = withNotificationProcesses(() => { constructed++; throw Error("Server must never construct desktop processes") })
+  assert.equal(terminal.id, server.default.id)
+  assert.equal("withNotificationProcesses" in server, false)
   const context = {
     app: { version: "development" },
     location: { directory: "/project", project: { id: "project", directory: "/project", canonical: "/project" } },
@@ -124,7 +127,7 @@ test("the public notification-process seam stays dormant in the server lifecycle
     rpc: { register: async () => ({ dispose() { disposed.push("rpc") } }) },
   } as unknown as Plugin.Context
   assert.equal(constructed, 0)
-  const stop = await plugin.setup(context)
+  const stop = await server.default.setup(context)
   assert.equal(constructed, 0)
   await stop()
   assert.equal(constructed, 0)

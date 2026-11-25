@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { gunzipSync } from "node:zlib"
 import { archiveIntegrity } from "../scripts/npm-publication.mjs"
-import { inspectPackageArchive, packageFiles } from "../scripts/release-artifact.mjs"
+import { inspectPackageArchive, packageLayout } from "../scripts/release-artifact.mjs"
 import { npmReleaseVersion } from "../scripts/release-version.mjs"
 import { publishRelease } from "../scripts/publish-release.mjs"
 import { archiveFixture, artifactFixture, fixturePackage, highBitNumericArchiveFixture, provenanceEnv } from "./release-fixture.mjs"
@@ -278,27 +278,27 @@ test("npm 12's bundled publication builder demonstrates manifest tag override an
 
 test("validated tar prefixes agree with npm 12's actual parser and invalid markers are rejected", () => {
   const { Header } = npmRequire("tar")
-  const entries = [...inspectPackageArchive(archiveFixture()).files].map(([name, content]) => ({ name, content }))
+  const entries = [...inspectPackageArchive(archiveFixture(), packageLayout("0.4.0")).files].map(([name, content]) => ({ name, content }))
   const valid = archiveFixture({ entries, alterHeader(header) { header.write("package", 345) } })
   assert.equal(new Header(gunzipSync(valid)).path, "package/LICENSE")
-  assert.deepEqual([...inspectPackageArchive(valid).files.keys()].sort(), packageFiles)
+  assert.deepEqual([...inspectPackageArchive(valid, packageLayout("0.4.0")).files.keys()].sort(), packageLayout("0.4.0").files)
   const disagreement = archiveFixture({ entries, alterHeader(header) { header.write("package", 345); header.fill(0, 257, 265) } })
   assert.equal(new Header(gunzipSync(disagreement)).path, "LICENSE", "npm ignores the prefix when the USTAR marker is absent")
-  assert.throws(() => inspectPackageArchive(disagreement), /USTAR/)
+  assert.throws(() => inspectPackageArchive(disagreement, packageLayout("0.4.0")), /USTAR/)
 })
 
 test("npm 12's actual Header size disagrees with masked ASCII digits and validation rejects the checksummed archive", () => {
   const { Header } = npmRequire("tar")
   const valid = archiveFixture()
   assert.equal(new Header(gunzipSync(valid)).size, 16)
-  assert.equal(inspectPackageArchive(valid).files.get("LICENSE").length, 16)
+  assert.equal(inspectPackageArchive(valid, packageLayout("0.4.0")).files.get("LICENSE").length, 16)
   const bytes = highBitNumericArchiveFixture("size"), header = gunzipSync(bytes).subarray(0, 512)
   assert.equal(Number.parseInt(header.subarray(124, 136).toString("ascii"), 8), 16, "former decoding silently cleared the high bit")
   const parsed = new Header(header)
   assert.equal(parsed.cksumValid, true, "this is a correctly checksummed parser disagreement")
   assert.equal(parsed.path, "package/LICENSE")
   assert.equal(parsed.size, 2, "npm's UTF-8 numeric parser stops at the corrupted digit")
-  assert.throws(() => inspectPackageArchive(bytes), /Unsupported tar numeric field encoding/)
+  assert.throws(() => inspectPackageArchive(bytes, packageLayout("0.4.0")), /Unsupported tar numeric field encoding/)
 })
 
 test("actual npm publish dry-run unpacks only validated files inside a private cache and executes no package code", async (t) => {
@@ -311,12 +311,13 @@ test("actual npm publish dry-run unpacks only validated files inside a private c
   await chmod(cache, 0o700)
   const marker = path.join(root, "package-code-ran")
   const hook = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(marker)}, "unexpected")`)}`
-  const pkg = { ...fixturePackage(), scripts: Object.fromEntries(["prepack", "prepare", "prepublishOnly", "publish", "postpublish", "install", "postinstall"].map((name) => [name, hook])) }
-  const entries = [...inspectPackageArchive(archiveFixture({ pkg })).files].map(([name, content]) => ({ name: `package/${name}`,
-    content: name === "dist/tui.js" ? "throw new Error('PACKAGE_ENTRYPOINT_MUST_NOT_EXECUTE')\n" : content }))
+  const layout = packageLayout("2.9.0")
+  const pkg = { ...fixturePackage("2.9.0"), scripts: Object.fromEntries(["prepack", "prepare", "prepublishOnly", "publish", "postpublish", "install", "postinstall"].map((name) => [name, hook])) }
+  const entries = [...inspectPackageArchive(archiveFixture({ pkg }), layout).files].map(([name, content]) => ({ name: `package/${name}`,
+    content: name.endsWith(".js") ? "throw new Error('PACKAGE_ENTRYPOINT_MUST_NOT_EXECUTE')\n" : content }))
   const bytes = archiveFixture({ entries })
-  const files = inspectPackageArchive(bytes).files
-  const tarball = path.join(root, "opencode-reviewer-0.4.0.tgz")
+  const files = inspectPackageArchive(bytes, layout).files
+  const tarball = path.join(root, "opencode-reviewer-2.9.0.tgz")
   await writeFile(tarball, bytes)
   const observer = path.join(root, "observe-extraction.cjs"), observations = path.join(root, "extractions.jsonl")
   await writeFile(observer, `
@@ -348,15 +349,15 @@ test("actual npm publish dry-run unpacks only validated files inside a private c
     "--registry", "https://registry.npmjs.org/", "--fetch-retries=0"], { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
   const report = JSON.parse(output)
   const contents = Array.isArray(report) ? report[0] : report["opencode-reviewer"]
-  assert.equal(contents.version, "0.4.0")
+  assert.equal(contents.version, pkg.version)
   assert.equal(contents.integrity, archiveIntegrity(bytes), "dry-run uses the original validated archive bytes")
-  assert.deepEqual(contents.files.map((file) => file.path).sort(), packageFiles)
+  assert.deepEqual(contents.files.map((file) => file.path).sort(), layout.files)
   const records = (await readFile(observations, "utf8")).trim().split("\n").map((line) => JSON.parse(line))
   assert.ok(records.length >= 2, "CLI reads both initial and authoritative manifests through actual file extraction")
   for (const record of records) {
     assert.ok(record.directory.startsWith(`${cache}${path.sep}`))
     assert.ok(record.directory.includes(`${path.sep}tmp${path.sep}`))
-    assert.deepEqual(record.files.map((file) => file.file).sort(), packageFiles)
+    assert.deepEqual(record.files.map((file) => file.file).sort(), layout.files)
     for (const file of record.files) assert.equal(file.digest, archiveIntegrity(files.get(file.file)).slice("sha512-".length))
   }
   assert.equal((await lstat(cache)).mode & 0o777, 0o700)

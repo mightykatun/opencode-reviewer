@@ -216,7 +216,7 @@ try {
   await publish(path.join(monitor, "package.json"), { name: "steering-monitor", type: "module", exports: { "./tui": "./tui.mjs" } })
   await writeFile(path.join(monitor, "tui.mjs"), prelude + monitorSetup + '\nexport default {id:"fixture.steering.monitor",setup:monitorSetup}\n')
   await publish(path.join(reviewer, "package.json"), { name: "steering-production", type: "module", exports: { ".": "./index.mjs", "./tui": "./tui.mjs" } })
-  await writeFile(path.join(reviewer, "index.mjs"), `export {default} from ${JSON.stringify(bundle)}\n`)
+  await writeFile(path.join(reviewer, "index.mjs"), `export {default} from ${JSON.stringify(pathToFileURL(path.join(root, "dist/server.js")).href)}\n`)
   await writeFile(path.join(reviewer, "tui.mjs"), prelude + `import * as production from ${JSON.stringify(bundle)}\n` + reviewerSetup + '\nexport default {id:"opencode-reviewer",setup:reviewerSetup}\n')
   await publish(path.join(title, "package.json"), { name: "steering-title", type: "module", exports: { ".": "./index.mjs" } })
   await writeFile(path.join(title, "index.mjs"), 'export default {id:"fixture.steering.title",async setup(ctx){const r=await ctx.session.hook("title",e=>{e.result="Steering fixture"});return ()=>r.dispose()}}\n')

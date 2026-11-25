@@ -190,7 +190,7 @@ try {
   await publish(path.join(monitor, "package.json"), { name: "worktree-monitor", type: "module", exports: { "./tui": "./tui.mjs" } })
   await writeFile(path.join(monitor, "tui.mjs"), prelude + monitorSetup + '\nexport default {id:"fixture.worktree.monitor",setup:monitorSetup}\n')
   await publish(path.join(reviewer, "package.json"), { name: "worktree-production", type: "module", exports: { ".": "./index.mjs", "./tui": "./tui.mjs" } })
-  await writeFile(path.join(reviewer, "index.mjs"), `export {default} from ${JSON.stringify(bundle)}\n`)
+  await writeFile(path.join(reviewer, "index.mjs"), `export {default} from ${JSON.stringify(pathToFileURL(path.join(root, "dist/server.js")).href)}\n`)
   await writeFile(path.join(reviewer, "tui.mjs"), prelude + `import * as production from ${JSON.stringify(bundle)}\n` + reviewerSetup + '\nexport default {id:"opencode-reviewer",setup:reviewerSetup}\n')
   await publish(path.join(title, "package.json"), { name: "worktree-title", type: "module", exports: { ".": "./index.mjs" } })
   await writeFile(path.join(title, "index.mjs"), 'export default {id:"fixture.worktree.title",async setup(ctx){const r=await ctx.session.hook("title",e=>{e.result="Worktree fixture"});return ()=>r.dispose()}}\n')

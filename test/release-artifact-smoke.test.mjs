@@ -5,13 +5,19 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { createRequire, isBuiltin } from "node:module"
-import { packageFiles, inspectPackageArchive } from "../scripts/release-artifact.mjs"
+import { packageLayout, inspectPackageArchive } from "../scripts/release-artifact.mjs"
 import { archiveIntegrity } from "../scripts/npm-publication.mjs"
-import { soundBanner, verifyBundledSounds } from "../scripts/bundled-sounds.mjs"
-import { historyWorkerBanner, verifyBundledHistoryWorker } from "../scripts/bundled-history-worker.mjs"
+import { assertNoBundledSounds, soundBanner, verifyBundledSounds } from "../scripts/bundled-sounds.mjs"
+import { assertNoBundledHistoryWorker, historyWorkerBanner, verifyBundledHistoryWorker } from "../scripts/bundled-history-worker.mjs"
 import { archiveFixture } from "./release-fixture.mjs"
 
-test("terminal payload excludes Effect/theme parsing, preserves public module mapping and upstream syntax semantics", async () => {
+// Untagged development builds exercise the split layout before the release bump.
+const releaseTag = process.env.RELEASE_TAG
+const layout = packageLayout(releaseTag ? releaseTag.slice(1) : "2.9.0")
+const split = layout.files.includes("dist/server.js")
+const packageFiles = layout.files
+
+test("terminal bundle excludes theme parsing and preserves public imports and upstream syntax semantics", { skip: !split }, async () => {
   const { parseSync } = createRequire(path.resolve("package.json"))("@babel/core")
   const parse = (source, sourceType) => parseSync(source, { sourceType, babelrc: false, configFile: false })
   const nodesOf = ast => {
@@ -28,26 +34,19 @@ test("terminal payload excludes Effect/theme parsing, preserves public module ma
     walk(ast.program)
     return nodes
   }
-  const bundle = await readFile("dist/tui.js", "utf8")
-  const outer = nodesOf(parse(bundle, "module"))
-  const payloads = outer.filter(node => node.type === "CallExpression" && node.callee.type === "MemberExpression"
-    && node.callee.object.name === "Buffer" && node.callee.property.name === "from"
-    && node.arguments[0]?.type === "StringLiteral" && node.arguments[1]?.value === "base64")
-  assert.equal(payloads.length, 1, "one fixed terminal payload must feed the CLI loader")
-  const terminal = Buffer.from(payloads[0].arguments[0].value, "base64").toString("utf8")
-  verifyBundledHistoryWorker(bundle)
-  assert.doesNotMatch(bundle.slice(bundle.indexOf("\n", bundle.indexOf("\n") + 1) + 1), /node_modules\/(?:mpg123-decoder|@wasm-audio-decoders)\//)
-  assert.equal(outer.filter(node => node.type === "VariableDeclarator" && node.id.name === "LinuxNotifications").length, 0)
+  const terminal = await readFile("dist/tui.js", "utf8")
+  const server = await readFile("dist/server.js", "utf8")
+  assertNoBundledSounds(server)
+  assertNoBundledHistoryWorker(server)
+  assert.doesNotMatch(server, /LinuxNotifications|NotificationAudio|mpeg_frame_decoder_create|solid-js|@opentui\/|@opencode\/theme/)
+  verifyBundledHistoryWorker(terminal)
   assert.doesNotMatch(terminal, /node_modules\/effect\/|Symbol\.for\(["']effect\//)
   assert.doesNotMatch(terminal, /@opencode\/theme\/dist\/tui\/(?:schema|resolve|expand|select|color|v1-migrate)\.js/)
   assert.doesNotMatch(terminal, /\b(?:ThemeDocument|parseThemeDocument|themeDecodeError)\b/)
-  const nodes = nodesOf(parse(terminal, "script"))
-  const requires = nodes.filter(node => node.type === "CallExpression" && node.callee.name === "require"
-    && node.arguments[0]?.type === "StringLiteral").map(node => node.arguments[0].value)
+  const nodes = nodesOf(parse(terminal, "module"))
   const hostModules = ["@opencode/plugin/rpc", "@opentui/core", "@opentui/solid", "solid-js"]
-  assert.deepEqual([...new Set(requires.filter(name => !isBuiltin(name)))].sort(), hostModules)
-  const imports = outer.filter(node => node.type === "CallExpression" && node.callee.type === "Import")
-    .map(node => node.arguments[0]?.value).filter(name => hostModules.includes(name))
+  const imports = nodes.filter(node => node.type === "ImportDeclaration")
+    .map(node => node.source.value).filter(name => !isBuiltin(name))
   assert.deepEqual([...new Set(imports)].sort(), hostModules)
 
   // Execute only the two extracted fixed helper functions with a recording
@@ -59,18 +58,16 @@ test("terminal payload excludes Effect/theme parsing, preserves public module ma
     return source.slice(matches[0].start, matches[0].end)
   }).join("\n")
   const syntax = await readFile("node_modules/@opencode/theme/dist/tui/syntax.js", "utf8")
-  const coreReferences = nodes.filter(node => node.type === "MemberExpression" && node.property.name === "SyntaxStyle"
-    && node.object.type === "Identifier")
+  const coreReferences = nodes.filter(node => node.type === "MemberExpression" && node.property.name === "fromTheme")
   const generate = nodes.find(node => node.type === "FunctionDeclaration" && node.id.name === "generateSyntax")
   const syntaxCore = coreReferences.filter(node => node.start >= generate.start && node.end <= generate.end)
   assert.equal(syntaxCore.length, 1)
-  const coreBinding = nodes.find(node => node.type === "VariableDeclarator" && node.id.name === syntaxCore[0].object.name)
-  assert.equal(coreBinding?.init.callee.name, "require")
-  assert.equal(coreBinding.init.arguments[0].value, "@opentui/core")
+  assert.ok(nodes.some(node => node.type === "ImportDeclaration" && node.source.value === "@opentui/core"
+    && node.specifiers.some(spec => spec.imported?.name === "SyntaxStyle" && spec.local.name === syntaxCore[0].object.name)))
   let receivedOwner
   const SyntaxStyle = { fromTheme: (rules, owner) => { receivedOwner = owner; return rules } }
   const upstream = new Function("SyntaxStyle", `${functions(nodesOf(parse(syntax, "module")), syntax)}\nreturn generateSyntax`)(SyntaxStyle)
-  const emitted = new Function(syntaxCore[0].object.name, `${functions(nodes, terminal)}\nreturn generateSyntax`)({ SyntaxStyle })
+  const emitted = new Function(syntaxCore[0].object.name, `${functions(nodes, terminal)}\nreturn generateSyntax`)(SyntaxStyle)
   const tokens = (names, prefix) => Object.fromEntries(names.split(" ").map(name => [name, `${prefix}.${name}`]))
   const theme = {
     syntax: tokens("comment string number keyword type function operator variable punctuation", "syntax"),
@@ -88,7 +85,7 @@ test("terminal payload excludes Effect/theme parsing, preserves public module ma
   }
 })
 
-test("the built audio constructor consumes the inspected mapping and actual bundle/archive mutations fail", async () => {
+test("the built audio constructor consumes the inspected mapping and actual bundle/archive mutations fail", { skip: !split }, async () => {
   const bundle = await readFile("dist/tui.js", "utf8")
   const assets = Object.fromEntries(await Promise.all(["attention", "unsafe", "question", "approved", "error", "ended"]
     .map(async kind => [kind, await readFile(`sounds/${kind}.mp3`)])))
@@ -97,11 +94,7 @@ test("the built audio constructor consumes the inspected mapping and actual bund
   // Parse only, without evaluating any package code. Follow the emitted binding
   // to the production constructor default so a detached data banner cannot pass.
   const { parseSync } = createRequire(path.resolve("package.json"))("@babel/core")
-  const outer = parseSync(bundle, { sourceType: "module", babelrc: false, configFile: false })
-  const payload = bundle.match(/Buffer\.from\("([A-Za-z0-9+/=]{10000,})", "base64"\)/)
-  assert.ok(payload, "fixed terminal payload must contain the sole audio implementation")
-  const terminal = Buffer.from(payload[1], "base64").toString("utf8")
-  const ast = parseSync(terminal, { sourceType: "script", babelrc: false, configFile: false })
+  const ast = parseSync(bundle, { sourceType: "module", babelrc: false, configFile: false })
   const nodes = []
   const walk = node => {
     if (!node || typeof node !== "object") return
@@ -121,10 +114,6 @@ test("the built audio constructor consumes the inspected mapping and actual bund
   const constructor = audio.init.body.body.find(node => node.kind === "constructor")
   assert.ok(constructor.params.some(node => node.type === "AssignmentPattern" && node.left.name === "sounds"
     && node.right.name === bindings[0].id.name), "audio must consume the inspected mapping by default")
-  nodes.length = 0; walk(outer.program)
-  assert.equal(nodes.filter(node => node.type === "VariableDeclarator" && node.id.name === "NotificationAudio").length, 0)
-  const loader = nodes.find(node => node.type === "CallExpression" && node.callee.type === "NewExpression" && node.callee.callee.name === "Function")
-  assert.equal(loader.arguments[3].name, "__REVIEWER_BUNDLED_SOUNDS__", "sole audio backend receives the exact inspected mapping")
   const originalFiles = new Map(await Promise.all(packageFiles.map(async file => [file, await readFile(file)])))
   for (const mutate of [s => { delete s.unsafe }, s => { delete s.question },
     s => { s.unsafe = s.approved }, s => { s.question = s.attention },
@@ -134,7 +123,8 @@ test("the built audio constructor consumes the inspected mapping and actual bund
     assert.throws(() => verifyBundledSounds(invalid, assets))
     const files = new Map(originalFiles); files.set("dist/tui.js", Buffer.from(invalid))
     const archive = archiveFixture({ entries: [...files].map(([name, content]) => ({ name: `package/${name}`, content })) })
-    assert.throws(() => verifyBundledSounds(inspectPackageArchive(archive).files.get("dist/tui.js").toString("utf8"), assets))
+    const packed = inspectPackageArchive(archive, layout)
+    assert.throws(() => verifyBundledSounds(packed.files.get("dist/tui.js").toString("utf8"), assets))
   }
 })
 
@@ -146,13 +136,14 @@ test("the actual bundle and archive share one worker source and reject changed c
     bundle.replace(historyWorkerBanner(source), ""),
     bundle + `\n${historyWorkerBanner(source)}`,
     bundle.replace(historyWorkerBanner(source), historyWorkerBanner("replacement")),
-    bundle.replace('module.exports, __REVIEWER_BUNDLED_SOUNDS__, __REVIEWER_HISTORY_WORKER__', 'module.exports, __REVIEWER_BUNDLED_SOUNDS__, "replacement"'),
+    bundle.replace("constructor(source = historyWorkerSource)", 'constructor(source = "replacement")'),
   ]) {
     assert.notEqual(invalid, bundle)
     assert.throws(() => verifyBundledHistoryWorker(invalid, source))
     const files = new Map(originalFiles); files.set("dist/tui.js", Buffer.from(invalid))
     const archive = archiveFixture({ entries: [...files].map(([name, content]) => ({ name: `package/${name}`, content })) })
-    assert.throws(() => verifyBundledHistoryWorker(inspectPackageArchive(archive).files.get("dist/tui.js").toString("utf8"), source))
+    const packed = inspectPackageArchive(archive, layout)
+    assert.throws(() => verifyBundledHistoryWorker(packed.files.get("dist/tui.js").toString("utf8"), source))
   }
 })
 
@@ -169,6 +160,14 @@ test("built package crosses the real version, npm pack, artifact and isolated ve
   await mkdir(isolated)
   for (const file of [...packageFiles, "package-lock.json"]) await writeFile(path.join(source, file), await readFile(file))
   const pkg = JSON.parse(await readFile(path.join(source, "package.json"), "utf8"))
+  if (releaseTag) assert.equal(`v${pkg.version}`, releaseTag)
+  else if (packageLayout(pkg.version).files.length !== layout.files.length) {
+    // Stage the future release identity only inside this private pack fixture.
+    const lock = JSON.parse(await readFile(path.join(source, "package-lock.json"), "utf8"))
+    pkg.version = lock.version = lock.packages[""].version = "2.9.0"
+    await writeFile(path.join(source, "package.json"), JSON.stringify(pkg))
+    await writeFile(path.join(source, "package-lock.json"), JSON.stringify(lock))
+  }
   const versionOutput = path.join(root, "version-output"), artifactOutput = path.join(root, "artifact-output")
   const env = { ...process.env, RELEASE_TAG: `v${pkg.version}`, RELEASE_COMMIT: "a".repeat(40), GITHUB_RUN_ATTEMPT: "1", GITHUB_OUTPUT: versionOutput }
   execFileSync(process.execPath, [new URL("../scripts/release-version.mjs", import.meta.url).pathname], { cwd: source, env, stdio: "pipe" })
@@ -182,15 +181,16 @@ test("built package crosses the real version, npm pack, artifact and isolated ve
   const prepared = outputs(await readFile(artifactOutput, "utf8"))
   const bytes = await readFile(path.join(artifact, `${pkg.name}-${pkg.version}.tgz`))
   assert.equal(prepared.integrity, archiveIntegrity(bytes))
-  assert.deepEqual(inspectPackageArchive(bytes).pkg, pkg)
+  const packed = inspectPackageArchive(bytes, layout)
+  assert.deepEqual(packed.pkg, pkg)
   const sounds = Object.fromEntries(await Promise.all(["attention", "unsafe", "question", "approved", "error", "ended"]
     .map(async kind => [kind, await readFile(`sounds/${kind}.mp3`)])))
   verifyBundledSounds((await readFile(path.join(source, "dist/tui.js"))).toString("utf8"), sounds)
-  verifyBundledSounds(inspectPackageArchive(bytes).files.get("dist/tui.js").toString("utf8"), sounds)
-  verifyBundledHistoryWorker(inspectPackageArchive(bytes).files.get("dist/tui.js").toString("utf8"))
+  verifyBundledSounds(packed.files.get("dist/tui.js").toString("utf8"), sounds)
+  verifyBundledHistoryWorker(packed.files.get("dist/tui.js").toString("utf8"))
   const verifyEnv = { ...artifactEnv, RELEASE_INTEGRITY: prepared.integrity }
   const verified = execFileSync(process.execPath, [helper, "verify", artifact], { cwd: isolated, env: verifyEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
-  assert.match(verified, /exactly five package files, matching digest and workflow identity/)
+  assert.ok(verified.includes(`exactly ${layout.files.length} package files, matching digest and workflow identity`))
   assert.throws(() => execFileSync(process.execPath, [helper, "verify", artifact], { cwd: isolated,
     env: { ...verifyEnv, RELEASE_COMMIT: "c".repeat(40) }, stdio: "pipe" }), (error) => {
     assert.match(error.stderr.toString(), /commit differs from validated workflow/)

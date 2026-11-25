@@ -36,7 +36,10 @@ if (args[0] === "--list") {
       hostVersion = execFileSync(host, ["--version"], { encoding: "utf8", timeout: 10000 }).trim()
       assertRuntimeHostVersion(selected, hostVersion)
     }
-    if (prerequisites.has("bundle")) await access(path.join(root, "dist/tui.js"))
+    if (prerequisites.has("bundle")) {
+      await access(path.join(root, "dist/server.js"))
+      await access(path.join(root, "dist/tui.js"))
+    }
     await mkdir(path.join(root, ".runtime"), { recursive: true })
     const lock = path.join(root, ".runtime/runtime-runner.lock")
     await mkdir(lock).catch(cause => { throw new Error(`Runtime runner already owned or lock unavailable: ${lock}`, { cause }) })

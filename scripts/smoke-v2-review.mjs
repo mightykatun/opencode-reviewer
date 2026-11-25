@@ -1,4 +1,4 @@
-// Installed five-file production archive: actual controller, UI and reviewer.
+// Installed six-file production archive: actual controller, UI and reviewer.
 // Scenarios: advisory (nonstream), advisory-history-once/always/reject (Unsafe native decisions),
 // advisory-evidence-timeout (actual pre-model deadline failure remains visible and manual),
 // normal (SSE), normal-retrieval (agentic list/read/grep retrieval, one native ask_context clarification shown as Asking,
@@ -523,7 +523,7 @@ const monitorPath = path.join(artifacts, "monitor.json"), controlPath = path.joi
 const presentationPath = path.join(artifacts, "presentation.json")
 const notificationPath = path.join(artifacts, "notifications.json"), notificationControlPath = path.join(artifacts, "notifications-control.json")
 const cliPath = path.join(temp, "config/opencode/cli.json")
-const archiveFiles = ["dist/tui.js", "package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"].sort()
+const archiveFiles = ["dist/server.js", "dist/tui.js", "package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"].sort()
 const editTarget = directoryEditCase ? path.join(temp, "outside-project", "target.txt") : path.join(initial, "target.txt")
 const writeTarget = directoryEditCase ? editTarget : "target.txt"
 const beforeEdit = "V2_EDIT_BEFORE\n", afterEdit = "V2_EDIT_AFTER\n"
@@ -1328,7 +1328,7 @@ try {
   const manifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"))
   assert.equal(manifest.name, "opencode-reviewer")
   assert.equal(manifest.engines.opencode, ">=2.0.0 <3")
-  assert.deepEqual(manifest.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })
+  assert.deepEqual(manifest.exports, { ".": "./dist/server.js", "./server": "./dist/server.js", "./tui": "./dist/tui.js" })
   modelServer = createServer(async (req, res) => {
     try {
       assert.equal(req.method, "POST")
@@ -1536,8 +1536,8 @@ try {
   await mkdir(reviewer)
   await publish(path.join(reviewer, "package.json"), { name: "v2-review-archive-entrypoints", type: "module",
     exports: { ".": "./index.mjs", "./tui": "./tui.mjs" } })
-  const archived = `export {default} from ${JSON.stringify(pathToFileURL(path.join(installed, "dist/tui.js")).href)}\n`
-  await writeFile(path.join(reviewer, "index.mjs"), archived)
+  const archived = role => `export {default} from ${JSON.stringify(pathToFileURL(path.join(installed, `dist/${role}.js`)).href)}\n`
+  await writeFile(path.join(reviewer, "index.mjs"), archived("server"))
   await writeFile(path.join(reviewer, "tui.mjs"), (automatic ? await readFile(new URL("./smoke-observations.mjs", import.meta.url), "utf8")
     + '\nimport {setTimeout as sleep} from "node:timers/promises"\n'
     + `\nimport * as production from ${JSON.stringify(pathToFileURL(path.join(installed, "dist/tui.js")).href)}\n`
@@ -1545,7 +1545,7 @@ try {
          ...(notificationCase ? { notifications: notificationPath, notificationControl: notificationControlPath } : {}), historyInput: coverCase,
            keyboardMouseOff: keyboardMouseOffCase, editCase, reconnect: reconnectCase })}\n`
      + observedReviewerSetup + '\nexport default {id:"opencode-reviewer",setup:observedReviewerSetup}\n'
-    : archived))
+    : archived("tui")))
   await Promise.all([observer, monitor].map(directory => mkdir(directory)))
   const helpers = await readFile(new URL("./smoke-observations.mjs", import.meta.url), "utf8")
   const prelude = helpers + '\nimport assert from "node:assert/strict"\n'

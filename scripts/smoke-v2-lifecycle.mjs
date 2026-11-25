@@ -1,4 +1,4 @@
-// Phase 1: the actual five-file production archive, not the W6 synthetic package.
+// Lifecycle checks use the packed production roles.
 // Inventory owner: default/cold-startup scenarios, no flags; linux/git/tmux/bundle/npm-pack/tar.
 // Host execution requires the inventory owner's registration and execution grant.
 // No permission-review, approval, notification or storage-activity coverage.
@@ -137,7 +137,7 @@ async function observedSetup(ctx) {
   const control = await readObservation(fixture.control)
   const phase = cli ? control.cliPhase : control.serverPhase
   const instance = randomUUID()
-  const result = { role: cli ? "cli" : "server", phase, instance, moduleURL: fixture.moduleURL,
+  const result = { role: cli ? "cli" : "server", phase, instance, moduleURL: cli ? fixture.tuiURL : fixture.serverURL,
     errors: [], events: [], ticks: 0, mounts: 0, unmounts: 0, cleanups: {}, aborted: false, cleaned: false }
   const publisher = observationPublisher(fixture.observations + "/" + result.role + "-" + phase + "-" + instance + ".json")
   const save = () => publisher.publish(result)
@@ -355,7 +355,7 @@ const cliPath = path.join(temp, "config/opencode/cli.json")
 const observations = path.join(artifacts, "observations")
 const controlPath = path.join(artifacts, "control.json")
 const monitorPath = path.join(artifacts, "monitor.json")
-const archiveFiles = ["dist/tui.js", "package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"].sort()
+const archiveFiles = ["dist/server.js", "dist/tui.js", "package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"].sort()
 const publishers = new Map()
 const publish = async (file, value) => {
   let publisher = publishers.get(file)
@@ -406,7 +406,7 @@ try {
   const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"))
   assert.equal(manifest.name, "opencode-reviewer")
   assert.equal(manifest.engines.opencode, ">=2.0.0 <3")
-  assert.deepEqual(manifest.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })
+  assert.deepEqual(manifest.exports, { ".": "./dist/server.js", "./server": "./dist/server.js", "./tui": "./dist/tui.js" })
   const { archive, packed, npmOptions } = await packFixtureArchive({ root, temp, env, expectedFiles: archiveFiles, extract: false })
   await publish(path.join(artifacts, "npm-pack.json"), packed)
   const install = path.join(temp, "installed")
@@ -445,7 +445,7 @@ try {
   await writeFile(path.join(promptDirectory, "PERMISSION-REVIEW-PROMPT.md"), "PHASE1 CUSTOM PROMPT\n")
   await writeFile(path.join(temp, ".npmrc"), `registry=http://127.0.0.1:${registry.address().port}/\nlegacy-peer-deps=true\nignore-scripts=true\naudit=false\nfund=false\n`)
   const fixture = { project, observations, control: controlPath, monitor: monitorPath, endpoint, hostVersion: version.slice("opencode v".length),
-    moduleURL: pathToFileURL(path.join(installed, "dist/tui.js")).href }
+    tuiURL: pathToFileURL(path.join(installed, "dist/tui.js")).href, serverURL: pathToFileURL(path.join(installed, "dist/server.js")).href }
   const helpers = await readFile(new URL("./smoke-observations.mjs", import.meta.url), "utf8")
   const prelude = helpers + '\nimport assert from "node:assert/strict"\nconst fixture = ' + JSON.stringify(fixture) + "\n"
     + handshakeDefinition.toString() + "\n" + observeConnectionMarker.toString() + "\n"
@@ -455,10 +455,10 @@ try {
   await writeFile(path.join(monitor, "tui.mjs"), prelude + monitorSetup.toString() + '\nexport default { id: "fixture.lifecycle.monitor", setup: monitorSetup }\n')
   await publish(path.join(wrapper, "package.json"), { name: "lifecycle-embedding", type: "module",
     exports: { ".": "./index.mjs", "./tui": "./tui.mjs" } })
-  const embedded = prelude + '\nimport * as production from ' + JSON.stringify(fixture.moduleURL) + "\n" + observedSetup.toString()
+  const embedded = url => prelude + '\nimport * as production from ' + JSON.stringify(url) + "\n" + observedSetup.toString()
     + '\nexport default { id: "opencode-reviewer", setup: observedSetup }\n'
-  await writeFile(path.join(wrapper, "index.mjs"), embedded)
-  await writeFile(path.join(wrapper, "tui.mjs"), embedded)
+  await writeFile(path.join(wrapper, "index.mjs"), embedded(fixture.serverURL))
+  await writeFile(path.join(wrapper, "tui.mjs"), embedded(fixture.tuiURL))
   for (const file of [path.join(monitor, "tui.mjs"), path.join(wrapper, "index.mjs"), path.join(wrapper, "tui.mjs")])
     execFileSync(process.execPath, ["--check", file], { env, timeout: 10000 })
   const target = manifest.name + "@" + manifest.version
@@ -624,7 +624,7 @@ try {
   await until("monitor cleanup", async () => (await readMonitor())?.cleaned)
   await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, cold, archiveFiles, installations, epochs,
     cycles, registryRequests, network,
-     assertions: ["Actual repository npm archive with unchanged five files and shared exports", "Separate server and CLI entries load both roles with reviewer options only in the CLI",
+     assertions: ["Actual repository npm archive with six files and separate role exports", "Separate server and CLI entries load both roles with reviewer options only in the CLI",
       ...(cold ? ["Real initial client/native marker identity admits one successful startup handshake without HTTP 499"] : []),
       "Public scoped protocol-2 handshake and exact archived RPC schema", "Empty terminal options disable review with a healthy companion", "Production CLI option parsing and rejected user-config dependency key",
       "Three CLI disable/reload cycles retain server epoch", "Owned real slot/listener/timer cleanup after abort, repeated cleanup and partial setup failure",

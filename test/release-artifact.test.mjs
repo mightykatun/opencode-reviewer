@@ -1,13 +1,17 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { spawnSync } from "node:child_process"
 import { writeFileSync } from "node:fs"
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { gunzipSync, gzipSync } from "node:zlib"
 import { archiveIntegrity } from "../scripts/npm-publication.mjs"
-import { expectedArtifact, inspectPackageArchive, loadReleaseArtifact, packageFiles, prepareReleaseArtifact, validateArtifactManifest } from "../scripts/release-artifact.mjs"
+import { expectedArtifact, inspectPackageArchive, loadReleaseArtifact, packageLayout, prepareReleaseArtifact, validateArtifactManifest } from "../scripts/release-artifact.mjs"
 import { archiveFixture, artifactFixture, fixturePackage, highBitNumericArchiveFixture } from "./release-fixture.mjs"
+
+const legacy = packageLayout("0.4.0")
+const inspectLegacy = bytes => inspectPackageArchive(bytes, legacy)
 
 async function directory(t) {
   const value = await mkdtemp(path.join(tmpdir(), "release-artifact-test-"))
@@ -27,7 +31,36 @@ test("artifact handoff verifies exact files, digest, version and validated workf
   assert.equal(loaded.pkg.version, "0.4.0")
   assert.ok(loaded.bytes.equals(fixture.bytes))
   assert.equal(loaded.tarball, path.join(fixture.root, fixture.manifest.archive.filename))
-  assert.deepEqual([...inspectPackageArchive(loaded.bytes).files.keys()].sort(), packageFiles)
+  assert.deepEqual([...inspectLegacy(loaded.bytes).files.keys()].sort(), legacy.files)
+})
+
+test("both release layouts are fixed by workflow identity before publication", async t => {
+  for (const [version, other] of [["2.8.9", "2.9.0"], ["2.9.0", "2.8.9"]]) {
+    const pkg = fixturePackage(version)
+    const correct = await writeArtifact(t, archiveFixture({ pkg }), { version })
+    assert.deepEqual((await loadReleaseArtifact(correct.root, correct.expected)).pkg, pkg)
+
+    const otherMembers = inspectPackageArchive(archiveFixture({ pkg: fixturePackage(other) }), packageLayout(other)).files
+    otherMembers.set("package.json", Buffer.from(JSON.stringify(pkg)))
+    for (const [bytes, reason] of [
+      [archiveFixture({ entries: [...otherMembers].map(([name, content]) => ({ name: `package/${name}`, content })) }),
+        /Unexpected package member|exactly 6 intended files/],
+      [archiveFixture({ pkg: { ...pkg, exports: fixturePackage(other).exports } }), /exports differ/],
+    ]) {
+      const wrong = await writeArtifact(t, bytes, { version })
+      await assert.rejects(loadReleaseArtifact(wrong.root, wrong.expected), reason)
+      for (const destination of ["github-release", "publish-release"]) {
+        const result = spawnSync(process.execPath, [
+          "--import", "data:text/javascript,globalThis.fetch = () => { throw Error('Unexpected network access') }",
+          new URL(`../scripts/${destination}.mjs`, import.meta.url).pathname, wrong.root],
+        { env: { ...wrong.env, PATH: "", HOME: wrong.root }, encoding: "utf8" })
+        assert.equal(result.status, 1)
+        assert.match(result.stderr, reason)
+      }
+    }
+  }
+  assert.deepEqual(packageLayout("2.9.0-rc.1"), legacy)
+  assert.deepEqual(packageLayout("2.10.0-rc.1"), packageLayout("2.9.0"))
 })
 
 test("stale artifacts cannot override tag, commit, policy, run, attempt or digest outputs", async (t) => {
@@ -106,7 +139,7 @@ test("archive digest, byte count and internal package version are independently 
 })
 
 test("actual archive parsing rejects extra, duplicate, linked, traversal and malformed tar members", () => {
-  const original = inspectPackageArchive(archiveFixture())
+  const original = inspectLegacy(archiveFixture())
   const entries = [...original.files].map(([file, content]) => ({ name: `package/${file}`, content }))
   for (const changed of [
     entries.slice(1), [...entries, entries[0]], [...entries, { name: "package/helper.mjs", content: "throw new Error('must not run')" }],
@@ -115,27 +148,27 @@ test("actual archive parsing rejects extra, duplicate, linked, traversal and mal
     [{ ...entries[0], type: "2", link: "/outside" }, ...entries.slice(1)],
     [{ ...entries[0], type: "1", link: "package/README.md" }, ...entries.slice(1)],
     [{ ...entries[0], type: "x" }, ...entries.slice(1)],
-  ]) assert.throws(() => inspectPackageArchive(archiveFixture({ entries: changed })))
+  ]) assert.throws(() => inspectLegacy(archiveFixture({ entries: changed })))
   const tar = gunzipSync(archiveFixture())
   tar[0] ^= 1
-  assert.throws(() => inspectPackageArchive(gzipSync(tar)), /checksum/)
-  assert.throws(() => inspectPackageArchive(gzipSync(gunzipSync(archiveFixture()).subarray(0, -512))), /end marker/)
-  assert.throws(() => inspectPackageArchive(gzipSync(Buffer.concat([gunzipSync(archiveFixture()), Buffer.alloc(512, 1)]))), /end marker/)
-  assert.throws(() => inspectPackageArchive(archiveFixture({ alterHeader(header) { header.write("0004644\0", 100) } })), /special mode/)
+  assert.throws(() => inspectLegacy(gzipSync(tar)), /checksum/)
+  assert.throws(() => inspectLegacy(gzipSync(gunzipSync(archiveFixture()).subarray(0, -512))), /end marker/)
+  assert.throws(() => inspectLegacy(gzipSync(Buffer.concat([gunzipSync(archiveFixture()), Buffer.alloc(512, 1)]))), /end marker/)
+  assert.throws(() => inspectLegacy(archiveFixture({ alterHeader(header) { header.write("0004644\0", 100) } })), /special mode/)
 })
 
 test("tar prefixes require the exact USTAR marker understood by npm's parser", () => {
-  const entries = [...inspectPackageArchive(archiveFixture()).files].map(([name, content]) => ({ name, content }))
+  const entries = [...inspectLegacy(archiveFixture()).files].map(([name, content]) => ({ name, content }))
   const prefixed = archiveFixture({ entries, alterHeader(header) { header.write("package", 345) } })
-  assert.deepEqual([...inspectPackageArchive(prefixed).files.keys()].sort(), packageFiles)
+  assert.deepEqual([...inspectLegacy(prefixed).files.keys()].sort(), legacy.files)
   for (const marker of [Buffer.alloc(8), Buffer.from("ustar  \0"), Buffer.from("ustar\0" + "01"), Buffer.from("notar\0" + "00")]) {
     const disagreement = archiveFixture({ entries, alterHeader(header) {
       header.write("package", 345)
       marker.copy(header, 257)
     } })
-    assert.throws(() => inspectPackageArchive(disagreement), /npm-compatible USTAR magic and version/)
+    assert.throws(() => inspectLegacy(disagreement), /npm-compatible USTAR magic and version/)
   }
-  assert.throws(() => inspectPackageArchive(archiveFixture({ alterHeader(header) { header.fill(0, 257, 265) } })), /USTAR/)
+  assert.throws(() => inspectLegacy(archiveFixture({ alterHeader(header) { header.fill(0, 257, 265) } })), /USTAR/)
 })
 
 test("checksummed size, checksum and mode fields reject high-bit bytes before ASCII decoding", () => {
@@ -144,7 +177,7 @@ test("checksummed size, checksum and mode fields reject high-bit bytes before AS
     const checksum = header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 32 : byte), 0)
     assert.equal(Number.parseInt(header.subarray(148, 156).toString("ascii"), 8), checksum,
       "the fixture must bypass the old checksum check so raw numeric validation is exercised")
-    assert.throws(() => inspectPackageArchive(bytes), /Unsupported tar numeric field encoding/)
+    assert.throws(() => inspectLegacy(bytes), /Unsupported tar numeric field encoding/)
   }
 })
 
@@ -154,7 +187,7 @@ test("tar numeric fields reject base-256 and unsupported ASCII encodings with va
     const header = gunzipSync(bytes).subarray(0, 512)
     const checksum = header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 32 : byte), 0)
     assert.equal(Number.parseInt(header.subarray(148, 156).toString("ascii"), 8), checksum)
-    assert.throws(() => inspectPackageArchive(bytes), /Unsupported tar numeric field encoding/)
+    assert.throws(() => inspectLegacy(bytes), /Unsupported tar numeric field encoding/)
   }
 })
 
@@ -166,22 +199,22 @@ test("package metadata is inspected as data and cannot request project dependenc
   ]) {
     const pkg = fixturePackage()
     change(pkg)
-    assert.throws(() => inspectPackageArchive(archiveFixture({ pkg })))
+    assert.throws(() => inspectLegacy(archiveFixture({ pkg })))
   }
   const pkg = { ...fixturePackage(), scripts: { prepack: "exit 1", postinstall: "exit 1" } }
-  assert.deepEqual(inspectPackageArchive(archiveFixture({ pkg })).pkg, pkg, "lifecycle text is never executed by archive inspection")
+  assert.deepEqual(inspectLegacy(archiveFixture({ pkg })).pkg, pkg, "lifecycle text is never executed by archive inspection")
 })
 
 test("V2 archives retain five files and require the current engine contract and shared entrypoint", () => {
   const pkg = fixturePackage()
-  assert.equal(inspectPackageArchive(archiveFixture({ pkg })).files.size, 5)
+  assert.equal(inspectLegacy(archiveFixture({ pkg })).files.size, 5)
   for (const exports of [{ "./tui": "./dist/tui.js" }, { ...pkg.exports, "./server": "./dist/server.js" },
     { ...pkg.exports, "./extra": "./dist/tui.js" }])
-    assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, exports } })))
+    assert.throws(() => inspectLegacy(archiveFixture({ pkg: { ...pkg, exports } })))
   for (const target of [undefined, "1.18.35", "2.0.26", "2.0.28", ">=2.0.26", "^2.0.26", "2.0.26 || 2.0.28", "2.0.27-beta.1"])
-    assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, engines: { ...pkg.engines, opencode: target } } })), /API generation/)
+    assert.throws(() => inspectLegacy(archiveFixture({ pkg: { ...pkg, engines: { ...pkg.engines, opencode: target } } })), /API generation/)
   for (const target of [undefined, ">=20", ">=22", "22.22.2", ">=24", ">=26", ">=26.3.0"])
-    assert.throws(() => inspectPackageArchive(archiveFixture({ pkg: { ...pkg, engines: { ...pkg.engines, node: target } } })), /Node runtime engine/)
+    assert.throws(() => inspectLegacy(archiveFixture({ pkg: { ...pkg, engines: { ...pkg.engines, node: target } } })), /Node runtime engine/)
 })
 
 test("archives reject top-level tags, arbitrary publication config and normalized npm versions", () => {
@@ -199,7 +232,7 @@ test("archives reject top-level tags, arbitrary publication config and normalize
   ]) {
     const pkg = fixturePackage()
     change(pkg)
-    assert.throws(() => inspectPackageArchive(archiveFixture({ pkg })), expected)
+    assert.throws(() => inspectLegacy(archiveFixture({ pkg })), expected)
   }
 })
 
@@ -223,7 +256,7 @@ test("invalid release identity or source publication fields reject before any pa
 test("artifact preparation packs with scripts disabled and compares every actual member to source", async (t) => {
   const root = await directory(t), source = path.join(root, "source"), output = path.join(root, "artifact")
   await mkdir(path.join(source, "dist"), { recursive: true })
-  const bytes = archiveFixture(), { files } = inspectPackageArchive(bytes), { expected } = artifactFixture(bytes)
+  const bytes = archiveFixture(), { files } = inspectLegacy(bytes), { expected } = artifactFixture(bytes)
   for (const [file, content] of files) await writeFile(path.join(source, file), content)
   let calls = 0
   const run = (command, args, options) => {

@@ -1,4 +1,4 @@
-// Installed five-file production archive and genuine stock V2 events. The only
+// Installed six-file production archive and genuine stock V2 events. The only
 // production dependency replaced is the desktop backend. Build first; the serial
 // runtime runner owns host admission, and fixtures never rebuild implicitly.
 import assert from "node:assert/strict"
@@ -237,7 +237,7 @@ const project = path.join(temp, "project"), cliPath = path.join(temp, "config/op
 const monitorPath = path.join(artifacts, "monitor.json"), controlPath = path.join(artifacts, "control.json")
 const setupControl = path.join(artifacts, "setup-control.json")
 const notifications = Object.fromEntries(["main", "invalid", "no-companion"].map(phase => [phase, path.join(artifacts, `notifications-${phase}.json`)]))
-const archiveFiles = ["dist/tui.js", "package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"].sort()
+const archiveFiles = ["dist/server.js", "dist/tui.js", "package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"].sort()
 const reminderMs = 8000
 const script = 'import sys\nfrom pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write(sys.argv[1] + "\\n")\nprint("NATIVE_NOTIFICATION_EXECUTED", sys.argv[1])\n'
 const publishers = new Map(), calls = [], errors = [], negativeWindows = [], transactions = [], evidence = []
@@ -382,7 +382,7 @@ const interrupt = async () => {
     || events(record, "session.execution.failed").some(event => event.data.error.type === "aborted"))
 }
 const limits = [
-  "Exact installed five-file archive, stock V2 native tool executors, real primary/reviewer HTTP and actual durable execution/permission/form events. No synthetic events, fake controllers, native forms or cache mutations.",
+  "Exact installed six-file archive, stock V2 native tool executors, real primary/reviewer HTTP and actual durable execution/permission/form events. No synthetic events, fake controllers, native forms or cache mutations.",
   "Only the exported desktop-backend seam is injected. No actual desktop processes, GNOME focus, audible playback, live-provider judgment or audio/desktop acceptance.",
   "One isolated standalone host/terminal and public client user controls. Manual once replies and form answers are explicit fixture actions, never reviewer automatic replies. No Always/reject or permission-rule mutation.",
   "Native question tool creates the production form. Pinned public SessionFormReplyInput uses session.form.reply with formID and an answer object; there is no guessed form.submit API.",
@@ -400,7 +400,7 @@ try {
    const { archive, packed, installed } = await packFixtureArchive({ root, temp, env, expectedFiles: archiveFiles })
   const manifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"))
   assert.equal(manifest.name, "opencode-reviewer")
-  assert.deepEqual(manifest.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })
+  assert.deepEqual(manifest.exports, { ".": "./dist/server.js", "./server": "./dist/server.js", "./tui": "./dist/tui.js" })
   server = createServer(async (req, res) => {
     let settle
     const transaction = { url: req.url, closed: false, finished: false, settled: new Promise(resolve => { settle = resolve }) }
@@ -475,7 +475,7 @@ try {
   const moduleURL = pathToFileURL(path.join(installed, "dist/tui.js")).href
   await publish(path.join(reviewer, "package.json"), { name: "v2-notification-installed-entrypoints", type: "module",
     exports: { ".": "./index.mjs", "./tui": "./tui.mjs" } })
-  await writeFile(path.join(reviewer, "index.mjs"), `export {default} from ${JSON.stringify(moduleURL)}\n`)
+  await writeFile(path.join(reviewer, "index.mjs"), `export {default} from ${JSON.stringify(pathToFileURL(path.join(installed, "dist/server.js")).href)}\n`)
   await writeFile(path.join(reviewer, "tui.mjs"), prelude + `import * as production from ${JSON.stringify(moduleURL)}\n`
     + reviewerSetup + '\nexport default {id:"opencode-reviewer",setup:reviewerSetup}\n')
   await publish(path.join(monitor, "package.json"), { name: "v2-notification-independent-monitor", type: "module", exports: { "./tui": "./tui.mjs" } })

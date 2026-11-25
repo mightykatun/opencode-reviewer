@@ -50,7 +50,7 @@ function observedFilePlugin(production, nativeIO) {
   return { id: "opencode-reviewer", async setup(ctx) {
     assert.equal("ui" in ctx, false, "FileIO injection belongs to the server consumer")
     const publisher = observationPublisher(fixture.fileIO)
-    const record = { role: "server", moduleURL: fixture.moduleURL, location: ctx.location,
+    const record = { role: "server", moduleURL: fixture.serverURL, location: ctx.location,
       ready: false, cleaned: false, realpath: 0, open: 0, calls: [] }
     const save = async () => { await publisher.publish(record); await publisher.flush() }
     const observe = async (method, args) => {
@@ -278,7 +278,7 @@ const observationDirectory = path.join(artifacts, "observations"), monitorPath =
 const controlPath = path.join(artifacts, "control.json"), cliPath = path.join(temp, "config/opencode/cli.json")
 const fileIOPath = path.join(artifacts, "server-file-io.json")
 const serverPath = path.join(project, "opencode.json")
-const archiveFiles = ["dist/tui.js", "package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"].sort()
+const archiveFiles = ["dist/server.js", "dist/tui.js", "package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"].sort()
 const publishers = new Map(), calls = [], waiting = new Map(), errors = [], evidence = {}, negativeWindows = []
 const network = { reviewPOSTs: 0, mcpToolCalls: 0 }
 const backgroundCalls = new Set(["phase2-native-child", "phase2-native-nested", "phase2-native-resume"])
@@ -427,7 +427,7 @@ try {
   const manifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"))
   assert.equal(manifest.name, "opencode-reviewer")
   assert.equal(manifest.engines.opencode, ">=2.0.0 <3")
-  assert.deepEqual(manifest.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })
+  assert.deepEqual(manifest.exports, { ".": "./dist/server.js", "./server": "./dist/server.js", "./tui": "./dist/tui.js" })
   modelServer = createServer(async (req, res) => {
     try {
       if (req.url === "/review/chat/completions") {
@@ -524,7 +524,7 @@ try {
   await Promise.all([modelServer, mcpServer].map(server => new Promise(resolve => server.listen(0, "127.0.0.1", resolve))))
   const origin = `http://127.0.0.1:${modelServer.address().port}`
   const fixture = { initial, observations: observationDirectory, monitor: monitorPath, control: controlPath, fileIO: fileIOPath, origin, review: scenario === "review",
-    moduleURL: pathToFileURL(path.join(installed, "dist/tui.js")).href }
+    tuiURL: pathToFileURL(path.join(installed, "dist/tui.js")).href, serverURL: pathToFileURL(path.join(installed, "dist/server.js")).href }
   const companion = path.join(temp, "companion"), observer = path.join(temp, "observer"), monitor = path.join(temp, "monitor")
   const observedCompanion = path.join(temp, "observed-companion")
   await Promise.all([companion, observer, monitor, observedCompanion].map(directory => mkdir(directory)))
@@ -533,16 +533,16 @@ try {
     + 'import {setTimeout as sleep} from "node:timers/promises"\nconst fixture=' + JSON.stringify(fixture) + "\n"
   await publish(path.join(companion, "package.json"), { name: "phase2-archived-companion", type: "module", exports: { ".": "./index.mjs" } })
   // Exact archived default export, without an embedding setup observer or context proxy.
-  await writeFile(path.join(companion, "index.mjs"), `export {default} from ${JSON.stringify(fixture.moduleURL)}\n`)
+  await writeFile(path.join(companion, "index.mjs"), `export {default} from ${JSON.stringify(fixture.serverURL)}\n`)
   await publish(path.join(observedCompanion, "package.json"), { name: "phase2-observed-companion", type: "module", exports: { ".": "./index.mjs" } })
   await writeFile(path.join(observedCompanion, "index.mjs"), prelude
-    + `\nimport * as production from ${JSON.stringify(fixture.moduleURL)}\n`
+    + `\nimport * as production from ${JSON.stringify(fixture.serverURL)}\n`
     + 'import {open as nativeOpen, realpath as nativeRealpath} from "node:fs/promises"\n'
     + observedFilePlugin + '\nexport default observedFilePlugin(production,{open:nativeOpen,realpath:nativeRealpath})\n')
   await publish(path.join(observer, "package.json"), { name: "phase2-native-observer", type: "module", exports: { ".": "./index.mjs" } })
   await writeFile(path.join(observer, "index.mjs"), prelude + serverSetup + '\nexport default {id:"fixture.invocation.server",setup:serverSetup}\n')
   await publish(path.join(monitor, "package.json"), { name: "phase2-reader-monitor", type: "module", exports: { "./tui": "./tui.mjs" } })
-  await writeFile(path.join(monitor, "tui.mjs"), prelude + `\nimport * as production from ${JSON.stringify(fixture.moduleURL)}\n`
+  await writeFile(path.join(monitor, "tui.mjs"), prelude + `\nimport * as production from ${JSON.stringify(fixture.tuiURL)}\n`
     + 'import {Rpc} from "@opencode/plugin/rpc"\n' + rpcDefinition + "\n" + monitorSetup
     + '\nexport default {id:"fixture.invocation.monitor",async setup(ctx){return production.withAdapterSetup(async(ready,life)=>{assert.equal(ready.role,"cli");life.addCleanup(await monitorSetup(ctx,ready.state))}).setup(ctx)}}\n')
   for (const file of [path.join(companion, "index.mjs"), path.join(observedCompanion, "index.mjs"), path.join(observer, "index.mjs"), path.join(monitor, "tui.mjs")])
@@ -768,7 +768,7 @@ try {
   assert.equal(observedIO.role, "server")
   assert.ok(observedIO.realpath > 0)
   assert.equal(observedIO.open, 0, "Mandatory shell evidence never opens files")
-  assert.ok(observedIO.calls.every(call => call.origin === "server" && call.consumer.includes("dist/tui.js")))
+  assert.ok(observedIO.calls.every(call => call.origin === "server" && call.consumer.includes("dist/server.js")))
   evidence.observedFileIO = observedIO
   await negativeWindow(sessionID, ioPending, "injected server FileIO supplies path probes without permission writes")
   await interrupt(sessionID)

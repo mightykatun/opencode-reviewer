@@ -24,11 +24,12 @@
     "auto-approval"
   ],
   "exports": {
-    ".": "./dist/tui.js",
-    "./server": "./dist/tui.js",
+    ".": "./dist/server.js",
+    "./server": "./dist/server.js",
     "./tui": "./dist/tui.js"
   },
   "files": [
+    "dist/server.js",
     "dist/tui.js",
     "README.md",
     "THIRD_PARTY_NOTICES.md"

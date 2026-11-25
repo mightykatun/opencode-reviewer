@@ -7,6 +7,8 @@ const prefix = "const __REVIEWER_BUNDLED_SOUNDS__ = "
 // not a second informational copy. A JSON-only banner survives bundling verbatim.
 export const soundBanner = sounds => `${prefix}${JSON.stringify(sounds)};`
 
+export const assertNoBundledSounds = bundle => assert.doesNotMatch(bundle, /__REVIEWER_BUNDLED_SOUNDS__/)
+
 /** Inspect package bytes as data. Never import/evaluate the bundle to inspect its assets. */
 export function verifyBundledSounds(bundle, expected) {
   assert.ok(bundle.startsWith(prefix), "Missing production sound mapping")

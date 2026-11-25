@@ -67,13 +67,13 @@ Focused checks are `smoke-v2-review.mjs` scenarios unless another file is named:
 
 ## Configuration and package
 
-- The package and plugin ID is `opencode-reviewer`. The exports `.`, `./server` and `./tui` all point to `dist/tui.js`. `src/plugin.ts` selects the role. The CLI role applies when the context has `ui`. Otherwise the role is the server companion.
+- The package and plugin ID is `opencode-reviewer`. One npm package exposes two role bundles. `.` and `./server` point to `dist/server.js`, built from `src/server.ts`. `./tui` points to `dist/tui.js`, built from `src/tui.ts`. The server never imports terminal UI or constructs desktop delivery. Verify each role in the actual package. Role-specific `with*` exports are fixture and embedding seams, never options, and there is no cross-role loader.
 - Users list the package in global `opencode.json` for the server companion. Permission rules, providers and MCP servers also live there. The terminal's `cli.json` lists the package with all reviewer options.
   - Only terminal `context.options` configures review. The companion never reads or exports settings. Empty or invalid terminal review settings never enable review or automatic decisions.
   - `cli-configuration.ts` parses terminal options and owns prompt reads. Locations on the same terminal use its settings. Ordinary health probes do not reread prompts. Native `keybinds` and other terminal preferences stay at the top level of `cli.json`.
 - Defaults and validation live in `src/config.ts`. Notification options live in `notification-config.ts`. All `review*` categories and `retrievalClarification` default on. `retrievalKinds.edit`, `autoApprove`, `autoRejectSteering`, `fastMode` and `stream` default off. `maxSteeringRejections` defaults to 1.
 - Source or built-in prompt changes need a build and a host restart. OpenCode reloads config edits automatically. Custom prompt-file changes need a plugin reload.
-- The archive holds exactly five files: `dist/tui.js`, `package.json`, `README.md`, `LICENSE` and `THIRD_PARTY_NOTICES.md`. `files` lists three. npm adds the other two. `dist/` is generated and ignored. `npm pack` rebuilds through `prepack`. Verified CI packing uses `--ignore-scripts`.
+- The archive holds exactly six files: `dist/server.js`, `dist/tui.js`, `package.json`, `README.md`, `LICENSE` and `THIRD_PARTY_NOTICES.md`. `files` lists four. npm adds the other two. `dist/` is generated and ignored. `npm pack` rebuilds through `prepack`. Verified CI packing uses `--ignore-scripts`. Release policy selects the exact layout from the trusted validated version (`packageLayout` in `scripts/release-artifact.mjs`): versions before 2.9.0 keep the five-file single-bundle layout. Never accept either layout indiscriminately.
 - Development dependencies use V2 ranges for `@opencode/plugin`, `@opencode/client` and `@opencode/theme`. Pin OpenTUI and Solid to the host's exact versions. Keep the lockfile. Refresh OpenCode dependencies to the latest stable V2 when developing.
 - Never gate activation, companion admission or evidence reads on host version numbers. Keep protocol, location, epoch, evidence and eligibility checks. Incompatible API data stays manual and is never guessed.
 - Use only public APIs and slots. Never import private UI modules or patch the native approval dialog.
@@ -82,17 +82,15 @@ Focused checks are `smoke-v2-review.mjs` scenarios unless another file is named:
 
 `scripts/build.mjs`:
 
-- Uses Solid's universal OpenTUI JSX transform, not React or Solid DOM. TypeScript only checks types.
-- Keeps Solid, OpenTUI and OpenCode external in the ESM bundle. The build fails if the shared entry eagerly imports `solid-js`, `@opentui/*` or `@opencode/theme`.
-- Ships terminal code as an opaque base64 CJS payload. `host-runtime-loader.ts` loads it only in the CLI role. Its only externals are `solid-js`, `@opentui/core`, `@opentui/solid` and `@opencode/plugin/rpc`. Any other unmapped import fails the build.
-- Injects only the package version string (`__REVIEWER_VERSION__`), never the manifest. Embeds prompts and contracts, six sounds, the MP3 decoder, the theme syntax helper and the CJS history worker. Sounds and the worker are single fixed mappings injected into the payload. The Linux notification and audio backend exists only in the payload. The server never constructs it.
-- `scripts/bundled-history-worker.mjs` proves from the AST that both worker consumers and the loader use the same source. Its tests run in `npm run test:helpers` and `check:package`.
+- Builds two ESM bundles. `dist/server.js` keeps only `@opencode/*` external and fails the build if any input or import names `solid-js`, `@opentui/*`, `@opencode/theme`, the MP3 decoder, the sound banner or the history worker banner. `dist/tui.js` keeps `solid-js`, `@opentui/*` and `@opencode/*` external and uses Solid's universal OpenTUI JSX transform, not React or Solid DOM. TypeScript only checks types.
+- Injects only the package version string (`__REVIEWER_VERSION__`), never the manifest. Both bundles embed prompts and contracts. The terminal bundle embeds six sounds, the MP3 decoder, the theme syntax helper and the CJS history worker as single fixed banner mappings. The Linux notification and audio backend exists only in the terminal bundle. The server never constructs it.
+- `scripts/bundled-history-worker.mjs` proves from the AST that the worker consumer uses the single embedded source and that the server bundle has none. `scripts/bundled-sounds.mjs` does the same for sounds. Their tests run in `npm run test:helpers` and `check:package`, which also checks both bundles for reproducibility.
 
 ## Module map
 
 Roles and connection:
 
-- `plugin.ts`: shared entry and role selection. Its `with*` exports are fixture and embedding seams, never options.
+- `server.ts` and `tui.ts`: the two role entries. Each owns the `with*` fixture and embedding seams of its role, never options.
 - `companion.ts`: server role. Captures invocations through hooks (`invocation-capture.ts`) and serves the handshake, invocation, evidence and `retrieve` RPCs. `companion-protocol.ts` defines the schema (protocol 2). `companion-read.ts` wraps reads.
 - `cli-plugin.ts`: CLI setup. Waits for the connection marker and runs the first handshake (`companion-handshake.ts`). `cli-configuration.ts` parses terminal options and loads prompts before admission.
 - `cli-reconnect.ts`: owns the connection after startup and one `LocationAdmission` per home, which also handshakes the home's member locations. `setupHostRecovery` in `host-runtime.tsx` wraps it. `connection-marker.ts` handles the delayed echo of the startup marker.

@@ -2,6 +2,7 @@ import { Rpc } from "@opencode/plugin/rpc"
 import path from "node:path"
 import { evidenceOptionsSchema } from "./host-evidence-options.js"
 
+export const pluginID = "opencode-reviewer"
 export const companionProtocol = 2
 /** Model-chosen read-only operations the companion executes for retrieval. */
 export const retrievalToolNames = ["read", "list", "glob", "grep"] as const
@@ -35,7 +36,7 @@ export interface CompanionHandshake {
 }
 
 export const companionRpc = Rpc.define({
-  id: "opencode-reviewer",
+  id: pluginID,
   methods: {
     handshake: {
       input: location,

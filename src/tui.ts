@@ -1,52 +1,40 @@
-import type { Plugin as ServerPlugin } from "@opencode/plugin"
-import type { Plugin as CliPlugin } from "@opencode/plugin/tui"
-import { setupCompanion } from "./companion.js"
+import type { Plugin } from "@opencode/plugin/tui"
 import { setupCli, type CliPluginState } from "./cli-plugin.js"
 import { PluginLifecycle } from "./plugin-lifecycle.js"
-import type { CompanionHandshake } from "./companion-protocol.js"
+import { pluginID } from "./companion-protocol.js"
 import type { PluginDependencies } from "./plugin-dependencies.js"
-import type { FileIO } from "./file-access.js"
 import type { DiagnosticObserver } from "./diagnostics.js"
 import type { HistoryRenderProbe, NotificationBackendFactory } from "./embedding-types.js"
 import type { NotificationProcesses } from "./notification-process.js"
 
-export const pluginID = "opencode-reviewer"
-type Context = ServerPlugin.Context | CliPlugin.Context
-type Ready = { role: "server"; state: CompanionHandshake } | { role: "cli"; state: CliPluginState }
+export { pluginID }
+type Ready = { role: "cli"; state: CliPluginState }
 
-/** Embedding seam only; never read from plugin options. */
+/** Embedding seam only. Never read from plugin options. */
 export type PluginSetupObserver = (ready: Ready, lifecycle: PluginLifecycle) => void | Promise<void>
 
 function createPlugin(dependencies: PluginDependencies = {}, observe?: PluginSetupObserver) {
   return {
     id: pluginID,
-    async setup(context: Context) {
+    async setup(context: Plugin.Context) {
       const lifecycle = new PluginLifecycle()
       await lifecycle.start(async () => {
-        if ("ui" in context) {
-          const state = await setupCli(context, lifecycle, dependencies)
-          await observe?.({ role: "cli", state }, lifecycle)
-        } else {
-          const state = await setupCompanion(context, lifecycle, dependencies.fileIO)
-          await observe?.({ role: "server", state }, lifecycle)
-        }
+        const state = await setupCli(context, lifecycle, dependencies)
+        await observe?.({ role: "cli", state }, lifecycle)
       })
       return () => lifecycle.stop()
     },
-  } satisfies ServerPlugin.Plugin & CliPlugin.Definition
+  } satisfies Plugin.Definition
 }
 
 export function withPluginSetup(observe: PluginSetupObserver) { return createPlugin({}, observe) }
 export function withAdapterSetup(observe: PluginSetupObserver) { return createPlugin({ adapterOnly: true }, observe) }
-export function withFileAccess(fileIO: FileIO) { return createPlugin({ fileIO }) }
 export function withDiagnostics(observer: DiagnosticObserver) { return createPlugin({ observer }) }
 export function withHistoryRenderProbe(historyProbe: HistoryRenderProbe, observer?: DiagnosticObserver) { return createPlugin({ historyProbe, observer }) }
 export function withHistoryObservations(observe: HistoryRenderProbe["observe"], observer?: DiagnosticObserver,
   notifications?: NotificationBackendFactory, setup?: PluginSetupObserver) { return createPlugin({ historyProbe: { observe }, observer, notifications }, setup) }
 export function withNotifications(notifications: NotificationBackendFactory) { return createPlugin({ notifications }) }
 export function withNotificationProcesses(factory: () => NotificationProcesses) {
-  // Keep the backend/decoder in the CLI payload. Merely importing or constructing
-  // this embedding seam must not resolve terminal modules or invoke the factory.
   return createPlugin({ notificationProcesses: factory })
 }
 export type { HistoryRenderProbe, DiagnosticObserver, NotificationBackendFactory }
@@ -55,5 +43,7 @@ export type { DiagnosticEvent } from "./diagnostics.js"
 export { readPendingInvocation } from "./host-reader.js"
 export { readHostEvidence } from "./host-evidence-reader.js"
 export { evaluateHostReview } from "./host-evaluate.js"
+export { HistoryStore, historyWorkerSource } from "./history-store.js"
+export { HistoryRefresh } from "./history-refresh.js"
 
 export default createPlugin()

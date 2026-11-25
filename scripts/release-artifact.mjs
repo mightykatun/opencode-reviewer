@@ -5,9 +5,16 @@ import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { gunzipSync } from "node:zlib"
 import { archiveIntegrity } from "./npm-publication.mjs"
-import { npmReleaseVersion, validatePublicationPackage } from "./release-version.mjs"
+import { compareVersions, npmReleaseVersion, validatePublicationPackage } from "./release-version.mjs"
 
-export const packageFiles = ["LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "dist/tui.js", "package.json"]
+export function packageLayout(version) {
+  const split = compareVersions(npmReleaseVersion(version), "2.9.0") >= 0
+  const server = split ? "./dist/server.js" : "./dist/tui.js"
+  return {
+    files: ["LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", ...(split ? ["dist/server.js"] : []), "dist/tui.js", "package.json"],
+    exports: { ".": server, "./server": server, "./tui": "./dist/tui.js" },
+  }
+}
 const maxArchiveBytes = 16 * 1024 * 1024, maxUnpackedBytes = 64 * 1024 * 1024
 const manifestFile = "release-manifest.json"
 const json = (bytes) => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))
@@ -19,7 +26,7 @@ const sha = (value, label) => assert.match(value ?? "", /^[a-f0-9]{40}$/, `Inval
 const ordinal = (value, label) => assert.match(value ?? "", /^[1-9]\d*$/, `Invalid ${label}`)
 
 /** Parse regular tar members in memory. No extraction, package imports or lifecycle scripts. */
-export function inspectPackageArchive(bytes) {
+export function inspectPackageArchive(bytes, layout) {
   assert.ok(bytes.length > 0 && bytes.length <= maxArchiveBytes, "Archive size exceeds release bounds")
   const tar = gunzipSync(bytes, { maxOutputLength: maxUnpackedBytes })
   assert.equal(tar.length % 512, 0, "Truncated package tar archive")
@@ -55,7 +62,7 @@ export function inspectPackageArchive(bytes) {
     assert.equal(octal(header.subarray(100, 108)) & 0o7000, 0, "Package members must not have special mode bits")
     const prefix = text(header.subarray(345, 500)), name = text(header.subarray(0, 100))
     const member = prefix ? `${prefix}/${name}` : name
-    assert.ok(packageFiles.some((file) => member === `package/${file}`), `Unexpected package member: ${JSON.stringify(member)}`)
+    assert.ok(layout.files.some((file) => member === `package/${file}`), `Unexpected package member: ${JSON.stringify(member)}`)
     const file = member.slice(8)
     assert.ok(!files.has(file), "Duplicate package member")
     const size = octal(header.subarray(124, 136)), start = offset + 512
@@ -66,14 +73,14 @@ export function inspectPackageArchive(bytes) {
     offset = next
   }
   assert.ok(ended, "Missing tar end marker")
-  assert.deepEqual([...files.keys()].sort(), packageFiles, "Package must contain exactly the five intended files")
+  assert.deepEqual([...files.keys()].sort(), layout.files, `Package must contain exactly ${layout.files.length} intended files`)
   const pkg = json(files.get("package.json"))
   validatePublicationPackage(pkg)
   assert.equal(pkg.type, "module")
   assert.equal(pkg.license, "MIT")
   assert.equal(pkg.engines?.node, ">=26.4.0", "Unexpected Node runtime engine")
   assert.equal(pkg.engines?.opencode, ">=2.0.0 <3", "Unexpected OpenCode API generation")
-  assert.deepEqual(pkg.exports, { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" })
+  assert.deepEqual(pkg.exports, layout.exports, "Package exports differ from the required layout")
   assert.ok(!pkg.dependencies && !pkg.optionalDependencies, "Release package must not install project dependencies")
   return { pkg, files }
 }
@@ -137,7 +144,7 @@ export async function loadReleaseArtifact(directory, expected) {
   const bytes = await regularFile(tarball, maxArchiveBytes)
   assert.equal(bytes.length, manifest.archive.bytes, "Artifact archive size differs from its manifest")
   assert.equal(archiveIntegrity(bytes), manifest.archive.integrity, "Artifact archive digest differs from its manifest")
-  const { pkg } = inspectPackageArchive(bytes)
+  const { pkg } = inspectPackageArchive(bytes, packageLayout(expected.packageVersion))
   assert.equal(pkg.version, manifest.packageVersion, "Archive package version differs from its manifest")
   return { manifest, tarball, bytes, pkg }
 }
@@ -152,10 +159,11 @@ export async function prepareReleaseArtifact(directory, expected, { run = execFi
   const filename = `${expected.name}-${expected.packageVersion}.tgz`
   assert.deepEqual(await readdir(directory), [filename], "Packing must produce exactly one expected archive")
   const bytes = await regularFile(path.join(directory, filename), maxArchiveBytes)
-  const { pkg, files } = inspectPackageArchive(bytes)
+  const layout = packageLayout(expected.packageVersion)
+  const { pkg, files } = inspectPackageArchive(bytes, layout)
   assert.deepEqual(pkg, sourcePkg, "Packed manifest differs from validated source")
   assert.equal(pkg.version, expected.packageVersion, "Packed version differs from validated workflow output")
-  for (const file of packageFiles) assert.ok(files.get(file).equals(await readFile(path.join(source, file))), `Packed ${file} differs from validated source`)
+  for (const [file, content] of files) assert.ok(content.equals(await readFile(path.join(source, file))), `Packed ${file} differs from validated source`)
   const manifest = { version: 1, ...expected, archive: { filename, bytes: bytes.length, integrity: archiveIntegrity(bytes) } }
   delete manifest.integrity
   validateArtifactManifest(manifest, { ...expected, integrity: manifest.archive.integrity })
@@ -169,5 +177,5 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   const artifact = mode === "prepare" ? await prepareReleaseArtifact(directory, expectedArtifact(process.env, false))
     : await loadReleaseArtifact(directory, expectedArtifact())
   if (mode === "prepare" && process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `integrity=${artifact.manifest.archive.integrity}\n`)
-  console.log(`Verified release artifact ${artifact.manifest.tag} at ${artifact.manifest.commit}: exactly five package files, matching digest and workflow identity`)
+  console.log(`Verified release artifact ${artifact.manifest.tag} at ${artifact.manifest.commit}: exactly ${packageLayout(artifact.manifest.packageVersion).files.length} package files, matching digest and workflow identity`)
 }

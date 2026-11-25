@@ -1,8 +1,10 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { verifyBundledSounds, soundBanner } from "../scripts/bundled-sounds.mjs"
-import { archiveFixture } from "./release-fixture.mjs"
-import { inspectPackageArchive } from "../scripts/release-artifact.mjs"
+import { assertNoBundledSounds, verifyBundledSounds, soundBanner } from "../scripts/bundled-sounds.mjs"
+import { archiveFixture, fixturePackage } from "./release-fixture.mjs"
+import { inspectPackageArchive, packageLayout } from "../scripts/release-artifact.mjs"
+
+const layout = packageLayout("2.9.0")
 
 const kinds = ["attention", "unsafe", "question", "approved", "error", "ended"]
 const assets = Object.fromEntries(kinds.map(kind => [kind, Buffer.from(`independent ${kind} bytes`)]))
@@ -13,10 +15,12 @@ test("sound mapping verification reads six exact associations as data in bundle 
   const bundle = emit(mapping())
   verifyBundledSounds(bundle, assets)
   assert.equal(soundBanner(mapping()), bundle.split("\n")[0])
-  const files = inspectPackageArchive(archiveFixture()).files
+  const files = inspectPackageArchive(archiveFixture({ pkg: fixturePackage("2.9.0") }), layout).files
+  assertNoBundledSounds(files.get("dist/server.js").toString("utf8"))
+  assert.throws(() => assertNoBundledSounds(bundle))
   files.set("dist/tui.js", Buffer.from(bundle))
   const archive = archiveFixture({ entries: [...files].map(([name, content]) => ({ name: `package/${name}`, content })) })
-  verifyBundledSounds(inspectPackageArchive(archive).files.get("dist/tui.js").toString("utf8"), assets)
+  verifyBundledSounds(inspectPackageArchive(archive, layout).files.get("dist/tui.js").toString("utf8"), assets)
 })
 
 test("missing, replaced and swapped unsafe/question associations fail even with correct decoy bytes", () => {
@@ -31,10 +35,10 @@ test("missing, replaced and swapped unsafe/question associations fail even with 
     const value = mapping(); mutate(value)
     const bundle = emit(value) + `// decoy: ${JSON.stringify(mapping())}\n`
     assert.throws(() => verifyBundledSounds(bundle, assets))
-    const files = inspectPackageArchive(archiveFixture()).files
+    const files = inspectPackageArchive(archiveFixture({ pkg: fixturePackage("2.9.0") }), layout).files
     files.set("dist/tui.js", Buffer.from(bundle))
     const archive = archiveFixture({ entries: [...files].map(([name, content]) => ({ name: `package/${name}`, content })) })
-    assert.throws(() => verifyBundledSounds(inspectPackageArchive(archive).files.get("dist/tui.js").toString("utf8"), assets))
+    assert.throws(() => verifyBundledSounds(inspectPackageArchive(archive, layout).files.get("dist/tui.js").toString("utf8"), assets))
   }
 })
 

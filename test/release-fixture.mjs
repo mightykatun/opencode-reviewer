@@ -1,14 +1,18 @@
 import { gunzipSync, gzipSync } from "node:zlib"
 import { archiveIntegrity } from "../scripts/npm-publication.mjs"
+import { compareVersions } from "../scripts/release-version.mjs"
+
+const splitRoles = version => compareVersions(version, "2.9.0") >= 0
 
 export const fixturePackage = (version = "0.4.0") => ({ name: "opencode-reviewer", version, type: "module", license: "MIT",
-  exports: { ".": "./dist/tui.js", "./server": "./dist/tui.js", "./tui": "./dist/tui.js" },
+  exports: { ".": splitRoles(version) ? "./dist/server.js" : "./dist/tui.js",
+    "./server": splitRoles(version) ? "./dist/server.js" : "./dist/tui.js", "./tui": "./dist/tui.js" },
   publishConfig: { access: "public", registry: "https://registry.npmjs.org/" },
   engines: { node: ">=26.4.0", opencode: ">=2.0.0 <3" } })
 
 export function archiveFixture({ pkg = fixturePackage(), entries, alterHeader } = {}) {
-  entries ??= ["LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "dist/tui.js", "package.json"].map((file) => ({
-    name: `package/${file}`, content: file === "package.json" ? JSON.stringify(pkg) : file === "dist/tui.js" ? "export default {}\n" : `${file} fixture\n`,
+  entries ??= ["LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", ...(splitRoles(pkg.version) ? ["dist/server.js"] : []), "dist/tui.js", "package.json"].map((file) => ({
+    name: `package/${file}`, content: file === "package.json" ? JSON.stringify(pkg) : file.endsWith(".js") ? "export default {}\n" : `${file} fixture\n`,
   }))
   const parts = []
   for (const [index, entry] of entries.entries()) {
