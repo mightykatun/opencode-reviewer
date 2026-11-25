@@ -243,6 +243,16 @@ Only the agentic retrieval loop chooses files. Never parse commands to pick file
 
 Observer, accounting and persistence failures never change review or approval. Diagnostics carry only fixed phase labels, timings and local numeric correlations. Never include prompts, IDs, paths, credentials or model output.
 
+## Ignored statistics utility
+
+- Preserve offline reads in `extra-tools/opencode-stats`. Keep its user-owned files ignored.
+- OpenCode database entries are strictly read-only. Use SQLite's read-only open, `query_only` and the read authorizer.
+- The only permitted source-side writes are SQLite's own normal coordination bookkeeping, including creation of WAL/SHM files and updates to SHM. This is not permission for application SQL writes or manual file changes.
+- Never modify, delete, rename, replace, truncate, chmod, repair, migrate, vacuum or checkpoint OpenCode's database or sidecars. Never force locks, change journal mode or restart or stop OpenCode to obtain access.
+- Use ordinary SQLite locking and bounded reads. Unavailable, busy or incomplete reads must fail without clearing or pruning valid cached statistics. Never use `immutable` to bypass live-database coordination or ignore committed WAL contents.
+- Test only synthetic databases in isolated temporary directories. Do not access live user databases during development or verification.
+- The utility's own numeric cache is separate from the OpenCode source database. Cache updates do not authorize source changes.
+
 ## Writing rules
 
 - Never use em dashes, semicolons or middle dots in any text you write, including assistant responses, documentation, comments, UI copy, commit messages, prompts and contracts. Preserve punctuation required by code, configuration, commands, URLs or literal data.
