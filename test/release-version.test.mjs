@@ -1,10 +1,26 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { canAdvanceChannel, compareVersions, isPrerelease, npmReleaseVersion, publicationTag, releaseChannel, releaseVersion } from "../scripts/release-version.mjs"
-import { githubRelease } from "../scripts/github-release.mjs"
+import { githubRelease as release } from "../scripts/github-release.mjs"
+import { archiveIntegrity } from "../scripts/npm-publication.mjs"
 import { fixturePackage } from "./release-fixture.mjs"
 
 const manifests = (version) => [fixturePackage(version), { version, packages: { "": { version } } }, `v${version}`]
+const bytes = Buffer.from("verified archive fixture"), commit = "a".repeat(40)
+const githubRelease = (_, pkg, tag, options) => release(`/tmp/opencode-reviewer-${pkg.version}.tgz`, pkg, tag, {
+  bytes, commit, ...options,
+  fetcher: async (url, init) => {
+    const target = new URL(url)
+    if (target.origin === "https://registry.npmjs.org") return new Response(null, { status: 404 })
+    if (target.pathname.includes("/git/ref/tags/")) return Response.json({ ref: `refs/tags/${tag}`, object: { type: "commit", sha: commit } })
+    if (target.pathname.endsWith("/assets")) return Response.json([])
+    const response = await options.fetcher(url, init)
+    if (response.ok && target.pathname.includes("/releases/tags/")) {
+      return Response.json({ id: 1, ...await response.json() })
+    }
+    return response
+  },
+})
 
 test("canonical release classification supports stable and prerelease identities", () => {
   for (const [version, prerelease] of [["0.4.1", false], ["1.0.0-rc.1", true], ["1.0.0-beta", true], ["1.0.0-0", true]]) {
@@ -96,9 +112,9 @@ test("GitHub create and rerun operations apply semantic, forward-only latest pol
       assert.deepEqual(reads, [...(prerelease ? [] : ["latest"]), `tags/${encodeURIComponent(tag)}`])
       const repo = ["--repo", "mightykatun/opencode-reviewer"]
       assert.deepEqual(calls, existing ? [
-        ["release", "upload", tag, "/tmp/verified.tgz", ...repo, "--clobber"],
+        ["release", "upload", tag, `/tmp/opencode-reviewer-${version}.tgz`, ...repo],
         ["release", "edit", tag, "--draft=false", `--prerelease=${prerelease}`, `--latest=${latest}`, ...repo],
-      ] : [["release", "create", tag, "/tmp/verified.tgz", "--verify-tag", "--generate-notes", "--title", `opencode-reviewer ${tag}`,
+      ] : [["release", "create", tag, `/tmp/opencode-reviewer-${version}.tgz`, "--verify-tag", "--generate-notes", "--title", `opencode-reviewer ${tag}`,
         ...(prerelease ? ["--prerelease"] : []), `--latest=${latest}`, ...repo]])
     }
   }
@@ -158,4 +174,115 @@ test("serialized GitHub uploads and historical reruns preserve the newest stable
     assert.equal(latest, "v0.10.0")
     assert.deepEqual([...releases].sort(), ["v0.10.0", "v0.9.1", "v1.0.0-beta.1"])
   }
+})
+
+function releaseFixture({ assets = [], npm, downloaded = bytes, tagObject = { type: "commit", sha: commit }, annotated = {}, missing = false } = {}) {
+  const writes = [], reads = []
+  return {
+    writes, reads,
+    options: {
+      repository: "mightykatun/opencode-reviewer", bytes, commit,
+      fetcher: async (url) => {
+        const target = new URL(url), pathname = target.pathname
+        reads.push(pathname)
+        if (target.origin === "https://registry.npmjs.org") {
+          if (pathname.endsWith(".tgz")) return new Response(downloaded)
+          return npm === undefined ? new Response(null, { status: 404 }) : Response.json(npm)
+        }
+        if (pathname.includes("/git/ref/tags/")) return Response.json({ ref: "refs/tags/v0.4.0", object: tagObject })
+        if (pathname.includes("/git/tags/")) return Response.json(annotated[pathname.split("/").at(-1)])
+        if (pathname.endsWith("/latest")) return new Response(null, { status: 404 })
+        if (pathname.endsWith("/assets")) return Response.json(assets)
+        return missing ? new Response(null, { status: 404 }) : Response.json({ id: 1, tag_name: "v0.4.0" })
+      },
+      run: (command, args) => {
+        if (args[0] === "api") return downloaded
+        writes.push({ command, args })
+      },
+    },
+  }
+}
+const perform = (fixture) => release("/tmp/opencode-reviewer-0.4.0.tgz", fixturePackage(), "v0.4.0", fixture.options)
+const asset = { id: 2, name: "opencode-reviewer-0.4.0.tgz", state: "uploaded", size: bytes.length }
+
+test("existing GitHub archives are byte verified and identical assets are never uploaded again", async () => {
+  const fixture = releaseFixture({ assets: [asset] })
+  await perform(fixture)
+  assert.deepEqual(fixture.writes.map(call => call.args[1]), ["edit"])
+  assert.ok(fixture.reads.at(-1).includes("/git/ref/tags/"))
+  for (const values of [
+    { assets: [asset], downloaded: Buffer.alloc(bytes.length) },
+    { assets: [{ ...asset, size: 1 }] },
+    { assets: [{ ...asset, state: "starter" }] },
+    { assets: [asset, { ...asset, id: 3 }] },
+    { assets: [asset, asset] },
+  ]) {
+    const invalid = releaseFixture(values)
+    await assert.rejects(perform(invalid))
+    assert.deepEqual(invalid.writes, [])
+  }
+})
+
+test("archive lookup completes paged inventory before deciding an asset is absent or unique", async () => {
+  for (const duplicate of [false, true]) {
+    const fixture = releaseFixture()
+    const fetcher = fixture.options.fetcher
+    const first = Array.from({ length: 100 }, (_, index) => ({ id: index + 10, name: `other-${index}` }))
+    if (duplicate) first[0] = asset
+    fixture.options.fetcher = async (url, init) => new URL(url).pathname.endsWith("/assets")
+      ? Response.json(new URL(url).searchParams.get("page") === "1" ? first : [{ ...asset, id: 200 }])
+      : fetcher(url, init)
+    if (duplicate) {
+      await assert.rejects(perform(fixture), /Ambiguous/)
+      assert.deepEqual(fixture.writes, [])
+    } else {
+      await perform(fixture)
+      assert.deepEqual(fixture.writes.map(call => call.args[1]), ["edit"])
+    }
+  }
+})
+
+test("npm preflight blocks all GitHub mutation on mismatched or unavailable existing archives", async () => {
+  const npm = { version: "0.4.0", dist: { integrity: archiveIntegrity(bytes),
+    tarball: "https://registry.npmjs.org/opencode-reviewer/-/opencode-reviewer-0.4.0.tgz" } }
+  for (const missing of [false, true]) {
+    for (const change of [
+      { npm: { ...npm, dist: { ...npm.dist, integrity: "different" } } },
+      { npm, downloaded: Buffer.alloc(bytes.length) },
+      { npm: { ...npm, version: "0.5.0" } },
+    ]) {
+      const fixture = releaseFixture({ ...change, missing })
+      await assert.rejects(perform(fixture))
+      assert.deepEqual(fixture.writes, [])
+      assert.ok(fixture.reads.every(p => !p.startsWith("/repos/")))
+    }
+  }
+  const identical = releaseFixture({ npm })
+  await perform(identical)
+  assert.deepEqual(identical.writes.map(call => call.args[1]), ["upload", "edit"])
+  for (const response of [() => new Response(null, { status: 503 }), () => new Response("{")]) {
+    const fixture = releaseFixture()
+    fixture.options.fetcher = async () => response()
+    await assert.rejects(perform(fixture))
+    assert.deepEqual(fixture.writes, [])
+  }
+})
+
+test("remote lightweight and annotated tags must resolve to the validated commit before each write", async () => {
+  const sha = "b".repeat(40)
+  const valid = releaseFixture({ tagObject: { type: "tag", sha },
+    annotated: { [sha]: { sha, object: { type: "commit", sha: commit } } } })
+  await perform(valid)
+  assert.deepEqual(valid.writes.map(call => call.args[1]), ["upload", "edit"])
+  for (const tagObject of [{ type: "commit", sha }, { type: "tree", sha }, { type: "tag", sha }]) {
+    const fixture = releaseFixture({ tagObject, annotated: { [sha]: { sha, object: tagObject } } })
+    await assert.rejects(perform(fixture))
+    assert.deepEqual(fixture.writes, [])
+  }
+  const moved = releaseFixture()
+  const fetcher = moved.options.fetcher
+  moved.options.fetcher = async (url, init) => moved.writes.length && url.includes("/git/ref/tags/")
+    ? Response.json({ ref: "refs/tags/v0.4.0", object: { type: "commit", sha } }) : fetcher(url, init)
+  await assert.rejects(perform(moved), /Remote tag differs/)
+  assert.deepEqual(moved.writes.map(call => call.args[1]), ["upload"])
 })

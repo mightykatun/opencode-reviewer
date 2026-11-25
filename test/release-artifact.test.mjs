@@ -52,6 +52,14 @@ test("failed-publish reruns reuse only the artifact bound to the successful vali
   await assert.rejects(loadReleaseArtifact(fixture.root, expected), /runAttempt differs from validated workflow/)
 })
 
+test("push-triggered artifact use requires the original tag ref and commit at both publication entrypoints", () => {
+  const { env } = artifactFixture()
+  const push = { ...env, GITHUB_EVENT_NAME: "push", GITHUB_REF: `refs/tags/${env.RELEASE_TAG}`, GITHUB_SHA: env.RELEASE_COMMIT }
+  assert.equal(expectedArtifact(push).commit, env.RELEASE_COMMIT)
+  assert.throws(() => expectedArtifact({ ...push, GITHUB_SHA: "c".repeat(40) }), /Push commit differs/)
+  assert.throws(() => expectedArtifact({ ...push, GITHUB_REF: "refs/tags/v0.5.0" }), /Push ref differs/)
+})
+
 test("manifest schema rejects unknown fields, unsafe names, invalid counts and duplicate JSON fields", async (t) => {
   const fixture = await writeArtifact(t)
   for (const change of [

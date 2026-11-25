@@ -110,6 +110,10 @@ export function expectedArtifact(env = process.env, requireIntegrity = true) {
     commit: env.RELEASE_COMMIT, workflowCommit: env.RELEASE_WORKFLOW_COMMIT, runId: env.RELEASE_RUN_ID,
     runAttempt: env.RELEASE_VALIDATION_ATTEMPT, integrity: env.RELEASE_INTEGRITY }
   identity(expected)
+  if (env.GITHUB_EVENT_NAME === "push") {
+    assert.equal(env.GITHUB_REF, `refs/tags/${expected.tag}`, "Push ref differs from the validated tag")
+    assert.equal(env.GITHUB_SHA, expected.commit, "Push commit differs from the validated commit")
+  }
   if (requireIntegrity) assert.match(expected.integrity ?? "", /^sha512-[A-Za-z0-9+/]{86}==$/, "Missing validated archive integrity")
   return expected
 }

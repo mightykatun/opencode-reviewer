@@ -201,11 +201,16 @@ test("artifact-only CLIs publish and attach the exact validated bytes without pr
       const target = new URL(url);
       assert.equal(init.redirect, "error");
       console.log("READ " + target.pathname);
-      if (target.origin === "https://api.github.com") return Response.json({ tag_name: target.pathname.endsWith("/latest") ? "v1.0.0" : "v0.4.0" });
+      if (target.origin === "https://api.github.com") {
+        if (target.pathname.includes("/git/ref/tags/")) return Response.json({ ref: "refs/tags/v0.4.0", object: { type: "commit", sha: "a".repeat(40) } });
+        if (target.pathname.endsWith("/assets")) return Response.json([]);
+        return Response.json({ id: 1, tag_name: target.pathname.endsWith("/latest") ? "v1.0.0" : "v0.4.0" });
+      }
       assert.equal(target.origin, "https://registry.npmjs.org");
       if (target.pathname.endsWith("/dist-tags")) return Response.json({ latest: "1.0.0" });
       if (target.pathname.endsWith(".tgz")) return new Response(bytes);
       assert.equal(target.pathname, "/opencode-reviewer/0.4.0");
+      if (process.env.FIXTURE_NPM_MISMATCH === "1") return Response.json({ version: "0.4.0", dist: { integrity: "different" } });
       return submitted ? Response.json({ version: "0.4.0", dist: { integrity: ${JSON.stringify(env.RELEASE_INTEGRITY)},
         tarball: "https://registry.npmjs.org/opencode-reviewer/-/opencode-reviewer-0.4.0.tgz" } }) : new Response(null, { status: 404 });
     };
@@ -228,10 +233,22 @@ test("artifact-only CLIs publish and attach the exact validated bytes without pr
     return true
   })
   assert.deepEqual(writes(run("github-release")), [
-    { command: "gh", args: ["release", "upload", "v0.4.0", tarball, "--repo", "mightykatun/opencode-reviewer", "--clobber"] },
+    { command: "gh", args: ["release", "upload", "v0.4.0", tarball, "--repo", "mightykatun/opencode-reviewer"] },
     { command: "gh", args: ["release", "edit", "v0.4.0", "--draft=false", "--prerelease=false", "--latest=false", "--repo", "mightykatun/opencode-reviewer"] },
   ])
+  assert.throws(() => run("github-release", { FIXTURE_NPM_MISMATCH: "1" }), error => {
+    assert.match(error.stderr.toString(), /Published archive differs/)
+    assert.deepEqual(writes(error.stdout.toString()), [])
+    return true
+  })
   for (const helper of ["publish-release", "github-release"]) {
+    for (const override of [{ GITHUB_SHA: "c".repeat(40) }, { GITHUB_REF: "refs/tags/v0.5.0" }]) {
+      assert.throws(() => run(helper, { GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/tags/v0.4.0", GITHUB_SHA: "a".repeat(40), ...override }), error => {
+        assert.match(error.stderr.toString(), /Push (commit|ref) differs/)
+        assert.doesNotMatch(error.stdout.toString(), /READ |WRITE /)
+        return true
+      })
+    }
     assert.throws(() => run(helper, { RELEASE_COMMIT: "c".repeat(40) }), (error) => {
       assert.match(error.stderr.toString(), /differs from validated workflow/)
       assert.doesNotMatch(error.stdout.toString(), /READ |WRITE /)
