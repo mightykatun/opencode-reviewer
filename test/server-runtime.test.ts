@@ -101,6 +101,15 @@ test("an unverified hosting service keeps a valid policy manual with the hosting
   assert.equal(fixture.runtime.snapshot().hosting.status, "unavailable")
 })
 
+test("without a decision ledger the engine is advisory and the snapshot says why", async t => {
+  const fixture = await runtimeFixture(t, { policy: { server: { ...serverPolicy, autoApprove: true, autoRejectSteering: true, fastMode: true } } })
+  assert.ok(fixture.runtime.engine())
+  assert.deepEqual(fixture.runtime.snapshot().automation, { autoApprove: false, autoRejectSteering: false, fastMode: false, unavailable: "ledger" })
+  await writeFile(fixture.policy, JSON.stringify({ server: { ...serverPolicy, autoApprove: false, autoRejectSteering: false } }), { mode: 0o600 })
+  await until("advisory policy", () => fixture.runtime.snapshot().automation?.autoApprove === false && fixture.runtime.snapshot().automation?.unavailable === undefined)
+  assert.deepEqual(fixture.runtime.snapshot().automation, { autoApprove: false, autoRejectSteering: false, fastMode: false }, "an advisory policy loses nothing")
+})
+
 test("a valid policy starts one engine per server generation and tui edits leave it alone", async t => {
   const fixture = await runtimeFixture(t, { policy: { server: serverPolicy, tui: { notify: false } } })
   const first = fixture.runtime.engine()

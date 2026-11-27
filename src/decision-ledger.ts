@@ -77,6 +77,13 @@ export class DecisionLedger {
     db.exec(`CREATE TABLE IF NOT EXISTS decisions (key TEXT PRIMARY KEY, owner TEXT NOT NULL, fingerprint TEXT NOT NULL, state TEXT NOT NULL
       CHECK(state IN ('observed','cancelled','reserved','sent','resolved')), at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS decisions_state_at ON decisions(state,at)`)
+    // An existing table is kept by CREATE TABLE IF NOT EXISTS. A file from another schema
+    // (for example a development build) would fail every write, so it is unavailable and
+    // never reset. Automatic replies then stay off and viewers are told why.
+    const columns = db.prepare("SELECT name FROM pragma_table_info('decisions') ORDER BY cid").all().map((row: { name: unknown }) => row.name)
+    const definition = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'").get()?.sql
+    if (JSON.stringify(columns) !== JSON.stringify(["key", "owner", "fingerprint", "state", "at"]) || typeof definition !== "string"
+      || !STATES.every(state => definition.includes(`'${state}'`))) throw new DecisionLedgerUnavailable("Decision ledger schema differs")
   }
 
   /** Open the ledger in the reviewer state root. Ancestors and sidecars must be private. */

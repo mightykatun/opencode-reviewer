@@ -144,6 +144,15 @@ export async function setupServerRuntime(ctx: Plugin.Context, lifecycle: PluginL
     if (ledger) lifecycle.addCleanup(() => ledger!.close(), false)
   }
   const ledgerKey = (sessionID: string, requestID: string) => decisionKey(location, sessionID, requestID)
+  /** The configuration an engine runs. Without a ledger no automatic reply can be recorded,
+   * so the engine is advisory: no countdown, no fast reply, no steering request. */
+  const effectiveConfig = (configured: Config): Config => ledger ? configured
+    : { ...configured, autoApprove: false, autoRejectSteering: false, fastMode: false }
+  const automationProjection = (configured: Config): AutomationProjection => {
+    const config = effectiveConfig(configured)
+    return { autoApprove: config.autoApprove, autoRejectSteering: config.autoRejectSteering, fastMode: config.fastMode,
+      ...(!ledger && (configured.autoApprove || configured.autoRejectSteering) ? { unavailable: "ledger" as const } : {}) }
+  }
   // The server records outcomes and usage once in the shared v2 store. Storage
   // failures show unavailable and never gate review, approval or recovery.
   let store: HistoryStore | undefined, coordinator: HistoryCoordinator<HostPendingRequest> | undefined
@@ -228,7 +237,7 @@ export async function setupServerRuntime(ctx: Plugin.Context, lifecycle: PluginL
   let continuity: ControllerCheckpoint<HostPendingRequest> | undefined
 
   const createEngine = (generation: PolicyGeneration, verified: OpenCodeClient): ServerEngine => {
-    const config = generation.server!.config, prompts = generation.server!.prompts
+    const config = effectiveConfig(generation.server!.config), prompts = generation.server!.prompts
     const access = directCompanionAccess(companion)
     // Direct-domain reads may carry own undefined fields that the wire form omits. Normalize
     // them like the companion does, so identity comparison sees one representation.
@@ -523,7 +532,7 @@ export async function setupServerRuntime(ctx: Plugin.Context, lifecycle: PluginL
     const generation = watcher.current
     const tui = generation?.tui ? { ...generation.tui, notificationSoundDirectory: undefined, customSounds: generation.tui.notificationSoundDirectory ? true : false, soundGeneration } : undefined
     const config = generation?.server?.config
-    const automation: AutomationProjection | undefined = config ? { autoApprove: !!config.autoApprove, autoRejectSteering: !!config.autoRejectSteering, fastMode: !!config.fastMode } : undefined
+    const automation: AutomationProjection | undefined = config ? automationProjection(config) : undefined
     const views: ReviewerViewProjection[] = engine ? engine.controller.views.map((view: View<HostPendingRequest>) => {
       const root = engine!.controller.root(view.request.id)
       const { id, sessionID, action } = view.request as { id: string; sessionID: string; action?: string }

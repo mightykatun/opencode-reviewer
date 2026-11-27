@@ -97,12 +97,12 @@ test("session instructions selects one installed production host with the existi
 
 test("V2 acceptance includes each production review case exactly once and retains explicit synthetic classifications", () => {
   const cases = profilePlan("v2-acceptance")
-  assert.equal(cases.length, 72)
+  assert.equal(cases.length, 73)
   assert.equal(cases.length, new Set(cases.map(value => value.id)).size)
   assert.deepEqual(cases.filter(value => value.entrypoint === "scripts/smoke-v2-lifecycle.mjs").map(value => value.scenario),
     ["cold-startup", "viewer-attach-detach", "viewer-settings-sounds"])
   const reviews = cases.filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs")
-  const expectedReviews = ["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "normal-retrieval", "normal-retrieval-model", "fast", "normal-mouse-off", "normal-cancel", "normal-native-enter", "normal-native-enter-click", "child-route-progress", "fast-descendant",
+  const expectedReviews = ["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "normal-retrieval", "normal-retrieval-model", "fast", "normal-mouse-off", "normal-cancel", "normal-native-enter", "normal-native-enter-click", "normal-ledger-schema", "child-route-progress", "fast-descendant",
     "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
       "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-home-route", "normal-location-tab", "normal-highlighted-choice", "fast-highlighted-choice", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-code-mode-tool", "fast-code-mode-tool", "normal-project-transition", "normal-long-session", "normal-large-source", "viewer-reconnect-idle", "viewer-reconnect-countdown", "viewer-stalled-stream", "normal-instructions"].sort()
   assert.deepEqual(reviews.map(value => value.scenario).sort(), expectedReviews)

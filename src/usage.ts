@@ -1,5 +1,6 @@
 import { uiText } from "./ui-text.js"
 import { HISTORY_TEXT_BYTES } from "./history-records.js"
+import { isOpenRouter } from "./model-endpoint.js"
 
 /** Token counts are a pair; cost is independently available. */
 export interface Usage { input?: number; output?: number; cost?: number }
@@ -19,16 +20,12 @@ const rate = (value: unknown): value is number => typeof value === "number" && N
 /** Bounded historical metadata, independent of assessment validation and pricing. */
 const reportedModel = (value: unknown): string | undefined => typeof value === "string" && value.trim()
   && !value.includes("\0") && Buffer.byteLength(value) <= HISTORY_TEXT_BYTES ? value : undefined
-const endpoint = (value: unknown) => {
-  if (typeof value !== "string") return
-  try { return new URL(value).href.replace(/\/+$/, "") } catch { return }
-}
 
 export function responseUsage(envelope: unknown, requestedModel: string, pricing?: PricingLookup, baseURL?: string): Usage | undefined {
   const body = record(envelope), usage = record(body.usage)
   const tokens = count(usage.prompt_tokens) && count(usage.completion_tokens)
     ? { input: usage.prompt_tokens, output: usage.completion_tokens } : undefined
-  if (endpoint(baseURL) === "https://openrouter.ai/api/v1") {
+  if (isOpenRouter(baseURL)) {
     // Reported cost already includes provider billing. Never add upstream cost or an estimate.
     return rate(usage.cost) ? { ...tokens, cost: usage.cost } : tokens
   }
@@ -66,7 +63,7 @@ function estimatedUsage(body: Record<string, unknown>, requestedModel: string, p
  * Always finalize in the transport attempt's finally, even after failure or cancellation.
  */
 export function usageAttempt(baseURL: string, requestedModel: string, pricing?: PricingLookup, onUsage?: (usage: Usage) => void) {
-  const reportedCost = endpoint(baseURL) === "https://openrouter.ai/api/v1"
+  const reportedCost = isOpenRouter(baseURL)
   let usage: Usage | undefined
   let finalized = false
   let model: string | undefined

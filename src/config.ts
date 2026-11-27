@@ -1,12 +1,15 @@
 import type { Limits, ReviewKind } from "./types.js"
 import path from "node:path"
 import { parseNotificationConfig, type NotificationConfig } from "./notification-config.js"
+import { reasoningEfforts, type ReasoningEffort } from "./model-endpoint.js"
 
 export interface ModelConnection {
   baseURL: string
   model: string
   apiKey?: string
   apiKeyEnv?: string
+  /** Sent only when set. */
+  reasoningEffort?: ReasoningEffort
 }
 
 export interface Config extends ModelConnection, Limits, NotificationConfig {
@@ -14,6 +17,7 @@ export interface Config extends ModelConnection, Limits, NotificationConfig {
   retrievalModel?: string
   retrievalApiKey?: string
   retrievalApiKeyEnv?: string
+  retrievalReasoningEffort?: ReasoningEffort
   instructions?: string
   stream: boolean
   reviewBash: boolean
@@ -59,9 +63,12 @@ export function retrievalConnection(config: Config): ModelConnection {
   const baseURL = config.retrievalBaseURL ?? config.baseURL
   const ownCredentials = config.retrievalApiKey !== undefined || config.retrievalApiKeyEnv !== undefined
   const inherit = !ownCredentials && baseURL === config.baseURL
-  return { baseURL, model: config.retrievalModel ?? config.model,
+  const model = config.retrievalModel ?? config.model
+  // An effort is a property of one model: it is inherited only by the same model at the same endpoint.
+  const reasoningEffort = config.retrievalReasoningEffort ?? (baseURL === config.baseURL && model === config.model ? config.reasoningEffort : undefined)
+  return { baseURL, model,
     apiKey: inherit ? config.apiKey : config.retrievalApiKey,
-    apiKeyEnv: inherit ? config.apiKeyEnv : config.retrievalApiKeyEnv }
+    apiKeyEnv: inherit ? config.apiKeyEnv : config.retrievalApiKeyEnv, ...(reasoningEffort ? { reasoningEffort } : {}) }
 }
 
 export type ReviewOptions = Pick<Config, "reviewBash" | "reviewEdits"> & Partial<Pick<Config,
@@ -77,7 +84,7 @@ export function configuredEvidenceBytes(options: Readonly<Record<string, unknown
 }
 
 export function parseConfig(options: Record<string, unknown> = {}): Config {
-  const keys = new Set(["baseURL", "model", "apiKey", "apiKeyEnv", "retrievalBaseURL", "retrievalModel", "retrievalApiKey", "retrievalApiKeyEnv", "instructions", "stream", "reviewBash", "reviewEdits", "reviewSkills", "reviewTools", "reviewExternalDirectories", "retrieval", "retrievalKinds", "retrievalClarification", "maxRetrievalRounds", "retrievalTimeoutMs", "autoApprove", "autoRejectSteering", "maxSteeringRejections", "fastMode", "extraCareful", "autoApproveDelaySeconds", "formatRetries", "timeoutMs", "maxOutputTokens", "maxFiles", "maxEvidenceBytes", "notify", "notifySound", "notificationSoundDirectory", "staleReminderSeconds", "notifications"])
+  const keys = new Set(["baseURL", "model", "apiKey", "apiKeyEnv", "retrievalBaseURL", "retrievalModel", "retrievalApiKey", "retrievalApiKeyEnv", "reasoningEffort", "retrievalReasoningEffort", "instructions", "stream", "reviewBash", "reviewEdits", "reviewSkills", "reviewTools", "reviewExternalDirectories", "retrieval", "retrievalKinds", "retrievalClarification", "maxRetrievalRounds", "retrievalTimeoutMs", "autoApprove", "autoRejectSteering", "maxSteeringRejections", "fastMode", "extraCareful", "autoApproveDelaySeconds", "formatRetries", "timeoutMs", "maxOutputTokens", "maxFiles", "maxEvidenceBytes", "notify", "notifySound", "notificationSoundDirectory", "staleReminderSeconds", "notifications"])
   for (const key of Object.keys(options)) if (!keys.has(key)) throw new Error(`Unknown opencode-reviewer setting: ${key}`)
   const text = (name: string, optional = false): string | undefined => {
     const value = options[name]
@@ -126,6 +133,12 @@ export function parseConfig(options: Record<string, unknown> = {}): Config {
     return value
   }
   const apiKeyEnv = keyEnvironment("apiKeyEnv")
+  const effort = (name: string): ReasoningEffort | undefined => {
+    const value = options[name]
+    if (value === undefined) return
+    if (!reasoningEfforts.includes(value as ReasoningEffort)) throw new Error(`${name} must be one of ${reasoningEfforts.join(", ")}`)
+    return value as ReasoningEffort
+  }
   const instructions = text("instructions", true)
   if (instructions && (!path.isAbsolute(instructions) || instructions.includes("\u0000"))) {
     throw new Error("instructions must be an absolute prompt-directory path; inline instructions are no longer supported")
@@ -134,9 +147,10 @@ export function parseConfig(options: Record<string, unknown> = {}): Config {
     ...parseNotificationConfig(options),
     baseURL,
     model: text("model")!, apiKeyEnv,
-    apiKey: text("apiKey", true),
+    apiKey: text("apiKey", true), reasoningEffort: effort("reasoningEffort"),
     retrievalBaseURL: endpoint("retrievalBaseURL", true), retrievalModel: text("retrievalModel", true),
     retrievalApiKey: text("retrievalApiKey", true), retrievalApiKeyEnv: keyEnvironment("retrievalApiKeyEnv"),
+    retrievalReasoningEffort: effort("retrievalReasoningEffort"),
     instructions,
     stream: boolean("stream", false),
     reviewBash: boolean("reviewBash"),

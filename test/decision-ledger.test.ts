@@ -92,3 +92,22 @@ test("the ledger refuses an unsafe state directory", async t => {
   mkdirSync(path.join(dir, "opencode-reviewer"), { mode: 0o755 })
   assert.throws(() => DecisionLedger.open(dir, construct), DecisionLedgerUnavailable)
 })
+
+test("a ledger file from another schema is unavailable and never reset", async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reviewer-ledger-dev-"))
+  chmodSync(dir, 0o700)
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  mkdirSync(path.join(dir, "opencode-reviewer"), { mode: 0o700 })
+  const file = path.join(dir, "opencode-reviewer", "decisions-v1.sqlite")
+  // The exact table a development build created: no owner column, no observed state.
+  const old = new DatabaseSync(file)
+  old.exec(`CREATE TABLE decisions (key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, state TEXT NOT NULL
+      CHECK(state IN ('cancelled','reserved','sent','resolved')), at INTEGER NOT NULL); CREATE INDEX decisions_state_at ON decisions(state,at)`)
+  old.close()
+  chmodSync(file, 0o600)
+  assert.throws(() => DecisionLedger.open(dir, construct), (error: Error) => error instanceof DecisionLedgerUnavailable && /schema differs/.test(error.message))
+  const check = new DatabaseSync(file)
+  const columns = check.prepare("SELECT name FROM pragma_table_info('decisions') ORDER BY cid").all().map(row => row.name)
+  check.close()
+  assert.deepEqual(columns, ["key", "fingerprint", "state", "at"], "the file is left as it was")
+})

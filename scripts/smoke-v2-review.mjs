@@ -439,7 +439,8 @@ const registeredTool = codeModeTool || ["normal-tool", "fast-tool"].includes(sce
 const skillCase = registeredTool || ["normal-skill", "fast-skill"].includes(scenario)
 const directoryEditCase = scenario === "normal-directory-edit"
 const nativeEnterCase = scenario.startsWith("normal-native-enter"), nativeEnterClick = scenario === "normal-native-enter-click"
-const notificationCase = scenario === "fast-notifications", savedCase = automatic && scenario !== "normal-cancel" && !nativeEnterCase
+const ledgerSchemaCase = scenario === "normal-ledger-schema"
+const notificationCase = scenario === "fast-notifications", savedCase = automatic && scenario !== "normal-cancel" && !nativeEnterCase && !ledgerSchemaCase
 const projectTransition = scenario === "normal-project-transition"
 const instructionsCase = scenario === "normal-instructions"
 const evidenceTimeout = scenario === "advisory-evidence-timeout"
@@ -1603,6 +1604,17 @@ createInterface({input:process.stdin}).on('line',line=>{
     environment: { HOME: env.HOME, XDG_STATE_HOME: env.XDG_STATE_HOME }, stateRoot, historyFile,
     ...(defaultHomeCase ? { oldHistoryFile, hostStateMode: "0775" } : {}),
     socket: runtime.socket, supervisorPID: runtime.supervisorPID })
+  const ledgerFile = path.join(path.dirname(historyFile), "decisions-v1.sqlite")
+  if (ledgerSchemaCase) {
+    // The exact table a development build left behind: no owner column, no observed state.
+    const { DatabaseSync } = await import("node:sqlite")
+    await mkdir(path.dirname(ledgerFile), { recursive: true, mode: 0o700 })
+    const old = new DatabaseSync(ledgerFile)
+    old.exec(`CREATE TABLE decisions (key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, state TEXT NOT NULL
+      CHECK(state IN ('cancelled','reserved','sent','resolved')), at INTEGER NOT NULL); CREATE INDEX decisions_state_at ON decisions(state,at)`)
+    old.close()
+    await chmod(ledgerFile, 0o600)
+  }
   service = await managedReviewer({ runtime, env, directory: initial, host })
   let serverArguments = []
   if (reconnectCase) {
@@ -1653,7 +1665,8 @@ createInterface({input:process.stdin}).on('line',line=>{
     remove: (sessionID, { timeoutMs } = {}) => command({ type: "remove-probe", sessionID }, timeoutMs) })
   await publish(path.join(artifacts, "connection-probe.json"), probe)
   const snapshot = await verifiedSnapshot(service, initial)
-  assert.deepEqual(snapshot.automation, { autoApprove: automatic, autoRejectSteering: false, fastMode: fast })
+  assert.deepEqual(snapshot.automation, ledgerSchemaCase ? { autoApprove: false, autoRejectSteering: false, fastMode: false, unavailable: "ledger" }
+    : { autoApprove: automatic, autoRejectSteering: false, fastMode: fast })
   await publish(path.join(artifacts, "startup-snapshot.json"), snapshot)
   await publish(cliPath, cli)
   await until("registered production viewer", async () => {
@@ -1955,7 +1968,28 @@ createInterface({input:process.stdin}).on('line',line=>{
   } else await until("rendered production evaluating panel", () => capture().includes("Permission analysis"))
   await saveCapture("evaluating")
    await negativeWindow("review response held", [request], [], null, 1, 1500, notificationCase ? noAttention : savedCase ? noSavedBody : () => {})
-    if (nativeEnterCase) {
+    if (ledgerSchemaCase) {
+      // A configured automatic policy over an unusable ledger is advisory. The snapshot says why,
+      // the Safe report is complete, no countdown starts, nothing is written and the file stays untouched.
+      finishReview()
+      await until("advisory Safe report", () => capture().includes("✓ Safe"))
+      assert.doesNotMatch(capture(), /Allowed in|Cancel/)
+      const advisory = (await service.snapshot()).views.find(item => item.view.request.id === request.id)
+      assert.equal(advisory?.view.assessment?.safe, true)
+      assert.equal(advisory.view.autoApproval, undefined, "no automatic reply is armed")
+      assert.equal((await service.snapshot()).automation.unavailable, "ledger")
+      await saveCapture("ledger-schema-advisory")
+      await negativeWindow("an unusable ledger never dispatches", [request], [], null, 1, 3000, () => {})
+      const { DatabaseSync } = await import("node:sqlite")
+      const check = new DatabaseSync(ledgerFile, { readOnly: true })
+      assert.deepEqual(check.prepare("SELECT name FROM pragma_table_info('decisions') ORDER BY cid").all().map(row => row.name), ["key", "fingerprint", "state", "at"],
+        "the development ledger is never reset")
+      check.close()
+      manualDecision = true; allowWrites = true
+      runtime.tmux("send-keys", "-t", "v2-review", "Enter")
+      await until("native Allow once by the user", record => record?.replied.length === 1 && record.replied[0].reply === "once", 10000)
+      await until("native execution after the manual decision", async () => await executed() === markerLine)
+    } else if (nativeEnterCase) {
       // The review is still evaluating and the panel paints no button. The native prompt keeps
       // the keyboard: Enter confirms the highlighted Allow once, the engine writes nothing, the
       // held review ends without a report and the tool runs.

@@ -84,7 +84,12 @@ export type ReviewProjection = { enabled: true } | { enabled: false; reason: "no
 
 /** Nonsecret automation facts of the active server policy, so a viewer can tell an
  * advisory Safe report from one still waiting for its automatic decision. */
-export interface AutomationProjection { autoApprove: boolean; autoRejectSteering: boolean; fastMode: boolean }
+export interface AutomationProjection {
+  autoApprove: boolean; autoRejectSteering: boolean; fastMode: boolean
+  /** The policy asks for automatic replies but the decision ledger is unavailable, so the
+   * flags above are off and every report is advisory. */
+  unavailable?: "ledger"
+}
 
 /** A confirmed automatic decision, kept briefly so a viewer that fetches the next
  * snapshot after the request vanished can still attribute it. */

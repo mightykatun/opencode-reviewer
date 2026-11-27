@@ -691,6 +691,24 @@ test("extra-careful guidance defaults on and can be omitted from native auto rev
   }
 })
 
+test("a configured reasoning effort reaches every verdict POST, retries and corrections included, in the endpoint's format", async t => {
+  for (const stream of [false, true]) {
+    const { config, requests } = await endpoint(t, (index, res) => {
+      if (index === 0) { res.writeHead(503); res.end("temporary"); return }
+      const content = index === 1 ? "bad format" : '{"safe":true,"reason":"Decisive reason.","desc":"Bounded."}'
+      res.writeHead(200, { "Content-Type": stream ? "text/event-stream" : "application/json" })
+      res.end(stream ? event(chunk(content, "stop")) + done : envelope(content))
+    })
+    await review(evidence, { ...config, stream, reasoningEffort: "medium" }, signal())
+    assert.equal(requests.length, 3)
+    assert.ok(requests.every(request => request.body.reasoning_effort === "medium" && request.body.reasoning === undefined),
+      "a non-OpenRouter endpoint gets the standard field")
+  }
+  const { config, requests } = await endpoint(t, (_, res) => res.end(envelope('{"safe":true,"reason":"Decisive reason.","desc":"Bounded."}')))
+  await review(evidence, config, signal())
+  assert.equal("reasoning_effort" in requests[0]!.body || "reasoning" in requests[0]!.body, false, "unset sends no reasoning field")
+})
+
 test("provider reasoning stays outside the displayed assessment", async (t) => {
   const { config } = await endpoint(t, (_, res) => res.end(JSON.stringify({ choices: [{ message: {
     content: '{"safe":true,"reason":"Decisive reason.","desc":"Visible effects."}', reasoning: "hidden reasoning", reasoning_content: "hidden thoughts",

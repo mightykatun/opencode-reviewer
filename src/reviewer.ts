@@ -15,6 +15,7 @@ import { retrievalConnection, retrievalEnabled } from "./config.js"
 import { retrieveDocuments, type RetrievalExecutor, type RetrievalSection } from "./retrieval.js"
 import type { ContextAsker } from "./clarification.js"
 import type { SteeringFollowUpEvidence } from "./steering-follow-up.js"
+import { reasoningRequest } from "./model-endpoint.js"
 export { withDeadline } from "./deadline.js"
 
 export function parseAssessment(content: string, steering = false): Assessment {
@@ -271,7 +272,7 @@ export async function review(
       let response: Response
       let diagnose: ReturnType<typeof diagnosticAttempt> | undefined
       try {
-        const body = JSON.stringify({ model: config.model, messages, max_tokens: config.maxOutputTokens, stream: config.stream,
+        const body = JSON.stringify({ model: config.model, messages, max_tokens: config.maxOutputTokens, ...reasoningRequest(config), stream: config.stream,
           ...(config.stream ? { stream_options: { include_usage: true } } : {}) })
         reviewStage(signal, "Reviewer response")
         diagnose = onDiagnostics ? diagnosticAttempt(onDiagnostics, attempt) : undefined

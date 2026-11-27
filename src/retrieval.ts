@@ -5,6 +5,7 @@ import type { HostReviewEvidence } from "./host-evidence.js"
 import type { JSONObject, JSONValue } from "./host-types.js"
 import { RETRIEVAL_CONTRACT, type PromptSet } from "./prompts.js"
 import { abortable, cancelBody, modelApiKey, responseText } from "./chat-transport.js"
+import { isOpenRouter, reasoningRequest } from "./model-endpoint.js"
 import { AssessmentStreamError, httpFailure, networkFailure, transientFailure, TransportRetries } from "./transport-retry.js"
 import { TransportOwnership, transportOwnership } from "./transport-ownership.js"
 import { leadingLines, lineCount } from "./truncate.js"
@@ -37,7 +38,6 @@ export type RetrievalSection = { status: "disabled" | "unavailable" } | {
 export interface RetrievalOutcome { section: RetrievalSection; limitations: string[]; posts: number; toolCalls: number; usage?: Usage }
 
 export const maxCallsPerRound = 10
-const OPENROUTER = "https://openrouter.ai/api/v1"
 
 const path = { type: "string", description: "Absolute, ~/..., or relative to the stated base directory." }
 const offset = { type: "integer", minimum: 1, description: "First line, 1-based." }
@@ -125,7 +125,7 @@ interface Dependencies {
 export async function retrieveDocuments(evidence: HostReviewEvidence, config: Config, prompts: PromptSet,
   signal: AbortSignal, deps: Dependencies): Promise<RetrievalOutcome> {
   const base = evidence.kind === "shell" ? evidence.cwd : evidence.location.directory
-  const cached = (text: string) => new URL(config.baseURL).href.replace(/\/+$/, "") === OPENROUTER
+  const cached = (text: string) => isOpenRouter(config.baseURL)
     ? [{ type: "text", text, cache_control: { type: "ephemeral" } }] : text
   const messages: Record<string, unknown>[] = [
     { role: "system", content: cached([prompts[evidence.kind].instructions, prompts.retrieval, RETRIEVAL_CONTRACT].join("\n\n")) },
@@ -149,7 +149,7 @@ export async function retrieveDocuments(evidence: HostReviewEvidence, config: Co
 
   const post = async (toolChoice: unknown, stage: AbortSignal) => {
     const body = JSON.stringify({ model: config.model, messages, tools, ...(toolChoice ? { tool_choice: toolChoice } : {}),
-      max_tokens: config.maxOutputTokens, stream: false })
+      max_tokens: config.maxOutputTokens, ...reasoningRequest(config), stream: false })
     for (let attempt = 0; ; attempt++) {
       reviewStage(stage, "Retrieval response")
       if (attempt) deps.progress("retrieving")

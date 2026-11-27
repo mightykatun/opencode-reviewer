@@ -135,6 +135,7 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `stream` | boolean | `false` | Request SSE for the verdict and show provisional rating/text updates. Retrieval is always non-streaming. Normal automatic approval waits for a completed, validated report. Fast mode can approve on an early Safe rating. Approval rules are described below. |
 | `formatRetries` | integer | `1` | `0`–`100` additional verdict-format correction attempts. Does not control retrieval turns. `0` disables format corrections, not independent transport recovery. |
 | `maxOutputTokens` | integer | `4096` | `1` through the maximum safe integer. Sent as `max_tokens` on every retrieval and verdict POST, including retries/corrections. Your provider/model enforces its supported output limit. |
+| `reasoningEffort` | string | Unset | One of `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. Sent with every verdict POST, and with every retrieval POST when retrieval uses the same model at the same endpoint. OpenRouter receives it as `reasoning.effort`, other endpoints as `reasoning_effort`. The provider decides which levels a model supports. An unsupported level fails the review with the provider's error. Unset sends nothing. |
 | `timeoutMs` | integer | `120000` | `1`–`3600000` milliseconds shared across context, evidence collection, retrieval, verdict HTTP requests, retries and corrections. This is not a fresh budget per stage or POST. Expiry ends the review. |
 
 ### Review categories
@@ -156,6 +157,7 @@ inclusive, fractions are invalid, and the maximum safe integer is
 | `retrievalModel` | string | `model` | Optional nonempty retrieval model identifier. |
 | `retrievalApiKey` | string | Inherited at the same endpoint | Optional retrieval Bearer token. Takes precedence over `retrievalApiKeyEnv`. |
 | `retrievalApiKeyEnv` | string | Inherited at the same endpoint | Optional environment-variable name for the retrieval key. Setting either retrieval key option replaces the inherited credentials. An unset or blank variable skips retrieval with a factual limitation, then the verdict runs. |
+| `retrievalReasoningEffort` | string | `reasoningEffort` for the same model at the same endpoint, otherwise unset | Same values as `reasoningEffort`, for retrieval POSTs only. |
 | `retrievalKinds` | object | `bash: true`, `edit: false`, `skill: true`, `tool: true`, `external_directory: true` | Optional boolean fields with exactly these names. Omitted fields retain their defaults. Unknown fields and non-booleans are invalid. `bash` selects native shell reviews. `retrieval: false` overrides all categories. These switches control retrieval, not whether the permission is reviewed. |
 | `retrievalClarification` | boolean | `true` | Lets retrieval ask the main conversation's own model once per review (`ask_context`), in the background through OpenCode's `/btw` mechanism. Applies only where retrieval is on, and never to subagent reviews. `false` removes the tool. |
 | `maxRetrievalRounds` | integer | `3` | `1`–`50` retrieval-model rounds, each allowing up to ten sequential tool calls. The model may finish early. After the last round, or an early response without tool calls, one additional forced `finish` turn selects results if needed. Transport retries do not consume rounds. |
@@ -379,6 +381,11 @@ steering rejection, below.
 - Cancel, `/reviewer-disable` and native rejection or interruption stop
   automation for that request. Returning or re-enabling review doesn't restart it.
 - If the plugin can't confirm that an approval went through, it never resends it.
+- Automatic replies need the server's private decision record,
+  `decisions-v1.sqlite` next to the history database. If it can't be opened, or it
+  was written by another version's schema, every report is advisory: no countdown,
+  no automatic reply, and Safe reports ask for your attention. The file is never
+  reset. Move it aside and restart the service to recreate it.
   The request stays manual.
 
 The panel shows **Allowed in Ns** during the countdown, then **Checking…** and
