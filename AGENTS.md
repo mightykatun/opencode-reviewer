@@ -259,7 +259,7 @@ Observer, accounting and persistence failures never change review or approval. D
 
 ## Releases
 
-- Bump with `npm version X.Y.Z --no-git-tag-version`, which updates `package.json` and `package-lock.json`. Commit, tag `vX.Y.Z` on that commit and push the tag. Tag, commit and manifests must match. Build metadata is rejected.
+- Bump with `npm version X.Y.Z --no-git-tag-version`, which updates `package.json` and `package-lock.json`. Commit, tag `vX.Y.Z` on that commit with a lightweight tag (`git tag vX.Y.Z`, never `-a`, because the push identity check compares the pushed ref with the validated commit) and push the tag. Tag, commit and manifests must match. Build metadata is rejected.
 - `release.yml` runs on `v*` tag pushes, or on manual dispatch from the default branch with an existing tag. Creating a GitHub release doesn't trigger it. Concurrency uses `queue: max` with cancellation disabled.
 - The read-only validation job type-checks and tests the tag. It runs `check:package`. It then runs workflow lint, helper tests and the release smoke tests from a complete policy checkout at `github.workflow_sha`.
 - The privileged publish job publishes the exact validated archive. It uses only the fixed policy helpers from a sparse checkout at `github.workflow_sha`. Never build, install dependencies or run package code there.

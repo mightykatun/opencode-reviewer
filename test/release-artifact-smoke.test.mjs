@@ -171,7 +171,10 @@ test("built package crosses the real version, npm pack, artifact and isolated ve
     await writeFile(path.join(source, "package-lock.json"), JSON.stringify(lock))
   }
   const versionOutput = path.join(root, "version-output"), artifactOutput = path.join(root, "artifact-output")
-  const env = { ...process.env, RELEASE_TAG: `v${pkg.version}`, RELEASE_COMMIT: "a".repeat(40), GITHUB_RUN_ATTEMPT: "1", GITHUB_OUTPUT: versionOutput }
+  // The synthetic release identity also plays the tag push that validates it. CI's real push
+  // environment must not leak into this private fixture, which uses its own commit.
+  const env = { ...process.env, RELEASE_TAG: `v${pkg.version}`, RELEASE_COMMIT: "a".repeat(40), GITHUB_RUN_ATTEMPT: "1", GITHUB_OUTPUT: versionOutput,
+    GITHUB_EVENT_NAME: "push", GITHUB_REF: `refs/tags/v${pkg.version}`, GITHUB_SHA: "a".repeat(40) }
   execFileSync(process.execPath, [new URL("../scripts/release-version.mjs", import.meta.url).pathname], { cwd: source, env, stdio: "pipe" })
   const version = outputs(await readFile(versionOutput, "utf8"))
   assert.equal(version.tag, env.RELEASE_TAG)
@@ -195,7 +198,7 @@ test("built package crosses the real version, npm pack, artifact and isolated ve
   const verified = execFileSync(process.execPath, [helper, "verify", artifact], { cwd: isolated, env: verifyEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
   assert.ok(verified.includes(`exactly ${layout.files.length} package files, matching digest and workflow identity`))
   assert.throws(() => execFileSync(process.execPath, [helper, "verify", artifact], { cwd: isolated,
-    env: { ...verifyEnv, RELEASE_COMMIT: "c".repeat(40) }, stdio: "pipe" }), (error) => {
+    env: { ...verifyEnv, RELEASE_COMMIT: "c".repeat(40), GITHUB_SHA: "c".repeat(40) }, stdio: "pipe" }), (error) => {
     assert.match(error.stderr.toString(), /commit differs from validated workflow/)
     return true
   })
