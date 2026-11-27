@@ -29,7 +29,7 @@ await mkdir(pluginDirectory)
 smokeGitInit(temp, project)
 await writeFile(path.join(project, "fixture.py"), 'from pathlib import Path\nPath("executed").write_text("unexpected approval")\n')
 await writeFile(path.join(pluginDirectory, "package.json"), JSON.stringify({ name: "research-v2-root-presentation", type: "module", exports: { "./tui": "./tui.mjs" } }))
-const report = "# W5 MARKDOWN BODY\n\n**Read only** synthetic report.\n\nCommand: `python3 fixture.py`.\n\nNo approval is dispatched."
+const report = "# W5 MARKDOWN BODY\n\n**Read only** synthetic report.\n\n```python\nprint('fixture')\n```\n\nNo approval is dispatched."
 const jsx = `
 import { Plugin } from '@opencode/plugin/tui'
 import { CliRenderEvents, CodeRenderable, SyntaxStyle } from '@opentui/core'
@@ -125,8 +125,20 @@ export default Plugin.define({ id:'research.v2.root-presentation', setup(ctx) {
     <box flexGrow={1} />
     <text ref={value => footer=value}>W5 HELD: NO REPLY</text>
   </box>})
-  const events=[ctx.data.on('permission.asked',event => { result.asked.push(event.data); sample('asked') }),
+  // A birth is one native request by ID. The host's terminal client can reconnect its event
+  // stream during startup and deliver the request through resync instead of a live event, so the
+  // native permission list of the root is the second source. Both are host data, never inferred.
+  const birth=(data,source) => {
+    if (!data || result.asked.some(item => item.id === data.id)) return
+    result.asked.push(data); result.lifecycle.push({event:'asked',source,id:data.id}); sample('asked')
+  }
+  const events=[ctx.data.on('permission.asked',event => birth(event.data,'event')),
     ctx.data.on('permission.replied',event => { result.replies.push(event.data); sample('replied') })]
+  const reconcile=() => {
+    if (!result.root || result.asked.length) return
+    const list=ctx.data.session.permission.list(result.root) ?? []
+    if (list.length === 1) birth(list[0],'list')
+  }
   const frame=() => {
     sample('frame')
     // Layout read after a genuine frame; a changed anchor needs a subsequent frame
@@ -136,7 +148,7 @@ export default Plugin.define({ id:'research.v2.root-presentation', setup(ctx) {
       ? {x:node.x,y:node.y,width:node.width,height:node.height} : undefined)
   }
   ctx.renderer.on(CliRenderEvents.FRAME,frame)
-  const timer=setInterval(() => { sample('timer'); ctx.renderer.requestRender() },100)
+  const timer=setInterval(() => { try { reconcile() } catch(error) { result.errors.push(String(error)) } sample('timer'); ctx.renderer.requestRender() },100)
   const pending = async () => {
     if (result.asked.length !== 1) throw Error('expected one held permission')
     const request=result.asked[0]
@@ -268,7 +280,7 @@ const rootShown = (record, screen) => record.asked.length === 1 && [record.sampl
   && sample.ownershipCandidate === mouse)
   && record.frame.rootFrameProof === mouse && screen.includes("W5 ROOT REPORT")
   && screen.includes("W5 MARKDOWN BODY") && screen.includes("W5 HELD: NO REPLY")
-  && !screen.includes("Commands") && !screen.includes("minimize")
+  && !/Commands|Search commands/.test(screen) && !screen.includes("minimize")
 const noProof = record => [record.sample, record.frame].every(sample => sample && !sample.ownershipCandidate && !sample.rootFrameProof)
 const hiddenRoute = route => (record, screen) => noProof(record) && [record.sample, record.frame].every(sample =>
   sample.route.type === "session" && sample.route.sessionID === record[route] && !sample.sidebar && !sample.panel?.visible)
@@ -346,7 +358,7 @@ try {
   await hold("native-sidebar-restored", rootShown)
   // Open the real palette without selecting a command or answering the permission.
   send("C-p")
-  await hold("native-palette", (record, screen) => noProof(record) && screen.includes("Commands"), 3000)
+  await hold("native-palette", (record, screen) => noProof(record) && /Commands|Search commands/.test(screen), 3000)
   send("Escape")
   await hold("palette-restored", rootShown)
   await command("modal")

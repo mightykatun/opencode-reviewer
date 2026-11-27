@@ -144,6 +144,42 @@ test("custom WAV playback and per-file bundled fallback use literal paths and ow
   assert.equal(f.calls.every(c => c.command === "paplay"), true)
 })
 
+test("viewer sound bytes are selected by kind and null uses the bundled default", async t => {
+  const f = fakeProcesses()
+  const requested: string[] = []
+  const bundled = { format: "wav" as const, data: fixtureWav(500, 800).toString("base64") }
+  const remote = { format: "wav" as const, data: fixtureWav(1200, 1600).toString("base64") }
+  const audio = new NotificationAudio(f.processes, async (kind, _signal, format) => {
+    requested.push(`${kind}:${format}`)
+    return kind === "steered" && format === "wav" ? remote : null
+  }, { ended: bundled })
+  t.after(() => audio.dispose())
+  const signal = new AbortController().signal
+  await audio.play("steered", signal)
+  await audio.play("ended", signal)
+  // WAV is asked first. A WAV answer ends the search, a null answer asks for MP3 before the bundled default.
+  assert.deepEqual(requested, ["steered:wav", "ended:wav", "ended:mp3"])
+  const [custom, fallback] = await Promise.all(f.calls.map(call => readFile(call.args.at(-1)!)))
+  assert.ok(custom && fallback && custom.byteLength > fallback.byteLength)
+})
+
+test("a viewer sound that fails to decode never hides the next format", async t => {
+  const f = fakeProcesses()
+  const requested: string[] = []
+  const mp3 = (await readFile(new URL("../sounds/approved.mp3", import.meta.url))).toString("base64")
+  const audio = new NotificationAudio(f.processes, async (kind, _signal, format) => {
+    requested.push(`${kind}:${format}`)
+    if (format === "wav") return { format: "wav", data: Buffer.from("RIFF not a wave file").toString("base64") }
+    return { format: "mp3", data: mp3 }
+  }, { approved: { format: "wav", data: fixtureWav(500, 800).toString("base64") } })
+  t.after(() => audio.dispose())
+  await audio.play("approved", new AbortController().signal)
+  assert.deepEqual(requested, ["approved:wav", "approved:mp3"])
+  assert.equal(f.calls.length, 1)
+  const played = await readFile(f.calls[0]!.args.at(-1)!)
+  assert.ok(played.byteLength > fixtureWav(500, 800).byteLength, "the decoded custom MP3 played, not the bundled default")
+})
+
 test("missing players and invalid sounds stay isolated, mute schedules no playback", async () => {
   const f = fakeProcesses(); f.playerCode(1)
   const audio = new NotificationAudio(f.processes, "/nonexistent", { attention: { format: "wav", data: "bad" } })

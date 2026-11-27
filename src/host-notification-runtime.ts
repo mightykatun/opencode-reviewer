@@ -1,19 +1,17 @@
 import type { PermissionRequest } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createEffect, createRoot, untrack } from "solid-js"
-import type { CliPluginState } from "./cli-plugin.js"
-import type { View } from "./controller.js"
-import type { setupHostHistory } from "./host-history-runtime.js"
+import type { View, RequestIdentity } from "./controller.js"
 import type { HostRequest } from "./host-types.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
-import { atLocation } from "./host-locations.js"
+import { atLocation, type ReviewLocation } from "./host-locations.js"
 import { hostQueueSnapshot, hostPermissionIdentities } from "./host-queue.js"
 import { refreshNativeFamilies } from "./host-native-observations.js"
-import { setupHostNotifications, type HostNotificationCheckpoint } from "./host-notifications.js"
+import { setupHostNotifications, type HostNotificationOptions, type ViewerNotifications } from "./host-notifications.js"
 import { PendingRefresh } from "./pending-refresh.js"
 import { conversationRoot } from "./route-approval.js"
 import { TransportOwnership } from "./transport-ownership.js"
-import type { AncestryReader } from "./session-ancestry.js"
+import { SessionAncestry, type AncestryReader } from "./session-ancestry.js"
 import { notificationEvent, notificationSession, notificationWorkEvent } from "./host-background-work.js"
 
 /** Native cache data supplies notification identity, not review provenance. */
@@ -22,11 +20,14 @@ function request(value: PermissionRequest): HostRequest {
     ...(value.source ? { source: { assistantID: value.source.messageID, id: value.source.id } } : {}) }
 }
 
-/** Read-only attention when review configuration or its companion is unavailable.
- * The caller retains the single app surface and all history/storage disposal.
- * No controller, mode files, evaluator, model transport or permission replies. */
-export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginState, life: PluginLifecycle,
-  records: ReturnType<typeof setupHostHistory>, checkpoint?: HostNotificationCheckpoint) {
+/** Merge scoped reviewer views with this viewer's native queues and event births. */
+export function setupHostNotificationOnly(ctx: Plugin.Context, state: ViewerNotifications, life: PluginLifecycle,
+  records: { location: ReviewLocation
+    root?: AncestryReader
+    project(request: HostRequest): View<HostRequest>
+    openHistory?: HostNotificationOptions["openHistory"]
+    checkpoint?: HostNotificationOptions["checkpoint"]
+  }) {
   const location = records.location
   const abort = new AbortController()
   const signal = AbortSignal.any([life.signal, abort.signal])
@@ -35,6 +36,7 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   let visited: string | undefined
   let revision = 0, stopped = false
   let views: View<HostRequest>[] = []
+  let native: HostRequest[] = []
   let healthyRoots: ReadonlySet<string> = new Set()
   let healthAt = 0
   const owned = <T>(work: Promise<T>) => reads.track(work)
@@ -54,11 +56,13 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   const permissions = (id: string) => {
     return hostPermissionIdentities(id, ctx.data.session.permission.list(id))
   }
+  const ancestry = new SessionAncestry((id, signal) => owned(ctx.client.session.get({ sessionID: id }, { signal })))
+  const resolveRoot: AncestryReader = records.root ?? ((id, parent) => ancestry.root(id, parent))
   const front = (root: string) => hostQueueSnapshot(root, {
     session, family: id => ctx.data.session.family(id), permissions,
   })
   const notifications = setupHostNotifications(ctx, state, {
-    signal, nativeQueue: front, resolveRoot: (id, parent) => records.history.root(id, parent), checkpoint,
+    signal, nativeQueue: front, resolveRoot, openHistory: records.openHistory, checkpoint: records.checkpoint,
   })
   // Failed/disabled desktop setup is isolated from the read-only history owner.
   if (!notifications) return
@@ -77,7 +81,7 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   const root: AncestryReader = (id, parent) => {
     const cached = conversationRoot(id, session)
     if (cached) return Promise.resolve(cached)
-    const read = records.history.root(id, parent)
+    const read = resolveRoot(id, parent)
     if (read.settled) owned(read.settled)
     return owned(read)
   }
@@ -85,7 +89,8 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
     get revision() { return revision },
     reconcile({ values, roots }, at) {
       if (stopped || at !== revision) return
-      views = values.map(request => ({ request, status: state.config ? "suspended" : "unavailable" }))
+      native = values
+      views = values.map(records.project)
       healthAt = performance.now()
       publish(roots)
     },
@@ -166,6 +171,7 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   off = ctx.data.listen(({ details: event }) => {
     // Connection revocation belongs to the supervisor, after its checkpoint.
     if (stopped || signal.aborted || event.type === "server.connected") return
+    if (event.type === "session.deleted" || event.type === "session.moved") ancestry.deleted(event.data.sessionID)
     if (!notificationEvent(event)) return
     try {
       const id = notificationSession(event)
@@ -185,5 +191,10 @@ export function setupHostNotificationOnly(ctx: Plugin.Context, state: CliPluginS
   })
   timer = setInterval(() => { if (!stopped) { try { observeRoute() } catch { publish(false) }; void refresh.refresh() } }, 2000)
   void refresh.refresh()
-  return { notifications, refresh, front, visit, views: () => views, dispose, settled }
+  const changed = (confirmed: readonly View<RequestIdentity>[]) => {
+    for (const view of confirmed) notifications.confirmed(view)
+    views = native.map(records.project)
+    publish(healthyRoots)
+  }
+  return { notifications, refresh, front, visit, views: () => views, dispose, settled, changed }
 }

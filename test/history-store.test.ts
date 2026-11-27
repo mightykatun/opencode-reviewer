@@ -16,7 +16,7 @@ import type { HistoryTotals } from "../src/history-schema.js"
 import { empty } from "../src/lifetime.js"
 import { build } from "esbuild"
 
-const context: HistoryReview = { scope: "/project", root: "root", session: "root", permission: "permission", review: "review",
+const context: HistoryReview = { root: "root", session: "root", permission: "permission", review: "review",
   category: "bash", configuredModel: "model", provider: "https://example.com/v1" }
 const event: HistoryEvent = { type: "permissionResolved", context, at: 1, outcome: "manual", payload: { safe: true, completedAt: 1, desc: "report" } }
 function deferred<T>() {
@@ -60,7 +60,7 @@ test("64 MiB cap includes in-flight bytes, keeps FIFO admitted operations and al
   assert.equal(store.admit(large), false); assert.equal(store.retainedBytes, admitted * bytes)
   // Fill the remaining tail with small events before rejecting a deletion.
   while (store.admit(event)) admitted++
-  const deleted: HistoryEvent = { type: "sessionDeleted", context: { scope: "/project", root: "r".repeat(4096), session: "s".repeat(4096) }, at: 2 }
+  const deleted: HistoryEvent = { type: "sessionDeleted", context: { root: "r".repeat(4096), session: "s".repeat(4096) }, at: 2 }
   assert.equal(store.admit(deleted), false)
   barrier.resolve(); await turn()
   assert.equal(store.pendingOperations, 0); assert.equal(store.retainedBytes, 0); assert.equal(maximum, 1)
@@ -70,7 +70,7 @@ test("64 MiB cap includes in-flight bytes, keeps FIFO admitted operations and al
 })
 
 test("failed real SQLite writes retry after exactly two seconds while committed history stays readable", async t => {
-  const directory = mkdtempSync(path.join(tmpdir(), "history-outage-")), file = path.join(directory, "private/history-v1.sqlite")
+  const directory = mkdtempSync(path.join(tmpdir(), "history-outage-")), file = path.join(directory, "private/history-v2.sqlite")
   privateDatabase(file)
   const db = new DatabaseSync(file), sql = new HistorySQL(db), lock = new DatabaseSync(file)
   sql.apply("seed", 1, encodeEvent(event))
@@ -89,9 +89,10 @@ test("failed real SQLite writes retry after exactly two seconds while committed 
   lock.exec("BEGIN IMMEDIATE")
   store.admit({ type: "reviewAccepted", context, at: 1, accepted: { safe: true, completedAt: 1 } })
   await turn(); assert.equal(attempts, 1); assert.equal(failures, 1)
-  const history = await store.query({ type: "history", scope: context.scope, root: context.root }) as any
+  const history = await store.query({ type: "history", root: context.root }) as any
   assert.equal(history.record.payload.desc, "report")
-  await assert.rejects(store.query({ type: "totals" }), /unavailable/)
+  // Totals stay available while the write waits: they count what is committed, without a label.
+  assert.equal(((await store.query({ type: "totals" })) as any).totals.safe, 0)
   time.advance(1999); await turn(); assert.equal(attempts, 1)
   lock.exec("ROLLBACK"); time.advance(1); await turn()
   assert.equal(attempts, 2); assert.equal(commits, 1); assert.equal(store.pendingOperations, 0)
@@ -134,7 +135,7 @@ test("invalid initialization retries after exactly two seconds and retains new a
 
 test("a real worker read waits within its deadline while another connection briefly holds the write lock", async t => {
   const directory = mkdtempSync(path.join(tmpdir(), "history-open-busy-"))
-  const file = path.join(directory, "opencode-reviewer/history-v1.sqlite")
+  const file = path.join(directory, "opencode-reviewer/history-v2.sqlite")
   privateDatabase(file)
   new HistorySQL(new DatabaseSync(file)).close()
   const source = (await build({ entryPoints: ["src/history-storage-worker.ts"], bundle: true, write: false,
@@ -153,7 +154,7 @@ test("a real worker read waits within its deadline while another connection brie
 
 test("a write lock held past the read deadline still ends the read at its existing timeout", async t => {
   const directory = mkdtempSync(path.join(tmpdir(), "history-open-held-"))
-  const file = path.join(directory, "opencode-reviewer/history-v1.sqlite")
+  const file = path.join(directory, "opencode-reviewer/history-v2.sqlite")
   privateDatabase(file)
   new HistorySQL(new DatabaseSync(file)).close()
   const source = (await build({ entryPoints: ["src/history-storage-worker.ts"], bundle: true, write: false,
@@ -178,6 +179,22 @@ test("a worker open that fails for any other reason still rejects the read immed
   t.after(() => store.dispose(performance.now() - 3500))
   await assert.rejects(store.query({ type: "totals" }), /History initialization unavailable/)
   assert.equal(opens, 1)
+})
+
+test("an unsupported schema in the v2 file stays unavailable for history and statistics", async t => {
+  const directory = mkdtempSync(path.join(tmpdir(), "history-unsupported-"))
+  const file = path.join(directory, "opencode-reviewer/history-v2.sqlite")
+  privateDatabase(file)
+  const db = new DatabaseSync(file)
+  new HistorySQL(db)
+  db.exec("UPDATE meta SET version=3")
+  db.close()
+  const source = (await build({ entryPoints: ["src/history-storage-worker.ts"], bundle: true, write: false,
+    platform: "node", format: "cjs", external: ["bun:sqlite", "node:sqlite"] })).outputFiles[0]!.text
+  const store = new HistoryStore(directory, { source, adapter: "node" })
+  t.after(async () => { await store.dispose(); rmSync(directory, { recursive: true, force: true }) })
+  await assert.rejects(store.query({ type: "totals" }), /History initialization unavailable/)
+  await assert.rejects(store.query({ type: "history", root: "root" }), /History initialization unavailable/)
 })
 
 test("invalid admitted apply permanently retains the FIFO and rejects new admissions", async t => {
@@ -248,7 +265,7 @@ test("refresh coalesces, guards selection/write failures, polls repairs and neve
   failure(); pending[0]!.resolve({ stale: true }); await turn()
   assert.equal(publications.length, 1); assert.equal(publications[0], undefined); assert.equal(pending.length, 1)
   commit(); assert.equal(pending.length, 2)
-  refresh.select({ type: "history", scope: context.scope, root: context.root })
+  refresh.select({ type: "history", root: context.root })
   pending[1]!.resolve({ stale: true }); await turn(); assert.equal(pending.length, 3)
   pending[2]!.resolve({ revision: 1, total: 1, unreadable: true }); await turn()
   refresh.refresh(); pending[3]!.resolve({ revision: 1, total: 1, repaired: true }); await turn()
@@ -296,7 +313,7 @@ test("queued query owns an immutable scope snapshot", async () => {
     }, async terminate() {},
   }) })
   store.admit(event)
-  const query = { type: "history" as const, scope: "/project", root: "root" }
+  const query = { type: "history" as const, root: "root" }
   const read = store.query(query); query.root = "other"
   barrier.resolve(); await read
   assert.equal(queries[0].root, "root")
@@ -329,7 +346,7 @@ test("a worker that exits while idle reports the exit on the next call", async (
 
 test("polling does not starve reads slower than its cadence and selection is snapshotted", async () => {
   const first = deferred<any>(), second = deferred<any>(), values: any[] = [], queries: any[] = []
-  const query = { type: "history" as const, scope: "/project", root: "root" }
+  const query = { type: "history" as const, root: "root" }
   const refresh = new HistoryRefresh({ query: q => { queries.push(q); return queries.length === 1 ? first.promise : second.promise },
     onCommit: () => () => {}, onWriteFailure: () => () => {} }, query, v => values.push(v))
   query.root = "other"
@@ -338,69 +355,4 @@ test("polling does not starve reads slower than its cadence and selection is sna
   assert.deepEqual(values, [{ total: 1 }]); assert.equal(queries.length, 2)
   assert.equal(queries[1].root, "root")
   refresh.dispose(); second.resolve({ total: 2 })
-})
-
-test("legacy escaped metadata baseline cannot block affected and unrelated roots in the admitted FIFO", async t => {
-  const db = new DatabaseSync(":memory:"), seed = new HistorySQL(db)
-  seed.apply("seed", 1, encodeEvent({ type: "attemptFinalized", context, at: 1, attempt: "old",
-    reportedModel: "x" + "\u0001".repeat(4095), usage: { input: 7, output: 2 } }))
-  db.exec("DROP TABLE conversation_totals")
-  const sql = new HistorySQL(db), applied: number[] = []
-  const store = new HistoryStore("/state", { transport: () => ({ async call(m) {
-    if (m.type === "apply") {
-      const result = sql.apply(m.writer as string, m.sequence as number, m.event as string)
-      applied.push(m.sequence as number); return result
-    }
-    if (m.type === "query") return sql.query(m.query as any)
-    return {}
-  }, async terminate() {} }) })
-  t.after(async () => { await store.dispose(performance.now() - 3500); sql.close() })
-  assert.equal(store.admit(event), true)
-  assert.equal(store.admit({ ...event, context: { ...context, root: "other", session: "other", permission: "other", review: "other" } }), true)
-  await turn()
-  assert.deepEqual(applied, [1, 2])
-  assert.equal(store.pendingOperations, 0)
-  assert.equal(store.admit({ type: "attemptFinalized", context, at: 2, attempt: "new", usage: { input: 3, output: 1 } }), true)
-  await turn()
-  assert.equal((await store.query({ type: "totals" }) as any).totals.input, 10)
-})
-
-test("query-driven bootstrap failure stays read-local and a later poll resumes its durable work", async t => {
-  const db = new DatabaseSync(":memory:"), sql = new HistorySQL(db)
-  sql.apply("seed", 1, encodeEvent({ type: "reviewAccepted", context, at: 1, accepted: { safe: true, completedAt: 1 } }))
-  db.exec("DELETE FROM conversation_totals")
-  let fail = true
-  const store = new HistoryStore("/state", { transport: () => ({ async call(m) {
-    if (m.type === "apply") return sql.applyReady(m.writer as string, m.sequence as number, m.event as string)
-    if (m.type === "query") return sql.queryReady(m.query as any)
-    if (m.type === "bootstrap") {
-      if (fail) { fail = false; throw Error("temporary bootstrap read failure") }
-      return sql.bootstrap(m.root as string)
-    }
-    return {}
-  }, async terminate() {} }) })
-  t.after(async () => { await store.dispose(); sql.close() })
-  const query = { type: "conversationTotals" as const, scope: context.scope, root: context.root }
-  await assert.rejects(store.query(query), /temporary/)
-  assert.equal(store.admit({ ...event, context: { ...context, root: "other", session: "other", review: "other", permission: "other" } }), true)
-  assert.equal((await store.query(query) as any).totals.safe, 1)
-  assert.equal((await store.query({ type: "totals" }) as any).totals.safe, 1)
-})
-
-test("aborted bootstrap read retains actual slice ownership and releases only after settlement", async t => {
-  const entered = deferred<void>(), release = deferred<void>(), controller = new AbortController()
-  let first = true, calls = 0
-  const store = new HistoryStore("/state", { transport: () => ({ async call(m) {
-    calls++
-    if (m.type === "query") { if (first) { first = false; return { pending: "a".repeat(64) } }; return { total: 0 } }
-    if (m.type === "bootstrap") { entered.resolve(); await release.promise; return { done: true } }
-    return {}
-  }, async terminate() { release.resolve() } }) })
-  t.after(async () => { release.resolve(); await store.dispose() })
-  const read = store.query({ type: "conversationTotals", scope: "/project", root: "root" }, controller.signal)
-  let settled = false; void read.settled!.then(() => { settled = true })
-  await entered.promise; controller.abort(); await assert.rejects(read, /aborted/)
-  assert.equal(settled, false)
-  const followup = store.query({ type: "totals" }); await turn(); assert.equal(calls, 3)
-  release.resolve(); await read.settled; await followup; assert.equal(settled, true)
 })

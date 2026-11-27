@@ -31,13 +31,13 @@ function fixture(t: TestContext) {
     events.push(JSON.parse(encoded)); sql.apply("writer", ++sequence, encoded); return true
   }, query: (query: HistoryQuery) => Promise.resolve(sql.query(query)),
   onCommit: (fn: () => unknown) => { commits.add(fn); return () => { commits.delete(fn) } } }
-  const h = new HistoryCoordinator<HostRequest>("/native-host", store, async () => "root", () => now, () => monotonic)
+  const h = new HistoryCoordinator<HostRequest>(store, async () => "root", () => now, () => monotonic)
   const lifecycle: ReviewLifecycleObserver<HostRequest> = h.lifecycle
   const onApproval: ApprovalObserver<HostRequest> = h.approval
   t.after(() => { h.dispose(); sql.close() })
   return { h, lifecycle, onApproval, events, db,
     poll: async () => { now += 2000; monotonic += 2000; for (const fn of commits) fn(); await settle() },
-    history: () => sql.query({ type: "history", scope: "/native-host", root: "root" }) as HistorySelection,
+    history: () => sql.query({ type: "history", root: "root" }) as HistorySelection,
     totals: () => (sql.query({ type: "totals" }) as HistoryTotals).totals }
 }
 
@@ -59,7 +59,7 @@ test("native history saves on once, but automatic attribution requires exact loc
   f.onApproval({ ...approval, type: "settled" })
   assert.equal(f.history().record?.payload.desc, "Final validated native report.")
   assert.equal(f.history().record?.outcome, "auto")
-  assert.deepEqual(f.history().record?.context, { scope: "/native-host", root: "root", session: "child",
+  assert.deepEqual(f.history().record?.context, { root: "root", session: "child",
     permission: "permission", review: "execution", category: "edit", configuredModel: config.model, provider: config.baseURL })
   assert.equal(f.totals().requests, 1)
   assert.equal(f.totals().activity.autoApproved, 1)

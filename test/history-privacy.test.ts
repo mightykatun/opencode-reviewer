@@ -9,18 +9,17 @@ import { setImmediate as turn } from "node:timers/promises"
 import { openHistoryDatabase as openDatabase, privateDatabase } from "../src/history-storage-worker.js"
 import { HistoryStore } from "../src/history-store.js"
 import type { HistoryTransport } from "../src/history-store.js"
-import { encodeEvent, reviewID } from "../src/history-records.js"
-import { HISTORY_DELETE_STEPS } from "../src/history-deletion.js"
+import { encodeEvent } from "../src/history-records.js"
 import type { HistoryEvent, HistoryReview } from "../src/history-records.js"
 
-const context: HistoryReview = { scope: "/privacy", root: "root", session: "child", permission: "permission", review: "review",
+const context: HistoryReview = { root: "root", session: "child", permission: "permission", review: "review",
   category: "bash", configuredModel: "model", provider: "https://example.com/v1" }
-const conversation = { scope: context.scope, root: context.root }
+const conversation = { root: context.root }
 const openHistoryDatabase = (file: string, adapter: "node", construct = (file: string) => new DatabaseSync(file)) => openDatabase(file, adapter, construct)
 const marker = "PRIVATE_REPORT_47a9e9c4_DELETION_PROOF"
 const accepted: HistoryEvent = { type: "reviewAccepted", context, at: 1, accepted: { safe: true, completedAt: 1 } }
 const report: HistoryEvent = { type: "permissionResolved", context, at: 2, outcome: "manual", payload: { safe: true, completedAt: 1, desc: marker.repeat(1000) } }
-const deleted: HistoryEvent = { type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.session }, at: 3 }
+const replacement: HistoryEvent = { ...report, context: { ...context, review: "replacement" }, payload: { safe: true, completedAt: 2, desc: "Replacement" } }
 
 function directory(t: any) {
   const dir = mkdtempSync(path.join(tmpdir(), "history-privacy-"))
@@ -32,77 +31,42 @@ function contains(file: string, text = marker) {
     .some(suffix => readFileSync(file + suffix).includes(Buffer.from(text)))
 }
 function fixture(t: any) {
-  const dir = directory(t), file = path.join(dir, "private/history-v1.sqlite")
+  const dir = directory(t), file = path.join(dir, "private/history-v2.sqlite")
   const sql = openHistoryDatabase(file, "node"), db = sql.db
   t.after(() => sql.close())
   sql.apply("seed", 1, encodeEvent(accepted)); sql.apply("seed", 2, encodeEvent(report))
   return { dir, file, sql, db }
 }
 
-test("secure deletion erases active DB/WAL/SHM markers after owned cleanup, retaining aggregates, tombstones and replay", t => {
-  const { file, sql, db } = fixture(t)
-  assert.equal(db.prepare("PRAGMA secure_delete").get().secure_delete, 1)
-  db.exec("PRAGMA wal_checkpoint(TRUNCATE)")
-  assert.equal(contains(file), true, "positive control includes overflow-page report bytes")
-  const totals = sql.query({ type: "totals", conversation })
-  sql.apply("seed", 3, encodeEvent(deleted))
-  assert.equal(db.prepare("SELECT count(*) n FROM payloads").get().n, 0)
-  assert.equal(db.prepare("SELECT count(*) n FROM reviews").get().n, 0)
-  assert.deepEqual(sql.cleanup(), { pending: false, legacy: false })
-  assert.equal(contains(file), false)
-  assert.deepEqual(sql.query({ type: "totals", conversation }), totals)
-  assert.deepEqual(sql.apply("seed", 3, encodeEvent(deleted)), { replay: true })
-  sql.apply("late", 1, encodeEvent(report)); sql.apply("late", 2, encodeEvent(accepted))
-  assert.equal(db.prepare("SELECT count(*) n FROM payloads").get().n, 0)
-  assert.equal(db.prepare("SELECT count(*) n FROM tombstones").get().n, 1)
-  assert.deepEqual(sql.query({ type: "totals", conversation }), totals)
-  const second = openHistoryDatabase(file, "node")
-  try { assert.deepEqual(second.cleanup(), { pending: false, legacy: false }); assert.equal(contains(file), false) }
-  finally { second.close() }
-})
-
-test("busy readers keep cleanup pending durably across reopen; release permits marker removal", t => {
+test("busy readers keep replaced bodies and reasons pending until checkpoint can remove them", t => {
   const { file, sql, db } = fixture(t), reader = new DatabaseSync(file)
   t.after(() => reader.close())
+  assert.equal(db.prepare("PRAGMA secure_delete").get().secure_delete, 1)
+  assert.equal(db.prepare("PRAGMA synchronous").get().synchronous, 2)
+  const reason = "PRIVATE_REASON_568AE"
+  sql.apply("reason", 1, encodeEvent({ ...report, reason: reason.repeat(600) }))
+  assert.equal(contains(file, reason), true)
   reader.exec("BEGIN"); assert.ok(reader.prepare("SELECT body FROM payloads").get())
-  sql.apply("seed", 3, encodeEvent(deleted))
-  assert.deepEqual(sql.cleanup(), { pending: true, legacy: false })
+  sql.apply("seed", 3, encodeEvent(replacement))
+  assert.deepEqual(sql.cleanup(), { pending: true })
   assert.equal(contains(file), true, "reader still owns old WAL snapshot")
   assert.ok(db.prepare("SELECT generation>cleaned AS dirty FROM history_privacy").get().dirty)
   const second = openHistoryDatabase(file, "node")
   try {
-    assert.deepEqual(second.cleanup(), { pending: true, legacy: false })
+    assert.deepEqual(second.cleanup(), { pending: true })
     reader.exec("ROLLBACK")
-    assert.deepEqual(second.cleanup(), { pending: false, legacy: false })
+    assert.deepEqual(second.cleanup(), { pending: false })
     assert.equal(contains(file), false)
+    assert.equal(contains(file, reason), false)
   } finally { second.close() }
 })
 
 test("payload replacement also schedules physical removal of superseded text", t => {
   const { file, sql } = fixture(t)
   sql.apply("seed", 3, encodeEvent({ ...report, payload: { safe: false, completedAt: 2, desc: "Replacement" } } as HistoryEvent))
-  assert.deepEqual(sql.cleanup(), { pending: false, legacy: false })
+  assert.deepEqual(sql.cleanup(), { pending: false })
   assert.equal(contains(file), false)
   assert.equal((sql.query({ type: "history", ...conversation }) as any).record.payload.desc, "Replacement")
-})
-
-test("automatic legacy cleanup erases free pages and live-page fragments without offline compaction", t => {
-  const { file, sql, db } = fixture(t)
-  db.exec(`DROP TRIGGER history_privacy_delete; DROP TRIGGER history_privacy_replace; DROP TABLE history_privacy;
-    PRAGMA secure_delete=OFF; DELETE FROM history; PRAGMA wal_checkpoint(TRUNCATE)`)
-  assert.equal(contains(file), true)
-  const migrated = openHistoryDatabase(file, "node")
-  try {
-    const totals = migrated.query({ type: "totals", conversation })
-    let steps = 0, cleanup
-    do { cleanup = migrated.cleanup(); assert.ok(++steps < 100) } while (cleanup.pending)
-    assert.deepEqual(cleanup, { pending: false, legacy: false })
-    assert.equal(migrated.db.prepare("SELECT phase FROM history_legacy_scrub").get().phase, 2)
-    assert.equal(contains(file), false)
-    assert.deepEqual(migrated.query({ type: "totals", conversation }), totals)
-  } finally { migrated.close() }
-  // Keep fixture's original connection alive to prove no close-only erasure claim.
-  assert.equal(sql.db.prepare("SELECT count(*) n FROM history").get().n, 0)
 })
 
 test("concurrent deletion after checkpoint cannot be acknowledged by an older cleanup generation", t => {
@@ -112,57 +76,20 @@ test("concurrent deletion after checkpoint cannot be acknowledged by an older cl
   let injected = false
   db.prepare = ((text: string) => {
     if (!injected && text.startsWith("UPDATE history_privacy SET cleaned=")) {
-      injected = true; other.apply("delete", 1, encodeEvent(deleted))
+      injected = true; other.apply("delete", 1, encodeEvent(replacement))
     }
     return prepare(text)
   }) as typeof db.prepare
-  assert.deepEqual(sql.cleanup(), { pending: true, legacy: false })
-  assert.deepEqual(sql.cleanup(), { pending: false, legacy: false })
+  assert.deepEqual(sql.cleanup(), { pending: true })
+  assert.deepEqual(sql.cleanup(), { pending: false })
   assert.equal(contains(file), false)
-})
-
-test("secure detail deletion bounds cascades, rolls back slices and resumes orphaned work without advancing replay or reducing totals", t => {
-  const { file, sql, db } = fixture(t)
-  db.exec("BEGIN")
-  const insert = db.prepare("INSERT INTO attempts VALUES (?,?,NULL,NULL)")
-  for (let i = 0; i < 2000; i++) insert.run(`attempt-${i}`, reviewID(context))
-  db.exec("COMMIT")
-  const remaining = () => ["history", "reviews", "attempts", "sessions", "approvals"]
-    .reduce((sum, table) => sum + db.prepare(`SELECT count(*) n FROM ${table}`).get().n, 0)
-  const original = remaining(), totals = sql.query({ type: "totals", conversation })
-  assert.throws(() => sql.applyReady("seed", 3, encodeEvent(deleted), () => { throw Error("interrupted slice") }), /interrupted/)
-  assert.equal(remaining(), original)
-  assert.equal(db.prepare("SELECT count(*) n FROM tombstones").get().n, 0)
-  assert.equal(db.prepare("SELECT count(*) n FROM history_deletions").get().n, 0)
-  assert.deepEqual(sql.applyReady("seed", 3, encodeEvent(deleted)), { deleting: true })
-  assert.ok(original - remaining() <= HISTORY_DELETE_STEPS)
-  assert.equal(db.prepare("SELECT sequence FROM writers WHERE id='seed'").get().sequence, 2)
-  const recovered = openHistoryDatabase(file, "node")
-  try {
-    // The original admitted event is gone. Durable cleanup owns the remaining work.
-    recovered.apply("late", 1, encodeEvent(report))
-    assert.equal(db.prepare("SELECT count(*) n FROM history").get().n, 0)
-    let slices = 0
-    for (;;) {
-      const before = remaining(), cleanup = recovered.cleanup()
-      assert.ok(before - remaining() <= HISTORY_DELETE_STEPS, "one review's attempts cannot escape the slice bound")
-      if (!cleanup.pending) break
-      assert.ok(++slices < 30)
-    }
-    assert.equal(remaining(), 0); assert.ok(slices > 10)
-    assert.equal(contains(file), false)
-    assert.deepEqual(recovered.query({ type: "totals", conversation }), totals)
-    assert.deepEqual(recovered.apply("seed", 3, encodeEvent(deleted)), { replay: false })
-    assert.deepEqual(recovered.apply("seed", 3, encodeEvent(deleted)), { replay: true })
-    assert.equal(db.prepare("SELECT count(*) n FROM tombstones").get().n, 1)
-  } finally { recovered.close() }
 })
 
 test("unprotected writable ancestors reject before a controlled SQLite constructor swap can write replacement storage", t => {
   const dir = directory(t), parent = path.join(dir, "replaceable"), tree = path.join(parent, "state")
   mkdirSync(parent); chmodSync(parent, 0o777); mkdirSync(tree, { mode: 0o700 })
   let constructed = false
-  assert.throws(() => openHistoryDatabase(path.join(tree, "private/history-v1.sqlite"), "node", file => {
+  assert.throws(() => openHistoryDatabase(path.join(tree, "private/history-v2.sqlite"), "node", file => {
     constructed = true
     renameSync(tree, tree + "-old"); mkdirSync(tree); mkdirSync(path.dirname(file))
     writeFileSync(file, "replacement", { mode: 0o644 })
@@ -176,7 +103,7 @@ test("unprotected writable ancestors reject before a controlled SQLite construct
 test("protected sticky temporary ancestry and private homes permit SQLite and private sidecars", t => {
   const dir = directory(t), sticky = path.join(dir, "sticky")
   mkdirSync(sticky); chmodSync(sticky, 0o1777)
-  const file = path.join(sticky, "home/state/private/history-v1.sqlite")
+  const file = path.join(sticky, "home/state/private/history-v2.sqlite")
   const sql = openHistoryDatabase(file, "node")
   try {
     sql.apply("seed", 1, encodeEvent(report))
@@ -189,7 +116,7 @@ for (const suffix of ["", "-wal", "-shm", "-journal"]) {
     test(`unsafe ${suffix || "database"} ${kind} is rejected without chmod or mutation`, t => {
       const dir = directory(t), privateDir = path.join(dir, "private")
       mkdirSync(privateDir, { mode: 0o700 })
-      const file = path.join(privateDir, "history-v1.sqlite"), name = file + suffix, target = path.join(dir, "target")
+      const file = path.join(privateDir, "history-v2.sqlite"), name = file + suffix, target = path.join(dir, "target")
       writeFileSync(target, "UNTOUCHED", { mode: 0o600 })
       if (kind === "symlink") symlinkSync(target, name)
       else if (kind === "hardlink") linkSync(target, name)
@@ -233,9 +160,9 @@ test("foreign-owned ancestors including sticky parents and sticky children are r
   })
   syncBuiltinESMExports()
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports() })
-  assert.throws(() => privateDatabase(path.join(child, "private/history-v1.sqlite")), /ancestor/)
+  assert.throws(() => privateDatabase(path.join(child, "private/history-v2.sqlite")), /ancestor/)
   foreign = child
-  assert.throws(() => privateDatabase(path.join(child, "private/history-v1.sqlite")), /ancestor/)
+  assert.throws(() => privateDatabase(path.join(child, "private/history-v2.sqlite")), /ancestor/)
   assert.equal(existsSync(path.join(child, "private")), false)
 })
 
@@ -255,8 +182,8 @@ test("store owns busy cleanup retries independently of write FIFO, including idl
     active++; maximum = Math.max(maximum, active)
     try {
       if (m.type === "open") return { cleanup: true }
-      if (m.type === "apply") return sql.applyReady(m.writer as string, m.sequence as number, m.event as string)
-      if (m.type === "query") return sql.queryReady(m.query as any)
+      if (m.type === "apply") return sql.apply(m.writer as string, m.sequence as number, m.event as string)
+      if (m.type === "query") return sql.query(m.query as any)
       if (m.type === "cleanup") { calls++; return sql.cleanup() }
       return {}
     } finally { active-- }
@@ -264,7 +191,7 @@ test("store owns busy cleanup retries independently of write FIFO, including idl
   const store = new HistoryStore(dir, { transport: () => transport, ...time })
   t.after(() => store.dispose(performance.now() - 3500))
   reader.exec("BEGIN"); reader.prepare("SELECT body FROM payloads").get()
-  store.admit(deleted); await turn()
+  store.admit(replacement); await turn()
   assert.equal(calls, 1); assert.equal(store.pendingOperations, 0); assert.equal(store.cleanupPending, true)
   store.admit({ ...accepted, context: { ...context, root: "other", session: "other", review: "other", permission: "other" } })
   await turn(); assert.equal(store.pendingOperations, 0)
@@ -274,7 +201,7 @@ test("store owns busy cleanup retries independently of write FIFO, including idl
   reader.exec("ROLLBACK"); time.advance(2000); await turn()
   assert.equal(calls, 3); assert.equal(store.cleanupPending, false); assert.equal(contains(file), false)
   // Another client can leave work behind while this store's local flag is clean.
-  sql.apply("idle", 1, encodeEvent({ ...deleted, context: { ...deleted.context, session: "other-child" } }))
+  sql.apply("idle", 1, encodeEvent({ ...replacement, payload: { ...replacement.payload, desc: "Changed again" } }))
   time.advance(2000); await turn(); assert.equal(calls, 4)
   assert.equal(maximum, 1)
 })
@@ -289,7 +216,7 @@ test("cleanup watchdog reply race keeps the single slot until actual worker term
     return { async call(m) {
       calls++
       if (m.type === "open") return { cleanup: true }
-      if (m.type === "cleanup") { await held; return { pending: false, legacy: false } }
+      if (m.type === "cleanup") { await held; return { pending: false } }
       return {}
     }, async terminate() { entered(); await exited } }
   } })
@@ -309,13 +236,13 @@ test("cleanup errors do not poison accounting and disposal leaves durable unfini
   let attempts = 0, failures = 0
   const store = new HistoryStore(dir, { ...time, transport: () => ({ async call(m) {
     if (m.type === "open") return { cleanup: true }
-    if (m.type === "apply") return sql.applyReady(m.writer as string, m.sequence as number, m.event as string)
-    if (m.type === "query") return sql.queryReady(m.query as any)
+    if (m.type === "apply") return sql.apply(m.writer as string, m.sequence as number, m.event as string)
+    if (m.type === "query") return sql.query(m.query as any)
     if (m.type === "cleanup") { attempts++; throw Error("checkpoint I/O failure") }
     return {}
   }, async terminate() {} }) })
   store.onWriteFailure(() => { failures++ })
-  store.admit(deleted); await turn()
+  store.admit(replacement); await turn()
   assert.equal(store.pendingOperations, 0); assert.equal(store.cleanupPending, true)
   assert.equal((await store.query({ type: "totals" }) as any).totals.safe, 1)
   time.advance(1999); await turn(); assert.equal(attempts, 1)
@@ -324,7 +251,7 @@ test("cleanup errors do not poison accounting and disposal leaves durable unfini
   const reopened = openHistoryDatabase(file, "node")
   try {
     assert.equal(reopened.db.prepare("SELECT generation>cleaned dirty FROM history_privacy").get().dirty, 1)
-    assert.deepEqual(reopened.cleanup(), { pending: false, legacy: false })
+    assert.deepEqual(reopened.cleanup(), { pending: false })
     assert.equal(contains(file), false)
   } finally { reopened.close() }
 })

@@ -10,6 +10,7 @@ import { getEventListeners } from "node:events"
 import { Controller, type ApprovalFact, type ReviewLifecycleFact } from "../src/controller.js"
 import type { HostRequest, HostRequestSnapshot } from "../src/host-types.js"
 import { monotonicTimers } from "./reviewer-clock.js"
+import { rpcTestAccess } from "./companion-rpc-access.js"
 
 const location = { directory: "/invocation", workspaceID: "workspace" }, scope = { location, epoch: "10000000-1000-4000-8000-100000000000" }
 const raw = (id = "request", sessionID = "session") => ({ id, sessionID, action: "shell", resources: ["python3 fixture.py"], save: ["python3 *"] })
@@ -53,7 +54,7 @@ function fixture() {
     },
   }
   return {
-    state, transport: hostPermissionTransport(client as unknown as OpenCodeClient, scope),
+    state, transport: hostPermissionTransport(client as unknown as OpenCodeClient, scope, rpcTestAccess(client, scope)),
     add(request: ReturnType<typeof raw>) {
       state.request = request
       state.pending.set(key(request.sessionID, request.id), request)

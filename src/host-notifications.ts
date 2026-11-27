@@ -1,7 +1,9 @@
 import type { LocationRef, OpenCodeEvent } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin/tui"
-import type { CliPluginState } from "./cli-plugin.js"
-import type { ApprovalFact, RequestIdentity, View } from "./controller.js"
+import type { NotificationConfig } from "./notification-config.js"
+import type { PluginDependencies } from "./plugin-dependencies.js"
+import type { ViewerSound } from "./notification-audio.js"
+import type { RequestIdentity, View } from "./controller.js"
 import { hostPermissionIdentities, type HostQueueSnapshot } from "./host-queue.js"
 import type { HistoryTarget } from "./history-records.js"
 import type { AncestryRead, AncestryReader } from "./session-ancestry.js"
@@ -13,8 +15,7 @@ import { notificationClock, type NotificationClock, type NotificationClick, type
   type NotificationInteraction } from "./notification-types.js"
 import { uiText } from "./ui-text.js"
 import { hostBackgroundIdle, notificationEvent, notificationSession } from "./host-background-work.js"
-import { sameLocation } from "./companion-protocol.js"
-import { locationKey, MAX_REVIEW_LOCATIONS, reviewLocation } from "./host-locations.js"
+import { atLocation, locationKey, MAX_REVIEW_LOCATIONS, reviewLocation } from "./host-locations.js"
 
 type Target = { root: string; sessionID: string; title: string }
 type Birth = { sessionID: string; received: number; root?: string; target?: Target; announced?: readonly NotificationAnnouncement[] }
@@ -45,6 +46,15 @@ export interface HostNotificationOptions {
   checkpoint?: HostNotificationCheckpoint
 }
 
+export interface ViewerNotifications {
+  notificationConfig: NotificationConfig
+  dependencies: PluginDependencies
+  sound?: ViewerSound
+  /** Whether the server policy approves Safe reports automatically, from `snapshot.automation`.
+   * A Safe report that no automation will approve needs attention. */
+  automatic?: () => boolean | undefined
+}
+
 /** Scope filtering, native cache synchronization and route observation belong to
  * the runtime. This bridge subscribes to nothing and never starts a host/read poll.
  * `visit`, `event`, `snapshot` and `routeChanged` are its publication seams. */
@@ -65,7 +75,7 @@ export class HostNotifications {
   private forms = new Map<string, Birth>()
   private closed = new Set<string>()
   private deletedSessions = new Set<string>()
-  private dispatches = new Map<string, { request: RequestIdentity; target: Target; approval?: string; automatic: boolean }>()
+  private births = new Map<string, Birth>()
   private executions = new Map<string, Execution>()
   private completionReads = new Map<string, Promise<void>>()
   private activityRevision = 0
@@ -78,24 +88,24 @@ export class HostNotifications {
   private clickWait?: () => void
   private onAbort = () => { void this.dispose() }
 
-  constructor(private context: Plugin.Context, state: CliPluginState, private options: HostNotificationOptions) {
-    const config = state.notificationConfig ?? state.config
-    if (!config) throw new Error("Notification configuration unavailable")
+  constructor(private context: Plugin.Context, state: ViewerNotifications, private options: HostNotificationOptions) {
+    const config = state.notificationConfig
     this.clock = options.clock ?? notificationClock
-    this.location = state.companion?.location ?? context.location ?? context.data.location.default()
+    this.location = context.location ?? context.data.location.default()
     const click: NotificationClick = (sessionID, target) => this.beginClick(sessionID, target).commit()
     click.begin = (sessionID, target) => this.beginClick(sessionID, target)
     const backend = state.dependencies.notifications?.(click, config)
-      ?? new LinuxNotifications(config, click, state.dependencies.notificationProcesses?.())
-    this.policy = new NotificationPolicy<RequestIdentity>(config, state.config?.autoApprove === true, backend, this.clock)
+      ?? new LinuxNotifications(config, click, state.dependencies.notificationProcesses?.(), undefined, undefined, state.sound)
+    this.policy = new NotificationPolicy<RequestIdentity>(config, state.automatic, backend, this.clock)
     const previous = options.checkpoint
-    if (previous?.client === context.client && sameLocation(previous.location, this.location)) {
+    if (previous?.client === context.client && atLocation(previous.location, this.location)) {
       const copy = (values: ReadonlyMap<string, Birth>) => new Map([...values].map(([id, birth]) => [id, {
         sessionID: birth.sessionID, received: birth.received, root: birth.root, announced: [...(birth.announced ?? [])],
       }]))
       this.sequence = previous.sequence
       this.roots = new Map(previous.roots); this.visits = new Map(previous.visits)
       this.permissions = copy(previous.permissions); this.forms = copy(previous.forms)
+      this.births = new Map(this.permissions)
       this.closed = new Set(previous.closed); this.deletedSessions = new Set(previous.deleted)
     }
     options.signal.addEventListener("abort", this.onAbort, { once: true })
@@ -196,7 +206,6 @@ export class HostNotifications {
   }
   private live(root: string): boolean {
     if (this.executions.has(root) && !this.executions.get(root)!.done) return true
-    if ([...this.dispatches.values()].some(value => value.target.root === root)) return true
     if (this.views.some(view => this.rootOf(view.request.sessionID) === root)) return true
     return [...this.permissions.values(), ...this.forms.values()].some(birth => (birth.target?.root ?? birth.root) === root
       || (birth.received >= this.roots.get(root)! && this.rootOf(birth.sessionID) === root))
@@ -386,25 +395,18 @@ export class HostNotifications {
       this.publish()
     })
   }
-  approval(fact: ApprovalFact<RequestIdentity>) {
+  confirmed(view: View<RequestIdentity>) {
     this.guard(() => {
-      const id = fact.request.id
-      if (fact.type === "dispatched") {
-        const root = this.rootOf(fact.request.sessionID)
-        if (root && this.roots.has(root) && this.dispatches.size < 1024) this.dispatches.set(id, {
-          request: fact.request, target: this.target(root), approval: fact.approval, automatic: fact.automatic,
-        })
-      } else {
-        const dispatch = this.dispatches.get(id)
-        if (!dispatch || dispatch.request.sessionID !== fact.request.sessionID || dispatch.approval !== fact.approval) return
-        this.dispatches.delete(id)
-        if (fact.type === "confirmed" && fact.automatic && dispatch.automatic
-          && !this.deletedSessions.has(fact.request.sessionID) && !this.deletedSessions.has(dispatch.target.root)) {
-          // Policy delivery is microtask-queued, never process work on the write path.
-          if (fact.decision === "reject") this.policy.steered(dispatch.request, this.target(dispatch.target.root))
-          else this.policy.approved(dispatch.request, this.target(dispatch.target.root))
-        }
-      }
+      if (!view.resolved || view.autoApproval?.status !== "approved") return
+      const { id, sessionID } = view.request
+      const birth = this.births.get(id)
+      const root = this.rootOf(sessionID)
+      const since = root && this.roots.get(root)
+      if (!birth || birth.sessionID !== sessionID || !root || typeof since !== "number" || birth.received < since
+        || this.deletedSessions.has(sessionID) || this.deletedSessions.has(root)) return
+      this.births.delete(id)
+      if (view.autoDecision === "reject") this.policy.steered(view.request, this.target(root))
+      else if (view.autoDecision === "once") this.policy.approved(view.request, this.target(root))
     })
   }
   private resolve(kind: "permission" | "question", id: string, sessionID: string) {
@@ -426,7 +428,12 @@ export class HostNotifications {
         const entries = kind === "permission" ? this.permissions : this.forms
         if (value.sessionID === "global" || this.deletedSessions.has(value.sessionID)
           || entries.has(value.id) || this.closed.has(`${kind}:${value.id}`) || entries.size >= 1024) return
-        entries.set(value.id, { sessionID: value.sessionID, received: ++this.sequence })
+        const birth = { sessionID: value.sessionID, received: ++this.sequence }
+        entries.set(value.id, birth)
+        if (kind === "permission") {
+          if (this.births.size >= 4096) this.births.delete(this.births.keys().next().value!)
+          this.births.set(value.id, birth)
+        }
       } else if (event.type === "permission.replied") this.resolve("permission", event.data.requestID, event.data.sessionID)
       else if (event.type === "form.replied" || event.type === "form.cancelled") this.resolve("question", event.data.id, event.data.sessionID)
       else if (event.type === "session.deleted") { this.deleted(event.data.sessionID); return }
@@ -508,7 +515,7 @@ export class HostNotifications {
       for (const [id, root] of this.ancestry) if (id === sessionID || root === sessionID) this.ancestry.delete(id)
       for (const [id, birth] of this.permissions) if (birth.sessionID === sessionID || (birth.target?.root ?? birth.root) === sessionID) this.resolve("permission", id, birth.sessionID)
       for (const [id, birth] of this.forms) if (birth.sessionID === sessionID || (birth.target?.root ?? birth.root) === sessionID) this.resolve("question", id, birth.sessionID)
-      for (const [id, dispatch] of this.dispatches) if (dispatch.request.sessionID === sessionID || dispatch.target.root === sessionID) this.dispatches.delete(id)
+      for (const [id, birth] of this.births) if (birth.sessionID === sessionID || birth.root === sessionID) this.births.delete(id)
       this.policy.deleted(sessionID)
       this.publish()
     })
@@ -528,7 +535,7 @@ export class HostNotifications {
     this.clearClick(); this.abort.abort()
     this.options.signal.removeEventListener("abort", this.onAbort)
     this.cancelHealth?.()
-    this.roots.clear(); this.permissions.clear(); this.forms.clear(); this.dispatches.clear(); this.executions.clear()
+    this.roots.clear(); this.permissions.clear(); this.forms.clear(); this.births.clear(); this.executions.clear()
     this.rootRevisions.clear()
     this.visits.clear(); this.ancestry.clear(); this.retryAt.clear(); this.closed.clear(); this.deletedSessions.clear(); this.views = []
     this.disposal = Promise.allSettled([this.policy.dispose(), ...this.completionReads.values(),
@@ -538,7 +545,7 @@ export class HostNotifications {
 }
 
 /** Optional observers/backend failures cannot prevent runtime setup. */
-export function setupHostNotifications(context: Plugin.Context, state: CliPluginState, options: HostNotificationOptions) {
-  if (!(state.notificationConfig ?? state.config)?.notify || options.signal.aborted) return
+export function setupHostNotifications(context: Plugin.Context, state: ViewerNotifications, options: HostNotificationOptions) {
+  if (!state.notificationConfig.notify || options.signal.aborted) return
   try { return new HostNotifications(context, state, options) } catch { return }
 }

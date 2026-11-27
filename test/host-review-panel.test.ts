@@ -181,7 +181,7 @@ function panelObserverFixture(probe: boolean) {
       // These tests cover observer registration, not rendering nested components.
       createComponent() {}, insert() {}, insertNode() {}, createTextNode() {}, memo: solid.createMemo,
     },
-    "./controller.js": { displayText },
+    "./display-text.js": { displayText },
     "./appearance.js": { scannerFrame, SCANNER_FRAME_COUNT, SCANNER_INTERVAL_MS },
     "./review-description.js": { HostReviewDescription() {} },
     "./host-review-metadata.js": { HostReviewMetadata() {} },
@@ -250,7 +250,7 @@ test("the production Unsafe footer renders Checking and working Cancel before ar
         setProp(node: any, key: string, value: any) { node[key] = value; return value },
         effect(fn: any) { fn({}) }, memo: (fn: any) => fn,
       },
-      "./controller.js": { displayText }, "./appearance.js": {},
+      "./display-text.js": { displayText }, "./appearance.js": {},
       "./review-description.js": {}, "./host-review-metadata.js": {},
       "./review-geometry.js": {}, "./ui-text.js": { uiText }, "./usage.js": {}, "./review-lines.js": reviewLines,
     }

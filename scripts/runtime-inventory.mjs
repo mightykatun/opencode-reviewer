@@ -7,18 +7,20 @@ const host = (scenarios, flags = [], extra = {}) => ({ classification: "producti
 export const runtimeInventory = {
   "smoke-v2-root-presentation.mjs": host(["mouse-on", "mouse-off"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux", "babel"] }),
   "smoke-v2-native-queue.mjs": host(["default"], [], { classification: "synthetic-host", requires: ["linux", "git", "python3", "tmux"] }),
-  "smoke-v2-lifecycle.mjs": host(["default", "cold-startup"], [], { requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
-  "smoke-v2-invocation.mjs": host(["default", "review"], [], { requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"] }),
-  "smoke-v2-review.mjs": host(["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "normal-retrieval", "normal-retrieval-model", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant", "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
-      "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-location-tab", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-code-mode-tool", "fast-code-mode-tool", "normal-project-transition", "normal-long-session", "normal-large-source", "normal-reconnect", "normal-reconnect-visible", "normal-stalled-stream", "normal-instructions"], [], { scenarioHosts: { "normal-reconnect": 2, "normal-reconnect-visible": 2, "normal-stalled-stream": 2 }, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
+  "smoke-v2-lifecycle.mjs": host(["cold-startup", "viewer-attach-detach", "viewer-settings-sounds"], [], { requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
+  "smoke-v2-review.mjs": host(["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "normal-retrieval", "normal-retrieval-model", "fast", "normal-mouse-off", "normal-cancel", "normal-native-enter", "normal-native-enter-click", "child-route-progress", "fast-descendant", "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
+      "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-home-route", "normal-location-tab", "normal-highlighted-choice", "fast-highlighted-choice", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-code-mode-tool", "fast-code-mode-tool", "normal-project-transition", "normal-long-session", "normal-large-source", "viewer-reconnect-idle", "viewer-reconnect-countdown", "viewer-stalled-stream", "normal-instructions"], [], { scenarioHosts: { "viewer-reconnect-idle": 2, "viewer-reconnect-countdown": 2, "viewer-stalled-stream": 2 }, requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"] }),
   "smoke-v2-notifications.mjs": host(["manual-handoff", "forms", "execution", "unavailable-review"], [], {
     requires: ["linux", "git", "python3", "tmux", "npm-pack", "tar", "bundle"], timeoutMs: 360000 }),
-  "smoke-v2-steering.mjs": host(["normal-steering", "fast-steering", "normal-steering-cap", "normal-steering-follow-up", "normal-steering-cancel-held"], [], {
+  "smoke-v2-steering.mjs": host(["normal-steering", "fast-steering", "normal-steering-cap", "normal-steering-follow-up", "normal-steering-cancel-verification"], [], {
     requires: ["linux", "git", "tmux", "bundle", "node-sqlite"] }),
   "smoke-v2-worktree.mjs": host(["normal-worktree-descendant", "normal-removed-worktree"], [], { requires: ["linux", "git", "tmux", "bundle", "node-sqlite"] }),
+  "smoke-v2-headless.mjs": host(["advisory", "once", "steering", "unconfigured"], [], { requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle"] }),
+  "smoke-v2-headless-lifecycle.mjs": host(["human-reply-race", "same-step-steering", "root-blocker-child-progress", "policy-edit-pending", "restart-shared-stats", "server-state-upgrade"], [],
+    { requires: ["linux", "git", "tmux", "npm-pack", "tar", "bundle", "node-sqlite"], timeoutMs: 480000 }),
   "smoke-notification-desktop.ts": { classification: "interactive", scenarios: ["default"], default: "default", flags: ["all", "sounds", "click", "critical"],
     rules: [], exactlyOne: ["all", "sounds", "click"], requires: ["linux", "desktop-bus", "audio-player", "source", "tsx"], hosts: 0, timeoutMs: 180000 },
-  ...Object.fromEntries(["smoke-runtime.mjs", "smoke-package.mjs", "smoke-desktop-playback.mjs", "smoke-observations.mjs", "smoke-connection.mjs", "smoke-ui.mjs", "smoke-v2-review-support.mjs", "smoke-v2-rpc.mjs", "runtime-inventory.mjs", "runtime-runner.mjs", "runtime-summary.mjs", "test-runtime.mjs"]
+  ...Object.fromEntries(["smoke-runtime.mjs", "smoke-package.mjs", "smoke-desktop-playback.mjs", "smoke-observations.mjs", "smoke-connection.mjs", "smoke-ui.mjs", "smoke-v2-review-support.mjs", "smoke-v2-headless-support.mjs", "smoke-v2-rpc.mjs", "runtime-inventory.mjs", "runtime-runner.mjs", "runtime-summary.mjs", "test-runtime.mjs"]
     .map(name => [name, { classification: "helper", internal: name === "smoke-runtime.mjs" ? ["--guard <absolute-socket>"]
       : name === "test-runtime.mjs" ? ["--list", "--plan [--profile <name> | <entrypoint> <scenario> <flags>]", "--profile <name>"] : [] }])),
 }
@@ -58,10 +60,9 @@ export function assertV2HostVersion(actual) {
 
 export const runtimeProfiles = {
   ci: [
-    ["smoke-v2-lifecycle.mjs"],
     ["smoke-v2-lifecycle.mjs", "cold-startup"],
-    ["smoke-v2-invocation.mjs"],
-    ["smoke-v2-invocation.mjs", "review"],
+    ["smoke-v2-lifecycle.mjs", "viewer-attach-detach"],
+    ["smoke-v2-lifecycle.mjs", "viewer-settings-sounds"],
     ["smoke-v2-review.mjs", "advisory"],
     ["smoke-v2-review.mjs", "advisory-evidence-timeout"],
     ...["advisory-history-once", "advisory-history-always", "advisory-history-reject"].map(scenario => ["smoke-v2-review.mjs", scenario]),
@@ -70,26 +71,27 @@ export const runtimeProfiles = {
     ["smoke-v2-review.mjs", "normal-retrieval-model"],
     ["smoke-v2-review.mjs", "normal-instructions"],
     ["smoke-v2-review.mjs", "fast"],
-    ["smoke-v2-review.mjs", "normal-descendant"],
+    ["smoke-v2-review.mjs", "child-route-progress"],
      ["smoke-v2-review.mjs", "normal-project-transition"],
      ["smoke-v2-review.mjs", "normal-long-session"],
      ["smoke-v2-review.mjs", "normal-large-source"],
-      ["smoke-v2-review.mjs", "normal-reconnect"],
-      ["smoke-v2-review.mjs", "normal-reconnect-visible"],
-      ["smoke-v2-review.mjs", "normal-stalled-stream"],
+      ["smoke-v2-review.mjs", "viewer-reconnect-idle"],
+      ["smoke-v2-review.mjs", "viewer-reconnect-countdown"],
+      ["smoke-v2-review.mjs", "viewer-stalled-stream"],
     ["smoke-v2-root-presentation.mjs", "mouse-on"],
     ["smoke-v2-root-presentation.mjs", "mouse-off"],
     ["smoke-v2-native-queue.mjs"],
-    ...["normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-code-mode-tool", "fast-code-mode-tool", "normal-mouse-off", "normal-cancel", "fast-descendant", "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off",
+    ...["normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-code-mode-tool", "fast-code-mode-tool", "normal-mouse-off", "normal-cancel", "normal-native-enter", "normal-native-enter-click", "fast-descendant", "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off",
       "fast-history-cover", "fast-notifications", "normal-hide", "normal-dialog", "normal-resize", "fast-dialog",
-      "normal-hidden-complete", "normal-route-wait", "normal-location-tab", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit"].map(scenario => ["smoke-v2-review.mjs", scenario]),
+      "normal-hidden-complete", "normal-home-route", "normal-location-tab", "normal-highlighted-choice", "fast-highlighted-choice", "normal-edit", "normal-directory-edit"].map(scenario => ["smoke-v2-review.mjs", scenario]),
     ...["manual-handoff", "forms", "execution", "unavailable-review"].map(scenario => ["smoke-v2-notifications.mjs", scenario]),
-    ...["normal-steering", "fast-steering", "normal-steering-cap", "normal-steering-follow-up", "normal-steering-cancel-held"].map(scenario => ["smoke-v2-steering.mjs", scenario]),
+    ...["normal-steering", "fast-steering", "normal-steering-cap", "normal-steering-follow-up", "normal-steering-cancel-verification"].map(scenario => ["smoke-v2-steering.mjs", scenario]),
     ["smoke-v2-worktree.mjs", "normal-worktree-descendant"],
     ["smoke-v2-worktree.mjs", "normal-removed-worktree"],
+    ...["advisory", "once", "steering", "unconfigured"].map(scenario => ["smoke-v2-headless.mjs", scenario]),
+    ...["human-reply-race", "same-step-steering", "root-blocker-child-progress", "policy-edit-pending", "restart-shared-stats", "server-state-upgrade"].map(scenario => ["smoke-v2-headless-lifecycle.mjs", scenario]),
   ],
   "v2-permissions": [
-    ["smoke-v2-invocation.mjs"], ["smoke-v2-invocation.mjs", "review"],
     ["smoke-v2-review.mjs", "normal-edit"], ["smoke-v2-review.mjs", "normal-directory-edit"],
     ["smoke-v2-review.mjs", "normal-project-transition"],
   ],

@@ -9,7 +9,8 @@ import { withDeadline } from "./deadline.js"
 
 export interface HostSessionInstructionsOptions {
   root(): string | undefined
-  maxBytes: number
+  /** Effective byte limit. A getter follows the server's current limit. */
+  maxBytes: number | (() => number)
   /** Resolves "" only for a missing record. Unreadable or skipped reads reject. */
   read(root: string, signal: AbortSignal): Promise<string>
   write(root: string, text: string): Promise<void>
@@ -107,9 +108,10 @@ export function setupHostSessionInstructions(context: Plugin.Context,
   }
   const apply = (draft: Draft, text: string) => {
     if (!current(draft) || !draft.ready() || draft.saving()) return
-    const normalized = sessionInstructionsText(text, options.maxBytes)
+    const maxBytes = typeof options.maxBytes === "function" ? options.maxBytes() : options.maxBytes
+    const normalized = sessionInstructionsText(text, maxBytes)
     if (normalized === undefined) {
-      context.ui.toast.show({ message: uiText.sessionInstructions.tooLarge(options.maxBytes), variant: "error" })
+      context.ui.toast.show({ message: uiText.sessionInstructions.tooLarge(maxBytes), variant: "error" })
       return
     }
     draft.setSaving(true)

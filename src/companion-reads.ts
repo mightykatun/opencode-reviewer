@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import path from "node:path"
 import type { Plugin } from "@opencode/plugin"
-import { companionBusy, companionProtocol, companionRpc, sameLocation, type CompanionHandshake } from "./companion-protocol.js"
+import { companionProtocol, type CompanionHandshake } from "./companion-protocol.js"
 import type { PluginLifecycle } from "./plugin-lifecycle.js"
 import { InvocationCapture } from "./invocation-capture.js"
 import { readHostInvocation, sameRequest, serverRequestJSON, snapshotRequest } from "./host-request.js"
@@ -14,11 +14,25 @@ import { readHostEvidenceOptions } from "./host-evidence-options.js"
 import { codeModeToolAction } from "./host-tool-kind.js"
 import { runRetrievalTool, type RetrievalCall } from "./retrieval-tools.js"
 
-type Query = { location: CompanionHandshake["location"]; epoch: string; sessionID: string; requestID: string }
-type RetrieveQuery = Query & { base: string; call: RetrievalCall; timeoutMs: number; maxBytes: number }
-type Call = { signal: AbortSignal; error(type: typeof companionBusy, message: string, data: Record<string, never>): unknown }
+export interface CompanionQuery { sessionID: string; requestID: string }
+export interface CompanionRetrieveQuery extends CompanionQuery { base: string; call: RetrievalCall; timeoutMs: number; maxBytes: number }
+export interface CompanionCollection { options: unknown; timeoutMs: number }
+/** Explicit pre-admission refusal: no physical work started. */
+export class CompanionBusyError extends Error {}
 
-export async function setupCompanion(context: Plugin.Context, lifecycle: PluginLifecycle, fileIO?: FileIO): Promise<CompanionHandshake> {
+/** The location's exact evidence source: live invocation captures plus scoped
+ * server reads. One instance per plugin generation. The RPC companion and the
+ * in-process server engine both call these functions. */
+export interface CompanionServer {
+  readonly handshake: CompanionHandshake
+  readonly captures: InvocationCapture
+  /** Pending permission bound to its captured invocation, optionally with collected operation evidence. */
+  read(query: CompanionQuery, signal: AbortSignal, collection?: CompanionCollection): Promise<unknown>
+  /** Model-chosen read-only filesystem operation within the scope. */
+  retrieve(query: CompanionRetrieveQuery, signal: AbortSignal): Promise<unknown>
+}
+
+export async function createCompanionServer(context: Plugin.Context, lifecycle: PluginLifecycle, fileIO?: FileIO): Promise<CompanionServer> {
   const location = { directory: context.location.directory,
     ...(context.location.workspaceID ? { workspaceID: context.location.workspaceID } : {}) }
   const handshake: CompanionHandshake = {
@@ -37,14 +51,14 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
   const after = await context.tool.hook("execute.after", event => { captures.after(event) })
   lifecycle.addCleanup(() => after.dispose())
   lifecycle.signal.throwIfAborted()
-  const read = async (query: Query, call: Call, collection?: { options: unknown; timeoutMs: number }) => {
-    if (lifecycle.signal.aborted || call.signal.aborted) return null
+  const read = async (query: CompanionQuery, callSignal: AbortSignal, collection?: CompanionCollection): Promise<unknown> => {
+    if (lifecycle.signal.aborted || callSignal.aborted) return null
     const collectOptions = collection && readHostEvidenceOptions(collection.options)
     if (collection && (!collectOptions || !Number.isFinite(collection.timeoutMs) || collection.timeoutMs <= 0 || collection.timeoutMs > 5000)) return null
-    if (activeReads >= 2) return call.error(companionBusy, "Reviewer companion read capacity occupied", {})
+    if (activeReads >= 2) throw new CompanionBusyError("Reviewer companion read capacity occupied")
     activeReads++
     const ownership = new TransportOwnership(reads)
-    const signal = AbortSignal.any([lifecycle.signal, call.signal])
+    const signal = AbortSignal.any([lifecycle.signal, callSignal])
     bindTransportOwnership(signal, ownership)
     try {
       return await withDeadline(signal, collection?.timeoutMs ?? 5000, async signal => {
@@ -82,25 +96,23 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
           signal.throwIfAborted()
           if (current.id !== ids.sessionID || current.location.directory !== location.directory) return null
         }
-        // The CLI binds the exact durable direct/outer item and inputs. Code Mode
+        // The consumer binds the exact durable direct/outer item and inputs. Code Mode
         // candidates remain observations, never a selected inner-call identity.
         return { request: first, invocation, ...(result ? { result } : {}) }
       }, "Invocation evidence lookup")
     } catch { return null }
     finally {
-      // An RPC timeout cannot free capacity while its public reads still run.
+      // A timeout cannot free capacity while its public reads still run.
       void ownership.settled().then(() => { activeReads-- })
     }
   }
-  /** Model-chosen read-only operations. Scope is the handshake epoch/location; the
-   * pending permission is not re-read per call. Physical work is owned until it settles. */
-  const retrieve = async (query: RetrieveQuery, call: Call) => {
-    if (lifecycle.signal.aborted || call.signal.aborted) return null
+  const retrieve = async (query: CompanionRetrieveQuery, callSignal: AbortSignal): Promise<unknown> => {
+    if (lifecycle.signal.aborted || callSignal.aborted) return null
     if (!path.isAbsolute(query.base) || query.base.includes("\0")) return null
-    if (activeRetrievals >= 2) return call.error(companionBusy, "Reviewer companion retrieval capacity occupied", {})
+    if (activeRetrievals >= 2) throw new CompanionBusyError("Reviewer companion retrieval capacity occupied")
     activeRetrievals++
     const ownership = new TransportOwnership(reads)
-    const signal = AbortSignal.any([lifecycle.signal, call.signal])
+    const signal = AbortSignal.any([lifecycle.signal, callSignal])
     // Partial traversal results return slightly before the hard deadline.
     const softEnd = performance.now() + query.timeoutMs - Math.min(1000, query.timeoutMs / 10)
     try {
@@ -116,33 +128,5 @@ export async function setupCompanion(context: Plugin.Context, lifecycle: PluginL
       activeRetrievals--
     }
   }
-  const registration = await context.rpc.register(companionRpc, {
-    handshake: async (input, call) => {
-      lifecycle.signal.throwIfAborted()
-      call.signal.throwIfAborted()
-      if (!sameLocation(input, location)) return call.error("scope", "Reviewer companion scope mismatch", {})
-      return structuredClone(handshake)
-    },
-    invocation: async (input, call) => {
-      const query = input as Query
-      if (query.epoch !== handshake.epoch || !sameLocation(query.location, location))
-        return call.error("scope", "Reviewer companion scope mismatch", {})
-      return read(query, call)
-    },
-    evidence: async (input, call) => {
-      const query = input as Query & { options: unknown; timeoutMs: number }
-      if (query.epoch !== handshake.epoch || !sameLocation(query.location, location))
-        return call.error("scope", "Reviewer companion scope mismatch", {})
-      return read(query, call, query)
-    },
-    retrieve: async (input, call) => {
-      const query = input as RetrieveQuery
-      if (query.epoch !== handshake.epoch || !sameLocation(query.location, location))
-        return call.error("scope", "Reviewer companion scope mismatch", {})
-      return retrieve(query, call)
-    },
-  })
-  lifecycle.addCleanup(() => registration.dispose())
-  lifecycle.signal.throwIfAborted()
-  return handshake
+  return { handshake, captures, read, retrieve }
 }

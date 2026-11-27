@@ -9,6 +9,7 @@ import { hostPermissionTransport } from "../src/host-permissions.js"
 import { InvocationCapture } from "../src/invocation-capture.js"
 import { parseConfig } from "../src/config.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
+import { rpcTestAccess, type RPCTestClient } from "./companion-rpc-access.js"
 
 const location = { directory: "/fixture/project" }
 const scope = { location, epoch: "10000000-1000-4000-8000-100000000000" }
@@ -24,6 +25,7 @@ test("missing mandatory evidence remains visible and manual while its native per
   const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", notify: false, retrieval: false })
   const controller = new Controller((_request, signal, identified) =>
     evaluateHostReview(client, snapshot, config, BUILTIN_PROMPTS, signal, identified, {
+      access: rpcTestAccess(client as unknown as RPCTestClient, scope),
       fetcher: async () => { posts++; throw Error("No model call without evidence") },
     }), () => {}, { candidate: () => true, nativeFront: () => snapshot.request.id })
   t.after(() => controller.dispose())
@@ -41,7 +43,7 @@ test("a metadata-heavy pending request does not block an independent valid permi
   const client = { rpc: () => ({ handshake: async () => handshake }), permission: {
     request: { list: async () => ({ location, data: [large, healthy] }) },
   } } as unknown as OpenCodeClient
-  const values = await hostPermissionTransport(client, scope).pendingScope(new AbortController().signal)
+  const values = await hostPermissionTransport(client, scope, rpcTestAccess(client as unknown as RPCTestClient, scope)).pendingScope(new AbortController().signal)
   assert.deepEqual(values.map(value => value.request.id), ["large", "healthy"], "Retain the unreadable native blocker identity")
   assert.deepEqual(values[1], snapshotRequest(healthy, scope))
   assert.equal("resources" in values[0]!.request, false, "Never fabricate missing mandatory arguments")

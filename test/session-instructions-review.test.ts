@@ -10,6 +10,7 @@ import { evaluateHostReview } from "../src/host-evaluate.js"
 import { FileAccess } from "../src/file-access.js"
 import { shellEvidence, editEvidence, directoryEvidence, skillEvidence, nativeInvocation, nativeClient, verdictEvidence } from "./review-fixtures.js"
 import type { HostReviewEvidence } from "../src/host-evidence.js"
+import { rpcTestAccess, type RPCTestClient } from "./companion-rpc-access.js"
 
 const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "judge" })
 const answer = (content = '{"safe":true,"reason":"Decisive reason.","desc":"Bounded effects."}') => new Response(JSON.stringify({ choices: [{ message: { content } }] }))
@@ -61,6 +62,7 @@ test("guidance is captured before evidence collection, not immediately before th
   }) as typeof client.permission.get
   let system = ""
   await evaluateHostReview(client, invocation.snapshot, config, BUILTIN_PROMPTS, new AbortController().signal, () => {}, {
+    access: rpcTestAccess(client as unknown as RPCTestClient, invocation.snapshot.scope),
     loadSessionInstructions: async () => { assert.equal(evidenceStarted, false); loaded++; return saved },
     fetcher: async (_, init) => { system = JSON.parse(String(init?.body)).messages[0].content; return answer() },
   })

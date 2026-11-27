@@ -56,7 +56,7 @@ function fixture() {
         return style
       },
     },
-    "./controller.js": { displayText },
+    "./display-text.js": { displayText },
     "./syntax-retirement.js": { retireDefaultMarkdownStyle },
   }
   const module = { exports: {} as { HostReviewDescription(props: unknown): typeof markdown } }

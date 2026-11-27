@@ -9,7 +9,7 @@ import { HostReviewMetadata } from "./host-review-metadata.js"
 import { uiText } from "./ui-text.js"
 import { HostButton as HistoryButton } from "./host-button.js"
 import { historyOutcome, reasonLine } from "./review-lines.js"
-import { displayText } from "./controller.js"
+import { displayText } from "./display-text.js"
 
 export interface HostHistoryProofInput {
   session: string

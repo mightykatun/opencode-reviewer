@@ -5,7 +5,7 @@ import { isBuiltin } from "node:module"
 import { fileURLToPath } from "node:url"
 import inventory from "../src/prompt-files.json" with { type: "json" }
 import { soundBanner, assertNoBundledSounds } from "./bundled-sounds.mjs"
-import { historyWorkerBanner, assertNoBundledHistoryWorker } from "./bundled-history-worker.mjs"
+import { historyWorkerBanner, assertNoBundledHistoryWorker, verifyBundledHistoryWorker } from "./bundled-history-worker.mjs"
 import { themeSyntaxOnlyPlugin, verifyThemeSyntaxBuild } from "./theme-syntax-adapter.mjs"
 
 const prompts = Object.fromEntries(await Promise.all(
@@ -87,29 +87,46 @@ const embeddedPromptsPlugin = {
 }
 
 const common = { bundle: true, metafile: true, platform: "node", format: "esm", target: "es2023" }
+// The server bundles @opencode/client (promise client and service discovery) because
+// the host supplies only @opencode/plugin and effect to plugins. Everything else is bundled.
+const serverExternals = ["@opencode/plugin", "@opencode/plugin/*", "effect", "effect/*"]
+// History and statistics live in the server, so it embeds the SQLite worker. Sounds,
+// the MP3 decoder and the renderer stay in the terminal bundle.
+const workerBanner = historyWorkerBanner(historyWorker.outputFiles[0].text)
 const server = await build({
-  ...common, entryPoints: ["src/server.ts"], outfile: "dist/server.js", external: ["@opencode/*"],
+  ...common, entryPoints: ["src/server.ts"], outfile: "dist/server.js", external: serverExternals,
+  banner: { js: workerBanner },
+  define: { __REVIEWER_VERSION__: define.__REVIEWER_VERSION__, __REVIEW_PROMPTS__: define.__REVIEW_PROMPTS__, __HISTORY_WORKER__: define.__HISTORY_WORKER__ },
+  plugins: [versionPlugin, embeddedPromptsPlugin],
 })
 const forbidden = /solid-js|@opentui\/|@opencode\/theme|mpeg_frame_decoder_create|mpg123-decoder/
 for (const input of Object.keys(server.metafile.inputs)) {
   if (forbidden.test(input)) throw new Error(`Terminal dependency in server inputs: ${input}`)
 }
 for (const dependency of server.metafile.outputs["dist/server.js"].imports) {
-  if (forbidden.test(dependency.path) || (!isBuiltin(dependency.path) && !dependency.path.startsWith("@opencode/"))) {
+  if (forbidden.test(dependency.path) || (!isBuiltin(dependency.path) && !/^(?:@opencode\/plugin|effect)(?:\/|$)/.test(dependency.path))) {
     throw new Error(`Unexpected server import: ${dependency.path}`)
   }
 }
 const source = await readFile("dist/server.js", "utf8")
 if (forbidden.test(source)) throw new Error("Terminal dependency in server bundle")
 assertNoBundledSounds(source)
-assertNoBundledHistoryWorker(source)
+verifyBundledHistoryWorker(source, historyWorker.outputFiles[0].text)
 
 const terminal = await build({
   ...common, entryPoints: ["src/tui.ts"], outfile: "dist/tui.js",
-  banner: { js: `${soundBanner(sounds)}\n${historyWorkerBanner(historyWorker.outputFiles[0].text)}` },
-  define,
+  banner: { js: soundBanner(sounds) },
+  define: { __REVIEW_SOUNDS__: define.__REVIEW_SOUNDS__ },
   alias: { "@opencode/theme/tui": fileURLToPath(import.meta.resolve("@opencode/theme/tui")) },
   external: ["solid-js", "solid-js/*", "@opentui/*", "@opencode/*"],
-  plugins: [versionPlugin, decoderPlugin, themeSyntaxOnlyPlugin, jsxPlugin, embeddedPromptsPlugin],
+  plugins: [decoderPlugin, themeSyntaxOnlyPlugin, jsxPlugin],
 })
 verifyThemeSyntaxBuild(terminal.metafile)
+const serverOnly = new Set(["host-evaluate", "reviewer", "retrieval", "retrieval-tools", "policy", "decision-ledger", "hosting",
+  "history-store", "history-storage-worker", "local-state", "session-mode", "session-instructions", "host-permissions",
+  "controller", "prompts", "steering", "server-runtime", "companion-reads", "companion-access", "approval-transaction"])
+for (const [file, input] of Object.entries(terminal.metafile.outputs["dist/tui.js"].inputs)) {
+  if (input.bytesInOutput && serverOnly.has(file.replace(/^src\//, "").replace(/\.ts$/, "")))
+    throw new Error(`Server implementation in terminal bundle: ${file}`)
+}
+assertNoBundledHistoryWorker(await readFile("dist/tui.js", "utf8"))

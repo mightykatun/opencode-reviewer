@@ -4,7 +4,6 @@ import { setImmediate as settle } from "node:timers/promises"
 import { Controller, type ApprovalClock, type ApprovalFact, type ReviewLifecycleFact } from "../src/controller.js"
 import type { HostRequest } from "../src/host-types.js"
 import type { ReviewProgress, ReviewResult } from "../src/types.js"
-import { hostApprovalReady } from "../src/host-approval-ready.js"
 
 const request: HostRequest = { id: "request", sessionID: "root", action: "shell", resources: ["pwd"],
   source: { assistantID: "assistant", id: "call" } }
@@ -178,37 +177,7 @@ test("fast: a background tab allows preview approval without a countdown", async
 })
 
 for (const fast of [false, true]) {
-  test(`${fast ? "fast" : "normal"}: actual tab policy ignores another conversation's native decision through dispatch`, async t => {
-    let route: { type: string; sessionID?: string } = { type: "session", sessionID: "other" }
-    const tabs = [{ sessionID: "root", active: false }, { sessionID: "other", active: true }]
-    let decisionReads = 0
-    const policy = () => hostApprovalReady(request, "root", route, id => ({ id }),
-      () => { decisionReads++; return true }, tabs)
-    const f = await fixture(fast, true, false, 2, true, policy); t.after(() => f.dispose())
-    if (!fast) { await f.complete(); f.clock.jump(2200) }
-    await settle()
-    assert.equal(f.state.preparations, 1)
-    route = { type: "home" }
-    f.wake()
-    f.preparation.resolve(); await settle()
-    assert.equal(f.state.writes, 1)
-    assert.equal(decisionReads, 0)
-    await f.complete()
-    assert.equal(f.facts.filter(fact => fact.type === "confirmed").length, 1)
-  })
 
-  test(`${fast ? "fast" : "normal"}: closing the qualifying tab during preparation prevents dispatch`, async t => {
-    const tabs = [{ sessionID: "root", active: false }]
-    const policy = () => hostApprovalReady(request, "root", { type: "home" }, id => ({ id }), () => false, tabs)
-    const f = await fixture(fast, true, false, 2, true, policy); t.after(() => f.dispose())
-    if (!fast) { await f.complete(); f.clock.jump(2200) }
-    await settle()
-    assert.equal(f.state.preparations, 1)
-    tabs.length = 0
-    f.wake(); f.preparation.resolve(); await settle()
-    assert.equal(f.state.writes, 0)
-    assert.notEqual(f.view()?.autoApproval?.status, "cancelled")
-  })
 
   test(`${fast ? "fast" : "normal"}: a route/form change during awaited preparation blocks the synchronous write and recovers`, async t => {
     const f = await fixture(fast, true); t.after(() => f.dispose())

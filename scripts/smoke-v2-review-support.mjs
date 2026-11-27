@@ -19,14 +19,15 @@ export async function readProductionHistory(file) {
     if (!tables.length) return undefined
     const rows = db.prepare(`SELECT h.*,r.context,r.accepted,p.body FROM history h
       JOIN reviews r ON r.id=h.review JOIN payloads p ON p.id=h.id ORDER BY h.completed,h.tie,h.id`).all()
-    const reviews = db.prepare("SELECT id,root,session,context,accepted FROM reviews ORDER BY id").all()
+    const reviews = db.prepare("SELECT id,root,session,context,accepted,reviewer_version,opencode_version FROM reviews ORDER BY id").all()
+    const calls = db.prepare("SELECT review,tool FROM retrieval_calls ORDER BY rowid").all()
     const attempts = db.prepare("SELECT id,review,dispatched,finalized FROM attempts ORDER BY id").all()
     const approvals = db.prepare("SELECT * FROM approvals ORDER BY id").all()
     const meta = db.prepare("SELECT version,revision,totals FROM meta WHERE id=1").get()
-    const conversations = db.prepare("SELECT id,totals,partial FROM conversation_totals ORDER BY id").all()
+    const conversations = db.prepare("SELECT id,totals FROM conversation_totals ORDER BY id").all()
     const payloadCount = db.prepare("SELECT count(*) AS n FROM payloads").get().n
     db.exec("COMMIT")
-    return { file, rows, reviews, attempts, approvals, meta, conversations, payloadCount }
+    return { file, rows, reviews, attempts, calls, approvals, meta, conversations, payloadCount }
   } catch (error) {
     // Initial journal setup may briefly hold an exclusive lock. Let the caller's
     // existing polling deadline own retries, never hide corruption/SQL errors.
@@ -35,24 +36,21 @@ export async function readProductionHistory(file) {
   } finally { db?.close() }
 }
 
-export function assertWriteInspection(inspection, request, call, sessionID, handshake) {
+export function assertWriteInspection(inspection, request, call, sessionID, directory, projectID) {
   assert.deepEqual(inspection.request, request)
   assert.equal(request.sessionID, sessionID)
   assert.equal(request.source.type, "tool")
   assert.equal(request.source.id, call.id)
   assert.equal(inspection.session.id, sessionID)
   assert.equal(inspection.session.parentID, undefined)
-  assert.deepEqual(inspection.session.location, handshake.location)
-  assert.equal(inspection.session.projectID, handshake.project.id)
+  assert.deepEqual(inspection.session.location, { directory })
+  assert.equal(inspection.session.projectID, projectID)
   assert.equal(inspection.message.id, request.source.messageID)
   const native = inspection.message.content.filter(item => item.type === "tool" && item.id === call.id)
   assert.equal(native.length, 1)
   assert.equal(native[0].name, "write")
   assert.equal(native[0].state.status, "running")
   assert.deepEqual(native[0].state.input, call.input)
-  assert.deepEqual(inspection.captured.request, request)
-  assert.deepEqual(inspection.captured.invocation, { sessionID, assistantID: request.source.messageID, callID: call.id,
-    tool: "write", input: call.input, location: handshake.location, project: handshake.project, epoch: handshake.epoch })
   assert.equal(inspection.native.root, sessionID)
   assert.deepEqual(inspection.native.route, { type: "session", sessionID })
   assert.ok(inspection.native.permissions.some(item => item.id === request.id))
@@ -117,24 +115,22 @@ export function savedStageHistory(value, expected, sessionID) {
   const totals = [JSON.parse(value.meta.totals), ...value.conversations.map(row => JSON.parse(row.totals))]
   if (totals.some(total => total.activity.reviews !== count || total.activity.autoApproved !== count
     || total.activity.usageRequests !== count)) return undefined
-  assert.equal(value.meta.version, 1)
+  assert.equal(value.meta.version, 2)
   assert.equal(value.rows.length, count)
   assert.equal(value.payloadCount, count, "Only qualifying native resolutions save report bodies")
   assert.equal(value.conversations.length, 1)
   const opaque = (...parts) => createHash("sha256").update(JSON.stringify(parts)).digest("hex")
-  const scope = JSON.parse(rows[0].context).scope
   for (const [index, row] of rows.entries()) {
     const stage = expected[index], context = JSON.parse(row.context), payload = JSON.parse(row.body)
-    assert.equal(context.scope, scope)
     assert.equal(context.root, sessionID)
     assert.equal(context.session, sessionID)
     assert.equal(context.permission, stage.request.id)
     assert.equal(context.category, stage.action, "Directory and edit have separate saved categories")
     assert.equal(context.configuredModel, "v2-production-reviewer")
-    assert.equal(row.id, opaque(scope, context.review))
-    assert.equal(row.entry, opaque(scope, stage.request.id))
-    assert.equal(row.root, opaque(scope, sessionID))
-    assert.equal(row.session, opaque(scope, sessionID))
+    assert.equal(row.id, opaque(context.review))
+    assert.equal(row.entry, opaque(stage.request.id))
+    assert.equal(row.root, opaque(sessionID))
+    assert.equal(row.session, opaque(sessionID))
     assert.equal(row.outcome, "auto")
     assert.equal(row.resolution, "auto")
     assert.equal(row.approving, row.review)
@@ -158,7 +154,6 @@ export function savedStageHistory(value, expected, sessionID) {
     assert.equal(approvals[0].automatic, 1)
     assert.equal(value.conversations[0].id, row.root)
   }
-  assert.equal(value.conversations[0].partial, 0)
   for (const total of totals) {
     assert.equal(total.requests, count)
     assert.equal(total.tokenRequests, count)

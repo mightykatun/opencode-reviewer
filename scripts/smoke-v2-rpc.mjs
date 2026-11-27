@@ -1,21 +1,54 @@
-// Independent fixture wire contract. Keep closure-free for generated observers.
-export function rpcDefinition() {
-  const text = { type: "string", minLength: 1, maxLength: 16384 }
-  const location = { type: "object", properties: { directory: text, workspaceID: text },
-    required: ["directory"], additionalProperties: false }
-  return { id: "opencode-reviewer", methods: {
-    handshake: { input: location, output: { type: "object", properties: {
-      protocol: { const: 2 }, hostVersion: text, epoch: { type: "string", format: "uuid" }, location,
-      project: { type: "object", properties: { id: text, directory: text, canonical: text },
-        required: ["id", "directory", "canonical"], additionalProperties: false },
-    }, required: ["protocol", "hostVersion", "epoch", "location", "project"], additionalProperties: false },
-    errors: { scope: { type: "object", properties: {}, additionalProperties: false } } },
-    invocation: { input: { type: "object", properties: { location, epoch: text, sessionID: text, requestID: text },
-      required: ["location", "epoch", "sessionID", "requestID"], additionalProperties: false },
-    output: { anyOf: [{ type: "null" }, { type: "object", properties: {
-      request: { type: "object" }, invocation: { type: "object" },
-    }, required: ["request", "invocation"], additionalProperties: false }] },
-    errors: { scope: { type: "object", properties: {}, additionalProperties: false },
-      capacity_busy: { type: "object", properties: {}, additionalProperties: false } } },
-  }, events: {} }
+import assert from "node:assert/strict"
+import { createServer } from "node:net"
+import path from "node:path"
+import { setTimeout as sleep } from "node:timers/promises"
+import { OpenCode } from "@opencode/client"
+import { Service } from "@opencode/client/service"
+import { reviewerRpc } from "./smoke-v2-headless-support.mjs"
+
+/** One service owns the location. The terminal discovers its private registration. */
+export async function managedReviewer({ runtime, env, directory, host }) {
+  const reservation = createServer()
+  await new Promise((resolve, reject) => {
+    reservation.once("error", reject)
+    reservation.listen(0, "127.0.0.1", resolve)
+  })
+  const port = reservation.address().port
+  await new Promise(resolve => reservation.close(resolve))
+  const state = env.XDG_STATE_HOME ?? path.join(env.HOME, ".local/state")
+  const file = path.join(state, "opencode/service.json")
+  const environment = env.XDG_STATE_HOME ? ["XDG_STATE_HOME=" + state] : ["-u", "XDG_STATE_HOME", "HOME=" + env.HOME]
+  await runtime.start("-d", "-s", "reviewer-service", "-c", directory, "env", ...environment,
+    host, "serve", "--service", "--hostname", "127.0.0.1", "--port", String(port))
+  const deadline = performance.now() + 15000
+  do {
+    const endpoint = await Service.discover({ file }).catch(() => undefined)
+    if (endpoint?.url === `http://127.0.0.1:${port}`) {
+      const client = OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint) })
+      const rpc = client.rpc(reviewerRpc)
+      const options = (at = directory) => ({ location: { directory: at }, signal: AbortSignal.timeout(5000) })
+      return { client, endpoint, snapshot: at => rpc.snapshot({}, options(at)), identity: () => rpc.identity({}, options()) }
+    }
+    await sleep(50)
+  } while (performance.now() < deadline)
+  throw Error("Timed out waiting for the fixture service registration")
+}
+
+export async function verifiedSnapshot(service, directory, review = { enabled: true }) {
+  const deadline = performance.now() + 15000
+  let last
+  do {
+    try {
+      last = await service.snapshot(directory)
+      if (last.hosting.status === "verified" && last.review.enabled === review.enabled && last.review.reason === review.reason) {
+        assert.deepEqual(last.review, review)
+        assert.equal(last.location.directory, directory)
+        return last
+      }
+    } catch (error) {
+      if (error.type !== "rpc.unavailable") throw error
+    }
+    await sleep(50)
+  } while (performance.now() < deadline)
+  throw Error(`No verified reviewer snapshot: ${JSON.stringify(last)}`)
 }

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { Worker } from "node:worker_threads"
-import { encodeEvent, HISTORY_OPERATION_OVERHEAD, HISTORY_QUEUE_BYTES, HISTORY_RETRY_MS, HistoryBusy, HistoryInvalid, rootID, snapshotQuery } from "./history-records.js"
+import { encodeEvent, HISTORY_DATABASE_FILE, HISTORY_OPERATION_OVERHEAD, HISTORY_QUEUE_BYTES, HISTORY_RETRY_MS, HistoryBusy, HistoryInvalid, snapshotQuery } from "./history-records.js"
 import type { HistoryEvent, HistoryQuery } from "./history-records.js"
 import type { HistoryResult } from "./history-schema.js"
 
@@ -47,8 +47,8 @@ export class HistoryWorker implements HistoryTransport {
   async terminate(): Promise<void> { if (!this.dead) void this.worker.terminate().catch(() => {}); await this.exited }
 }
 
-interface Queued { sequence: number; event: string; bytes: number; root: string }
-interface Read { query: HistoryQuery; resolve: (result: HistoryResult) => void; reject: (error: Error) => void; settled: () => void; started: boolean; finished: boolean; bootstrap?: string }
+interface Queued { sequence: number; event: string; bytes: number }
+interface Read { query: HistoryQuery; resolve: (result: HistoryResult) => void; reject: (error: Error) => void; settled: () => void; started: boolean; finished: boolean }
 export type HistoryRead = Promise<HistoryResult> & { settled?: Promise<void> }
 export interface HistoryStoreOptions {
   adapter?: "node" | "bun"; source?: string; transport?: () => HistoryTransport
@@ -72,12 +72,9 @@ export class HistoryStore {
   private blocked = false
   private writeFailed = false
   private preferRead = false
-  private bootstraps = new Set<string>()
-  private preferBootstrap = true
   private cleanupEnabled = false
   private cleanupDue = 0
   private cleanupNeeded = false
-  private legacyCleanup?: boolean
   private failures = new Set<() => unknown>()
   private commits = new Set<() => unknown>()
   private disposal?: Promise<void>
@@ -92,7 +89,6 @@ export class HistoryStore {
   get pendingOperations() { return this.queue.length }
   /** Local observation only; another client may have committed newer cleanup work. */
   get cleanupPending() { return this.cleanupNeeded }
-  get legacyCleanupRequired() { return this.legacyCleanup }
   onCommit(listener: () => unknown) { this.commits.add(listener); return () => { this.commits.delete(listener) } }
   onWriteFailure(listener: () => unknown) { this.failures.add(listener); return () => { this.failures.delete(listener) } }
   private notify(listeners: Set<() => unknown>) {
@@ -102,8 +98,9 @@ export class HistoryStore {
   admit(event: HistoryEvent): boolean {
     if (this.closing || this.stopped || this.blocked) return false
     const serialized = encodeEvent(event), bytes = Buffer.byteLength(serialized) + HISTORY_OPERATION_OVERHEAD
+    // A full queue drops the event. Totals are best-effort counts and stay available.
     if (this.bytes + bytes > HISTORY_QUEUE_BYTES || !Number.isSafeInteger(this.sequence + 1)) return false
-    this.queue.push({ sequence: ++this.sequence, event: serialized, bytes, root: rootID(event.context) }); this.bytes += bytes
+    this.queue.push({ sequence: ++this.sequence, event: serialized, bytes }); this.bytes += bytes
     this.pump(); return true
   }
   query(query: HistoryQuery, signal?: AbortSignal): HistoryRead {
@@ -132,17 +129,13 @@ export class HistoryStore {
   private pump() {
     if (this.active || this.stopped) return
     if (this.timer) { this.cancel(this.timer); this.timer = undefined }
-    // One owned cleanup slot. Checkpoints retry after two seconds; interrupted
-    // detail deletion and legacy page scrub yield ten milliseconds between
-    // bounded slices. Poll even while idle to recover work left by an exited client.
+    // Poll for checkpoint work left by another writer.
     const cleanup = this.cleanupEnabled && this.now() >= this.cleanupDue && (!this.closing || this.cleanupNeeded)
-    if (cleanup) { this.active = true; void this.run(undefined, undefined, true); return }
+    if (cleanup) { this.active = true; void this.run(undefined, true); return }
     const write = !this.blocked && this.queue.length > 0 && this.now() >= this.retryAt
-    const bootstrap = !this.blocked && this.now() >= this.retryAt && (this.preferBootstrap || (!write && !this.reads.length))
-      ? this.bootstraps.values().next().value : undefined
-    const read = !bootstrap && this.reads.length && (!write || this.preferRead) ? this.reads.shift() : undefined
-    if (!read && !write && !bootstrap) {
-      const next = Math.min((this.queue.length || this.bootstraps.size) && !this.blocked ? this.retryAt : Infinity,
+    const read = this.reads.length && (!write || this.preferRead) ? this.reads.shift() : undefined
+    if (!read && !write) {
+      const next = Math.min(this.queue.length && !this.blocked ? this.retryAt : Infinity,
         this.cleanupEnabled && (!this.closing || this.cleanupNeeded) ? this.cleanupDue : Infinity)
       if (Number.isFinite(next)) {
         this.timer = this.schedule(() => { this.timer = undefined; this.pump() }, Math.max(0, next - this.now()))
@@ -152,27 +145,17 @@ export class HistoryStore {
     }
     this.active = true
     if (read) read.started = true
-    void this.run(read, bootstrap)
+    void this.run(read)
   }
-  private rememberBootstrap(root: string) {
-    // Eight admitted readers plus the FIFO head. Expired readers cannot grow a
-    // permanent side queue; their durable cursor resumes on a subsequent poll.
-    if (!this.bootstraps.has(root) && this.bootstraps.size >= 9) this.bootstraps.delete(this.bootstraps.values().next().value!)
-    this.bootstraps.add(root); this.preferBootstrap = true
-  }
-  private async run(read?: Read, bootstrap?: string, cleanup = false) {
-    // Termination is a deadline action; never create a replacement until exit is observed.
-    const bootstrapReaders = bootstrap ? this.reads.filter(reader => reader.bootstrap === bootstrap) : []
-    for (const reader of bootstrapReaders) reader.started = true
+  private async run(read?: Read, cleanup = false) {
     let watchdog: ReturnType<typeof setTimeout> | undefined
     let terminating: Promise<void> | undefined
-    let cleanupDelay = HISTORY_RETRY_MS
     try {
       this.worker ??= this.options.transport?.() ?? new HistoryWorker(this.options.source)
       const worker = this.worker
       watchdog = setTimeout(() => { terminating = worker.terminate(); void terminating.catch(() => {}) }, 3000)
       if (!this.opened) {
-        const opened = await worker.call({ type: "open", file: path.join(this.stateDirectory, "opencode-reviewer/history-v1.sqlite"), adapter: this.options.adapter ?? "bun" })
+        const opened = await worker.call({ type: "open", file: path.join(this.stateDirectory, "opencode-reviewer", HISTORY_DATABASE_FILE), adapter: this.options.adapter ?? "bun" })
         if (terminating) throw new Error("History worker terminating")
         this.opened = true
         this.cleanupEnabled = opened?.cleanup === true
@@ -182,28 +165,16 @@ export class HistoryStore {
       if (this.stopped) return
       if (cleanup) {
         const result = await worker.call({ type: "cleanup" })
-        this.cleanupNeeded = result.pending; this.legacyCleanup = result.legacy
-        if (result.deleting || result.scrubbing) cleanupDelay = 10 // Yield between bounded durable cleanup slices.
-      } else if (bootstrap) {
-        const result = await worker.call({ type: "bootstrap", root: bootstrap })
-        this.bootstraps.delete(bootstrap)
-        if (!result.done) this.bootstraps.add(bootstrap)
-        this.preferBootstrap = false; this.retryAt = 0
+        this.cleanupNeeded = result.pending
       } else if (read) {
-        if ((read.query.type === "totals" || read.query.type === "conversationTotals") && this.writeFailed) throw new Error("History accounting unavailable")
+        // Totals are served from what is committed, also while a write waits or after one
+        // was dropped. They are counts for orientation, never exact accounting.
         const result = await worker.call({ type: "query", query: read.query })
-        if (result?.pending) {
-          read.bootstrap = result.pending; this.rememberBootstrap(result.pending)
-          if (!read.finished) this.reads.push(read)
-          return
-        }
         read.resolve(result); this.preferRead = false
       }
       else {
         const item = this.queue[0]!
-        const result = await worker.call({ type: "apply", writer: this.writer, sequence: item.sequence, event: item.event })
-        if (result?.pending) { this.rememberBootstrap(result.pending); this.preferRead = true; return }
-        if (result?.deleting) { this.cleanupNeeded = this.cleanupEnabled; this.preferRead = true; this.retryAt = 0; return }
+        await worker.call({ type: "apply", writer: this.writer, sequence: item.sequence, event: item.event })
         if (this.stopped) return
         if (this.cleanupEnabled) this.cleanupNeeded = true
         this.queue.shift(); this.bytes -= item.bytes; this.retryAt = 0; this.writeFailed = false; this.preferRead = true; this.notify(this.commits)
@@ -215,10 +186,6 @@ export class HistoryStore {
       if (read && !this.opened && error instanceof HistoryBusy) { if (!read.finished) this.reads.unshift(read) }
       else if (cleanup) this.cleanupNeeded = true // Cleanup failure cannot poison event replay/accounting.
       else if (read) read.reject(error as Error)
-      else if (bootstrap && this.queue[0]?.root !== bootstrap) {
-        this.bootstraps.delete(bootstrap)
-        for (const reader of [...this.reads]) if (reader.bootstrap === bootstrap) reader.reject(error as Error)
-      }
       else {
         this.writeFailed = true
         // Invalid transactions retain their admitted FIFO. They cannot be skipped without
@@ -237,12 +204,8 @@ export class HistoryStore {
         await terminating
         this.worker = undefined; this.opened = false
       }
-      if (cleanup) this.cleanupDue = this.now() + cleanupDelay
+      if (cleanup) this.cleanupDue = this.now() + HISTORY_RETRY_MS
       if (read) { read.started = false; if (read.finished) read.settled() }
-      for (const reader of bootstrapReaders) {
-        reader.started = false
-        if (reader.finished) reader.settled()
-      }
       this.active = false; this.pump()
     }
   }

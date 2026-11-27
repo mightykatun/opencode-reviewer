@@ -1,10 +1,10 @@
 import { parentPort } from "node:worker_threads"
 import { HistorySQL } from "./history-schema.js"
 import type { HistoryDatabase } from "./history-schema.js"
-import { HistoryInvalid } from "./history-records.js"
-import { privateDatabase } from "./history-private-path.js"
+import { HISTORY_DATABASE_FILE, HistoryInvalid } from "./history-records.js"
+import { privateDatabase as validateDatabase } from "./history-private-path.js"
 import { sqliteBusy } from "./history-sqlite-init.js"
-export { privateDatabase } from "./history-private-path.js"
+export const privateDatabase = (file: string, create = true) => validateDatabase(file, create, [HISTORY_DATABASE_FILE])
 
 export function openHistoryDatabase(file: string, adapter: "node" | "bun", construct?: (file: string) => HistoryDatabase): HistorySQL {
   privateDatabase(file)
@@ -27,9 +27,8 @@ if (parentPort) {
       } else if (message.type === "close") { sql?.close(); sql = undefined }
       else {
         if (!sql) throw new Error("History worker not open")
-        if (message.type === "apply") value = sql.applyReady(message.writer, message.sequence, message.event)
-        else if (message.type === "query") value = sql.queryReady(message.query)
-        else if (message.type === "bootstrap") value = sql.bootstrap(message.root)
+        if (message.type === "apply") value = sql.apply(message.writer, message.sequence, message.event)
+        else if (message.type === "query") value = sql.query(message.query)
         else if (message.type === "cleanup") value = sql.cleanup()
         else throw new HistoryInvalid("Invalid history worker operation")
       }

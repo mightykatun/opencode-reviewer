@@ -9,8 +9,7 @@ import { HistoryRefresh } from "../src/history-refresh.js"
 import { HistoryController } from "../src/history-controller.js"
 import { encodeEvent, type HistoryEvent, type HistoryQuery, type HistoryReview } from "../src/history-records.js"
 
-const scope = "/project"
-const context: HistoryReview = { scope, root: "root", session: "root", permission: "p", review: "r",
+const context: HistoryReview = { root: "root", session: "root", permission: "p", review: "r",
   category: "bash", configuredModel: "fixture", provider: "https://fixture.invalid" }
 const resolved = (c = context): HistoryEvent => ({ type: "permissionResolved", context: c, at: 10,
   outcome: "manual", payload: { safe: true, completedAt: 10, desc: "Saved report" } })
@@ -65,7 +64,7 @@ for (const pattern of ["burst", "continuous"] as const) for (const type of ["his
     t.after(off)
     for (let n = 0; n < (pattern === "burst" ? 40 : 8); n++) enqueue()
     const snapshots: { value: HistoryResult; pending: number; committed: number }[] = []
-    const query: HistoryQuery = type === "history" ? { type, scope, root: "root" } : { type }
+    const query: HistoryQuery = type === "history" ? { type, root: "root" } : { type }
     const refresh = new HistoryRefresh(f.store, query, value => {
       if (value) snapshots.push({ value, pending: f.store.pendingOperations, committed })
     })
@@ -90,7 +89,7 @@ test("an exact notification history target opens before an ordinary write backlo
   f.hooks.before = async message => { if (message.type === "apply") await settle() }
   for (let n = 0; n < 40; n++) assert.equal(f.store.admit(usage(n)), true)
   let pendingAtOpen = 0
-  const browser = new HistoryController(scope, f.store, async () => "root", () => {})
+  const browser = new HistoryController(f.store, async () => "root", () => {})
   t.after(() => browser.dispose())
   browser.openPermission("root", { session: "root", permission: "p" }, () => { pendingAtOpen = f.store.pendingOperations })
   while (f.store.pendingOperations) await settle()
@@ -109,10 +108,10 @@ for (const session of ["root", "child"]) test(`live ${session} invalidation clos
     }
   }
   const ready: string[] = []
-  const browser = new HistoryController(scope, f.store, async () => "root", state => {
+  const browser = new HistoryController(f.store, async () => "root", state => {
     if (state.status === "ready" && state.selection?.record) ready.push(state.selection.record.payload.desc)
   })
-  const history = new HistoryCoordinator(scope, f.store, async () => "root", () => 20)
+  const history = new HistoryCoordinator(f.store, async () => "root", () => 20)
   t.after(() => { release.resolve(); browser.dispose(); history.dispose() })
   browser.open("root"); await captured.promise
   // Production invalidates volatile facts and closes the browser. A live event
@@ -125,7 +124,7 @@ for (const session of ["root", "child"]) test(`live ${session} invalidation clos
   await settle()
   assert.equal(browser.state.open, false)
   assert.deepEqual(ready, [])
-  const stored = await f.store.query({ type: "history", scope, root: "root" })
+  const stored = await f.store.query({ type: "history", root: "root" })
   assert.equal("total" in stored && stored.total, 1)
   assert.equal("record" in stored && stored.record?.payload.desc, "Saved report")
 })
@@ -138,13 +137,13 @@ for (const action of ["navigate", "dispose"] as const) test(`${action} remains a
     if (hold && message.type === "query") { hold = false; captured.resolve(); await release.promise }
   }
   const roots: string[] = []
-  const refresh = new HistoryRefresh(f.store, { type: "history", scope, root: "root" }, value => {
+  const refresh = new HistoryRefresh(f.store, { type: "history", root: "root" }, value => {
     if (value && "rank" in value && value.record) roots.push(value.record.context.root)
   })
   t.after(() => { release.resolve(); refresh.dispose() })
   await captured.promise
   for (let n = 0; n < 10; n++) assert.equal(f.store.admit(usage(n)), true)
-  if (action === "navigate") refresh.select({ type: "history", scope, root: "other" })
+  if (action === "navigate") refresh.select({ type: "history", root: "other" })
   else refresh.dispose()
   release.resolve(); await settle()
   assert.deepEqual([...new Set(roots)], action === "navigate" ? ["other"] : [])
@@ -160,13 +159,13 @@ test("timed-out refresh owns its actual read until settlement across polling, na
     if (hold && message.type === "query") { hold = false; captured.resolve(); await release.promise }
   }
   const roots: string[] = []
-  const refresh = new HistoryRefresh(f.store, { type: "history", scope, root: "root" }, value => {
+  const refresh = new HistoryRefresh(f.store, { type: "history", root: "root" }, value => {
     if (value && "rank" in value && value.record) roots.push(value.record.context.root)
   })
   t.after(() => { release.resolve(); refresh.dispose() })
   await captured.promise
   t.mock.timers.tick(3000); await settle()
-  for (let n = 0; n < 10; n++) refresh.select({ type: "history", scope, root: "other" })
+  for (let n = 0; n < 10; n++) refresh.select({ type: "history", root: "other" })
   assert.equal(f.store.admit(usage(1)), true)
   t.mock.timers.tick(2000); await settle()
   assert.equal(f.queries.length, 1); assert.equal(f.maximum(), 1)

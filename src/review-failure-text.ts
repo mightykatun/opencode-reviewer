@@ -70,8 +70,9 @@ const http = /^Reviewer HTTP (\d{3})$/
 const apiKey = /^API key environment variable ([A-Za-z_][A-Za-z_0-9]*) is unset or empty$/
 
 /** Panel detail for a failed review. Unrecognized errors (host and client
- * failures) keep their own message without forbidden punctuation. The panel
- * also sanitizes control characters for display. */
+ * failures) keep their own message without forbidden punctuation, unless it
+ * names a path. Credential selectors never appear. The panel also sanitizes
+ * control characters for display. */
 export function reviewFailureText(error: unknown): string {
   const failures = uiText.review.failures
   if (error instanceof DeadlineError) {
@@ -83,7 +84,7 @@ export function reviewFailureText(error: unknown): string {
   if (key) return failures[key]
   let match = http.exec(error.message)
   if (match) return failures.http(Number(match[1]))
-  match = apiKey.exec(error.message)
-  if (match) return failures.apiKeyMissing(match[1]!)
-  return plain(error.message) || uiText.review.failed
+  if (apiKey.test(error.message)) return failures.apiKeyMissing
+  const text = plain(error.message)
+  return text && !/[\\/]/.test(text) ? text : uiText.review.failed
 }

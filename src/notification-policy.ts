@@ -29,7 +29,7 @@ export type NotificationAnnouncement = "attention" | "unsafe" | "question"
 
 /** Absence of a countdown is not evidence of manual-only approval. A completed
  * Safe request can still be waiting for its native queue position or conversation. */
-function permissionAttention(view: View<RequestIdentity>, auto: boolean): "attention" | "unsafe" | undefined {
+function permissionAttention(view: View<RequestIdentity>, auto: boolean | undefined): "attention" | "unsafe" | undefined {
   if (view.status === "identifying" || view.status === "analyzing") return
   const state = view.autoApproval?.status
   if (state === "countdown" || state === "waiting" || state === "checking" || state === "allowing") return
@@ -39,7 +39,7 @@ function permissionAttention(view: View<RequestIdentity>, auto: boolean): "atten
     // Like a Safe report awaiting automatic approval, a steerable one stays silent
     // until it is canceled, fails or falls back to manual.
     if (!view.assessment.safe) return view.steerable && state !== "cancelled" && state !== "failed" ? undefined : "unsafe"
-    if (!auto || state === "cancelled" || state === "failed") return "attention"
+    if (auto === false || state === "cancelled" || state === "failed") return "attention"
     return
   }
   // These are terminal no-report states, not an evaluation in progress.
@@ -59,8 +59,10 @@ export class NotificationPolicy<R extends RequestIdentity = HostRequest> {
   private draining = false
   private stopped = false
   private lastApprovalSound = -Infinity
-  constructor(private config: NotificationConfig, private auto: boolean,
+  /** `auto` is whether the server policy approves automatically. A getter follows live policy edits. */
+  constructor(private config: NotificationConfig, private auto: boolean | undefined | (() => boolean | undefined),
     private backend: NotificationBackend, private clock: NotificationClock = notificationClock) {}
+  private get automaticApproval(): boolean | undefined { return typeof this.auto === "function" ? this.auto() : this.auto }
 
   private remember(key: string) {
     if (this.seen.has(key)) return false
@@ -245,7 +247,7 @@ export class NotificationPolicy<R extends RequestIdentity = HostRequest> {
   private update(view: View<R>) {
     const entry = this.permissions.get(view.request.id)
     if (!entry) return
-    const kind = entry.blocking ? permissionAttention(view, this.auto) : undefined
+    const kind = entry.blocking ? permissionAttention(view, this.automaticApproval) : undefined
     if (kind) this.attention(entry, kind)
     else this.wait(entry)
   }

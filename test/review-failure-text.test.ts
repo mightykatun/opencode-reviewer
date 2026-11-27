@@ -19,7 +19,8 @@ test("every mapped internal message and stage label is still produced by the sou
 })
 
 test("every fixed failure and stage copy entry has an internal source", () => {
-  const fixed = Object.keys(failures).filter(key => typeof failures[key as keyof typeof failures] === "string")
+  // apiKeyMissing is sourced by pattern from the transport's selector-naming error, never by exact message.
+  const fixed = Object.keys(failures).filter(key => key !== "apiKeyMissing" && typeof failures[key as keyof typeof failures] === "string")
   assert.deepEqual([...new Set(reviewFailureMessages.values())].sort(), fixed.sort())
   assert.deepEqual([...new Set(reviewStageLabels.values())].sort(), Object.keys(stages).sort())
 })
@@ -29,7 +30,10 @@ test("review failures display their interface copy", () => {
   assert.equal(reviewFailureText(httpFailure(new Response(null, { status: 503 }))), failures.http(503))
   assert.equal(reviewFailureText(httpFailure(new Response(null, { status: 401 }))), failures.http(401))
   assert.equal(reviewFailureText(networkFailure(new TypeError("PRIVATE"), "Reviewer network request failed")), failures.network)
-  assert.equal(reviewFailureText(new Error("API key environment variable REVIEW_KEY is unset or empty")), failures.apiKeyMissing("REVIEW_KEY"))
+  assert.equal(reviewFailureText(new Error("API key environment variable REVIEW_KEY is unset or empty")), failures.apiKeyMissing)
+  assert.doesNotMatch(failures.apiKeyMissing, /REVIEW_KEY/, "the server's environment selector never reaches viewers")
+  assert.equal(reviewFailureText(new Error("ENOENT: no such file, open '/home/user/secret/policy.json'")), uiText.review.failed, "path-naming host errors stay on the server")
+  assert.equal(reviewFailureText(new Error("Transport: socket closed")), "Transport: socket closed")
   assert.equal(reviewFailureText(new Error(uiText.review.evidenceUnavailable)), uiText.review.evidenceUnavailable)
 })
 

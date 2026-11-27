@@ -1420,7 +1420,7 @@ test("complete SSE reviews discard stale estimates from report and lifetime but 
       }, observation: { review: "00000000-0000-4000-8000-000000000001", observe: event => {
         if (event.type !== "finalized") return
         store.apply("writer", 1, encodeEvent({ type: "attemptFinalized", at: 1, attempt: event.attempt, usage: event.usage,
-          context: { scope: "/fixture", root: "root", session: "root", permission: "permission", review: event.review,
+          context: { root: "root", session: "root", permission: "permission", review: event.review,
             category: "bash", configuredModel: config.model, provider: config.baseURL } }))
       } } })
     const expected = { input: 100, output, ...(reported ? { cost: 0.000102 } : {}) }

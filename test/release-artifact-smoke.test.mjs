@@ -37,9 +37,9 @@ test("terminal bundle excludes theme parsing and preserves public imports and up
   const terminal = await readFile("dist/tui.js", "utf8")
   const server = await readFile("dist/server.js", "utf8")
   assertNoBundledSounds(server)
-  assertNoBundledHistoryWorker(server)
+  verifyBundledHistoryWorker(server)
   assert.doesNotMatch(server, /LinuxNotifications|NotificationAudio|mpeg_frame_decoder_create|solid-js|@opentui\/|@opencode\/theme/)
-  verifyBundledHistoryWorker(terminal)
+  assertNoBundledHistoryWorker(terminal)
   assert.doesNotMatch(terminal, /node_modules\/effect\/|Symbol\.for\(["']effect\//)
   assert.doesNotMatch(terminal, /@opencode\/theme\/dist\/tui\/(?:schema|resolve|expand|select|color|v1-migrate)\.js/)
   assert.doesNotMatch(terminal, /\b(?:ThemeDocument|parseThemeDocument|themeDecodeError)\b/)
@@ -129,7 +129,8 @@ test("the built audio constructor consumes the inspected mapping and actual bund
 })
 
 test("the actual bundle and archive share one worker source and reject changed consumers", async () => {
-  const bundle = await readFile("dist/tui.js", "utf8")
+  const role = split ? "dist/server.js" : "dist/tui.js"
+  const bundle = await readFile(role, "utf8")
   const source = verifyBundledHistoryWorker(bundle)
   const originalFiles = new Map(await Promise.all(packageFiles.map(async file => [file, await readFile(file)])))
   for (const invalid of [
@@ -140,10 +141,11 @@ test("the actual bundle and archive share one worker source and reject changed c
   ]) {
     assert.notEqual(invalid, bundle)
     assert.throws(() => verifyBundledHistoryWorker(invalid, source))
-    const files = new Map(originalFiles); files.set("dist/tui.js", Buffer.from(invalid))
+    const files = new Map(originalFiles)
+    files.set(role, Buffer.from(invalid))
     const archive = archiveFixture({ entries: [...files].map(([name, content]) => ({ name: `package/${name}`, content })) })
     const packed = inspectPackageArchive(archive, layout)
-    assert.throws(() => verifyBundledHistoryWorker(packed.files.get("dist/tui.js").toString("utf8"), source))
+    assert.throws(() => verifyBundledHistoryWorker(packed.files.get(role).toString("utf8"), source))
   }
 })
 
@@ -187,7 +189,8 @@ test("built package crosses the real version, npm pack, artifact and isolated ve
     .map(async kind => [kind, await readFile(`sounds/${kind}.mp3`)])))
   verifyBundledSounds((await readFile(path.join(source, "dist/tui.js"))).toString("utf8"), sounds)
   verifyBundledSounds(packed.files.get("dist/tui.js").toString("utf8"), sounds)
-  verifyBundledHistoryWorker(packed.files.get("dist/tui.js").toString("utf8"))
+  verifyBundledHistoryWorker(packed.files.get(split ? "dist/server.js" : "dist/tui.js").toString("utf8"))
+  if (split) assertNoBundledHistoryWorker(packed.files.get("dist/tui.js").toString("utf8"))
   const verifyEnv = { ...artifactEnv, RELEASE_INTEGRITY: prepared.integrity }
   const verified = execFileSync(process.execPath, [helper, "verify", artifact], { cwd: isolated, env: verifyEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
   assert.ok(verified.includes(`exactly ${layout.files.length} package files, matching digest and workflow identity`))

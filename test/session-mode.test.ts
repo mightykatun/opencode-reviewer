@@ -107,6 +107,28 @@ test("refresh applies another terminal's shared switch, suspends unreadable reco
   assert.equal(slow.enabled("root"), false, "a local switch during the read is not overwritten")
 })
 
+test("mode records use the resolved root location and reject unknown locations", async t => {
+  const base = await mkdtemp(path.join(tmpdir(), "reviewer-root-mode-"))
+  t.after(() => rm(base, { recursive: true, force: true }))
+  const directory = path.join(base, "modes")
+  const home = JSON.stringify({ directory: "/home/project", workspaceID: "one" })
+  const other = JSON.stringify({ directory: "/other" })
+  const locations = new Map([["root", home], ["other", other]])
+  const store = new SessionModeStore(directory, root => locations.get(root))
+  await assert.rejects(store.read("unknown", signal()), /root location unavailable/)
+  await assert.rejects(store.write("unknown", false), /root location unavailable/)
+  assert.deepEqual(await readdir(base), [])
+  await new SessionModeStore(directory, home).write("root", false)
+  const ancestry = new SessionAncestry(async id => ({ id, parentID: id === "child" ? "root" : undefined }))
+  const modes = new SessionModes(store, ancestry)
+  const root = await modes.root("child", signal())
+  await modes.load(root, signal())
+  assert.equal(modes.enabled(root), false)
+  await modes.set("other", false)
+  assert.equal(await new SessionModeStore(directory, other).read("other", signal()), false)
+  assert.equal(await new SessionModeStore(directory, home).read("other", signal()), true)
+})
+
 test("mode reads reject corrupt, oversized, invalid UTF-8, nonregular and linked records", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "reviewer-mode-"))
   t.after(() => rm(directory, { recursive: true, force: true }))
@@ -189,7 +211,7 @@ test("queued roots lose authority within budget, retain their turn and share slo
   await settle()
   assert.deepEqual(changes.toSorted(), [...active])
   for (const root of active) assert.equal(f.modes.enabled(root), false)
-  await assert.rejects(f.modes.load("other", parent), /capacity/)
+  const other = assert.rejects(f.modes.load("other", parent), /Session mode loading timed out/)
   for (let i = 0; i < 5; i++) {
     refresh()
     await settle()
@@ -208,6 +230,7 @@ test("queued roots lose authority within budget, retain their turn and share slo
     await settle()
   }
   assert.deepEqual(changes.slice(4), ["b", "c", "d", "a"])
+  await other
 })
 
 test("a local enable racing a refresh timeout survives both revocation and late physical settlement", async t => {
@@ -236,6 +259,37 @@ test("failed writes reject honestly and later serialized writes recover", async 
   await rm(blocked)
   await store.write("root", false)
   assert.equal(await store.read("root", signal()), false)
+})
+
+for (const first of [false, true]) test(`concurrent mode writes starting with ${first} publish only the last committed enable`, async () => {
+  const calls: boolean[] = []
+  const commits = [deferred<void>(), deferred<void>()]
+  const modes = new SessionModes({ ...memory(), write: async (_root, enabled) => {
+    const index = calls.length
+    calls.push(enabled)
+    await commits[index]!.promise
+  } }, new SessionAncestry(async id => ({ id })))
+  await modes.load("root", signal())
+  const earlier = modes.set("root", first)
+  const later = modes.set("root", !first)
+  assert.equal(modes.enabled("root"), false)
+  assert.deepEqual(calls, [first])
+  commits[0]!.resolve()
+  await earlier
+  assert.deepEqual(calls, [first, !first])
+  assert.equal(modes.enabled("root"), false)
+  commits[1]!.resolve()
+  await later
+  assert.equal(modes.enabled("root"), !first)
+})
+
+test("a failed positive write leaves a disabled root disabled", async () => {
+  const modes = new SessionModes({ ...memory(), read: async () => false, write: async () => {
+    throw new Error("record write failed")
+  } }, new SessionAncestry(async id => ({ id })))
+  await modes.load("root", signal())
+  await assert.rejects(modes.set("root", true), /record write failed/)
+  assert.equal(modes.enabled("root"), false)
 })
 
 test("mode directory sync failures reject after rename while preserving the committed value", async (t) => {
@@ -423,48 +477,74 @@ for (const outcome of ["resolve", "reject"] as const) test(`expired same-root lo
   assert.equal(f.modes.enabled("root"), true)
 })
 
-test("multiple roots are capped at two actual reads through timeout and cleanup, then recover without queueing", async (t) => {
+test("multiple roots wait within budget at the two-read cap and recover in queue order after cleanup", async (t) => {
   const clock = monotonicTimers(t)
   const f = readFixture(t)
   const first = assert.rejects(f.modes.load("a", signal()), /Session mode loading timed out/)
   const second = assert.rejects(f.modes.load("b", signal()), /Session mode loading timed out/)
   await settle()
-  for (let i = 0; i < 30; i++) await assert.rejects(f.modes.load(`other${i}`, signal()), /read capacity unavailable/)
+  const queuedTimeouts = (count: number) => Array.from({ length: count }, (_, i) =>
+    assert.rejects(f.modes.load(`other${i}`, signal()), /Session mode loading timed out/))
+  const waiting = queuedTimeouts(30)
   clock.tick(5000)
-  await Promise.all([first, second])
+  await Promise.all([first, second, ...waiting])
   for (let cycle = 0; cycle < 30; cycle++) {
     await assert.rejects(f.modes.load("a", signal()), /timed out/)
     await assert.rejects(f.modes.load("b", signal()), /timed out/)
-    for (let i = 0; i < 20; i++) await assert.rejects(f.modes.load(`other${i}`, signal()), /read capacity unavailable/)
+    const expired = queuedTimeouts(20)
     clock.tick(5000)
-    await settle()
+    await Promise.all(expired)
     assert.deepEqual(f.counts(), { actual: 2, maximum: 2, maximumPerRoot: 1, reads: 2 })
   }
   f.calls[0]!.value.resolve(true)
   await settle()
-  await assert.rejects(f.modes.load("c", signal()), /read capacity unavailable/)
+  const third = f.modes.load("c", signal())
+  const joined = f.modes.load("c", signal())
+  const fourth = f.modes.load("d", signal())
+  assert.equal(f.counts().reads, 2)
   f.calls[0]!.cleanup.resolve()
   await settle()
   assert.equal(f.modes.enabled("a"), false)
-  assert.equal(f.counts().reads, 2, "capacity release does not dispatch skipped work")
-  const third = f.modes.load("c", signal())
-  await settle()
+  assert.equal(f.calls[2]?.root, "c")
   assert.equal(f.counts().actual, 2)
-  await assert.rejects(f.modes.load("d", signal()), /read capacity unavailable/)
   await f.modes.set("disabled", false)
   await f.modes.load("disabled", signal())
   assert.equal(f.modes.enabled("disabled"), false)
   f.finish(2)
-  await third
+  await Promise.all([third, joined])
+  await settle()
+  assert.equal(f.calls[3]?.root, "d")
+  f.finish(3)
+  await fourth
   f.calls[1]!.value.reject(new Error("late store failure"))
   f.calls[1]!.cleanup.resolve()
   await settle()
   const recovered = f.modes.load("a", signal())
   await settle()
-  f.finish(3)
+  f.finish(4)
   await recovered
   assert.equal(f.modes.enabled("a"), true)
-  assert.deepEqual(f.counts(), { actual: 0, maximum: 2, maximumPerRoot: 1, reads: 4 })
+  assert.deepEqual(f.counts(), { actual: 0, maximum: 2, maximumPerRoot: 1, reads: 5 })
+})
+
+test("a new root loads ahead of queued refreshes when a slot opens", async t => {
+  const f = readFixture(t)
+  const active = new Set(["a", "b", "c"])
+  for (const root of active) await f.modes.set(root, true)
+  f.modes.refresh(signal(), active, () => {})
+  const loading = f.modes.load("new", signal())
+  await settle()
+  assert.deepEqual(f.calls.map(call => call.root), ["a", "b"])
+  f.finish(0)
+  await settle()
+  assert.equal(f.calls[2]?.root, "new")
+  f.finish(2)
+  await loading
+  await settle()
+  assert.equal(f.calls[3]?.root, "c")
+  f.finish(1)
+  f.finish(3)
+  await f.modes.refreshSettled()
 })
 
 test("canceling a joining caller does not abort the owner's shared read", async (t) => {

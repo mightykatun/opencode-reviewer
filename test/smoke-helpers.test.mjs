@@ -81,11 +81,18 @@ test("fixture Git command arguments are bounded before process dispatch", () => 
 
 test("every inventoried Git fixture uses the bounded isolated initialization helper", async () => {
   const fixtures = Object.entries(runtimeInventory).filter(([, entry]) => entry.requires?.includes("git"))
-  assert.equal(fixtures.length, 8)
+  assert.equal(fixtures.length, 9)
   for (const [file] of fixtures) {
-    const source = await readFile(new URL(`../scripts/${file}`, import.meta.url), "utf8")
-    assert.match(source, /smokeGitInit\(temp, project\)/, file)
+    let source = await readFile(new URL(`../scripts/${file}`, import.meta.url), "utf8")
     assert.doesNotMatch(source, /execFileSync\(["']git["']/, `${file} bypasses isolated Git setup`)
+    // Headless fixtures boot through their shared support module, which owns the Git setup.
+    if (["smoke-v2-headless.mjs", "smoke-v2-headless-lifecycle.mjs"].includes(file)) {
+      const support = source.match(/from "\.\/(smoke-v2-headless-support\.mjs)"/)
+      assert.ok(support)
+      source = await readFile(new URL(`../scripts/${support[1]}`, import.meta.url), "utf8")
+      assert.doesNotMatch(source, /execFileSync\(["']git["']/, `${support[1]} bypasses isolated Git setup`)
+    }
+    assert.match(source, /smokeGitInit\(temp, project\)/, file)
   }
 })
 

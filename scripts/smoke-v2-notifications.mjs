@@ -11,6 +11,7 @@ import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { connectionProbe } from "./smoke-connection.mjs"
+import { managedReviewer, verifiedSnapshot } from "./smoke-v2-rpc.mjs"
 import { smokeEnvironment, smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
@@ -210,8 +211,7 @@ async function reviewerSetup(ctx) {
   const cleanup = await production.withHistoryObservations(() => {}, undefined, backend, ready => {
     if (ready.role !== "cli") return
     record.ready = true
-    record.state = { config: !!ready.state.config, configError: ready.state.configError,
-      companion: ready.state.companion, runtime: !!ready.state.runtime }
+    record.state = { runtime: !!ready.state.runtime }
     void save()
   }).setup(ctx)
   await save(); await publisher.flush()
@@ -236,7 +236,7 @@ await mkdir(path.join(env.XDG_STATE_HOME, "opencode"), { mode: 0o700 })
 const project = path.join(temp, "project"), cliPath = path.join(temp, "config/opencode/cli.json")
 const monitorPath = path.join(artifacts, "monitor.json"), controlPath = path.join(artifacts, "control.json")
 const setupControl = path.join(artifacts, "setup-control.json")
-const notifications = Object.fromEntries(["main", "invalid", "no-companion"].map(phase => [phase, path.join(artifacts, `notifications-${phase}.json`)]))
+const notifications = Object.fromEntries(["main", "invalid", "no-policy"].map(phase => [phase, path.join(artifacts, `notifications-${phase}.json`)]))
 const archiveFiles = ["dist/server.js", "dist/tui.js", "package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"].sort()
 const reminderMs = 8000
 const script = 'import sys\nfrom pathlib import Path\nwith Path("executed").open("a") as output:\n    output.write(sys.argv[1] + "\\n")\nprint("NATIVE_NOTIFICATION_EXECUTED", sys.argv[1])\n'
@@ -384,7 +384,7 @@ const interrupt = async () => {
 const limits = [
   "Exact installed six-file archive, stock V2 native tool executors, real primary/reviewer HTTP and actual durable execution/permission/form events. No synthetic events, fake controllers, native forms or cache mutations.",
   "Only the exported desktop-backend seam is injected. No actual desktop processes, GNOME focus, audible playback, live-provider judgment or audio/desktop acceptance.",
-  "One isolated standalone host/terminal and public client user controls. Manual once replies and form answers are explicit fixture actions, never reviewer automatic replies. No Always/reject or permission-rule mutation.",
+  "One isolated managed service and a terminal. The fixture submits manual once replies and form answers through public controls.",
   "Native question tool creates the production form. Pinned public SessionFormReplyInput uses session.form.reply with formID and an answer object; there is no guessed form.submit API.",
   "Execution coverage uses a genuine child session and native session-owned shell/terminal processes created through public client controls. It proves family completion gating, not the interactive background-tool gesture or a live provider's decision to stop waiting.",
   "An owned, prompt-free temporary session and its exact genuine birth and deletion on the native data stream establish connection before public CLI configuration activates notification behavior. Reconnect still revokes an active generation; these cases do not prove pre-connection startup acceptance. The separate lifecycle fixture checks startup.",
@@ -488,12 +488,15 @@ try {
     permissions: [{ action: "*", resource: "*", effect: "allow" }, { action: "shell", resource: "*", effect: "ask" }],
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: origin + "/v1", apiKey: "synthetic-only" },
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } }
-  const options = { baseURL: origin + "/review", model: "v2-production-notifications", stream: false, autoApprove: false, retrieval: false,
-    timeoutMs: 120000, notify: true, notifySound: false, staleReminderSeconds: reminderMs / 1000,
+  const policyFile = path.join(path.dirname(cliPath), "opencode-reviewer.json")
+  const serverPolicy = { baseURL: origin + "/review", model: "v2-production-notifications", stream: false, autoApprove: false, retrieval: false,
+    timeoutMs: 120000, ...(phase === "invalid" ? { fileIO: {} } : {}) }
+  const tui = { notify: true, notifySound: false, staleReminderSeconds: reminderMs / 1000,
     notifications: Object.fromEntries(["attention", "unsafe", "question", "approved", "ended", "error"].map(kind => [kind,
        { banner: kind === "attention" || kind === "question" || scenario === "execution" && ["ended", "error"].includes(kind), sound: false }])) }
   cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, attention: { notifications: false, sound: false },
-    session: { permissions: "prompt" }, plugins: [{ package: reviewer, options: phase === "invalid" ? { ...options, fileIO: {} } : options }, monitor] }
+    session: { permissions: "prompt" }, plugins: [reviewer, monitor] }
+  await publish(policyFile, phase === "invalid" ? { server: serverPolicy } : { server: serverPolicy, tui })
   await publish(setupControl, { phase })
   // Behavioral checks activate a fresh generation after the actual
   // initial connection. Native receipt of an exact real probe birth establishes
@@ -503,8 +506,9 @@ try {
   await publish(path.join(project, "opencode.json"), config); await publish(cliPath, startupCli)
   await publish(path.join(artifacts, "setup.json"), { version, scenario, archive, packed, installed, moduleURL, config, cli,
     startupCli, temp, environment: { HOME: env.HOME, XDG_STATE_HOME: env.XDG_STATE_HOME }, socket: runtime.socket, supervisorPID: runtime.supervisorPID, limits })
+  const service = await managedReviewer({ runtime, env, directory: project, host })
   await runtime.start("-d", "-s", "v2-notifications", "-x", "160", "-y", "40", "-c", project,
-    "env", "XDG_STATE_HOME=" + env.XDG_STATE_HOME, host, "--standalone", project)
+    "env", "XDG_STATE_HOME=" + env.XDG_STATE_HOME, host, project)
   const ready = await until("independent observer", record => record?.ready && record)
   assert.equal(ready.version, version.slice("opencode v".length))
   {
@@ -514,17 +518,33 @@ try {
     evidence.push({ connectionProbe: { ...probe, removed: true } })
     await publish(cliPath, cli)
   }
+  if (phase === "invalid") {
+    const before = await verifiedSnapshot(service, project, { enabled: false, reason: "invalid-policy" })
+    assert.equal(before.tui, undefined)
+    await until("viewer attached without notification settings", async () => (await attention())?.ready)
+    await start("baseline")
+    releaseTools("baseline", [shell("baseline")])
+    const baseline = await until("native permission before settings", record => events(record, "permission.asked")[0]?.data)
+    await quiet("unconfigured viewer stays silent", 0)
+    await publish(policyFile, { server: serverPolicy, tui })
+    await until("notification policy published", async () => {
+      const current = await service.snapshot()
+      return current.revision > before.revision && current.tui?.staleReminderSeconds === reminderMs / 1000
+    })
+    await until("viewer received new notification settings", async () => (await attention())?.config?.notify)
+    await quiet("settings do not replay or remind for the existing permission", 0, reminderMs + 1500, async () => {
+      assert.deepEqual((await snapshot()).pending.map(item => item.id), [baseline.id])
+    })
+    await interrupt()
+    await until("baseline interrupted", async () => !(await snapshot()).pending.length)
+  }
   const productionReady = await until("actual production notification runtime", async () => {
     const value = await attention()
     return value?.ready && !value.disposed && value.config?.staleReminderSeconds === reminderMs / 1000 && value
   })
   assert.equal(productionReady.config.staleReminderSeconds, reminderMs / 1000)
-  assert.equal(productionReady.state.runtime, scenario !== "unavailable-review")
-  if (scenario !== "unavailable-review") {
-    assert.equal(productionReady.state.config, true)
-    assert.equal(productionReady.state.companion.protocol, 2)
-    assert.deepEqual(productionReady.state.companion.location, { directory: project })
-  }
+  assert.equal(productionReady.state.runtime, true)
+  await verifiedSnapshot(service, project, phase === "invalid" ? { enabled: false, reason: "invalid-policy" } : { enabled: true })
 
   if (scenario === "manual-handoff") {
     await start("handoff")
@@ -694,27 +714,16 @@ try {
     for (const shown of shows(await attention())) assert.equal(shown.message.sessionID, sessionID)
     evidence.push({ terminal, active, steps, nativeEvents: record.events, notifications: shows(await attention()) })
   } else {
-    // Both real causes, on two freshly created roots. No forged handshake or
-    // observer-failure injection: reject actual user review options, then remove
-    // the actual server companion using the documented plugin directive.
-    assert.equal(productionReady.state.config, false)
-    assert.match(productionReady.state.configError, /Unknown opencode-reviewer setting: fileIO/)
-    assert.equal(productionReady.state.companion.protocol, 2)
-    for (const targetPhase of ["invalid", "no-companion"]) {
-      if (targetPhase === "no-companion") {
+    for (const targetPhase of ["invalid", "no-policy"]) {
+      if (targetPhase === "no-policy") {
         await publish(cliPath, { ...cli, plugins: ["-opencode-reviewer", monitor] })
         const cleaned = await until("invalid-review production backend fully unloaded", async () => { const value = await attention(); return value?.cleaned && value })
         assert.equal(cleaned.owned, 0); assert.equal(cleaned.disposed, true)
-        await publish(path.join(project, "opencode.json"), { ...config, plugins: ["-opencode-reviewer", title] })
-        await until("actual server companion removed", async () => {
-          const value = await command({ type: "plugins" })
-          return !value.data.some(plugin => plugin.id === "opencode-reviewer" && plugin.state.status === "active")
-        })
+        await publish(policyFile, { tui })
+        await verifiedSnapshot(service, project, { enabled: false, reason: "no-policy" })
         phase = targetPhase; await publish(setupControl, { phase })
-        cli = { ...cli, plugins: [{ package: reviewer, options }, monitor] }
         await publish(cliPath, cli)
-        const value = await until("production notification-only runtime without companion", async () => { const value = await attention(); return value?.ready && value })
-        assert.equal(value.state.config, true); assert.equal(value.state.companion, undefined); assert.equal(value.state.runtime, false)
+        await until("viewer notification settings", async () => (await attention())?.config?.staleReminderSeconds === reminderMs / 1000)
       }
       await start(targetPhase)
       const tool = shell(targetPhase)
@@ -758,7 +767,7 @@ try {
   assert.equal(recordReplies(final).length, scenario === "manual-handoff" ? 2 : 0)
   assert.equal(reviewCalls().length, expectedReviews)
   assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length,
-    scenario === "execution" ? 5 : 2)
+    scenario === "execution" ? 5 : scenario === "unavailable-review" ? 3 : 2)
   await saveCapture("final")
   await publish(cliPath, { ...cli, plugins: ["-opencode-reviewer", "-fixture.notifications.monitor"] })
   const cleaned = await until("monitor owned transactions and final publication settle", record => record?.cleaned && record)

@@ -1,5 +1,4 @@
-import { HistoryRefresh } from "./history-refresh.js"
-import type { HistoryStore } from "./history-store.js"
+import { HistoryRefresh, type HistoryReader } from "./history-refresh.js"
 import type { ConversationTotals } from "./history-schema.js"
 import type { LifetimeTotals } from "./lifetime.js"
 import { withDeadline } from "./deadline.js"
@@ -30,7 +29,7 @@ export class StatisticsController {
   private retry?: { cancel?: () => void }
   private abort?: AbortController
   private stopped = false
-  constructor(private scope: string, store: Pick<HistoryStore, "query" | "onCommit" | "onWriteFailure">,
+  constructor(store: HistoryReader,
     private ancestry: AncestryReader, private publish: (state: StatisticsState) => void,
     private clock: StatisticsClock = systemClock) {
     this.refresh = new HistoryRefresh(store, { type: "totals" }, value => {
@@ -63,7 +62,7 @@ export class StatisticsController {
   }
   private query() {
     this.refresh.select({ type: "totals", ...(this.state.open && this.state.view === "conversation" && this.root
-      ? { conversation: { scope: this.scope, root: this.root } } : {}) })
+      ? { conversation: { root: this.root } } : {}) })
   }
   private async resolve() {
     if (this.stopped || !this.session || !this.state.open || this.state.view !== "conversation" || this.root

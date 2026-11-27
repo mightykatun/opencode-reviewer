@@ -1,91 +1,113 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import type { CompanionHandshake } from "./companion-protocol.js"
-import type { PluginLifecycle } from "./plugin-lifecycle.js"
+import { createEffect, createRoot, createSignal, untrack } from "solid-js"
+import { setupHostRuntime, type ViewerLocation } from "./host-runtime.js"
+import { hostLocation, locationKey, MAX_REVIEW_LOCATIONS, reviewHomes, routeAtLocation, type ReviewLocation } from "./host-locations.js"
+import type { HostNotificationCheckpoint } from "./host-notifications.js"
+import { PluginLifecycle } from "./plugin-lifecycle.js"
 import type { PluginDependencies } from "./plugin-dependencies.js"
-import { localStateRoot } from "./local-state.js"
-import { remainingTime, withDeadline } from "./deadline.js"
-import { TransportOwnership } from "./transport-ownership.js"
-import { setupHostRecovery, type setupHostRuntime } from "./host-runtime.js"
-import { initialConnectionEcho } from "./connection-marker.js"
-import { companionHandshake } from "./companion-handshake.js"
-import { hostLocation } from "./host-locations.js"
-import { readCliConfiguration, type CliConfiguration } from "./cli-configuration.js"
+import { viewerFeed, type ViewerSnapshot } from "./viewer-feed.js"
 
-export interface CliPluginState extends CliConfiguration {
-  companion?: CompanionHandshake
-  /** Member locations this composition also reads permissions from, each with
-   * its own companion handshake. Only a reviewer composition has members. */
-  members?: readonly CompanionHandshake[]
-  /** The public connected marker already admitted by startup, not a host epoch. */
-  connectionID?: string
-  dependencies: PluginDependencies
-  stateRoot: string
-  /** Non-enumerable embedding inspection, never configuration or diagnostics. */
-  readonly runtime?: ReturnType<typeof setupHostRuntime>
+type Layer = Parameters<Plugin.Context["keymap"]["layer"]>[0]
+
+function install(ctx: Plugin.Context, life: PluginLifecycle, dependencies: PluginDependencies, home: ViewerLocation,
+  lookup: (location: ReviewLocation) => ViewerLocation | undefined, checkpoint?: HostNotificationCheckpoint) {
+  const location = home.feed.location
+  const client = ctx.client
+  const layers: Layer[] = []
+  let collecting = true
+  const keymap = new Proxy(ctx.keymap, { get: (target, key) => key !== "layer" ? Reflect.get(target, key) : (factory: Layer) => {
+    const scoped = () => {
+      const layer = factory()
+      return { ...layer, enabled: () => !life.signal.aborted && routeAtLocation(ctx, location)
+        && (typeof layer.enabled === "function" ? layer.enabled() : layer.enabled ?? true) }
+    }
+    if (collecting) layers.push(scoped)
+    else target.layer(scoped)
+  } })
+  const scoped = new Proxy(ctx, { get: (target, key) =>
+    key === "keymap" ? keymap : key === "location" ? location : key === "client" ? client : Reflect.get(target, key) })
+  const runtime = setupHostRuntime(scoped, life, dependencies, home, lookup, checkpoint)
+  collecting = false
+  life.addCleanup(ctx.ui.slot({ append: "app", render() {
+    for (const layer of layers) ctx.keymap.layer(layer)
+    return null
+  } }))
+  return runtime
 }
 
-/** Configuration and handshake precede scope-pinned production admission. */
-export async function setupCli(context: Plugin.Context, lifecycle: PluginLifecycle, dependencies: PluginDependencies): Promise<CliPluginState> {
-  const reads = new TransportOwnership()
-  lifecycle.addCleanup(() => reads.settled())
-  const state: CliPluginState = { dependencies, stateRoot: localStateRoot(),
-    ...await readCliConfiguration(context.options, lifecycle.signal, reads) }
-  // Startup admits the current host location. Recovery admits every other home
-  // and each home's member locations, each with its own handshake.
-  const location = hostLocation(context)
-  lifecycle.signal.throwIfAborted()
-  let connection = new AbortController()
-  let markerID: string | undefined, nativeID: string | undefined
-  let connectionVerified = false
-  let off = context.data.on("server.connected", event => {
-    nativeID = event.id
-    // Client subscribers and the native data bridge deliver the same initial
-    // marker at different times. Its delayed echo is not another connection.
-    if (initialConnectionEcho(markerID, event.id)) return
-    markerID = event.id
-    connection.abort()
-    connection = new AbortController()
+export function setupCli(ctx: Plugin.Context, life: PluginLifecycle, dependencies: PluginDependencies) {
+  type Scope = ViewerLocation & { life: PluginLifecycle
+    runtime?: ReturnType<typeof install> }
+  const scopes = new Map<string, Scope>()
+  const notifications = new Map<string, HostNotificationCheckpoint>()
+  const retiring = new Set<Promise<void>>()
+  const [membership, setMembership] = createSignal(0)
+  const lookup = (location: ReviewLocation) => {
+    membership()
+    return scopes.get(locationKey(location))
+  }
+  let client = ctx.client
+  const retire = (key: string, scope: Scope) => {
+    scopes.delete(key)
+    void scope.life.stop()
+    const work = scope.life.settled()
+    retiring.add(work)
+    void work.finally(() => retiring.delete(work))
+  }
+  const sync = (homes = reviewHomes(ctx), reconnect = false) => {
+    if (life.signal.aborted) return
+    const locations = new Map(homes.flatMap(home => [home.location, ...home.members]).map(at => [locationKey(at), at]))
+    const replaced = reconnect || ctx.client !== client
+    client = ctx.client
+    let changed = false
+    for (const [key, scope] of scopes) {
+      if (!replaced && locations.has(key)) continue
+      const checkpoint = scope.runtime?.checkpoint()
+      if (checkpoint && checkpoint.client === client) {
+        notifications.delete(key)
+        if (notifications.size >= MAX_REVIEW_LOCATIONS) notifications.delete(notifications.keys().next().value!)
+        notifications.set(key, checkpoint)
+      }
+      retire(key, scope)
+      changed = true
+    }
+    for (const [key, location] of locations) {
+      if (scopes.has(key)) continue
+      const child = new PluginLifecycle()
+      const [snapshot, setSnapshot] = createSignal<ViewerSnapshot>()
+      const feed = viewerFeed(client, location, child, data => {
+        const scope = scopes.get(key)
+        if (!scope || scope.life !== child) return
+        setSnapshot(data)
+        for (const value of scopes.values()) value.runtime?.changed(scope)
+      }, dependencies.observer)
+      const scope: Scope = { feed, snapshot, life: child }
+      scopes.set(key, scope)
+      scope.runtime = install(ctx, child, dependencies, scope, lookup, notifications.get(key))
+      notifications.delete(key)
+      changed = true
+    }
+    if (changed) setMembership(n => n + 1)
+  }
+  life.addCleanup(async () => {
+    for (const [key, scope] of scopes) retire(key, scope)
+    notifications.clear()
+    await Promise.allSettled(retiring)
   })
-  const stop = () => { off(); off = () => {}; connection.abort() }
-  lifecycle.addCleanup(stop)
-  // Startup only: one fixed budget, sequential physical reads, no fallback
-  // promotion or reuse of a controller after a connection changes.
-  try {
-    const admission = await withDeadline(lifecycle.signal, 10000, async signal => {
-      // Identify the initial connection before dispatching RPC so its delayed
-      // native echo cannot cancel our own read. Late subscribers receive the
-      // current marker, not business-event replay.
-      // Own this subscriber through abort/return, just like the physical RPCs.
-      const connected = await reads.track((async () => {
-        for await (const event of context.client.event.subscribe({ signal })) {
-          signal.throwIfAborted()
-          if (event.type === "server.connected" && typeof event.id === "string" && event.id.length > 0
-            && event.id.length <= 1024 && !event.id.includes("\0")) return event.id
-        }
-        return undefined
-      })())
-      signal.throwIfAborted()
-      if (!connected || remainingTime(signal) <= 0
-        || (nativeID !== undefined && !initialConnectionEcho(connected, nativeID))) return
-      markerID = connected
-      connectionVerified = true
-      return companionHandshake(() => context.client, location, reads, signal, !!state.config, () => connection.signal)
-    }, "Companion startup")
-    // Deadline callbacks produce data only. Fence the final promise handoff
-    // before installing the runtime's connection fence and recovery owner.
-    if (admission?.connection === connection.signal) state.companion = admission.companion
-  } catch { lifecycle.signal.throwIfAborted() }
-  finally {
-    // Companion failure does not invalidate an independently observed connection.
-    // Native generation changes update markerID, but cannot verify a missing or
-    // conflicting initial client marker. No late deadline worker can admit one.
-    if (connectionVerified) state.connectionID = markerID
-    stop()
-  }
-  if (!dependencies.adapterOnly) {
-    lifecycle.signal.throwIfAborted()
-    const recovery = setupHostRecovery(context, state, lifecycle)
-    Object.defineProperty(state, "runtime", { get: recovery.current })
-  }
-  return state
+  sync()
+  createRoot(dispose => {
+    life.addCleanup(dispose)
+    createEffect(() => {
+      const homes = reviewHomes(ctx)
+      untrack(() => sync(homes))
+    })
+  })
+  life.addCleanup(ctx.data.on("server.connected", () => sync(reviewHomes(ctx), true)))
+  const poll = setInterval(() => {
+    sync()
+    for (const scope of scopes.values()) void scope.feed.refresh()
+  }, 2000)
+  life.addCleanup(() => clearInterval(poll))
+  return { get runtime() { return lookup(hostLocation(ctx))?.runtime } }
 }
+export type CliPluginState = ReturnType<typeof setupCli>

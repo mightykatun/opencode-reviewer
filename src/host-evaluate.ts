@@ -6,25 +6,27 @@ import { readHostEvidence } from "./host-evidence-reader.js"
 import type { HostReviewEvidence } from "./host-evidence.js"
 import { review, type ReviewerDependencies } from "./reviewer.js"
 import { ownedReview, type ReviewEvaluation } from "./review-admission.js"
-import type { HostRequestSnapshot } from "./host-types.js"
+import type { HostInvocation, HostRequestSnapshot } from "./host-types.js"
 import type { ReviewObservation, ReviewResult } from "./types.js"
 import { uiText } from "./ui-text.js"
 import { sessionInstructionsSnapshot } from "./session-instructions-snapshot.js"
-import { companionBusy, companionRpc } from "./companion-protocol.js"
-import { readCompanion } from "./companion-read.js"
+import { CompanionBusyError } from "./companion-reads.js"
+import { waitForCompanionCapacity, type CompanionAccess } from "./companion-access.js"
 import { boundedHostJSON } from "./host-request.js"
 import { RetrievalCompletionError, type RetrievalExecutor } from "./retrieval.js"
 import { DeadlineError, remainingTime } from "./deadline.js"
 import { sessionContextAsker } from "./clarification.js"
-import type { HostScope, HostRequest, JSONObject } from "./host-types.js"
+import type { HostRequest, JSONObject } from "./host-types.js"
 import { readSteeringFollowUp, type SteeringRecord } from "./steering-follow-up.js"
 
 export interface HostReviewerDependencies extends ReviewerDependencies {
   loadSessionInstructions?: (signal: AbortSignal) => Promise<string>
   /** Synchronous accounting setup using the validated evidence kind. */
-  observeEvidence?: (evidence: HostReviewEvidence) => ReviewObservation | void
+  observeEvidence?: (evidence: HostReviewEvidence, invocation: HostInvocation) => ReviewObservation | void
   /** Open steering paired with this request on arrival. */
   steeringRecord?: SteeringRecord
+  /** The location's in-process evidence source. */
+  access: CompanionAccess
 }
 
 /** Advisory evaluation only. Admission/mode/queue/presentation are controller
@@ -32,15 +34,15 @@ export interface HostReviewerDependencies extends ReviewerDependencies {
  * Physical evidence, POSTs, retries and cleanup share one evaluator lease/budget.
  */
 export function evaluateHostReview(client: OpenCodeClient, snapshot: HostRequestSnapshot, config: Config,
-  prompts: PromptSet, parent: AbortSignal, onIdentified: () => void, dependencies: HostReviewerDependencies = {}): ReviewEvaluation<ReviewResult | null> {
+  prompts: PromptSet, parent: AbortSignal, onIdentified: () => void, dependencies: HostReviewerDependencies): ReviewEvaluation<ReviewResult | null> {
   return ownedReview(parent, config.timeoutMs, async signal => {
-    const { loadSessionInstructions, steeringRecord, ...captured } = dependencies
+    const { loadSessionInstructions, steeringRecord, access, ...captured } = dependencies
     const sessionInstructions = loadSessionInstructions
       ? await sessionInstructionsSnapshot(loadSessionInstructions, signal) : captured.sessionInstructions
     signal.throwIfAborted()
     const wire = hostRequestWire(snapshot)
     if (!wire) throw new Error(uiText.review.evidenceUnavailable)
-    const owned = await readHostEvidence(client, snapshot.scope, wire, config, signal)
+    const owned = await readHostEvidence(client, snapshot.scope, wire, config, signal, access)
     signal.throwIfAborted()
     if (!owned) throw new Error(uiText.review.evidenceUnavailable)
     if (owned.result.status !== "ready") return null
@@ -48,7 +50,7 @@ export function evaluateHostReview(client: OpenCodeClient, snapshot: HostRequest
     signal.throwIfAborted()
     const { observeEvidence, ...reviewer } = captured
     let observation: ReviewObservation | void = undefined
-    try { observation = observeEvidence?.(owned.result.evidence) } catch { /* Accounting cannot change review. */ }
+    try { observation = observeEvidence?.(owned.result.evidence, owned.invocation) } catch { /* Accounting cannot change review. */ }
     signal.throwIfAborted()
     const evidence = owned.result.evidence
     // Same category, and a root-session steering ends with a newer root user message.
@@ -58,34 +60,29 @@ export function evaluateHostReview(client: OpenCodeClient, snapshot: HostRequest
     signal.throwIfAborted()
     return review(evidence, config, signal, { ...reviewer, sessionInstructions, ...(observation ? { observation } : {}), prompts,
       ...(steeringFollowUp ? { steeringFollowUp } : {}),
-      retrieval: reviewer.retrieval ?? companionRetrieval(client, owned.snapshot.scope, owned.snapshot.request, config.maxEvidenceBytes),
+      retrieval: reviewer.retrieval ?? companionRetrieval(access, owned.snapshot.request, config.maxEvidenceBytes),
       // Retrieval offers it only for root conversations (clarificationEnabled).
       clarification: reviewer.clarification ?? sessionContextAsker(client, evidence.conversation.current.id) })
   })
 }
 
-/** Model-chosen read-only operations run in the scoped server companion. Ordinary
- * failures become factual tool results; cancellation and deadlines propagate. */
-export function companionRetrieval(client: OpenCodeClient, scope: HostScope, request: HostRequest, maxBytes: number): RetrievalExecutor {
+/** Model-chosen read-only operations run in the scoped companion at its location.
+ * Ordinary failures become factual tool results; cancellation and deadlines propagate. */
+export function companionRetrieval(access: CompanionAccess, request: HostRequest, maxBytes: number): RetrievalExecutor {
   return { async execute(call, base, timeoutMs, signal) {
     const end = performance.now() + Math.min(timeoutMs, remainingTime(signal))
     let raw: unknown, completionFailed = false
     try {
-      raw = await readCompanion(signal, async () => {
+      raw = await waitForCompanionCapacity(signal, async () => {
         const remaining = Math.min(3600000, end - performance.now(), remainingTime(signal))
         if (remaining <= 0) throw new DeadlineError("Retrieval")
         try {
-          // The caller races its logical deadline and owns this RPC until the
-          // companion responds after draining. Aborting the HTTP wait would
-          // hide still-running server I/O. The server enforces the sent budget.
-          return await client.rpc(companionRpc).retrieve({ ...scope, sessionID: request.sessionID, requestID: request.id,
-            base, call, timeoutMs: remaining, maxBytes }, { location: scope.location, signal: new AbortController().signal })
+          // The caller races its logical deadline and owns this call until the
+          // companion responds after draining. The companion enforces the sent budget.
+          return await access.retrieve(request.sessionID, request.id, base, call, remaining, maxBytes, signal)
         } catch (error) {
           // Only explicit pre-admission refusals prove no work was started.
-          const refused = error && typeof error === "object" && "type" in error
-            && (error.type === companionBusy || error.type === "scope") && "data" in error
-            && error.data && typeof error.data === "object" && !Array.isArray(error.data) && !Object.keys(error.data).length
-          if (!refused) completionFailed = true
+          if (!(error instanceof CompanionBusyError)) { completionFailed = true; throw error }
           throw error
         }
       }, timeoutMs)

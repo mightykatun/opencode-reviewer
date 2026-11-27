@@ -2,13 +2,11 @@ import assert from "node:assert/strict"
 import { test, type TestContext } from "node:test"
 import { setImmediate as tick } from "node:timers/promises"
 import { mkdir, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises"
-import type { OpenCodeClient } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin"
-import { setupCompanion } from "../src/companion.js"
+import { CompanionBusyError, createCompanionServer } from "../src/companion-reads.js"
 import { companionRetrieval } from "../src/host-evaluate.js"
-import { companionBusy } from "../src/companion-protocol.js"
+import { directCompanionAccess } from "../src/companion-access.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
-import { abortable } from "../src/chat-transport.js"
 import { parseConfig } from "../src/config.js"
 import { ownedReview } from "../src/review-admission.js"
 import { review } from "../src/reviewer.js"
@@ -46,36 +44,26 @@ function heldIO(...names: string[]) {
   return { io, holds, release() { for (const hold of holds.values()) hold.release.resolve() } }
 }
 
-/** Production handlers and executor, with a wire that really rejects on client
- * cancellation rather than quietly waiting for the handler's physical work. */
+/** Production in-process reads and executor with observable physical completion. */
 async function companion(io: FileIO, directory = "/fixture", lost?: Promise<never>) {
   const lifecycle = new PluginLifecycle(), location = { directory }
-  let handlers: Record<string, (input: any, call: any) => Promise<unknown>> = {}
   const context = {
     app: { version: "development" }, location: { ...location, project: { id: "project", directory, canonical: directory } },
     tool: { hook: async () => ({ dispose() {} }) },
-    rpc: { register: async (_definition: unknown, value: typeof handlers) => { handlers = value; return { dispose() {} } } },
   } as unknown as Plugin.Context
-  const handshake = await setupCompanion(context, lifecycle, io)
-  const scope = { location, epoch: handshake.epoch }
+  const server = await createCompanionServer(context, lifecycle, io)
+  const direct = directCompanionAccess(server)
   const request = shellEvidence({ cwd: directory }).permission
   const queries: any[] = [], work: Promise<unknown>[] = []
-  const invoke = (query: unknown, signal: AbortSignal) => handlers.retrieve!(query, {
-    signal, error: (type: string, message: string, data: unknown) => { throw { type, message, data } },
-  })
-  const client = { rpc: () => ({ retrieve: (query: unknown, options: { signal?: AbortSignal }) => {
-    queries.push(query)
-    const transport = new AbortController(), signal = options.signal
-    const cancel = () => transport.abort(signal?.reason)
-    signal?.addEventListener("abort", cancel, { once: true })
-    if (signal?.aborted) cancel()
-    const physical = invoke(query, transport.signal)
+  const access = { ...direct, retrieve: (...args: Parameters<typeof direct.retrieve>) => {
+    const [sessionID, requestID, base, call, timeoutMs, maxBytes] = args
+    queries.push({ sessionID, requestID, base, call, timeoutMs, maxBytes })
+    const physical = direct.retrieve(...args)
     work.push(physical)
-    const response = lost ? Promise.race([physical, lost]) : physical
-    return (signal ? abortable(response, signal) : response).finally(() => signal?.removeEventListener("abort", cancel))
-  } }) } as unknown as OpenCodeClient
-  return { executor: companionRetrieval(client, scope, request, 4096), queries,
-    direct: (call: RetrievalCall, timeoutMs: number) => invoke({ ...scope, sessionID: request.sessionID, requestID: request.id,
+    return lost ? Promise.race([physical, lost]) : physical
+  } }
+  return { executor: companionRetrieval(access, request, 4096), queries,
+    direct: (call: RetrievalCall, timeoutMs: number) => server.retrieve({ sessionID: request.sessionID, requestID: request.id,
       base: directory, call, timeoutMs, maxBytes: 4096 }, new AbortController().signal),
     async dispose() { await lifecycle.stop(); await lifecycle.settled(); await Promise.allSettled(work) },
   }
@@ -138,7 +126,7 @@ test("default inspection flags an oversized unterminated next line through the p
   }
 })
 
-test("attachment timeout drains only its production RPC and keeps server capacity owned", async t => {
+test("attachment timeout drains only its in-process call and keeps server capacity owned", async t => {
   const time = clock(t), data = heldIO("/fixture/slow", "/fixture/other")
   const service = await companion(data.io)
   t.after(async () => { data.release(); await service.dispose() })
@@ -153,7 +141,7 @@ test("attachment timeout drains only its production RPC and keeps server capacit
   const independent = service.direct({ tool: "read", arguments: { path: "other" } }, 100)
   await other.started.promise
   await assert.rejects(service.direct({ tool: "read", arguments: { path: "third" } }, 100),
-    error => (error as any).type === companionBusy)
+    CompanionBusyError)
   time.advance(100); await tick()
   assert.equal(running.bodies.length, 1)
   slow.release.resolve()
@@ -210,7 +198,7 @@ for (const stop of ["parent cancellation", "review deadline"] as const) test(`${
   assert.equal(running.bodies.length, 1, "late completion cannot start a verdict")
 })
 
-for (const late of [false, true]) test(`lost retrieval RPC ${late ? "after" : "before"} stage expiry cannot stand in for server completion`, async t => {
+for (const late of [false, true]) test(`retrieval access failure ${late ? "after" : "before"} stage expiry cannot stand in for server completion`, async t => {
   const time = clock(t), data = heldIO("/fixture/slow"), lost = deferred<never>()
   const service = await companion(data.io, "/fixture", lost.promise)
   t.after(async () => { data.release(); await service.dispose() })
@@ -219,9 +207,9 @@ for (const late of [false, true]) test(`lost retrieval RPC ${late ? "after" : "b
   const rejected = assert.rejects(running.evaluation, RetrievalCompletionError)
   await hold.started.promise
   if (late) { time.advance(100); await tick() }
-  lost.reject(Error("wire disconnected"))
+  lost.reject(Error("completion unavailable"))
   await rejected
-  assert.equal(hold.settled, false, "the server work is still pending when its transport disappears")
+  assert.equal(hold.settled, false, "the server work is still pending when access fails")
   assert.equal(running.bodies.length, 1, "an unconfirmed drain ends the review without a verdict")
   time.advance(100); await tick()
   hold.release.resolve()

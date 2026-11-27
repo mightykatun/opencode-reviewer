@@ -3,7 +3,8 @@ import { test } from "node:test"
 import { setImmediate as settle } from "node:timers/promises"
 import type { OpenCodeClient } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin"
-import { setupCompanion } from "../src/companion.js"
+import { createCompanionServer } from "../src/companion-reads.js"
+import { directCompanionAccess } from "../src/companion-access.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import { evaluateHostReview } from "../src/host-evaluate.js"
 import { readHostEvidence } from "../src/host-evidence-reader.js"
@@ -20,7 +21,6 @@ const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "judge
 
 async function fixture(ids: "shared" | "distinct" = "shared") {
   const life = new PluginLifecycle(), hooks = new Map<string, (event: any) => void>()
-  let handlers: any
   const state = { request: structuredClone(pending), epoch: "", registry: true, catalogReads: 0,
     afterCatalog: () => {}, transform: (value: any) => value,
     message: { id: "assistant", type: "assistant", content: [{ id: "outer", type: "tool", name: "execute", state: { status: "running", input } }] } }
@@ -32,28 +32,26 @@ async function fixture(ids: "shared" | "distinct" = "shared") {
         return [{ id: "account_lookup", name: "lookup", description: "Read a public account.", input: { type: "object", properties: { account: { type: "string" } } },
           get execute(): never { return assert.fail("Executors must not be inspected") } }]
       } },
-    rpc: { register: async (_definition: unknown, methods: any) => { handlers = methods; return { dispose() {} } } },
     permission: { get: async () => state.request }, session: { get: async () => ({ id: "session", projectID: project.id, location }) },
   }
-  const handshake = await setupCompanion(server as unknown as Plugin.Context, life, {
+  const companion = await createCompanionServer(server as unknown as Plugin.Context, life, {
     open: async () => assert.fail("Code Mode review must not inspect files"), realpath: async () => assert.fail("No filesystem reads"),
   })
+  const { handshake } = companion
   state.epoch = handshake.epoch
   const outer = { sessionID: "session", messageID: "assistant", id: "outer", tool: "execute", input }
   hooks.get("execute.before")!(outer)
   // OpenCode 2.3.1 and later give each inner call its own hook ID. Older hosts reuse the outer ID.
   for (const account of ["A", "B"]) hooks.get("execute.before")!({ ...outer, tool: "account_lookup", input: { account },
     ...(ids === "distinct" ? { id: `inner-${account}` } : {}) })
-  const rpc = {
-    handshake: async () => ({ ...handshake, epoch: state.epoch }),
-    invocation: async (query: unknown, options: { signal: AbortSignal }) => handlers.invocation(query, options),
-    evidence: async (query: unknown, options: { signal: AbortSignal }) => state.transform(await handlers.evidence(query, options)),
-  }
-  const client = { rpc: () => rpc, session: { ...server.session, message: { get: async () => state.message } },
+  const direct = directCompanionAccess(companion)
+  const access = { ...direct, epoch: async () => state.epoch,
+    evidence: async (...args: Parameters<typeof direct.evidence>) => state.transform(await direct.evidence(...args)) }
+  const client = { session: { ...server.session, message: { get: async () => state.message } },
     message: { list: async () => ({ data: [{ id: "user", type: "user", text: "Look up both public accounts." }], cursor: {} }) },
     permission: { get: async () => state.request, reply: () => assert.fail("Evaluator cannot write permissions") } } as unknown as OpenCodeClient
   const scope = { location, epoch: handshake.epoch }, snapshot = snapshotRequest(pending, scope)!
-  return { life, state, hooks, outer, client, scope, snapshot }
+  return { life, state, hooks, outer, client, scope, snapshot, access }
 }
 
 for (const safe of [true, false]) test(`uncertain parallel MCP linkage reaches the judge and preserves ${safe ? "Safe" : "Unsafe"}`, async () => {
@@ -61,6 +59,7 @@ for (const safe of [true, false]) test(`uncertain parallel MCP linkage reaches t
   try {
     let posts = 0
     const result = await evaluateHostReview(f.client, f.snapshot, config, BUILTIN_PROMPTS, f.life.signal, () => {}, {
+      access: f.access,
       fetcher: async (_url, init) => {
         posts++
         const body = JSON.parse(String(init?.body)), evidence = JSON.parse(body.messages[1].content)
@@ -93,7 +92,7 @@ test("distinct inner IDs reach the judge as possible candidates beside an overla
     before({ ...f.outer, id: "outer-2", input: { code: "return await tools.account.lookup({account:\"C\"})" } })
     before({ ...f.outer, id: "inner-C", tool: "account_lookup", input: { account: "C" } })
     before({ ...f.outer, messageID: "other-assistant", id: "inner-D", tool: "account_lookup", input: { account: "D" } })
-    const value = await readHostEvidence(f.client, f.scope, pending, config, f.life.signal)
+    const value = await readHostEvidence(f.client, f.scope, pending, config, f.life.signal, f.access)
     assert.ok(value?.result.status === "ready" && value.result.evidence.kind === "tool")
     const evidence = value.result.evidence
     assert.deepEqual(evidence.operation.input, input, "The outer program stays the exact mandatory evidence")
@@ -112,7 +111,7 @@ test("later and completed sibling candidates stay observations; absent definitio
     f.state.registry = false
     f.hooks.get("execute.after")!({ ...f.outer, tool: "account_lookup" })
     f.hooks.get("execute.before")!({ ...f.outer, tool: "account_lookup", input: { account: "x".repeat(10000) } })
-    const value = await readHostEvidence(f.client, f.scope, pending, { ...config, maxEvidenceBytes: 2048 }, f.life.signal)
+    const value = await readHostEvidence(f.client, f.scope, pending, { ...config, maxEvidenceBytes: 2048 }, f.life.signal, f.access)
     assert.ok(value?.result.status === "ready" && value.result.evidence.kind === "tool")
     const evidence = value.result.evidence
     assert.equal(evidence.codeMode?.observedCalls, 3)
@@ -141,7 +140,7 @@ for (const change of ["outer-input", "duplicate-outer", "permission", "epoch", "
         return value
       }
       if (change === "native") f.state.request = { ...pending, action: "shell" }
-      const value = await readHostEvidence(f.client, f.scope, f.state.request, config, f.life.signal)
+      const value = await readHostEvidence(f.client, f.scope, f.state.request, config, f.life.signal, f.access)
       assert.equal(value, undefined)
     } finally { await f.life.stop() }
   })
@@ -149,7 +148,7 @@ for (const change of ["outer-input", "duplicate-outer", "permission", "epoch", "
 test("disabled registered-tool review skips candidate registry work", async () => {
   const f = await fixture()
   try {
-    const value = await readHostEvidence(f.client, f.scope, pending, { ...config, reviewTools: false }, f.life.signal)
+    const value = await readHostEvidence(f.client, f.scope, pending, { ...config, reviewTools: false }, f.life.signal, f.access)
     assert.equal(value?.result.status, "disabled")
     assert.equal(f.state.catalogReads, 0)
   } finally { await f.life.stop() }
@@ -159,6 +158,7 @@ for (const safe of [true, false]) test(`the judge's ${safe ? "Safe" : "Unsafe"} 
   const f = await fixture(), timers = new Set<() => void>(), writes: string[] = []
   const options = { ...config, autoApprove: true, autoApproveDelaySeconds: 0 }
   const controller = new Controller((_request, signal, identified) => evaluateHostReview(f.client, f.snapshot, options, BUILTIN_PROMPTS, signal, identified, {
+    access: f.access,
     fetcher: async () => Response.json({ choices: [{ message: { content: JSON.stringify({ safe, reason: "Decisive reason.", desc: "Decision with uncertainty." }) }, finish_reason: "stop" }] }),
   }), () => {}, {
     reviewOptions: options, candidate: () => true, nativeFront: () => pending.id, approvalReady: () => true,

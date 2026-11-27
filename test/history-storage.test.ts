@@ -7,14 +7,14 @@ import path from "node:path"
 import { build } from "esbuild"
 import { HistorySQL } from "../src/history-schema.js"
 import type { HistorySelection, HistoryTotals, HistoryResolution } from "../src/history-schema.js"
-import { encodeEvent, HistoryInvalid, reviewID, rootID, sessionID } from "../src/history-records.js"
+import { encodeEvent, HistoryInvalid, entryID, reviewID, rootID, sessionID } from "../src/history-records.js"
 import type { HistoryEvent, HistoryOutcome, HistoryPayload, HistoryReview } from "../src/history-records.js"
 import { privateDatabase } from "../src/history-storage-worker.js"
 import { HistoryWorker } from "../src/history-store.js"
 import { StreamingAssessment } from "../src/streaming-assessment.js"
 import { displayText } from "../src/controller.js"
 
-const context: HistoryReview = { scope: "/project", root: "root", session: "child", permission: "permission", review: "review",
+const context: HistoryReview = { root: "root", session: "child", permission: "permission", review: "review",
   category: "bash", configuredModel: "configured", provider: "https://openrouter.ai/api/v1" }
 const payload: HistoryPayload = { safe: true, completedAt: 100, desc: "Resolved private report", reportedModel: "reported", usage: { cost: 0 } }
 const resolve = (c = context, p = payload, outcome: HistoryOutcome = "manual"): HistoryEvent =>
@@ -35,12 +35,12 @@ test("validated report controls survive resolved storage and remain escaped for 
 test("saved indexed order selects next newer after deletion, then nearest older, without jumping newest", t => {
   const f = fixture(t)
   for (let n = 1; n <= 5; n++) f.apply(resolve({ ...context, session: `child-${n}`, permission: `p-${n}`, review: `r-${n}` }, { ...payload, completedAt: n }))
-  const query = { type: "history" as const, scope: context.scope, root: context.root }
+  const query = { type: "history" as const, root: context.root }
   const middle = f.sql.query({ ...query, entry: reviewID({ ...context, review: "r-3" }) }) as HistorySelection
-  f.apply({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: "child-3" }, at: 300 })
+  f.db.prepare("DELETE FROM history WHERE id=?").run(middle.entry!)
   const newer = f.sql.query({ ...query, entry: middle.entry, order: middle.order }) as HistorySelection
   assert.equal(newer.record?.context.permission, "p-4"); assert.equal(newer.rank, 3); assert.equal(newer.total, 4)
-  for (const n of [4, 5]) f.apply({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: `child-${n}` }, at: 301 })
+  for (const n of [4, 5]) f.db.prepare("DELETE FROM history WHERE id=?").run(reviewID({ ...context, review: `r-${n}` }))
   const older = f.sql.query({ ...query, entry: middle.entry, order: middle.order }) as HistorySelection
   assert.equal(older.record?.context.permission, "p-2")
   assert.throws(() => f.sql.query({ ...query, entry: middle.entry, order: { ...middle.order!, id: "b".repeat(64) } }))
@@ -48,7 +48,7 @@ test("saved indexed order selects next newer after deletion, then nearest older,
 
 test("data-only resolution queries observe independent clients without reading or admitting report bodies", t => {
   const f = fixture(t), second = f.second()
-  const query = { type: "resolution" as const, scope: context.scope, root: context.root, session: context.session, permission: context.permission }
+  const query = { type: "resolution" as const, root: context.root, session: context.session, permission: context.permission }
   f.apply({ type: "reviewAccepted", context, at: 100, accepted: { safe: true, completedAt: 100 } })
   assert.deepEqual(second.query(query), { uncertain: false, conflict: false, deleted: false, outcome: undefined })
   assert.throws(() => second.query({ ...query, root: "another-root" }), /ownership/)
@@ -69,21 +69,21 @@ test("late outcome updates remain strict, data-only and deletion-aware", t => {
   assert.equal(f.history().record?.outcome, "rejected")
   assert.equal(f.history().record?.payload.desc, payload.desc)
   assert.throws(() => encodeEvent({ type: "permissionOutcome", context, at: 300, outcome: "rejected", payload } as any))
-  f.apply({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.session }, at: 400 })
-  assert.equal(f.db.prepare("SELECT count(*) n FROM sessions").get()!.n, 0)
-  const facts = f.sql.query({ type: "resolution", scope: context.scope, root: context.root, session: context.session, permission: context.permission }) as HistoryResolution
-  assert.equal(facts.deleted, true); assert.equal(facts.outcome, undefined)
+  f.apply({ type: "sessionDeleted", context: { root: context.root, session: context.session }, at: 400 })
+  assert.equal(f.db.prepare("SELECT count(*) n FROM sessions").get()!.n, 1)
+  const facts = f.sql.query({ type: "resolution", root: context.root, session: context.session, permission: context.permission }) as HistoryResolution
+  assert.equal(facts.deleted, false); assert.equal(facts.outcome, "rejected")
 })
 
 test("resolution facts reject corrupt attribution rather than authorize cancelled history", t => {
   const f = fixture(t)
   f.apply({ type: "approvalConfirmed", context, at: 200, approval: "write", automatic: true })
   f.db.exec("UPDATE approvals SET automatic=-1")
-  assert.throws(() => f.sql.query({ type: "resolution", scope: context.scope, root: context.root, session: context.session, permission: context.permission }), /ownership/)
+  assert.throws(() => f.sql.query({ type: "resolution", root: context.root, session: context.session, permission: context.permission }), /ownership/)
 })
 function fixture(t: any) {
   const directory = mkdtempSync(path.join(tmpdir(), "history-test-"))
-  const file = path.join(directory, "private/history-v1.sqlite")
+  const file = path.join(directory, "private/history-v2.sqlite")
   privateDatabase(file)
   const db = new DatabaseSync(file), sql = new HistorySQL(db)
   const clients = [sql]
@@ -91,7 +91,7 @@ function fixture(t: any) {
   let sequence = 0
   return { directory, file, db, sql, apply: (e: HistoryEvent) => sql.apply("writer", ++sequence, encodeEvent(e)),
     totals: () => (sql.query({ type: "totals" }) as HistoryTotals).totals,
-    history: () => sql.query({ type: "history", scope: context.scope, root: context.root }) as HistorySelection,
+    history: () => sql.query({ type: "history", root: context.root }) as HistorySelection,
     second: () => { const second = new HistorySQL(new DatabaseSync(file)); clients.push(second); return second } }
 }
 
@@ -135,10 +135,8 @@ test("two clients count distinct attempts and accepted reviews; latest Unsafe re
   second.apply("second", 3, encodeEvent(resolve(later, { ...payload, safe: false, completedAt: 150, desc: "New Unsafe" })))
   f.apply(resolve())
   const h = f.history()
-  assert.equal(h.total, 2)
-  const previous = f.sql.query({ type: "history", scope: context.scope, root: context.root, entry: h.older }) as HistorySelection
-  assert.equal(previous.record?.payload.desc, payload.desc)
-  assert.equal(previous.record?.outcome, "auto")
+  assert.equal(h.total, 1)
+  assert.equal(h.older, undefined)
   assert.equal(h.record?.payload.safe, false); assert.equal(h.record?.outcome, "auto")
   assert.equal(h.record?.approvingReview, reviewID(context)); assert.equal(h.record?.context.configuredModel, "configured")
   assert.equal(h.record?.payload.reportedModel, "reported")
@@ -163,19 +161,29 @@ test("cross-window dispatch observations never hide proven native approval while
   assert.equal(f.totals().activity.autoApproved, 1)
 })
 
-test("native once keeps every review readable through uncertainty and refines attribution without duplicate bodies", t => {
+test("equal completion timestamps cannot resurrect a superseded report on another writer's replay", t => {
+  const f = fixture(t), later = { ...context, review: "later" }
+  f.apply(resolve())
+  f.apply(resolve(later, { ...payload, desc: "Newer candidate" }))
+  f.second().apply("another", 1, encodeEvent(resolve()))
+  assert.equal(f.history().total, 1)
+  assert.equal(f.history().record?.context.review, later.review)
+  assert.equal(f.history().record?.payload.desc, "Newer candidate")
+})
+
+test("native once keeps the latest review readable through uncertainty and refines attribution without duplicate bodies", t => {
   const f = fixture(t), later = { ...context, review: "later" }
   f.apply(resolve(context, payload, "approved"))
   f.apply(resolve(later, { ...payload, safe: false, completedAt: 150 }, "approved"))
   f.apply({ type: "approvalDispatched", context, at: 200, approval: "write", automatic: true })
   f.apply({ type: "approvalSettled", context, at: 201, approval: "write", result: "uncertain" })
-  assert.equal(f.history().total, 2)
+  assert.equal(f.history().total, 1)
   assert.equal(f.history().record?.outcome, "approved")
   assert.equal(f.totals().activity.autoApproved, 0)
   f.apply({ type: "approvalConfirmed", context, at: 202, approval: "write", automatic: true })
   assert.equal(f.history().record?.outcome, "auto")
-  assert.equal(f.history().total, 2)
-  assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 2)
+  assert.equal(f.history().total, 1)
+  assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 1)
   assert.equal(f.totals().activity.autoApproved, 1)
 })
 
@@ -184,17 +192,17 @@ test("permission notification lookup selects that permission's newest review, ne
   f.apply(resolve())
   f.apply(resolve(later, { ...payload, safe: false, completedAt: 150 }))
   f.apply(resolve({ ...context, permission: "other", review: "other" }, { ...payload, completedAt: 200 }))
-  const query = { type: "history" as const, scope: context.scope, root: context.root,
+  const query = { type: "history" as const, root: context.root,
     permission: { session: context.session, permission: context.permission } }
   const selected = f.sql.query(query) as HistorySelection
   assert.equal(selected.entry, reviewID(later))
   assert.equal(selected.record?.payload.safe, false)
-  assert.equal(selected.rank, 2)
-  assert.equal(selected.total, 3)
-  const plan = f.db.prepare(`EXPLAIN QUERY PLAN SELECT * FROM history WHERE scope=? AND root=? AND outcome IS NOT NULL
-    AND permission=? AND session=? ORDER BY completed DESC,tie DESC,id DESC LIMIT 1`).all(
-    context.scope, rootID(context), context.permission, sessionID(context))
-  assert.match(JSON.stringify(plan), /SEARCH history USING INDEX history_permission/)
+  assert.equal(selected.rank, 1)
+  assert.equal(selected.total, 2)
+  const plan = f.db.prepare(`EXPLAIN QUERY PLAN SELECT * FROM history WHERE root=? AND outcome IS NOT NULL
+    AND entry=? AND session=? ORDER BY completed DESC,tie DESC,id DESC LIMIT 1`).all(
+    rootID(context), entryID(context), sessionID(context))
+  assert.match(JSON.stringify(plan), /SEARCH history USING INDEX sqlite_autoindex_history_/)
   assert.doesNotMatch(JSON.stringify(plan), /SCAN history|TEMP B-TREE/)
   assert.equal((f.sql.query({ ...query, permission: { ...query.permission, session: "other" } }) as HistorySelection).record, undefined)
   assert.throws(() => f.sql.query({ ...query, entry: selected.entry }))
@@ -218,7 +226,7 @@ test("completion ordering, stable ties, neighbors and rank use one snapshot; roo
   f.apply(resolve({ ...context, root: "other", session: "other", permission: "other", review: "other" }))
   const latest = f.history()
   assert.equal(latest.total, 3); assert.equal(latest.rank, 3); assert.equal(latest.entry, reviewID(context))
-  const selected = f.sql.query({ type: "history", scope: context.scope, root: context.root, entry: latest.entry, direction: "older" }) as HistorySelection
+  const selected = f.sql.query({ type: "history", root: context.root, entry: latest.entry, direction: "older" }) as HistorySelection
   assert.equal(selected.entry, reviewID(middle)); assert.equal(selected.rank, 2)
   assert.equal(selected.newer, reviewID(context)); assert.equal(selected.older, reviewID(oldest))
 })
@@ -233,24 +241,6 @@ test("payload corruption retains placeholder, repair is revalidated, invalid ind
   f.apply(resolve()); assert.equal(f.history().record?.payload.desc, payload.desc)
   f.db.exec("UPDATE history SET completed=-1")
   assert.throws(() => f.history(), /index/)
-})
-
-test("root/child tombstones remove details and retain totals and opaque contribution dedup", t => {
-  const f = fixture(t)
-  const event: HistoryEvent = { type: "reviewAccepted", context, at: 100, accepted: { safe: true, completedAt: 100 } }
-  f.apply(event); f.apply(resolve())
-  f.apply({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.session }, at: 300 })
-  f.apply(resolve()); f.apply(event)
-  assert.equal(f.history().total, 0); assert.equal(f.totals().safe, 1)
-  assert.equal(f.db.prepare("SELECT count(*) n FROM reviews").get()!.n, 0)
-  assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 0)
-  const root = { ...context, session: context.root, permission: "root-permission", review: "root-review" }
-  f.apply(resolve(root))
-  f.apply({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.root }, at: 301 })
-  f.apply({ type: "attemptFinalized", context: root, at: 302, attempt: "late", usage: { cost: 0.25 } })
-  assert.equal(f.totals().requests, 1); assert.equal(f.history().total, 0)
-  assert.equal(f.db.prepare("SELECT count(*) n FROM attempts").get()!.n, 0)
-  assert.equal(f.db.prepare("SELECT count(*) n FROM sessions").get()!.n, 0)
 })
 
 test("pending operations reject text, credentials, unsafe integers and unknown fields; no pending body on disk", t => {
@@ -269,7 +259,7 @@ test("private directory/database/WAL protection rejects symlinks, public modes a
   const f = fixture(t)
   for (const name of readdirSync(path.dirname(f.file))) assert.equal(statSync(path.join(path.dirname(f.file), name)).mode & 0o077, 0)
   const other = path.join(f.directory, "other"); mkdirSync(other, { mode: 0o700 })
-  const file = path.join(other, "history-v1.sqlite"), target = path.join(f.directory, "target")
+  const file = path.join(other, "history-v2.sqlite"), target = path.join(f.directory, "target")
   writeFileSync(target, "do not change", { mode: 0o600 }); symlinkSync(target, file)
   assert.throws(() => privateDatabase(file)); assert.equal(readFileSync(target, "utf8"), "do not change")
   rmSync(file); writeFileSync(file, "corrupt database", { mode: 0o600 })
@@ -278,7 +268,7 @@ test("private directory/database/WAL protection rejects symlinks, public modes a
   rmSync(file); writeFileSync(file, "", { mode: 0o644 }); assert.throws(() => privateDatabase(file))
   rmSync(file); privateDatabase(file); symlinkSync(target, file + "-wal"); assert.throws(() => privateDatabase(file))
   const publicDir = path.join(f.directory, "public"); mkdirSync(publicDir, { mode: 0o755 })
-  assert.throws(() => privateDatabase(path.join(publicDir, "history-v1.sqlite")))
+  assert.throws(() => privateDatabase(path.join(publicDir, "history-v2.sqlite")))
 })
 
 test("unsupported schema is not reset; precomputed totals survive reopen and ignore legacy files", t => {
@@ -289,7 +279,10 @@ test("unsupported schema is not reset; precomputed totals survive reopen and ign
   assert.equal(readFileSync(path.join(f.directory, "usage-v4.json"), "utf8"), '{"cost":999}')
   f.db.exec("UPDATE meta SET version=99")
   const other = new DatabaseSync(f.file)
-  try { assert.throws(() => new HistorySQL(other), /schema/); assert.equal(other.prepare("SELECT version FROM meta").get()!.version, 99) }
+  try {
+    assert.throws(() => new HistorySQL(other), error => error instanceof HistoryInvalid && error.message === "Unsupported history schema")
+    assert.equal(other.prepare("SELECT version FROM meta").get()!.version, 99)
+  }
   finally { other.close() }
 })
 
@@ -301,25 +294,25 @@ test("real worker distinguishes private-path initialization failure from invalid
     platform: "node", format: "cjs", external: ["bun:sqlite", "node:sqlite"] })
   const worker = new HistoryWorker(bundle.outputFiles[0]!.text)
   t.after(async () => { await worker.terminate(); rmSync(directory, { recursive: true, force: true }) })
-  await assert.rejects(worker.call({ type: "open", file: path.join(alias, "private/history-v1.sqlite"), adapter: "node" }), error => {
+  await assert.rejects(worker.call({ type: "open", file: path.join(alias, "private/history-v2.sqlite"), adapter: "node" }), error => {
     assert.ok(error instanceof Error); assert.equal(error instanceof HistoryInvalid, false)
     assert.equal(error.message, "History initialization unavailable")
     return true
   })
   assert.equal(existsSync(path.join(target, "private")), false)
-  assert.deepEqual(await worker.call({ type: "open", file: path.join(directory, "private/history-v1.sqlite"), adapter: "node" }),
+  assert.deepEqual(await worker.call({ type: "open", file: path.join(directory, "private/history-v2.sqlite"), adapter: "node" }),
     { environmentKeys: 0, cleanup: true })
   await assert.rejects(worker.call({ type: "apply", writer: "writer", sequence: 2, event: encodeEvent(resolve()) }), error => {
     assert.ok(error instanceof HistoryInvalid); assert.equal(error.message, "Invalid history operation")
     return true
   })
   await worker.call({ type: "apply", writer: "writer", sequence: 1, event: encodeEvent(resolve()) })
-  assert.equal((await worker.call({ type: "query", query: { type: "history", scope: context.scope, root: context.root } })).record.payload.desc, payload.desc)
+  assert.equal((await worker.call({ type: "query", query: { type: "history", root: context.root } })).record.payload.desc, payload.desc)
 })
 
 test("two real worker clients concurrently initialize schema and share committed Node SQLite data", async t => {
   const directory = mkdtempSync(path.join(tmpdir(), "history-workers-"))
-  const file = path.join(directory, "private/history-v1.sqlite")
+  const file = path.join(directory, "private/history-v2.sqlite")
   const bundle = await build({ entryPoints: ["src/history-storage-worker.ts"], bundle: true, write: false,
     platform: "node", format: "cjs", external: ["bun:sqlite", "node:sqlite"] })
   const workers = [new HistoryWorker(bundle.outputFiles[0]!.text), new HistoryWorker(bundle.outputFiles[0]!.text)]
@@ -327,7 +320,7 @@ test("two real worker clients concurrently initialize schema and share committed
   // Keep only two actual workers, but exercise cold WAL negotiation repeatedly.
   // A transient setup BUSY must recover inside its original SQLite wait budget.
   for (let round = 0; round < 50; round++) {
-    const cold = path.join(directory, `cold-${round}`, "history-v1.sqlite")
+    const cold = path.join(directory, `cold-${round}`, "history-v2.sqlite")
     assert.deepEqual(await Promise.all(workers.map(w => w.call({ type: "open", file: cold, adapter: "node" }))),
       [{ environmentKeys: 0, cleanup: true }, { environmentKeys: 0, cleanup: true }])
     await Promise.all(workers.map(w => w.call({ type: "close" })))
@@ -348,25 +341,17 @@ test("two real worker clients concurrently initialize schema and share committed
   try {
     reader.exec("BEGIN"); reader.prepare("SELECT body FROM payloads").get()
     await workers[0]!.call({ type: "apply", writer: "worker0", sequence: 3,
-      event: encodeEvent({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.root }, at: 300 }) })
-    assert.deepEqual(await workers[0]!.call({ type: "cleanup" }), { pending: true, legacy: false })
+      event: encodeEvent(resolve({ ...context, review: "replacement" }, { ...payload, completedAt: 300 })) })
+    assert.deepEqual(await workers[0]!.call({ type: "cleanup" }), { pending: true })
     assert.ok(readFileSync(file + "-wal").includes(Buffer.from(marker)))
     reader.exec("ROLLBACK")
-    assert.deepEqual(await workers[1]!.call({ type: "cleanup" }), { pending: false, legacy: false })
+    assert.deepEqual(await workers[1]!.call({ type: "cleanup" }), { pending: false })
     for (const suffix of ["", "-wal", "-shm"]) {
       assert.equal(readFileSync(file + suffix).includes(Buffer.from(marker)), false)
     }
-    assert.equal(reader.prepare("SELECT count(*) n FROM payloads").get()!.n, 0)
-    assert.equal(reader.prepare("SELECT count(*) n FROM tombstones").get()!.n, 1)
+    assert.equal(reader.prepare("SELECT count(*) n FROM payloads").get()!.n, 1)
     assert.deepEqual(await workers[1]!.call({ type: "query", query: { type: "totals" } }), resolvedTotals)
   } finally { reader.close() }
-})
-
-test("deletion rejects conflicting root ownership without deleting another root's details", t => {
-  const f = fixture(t); f.apply(resolve())
-  assert.throws(() => f.apply({ type: "sessionDeleted", context: { scope: context.scope, root: "wrong", session: context.session }, at: 300 }), /ownership/)
-  assert.equal(f.history().record?.payload.desc, payload.desc)
-  assert.equal(f.db.prepare("SELECT count(*) n FROM tombstones").get()!.n, 0)
 })
 
 test("approval identity cannot change review attribution or manual/automatic accounting", t => {
@@ -420,17 +405,17 @@ test("symlinked ancestors are rejected before creating directories in their targ
   t.after(() => rmSync(directory, { recursive: true, force: true }))
   const target = path.join(directory, "target"), alias = path.join(directory, "alias")
   mkdirSync(target, { mode: 0o700 }); symlinkSync(target, alias)
-  assert.throws(() => privateDatabase(path.join(alias, "new", "private", "history-v1.sqlite")))
+  assert.throws(() => privateDatabase(path.join(alias, "new", "private", "history-v2.sqlite")))
   assert.equal(existsSync(path.join(target, "new")), false)
 })
 
 test("serialized bounds cover maximum escaped context and payload shapes without weakening decoded limits", t => {
   const f = fixture(t), text = "x" + "\u0001".repeat(4095)
-  const c = { ...context, scope: "/" + "\u0001".repeat(4095), root: text, session: text,
+  const c = { ...context, root: text, session: text,
     permission: text, review: text, configuredModel: text, provider: "https://example.com/" + "x".repeat(4076) }
   assert.equal(Buffer.byteLength(c.provider), 4096)
   f.apply(resolve(c))
-  assert.equal((f.sql.query({ type: "history", scope: c.scope, root: c.root }) as HistorySelection).record?.context.configuredModel, text)
+  assert.equal((f.sql.query({ type: "history", root: c.root }) as HistorySelection).record?.context.configuredModel, text)
   const p = { ...payload, reportedModel: text, desc: "\u0001".repeat(65536),
     timing: { fullReportMs: Number.MAX_VALUE, ratingMs: Number.MIN_VALUE },
     usage: { input: Number.MAX_SAFE_INTEGER, output: Number.MAX_SAFE_INTEGER, cost: Number.MAX_VALUE } }

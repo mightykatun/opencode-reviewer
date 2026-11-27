@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto"
-import path from "node:path"
 import type { Usage } from "./usage.js"
 import type { ReviewTiming } from "./types.js"
 
 const HISTORY_EVENT_BYTES = 512 * 1024
+export const HISTORY_DATABASE_FILE = "history-v2.sqlite"
 export const HISTORY_QUEUE_BYTES = 64 * 1024 * 1024
 export const HISTORY_OPERATION_OVERHEAD = 512
 export const HISTORY_RETRY_MS = 2000
@@ -21,7 +21,7 @@ const usageBytes = objectBytes({ input: numberBytes, output: numberBytes, cost: 
 const acceptedFields = { safe: 5, completedAt: numberBytes, reportedModel: textBytes,
   timing: objectBytes({ fullReportMs: numberBytes, ratingMs: numberBytes }) }
 export const HISTORY_RECORD_BYTES = {
-  context: objectBytes({ scope: textBytes, root: textBytes, session: textBytes, permission: textBytes,
+  context: objectBytes({ root: textBytes, session: textBytes, permission: textBytes,
     review: textBytes, category: JSON.stringify("external_directory").length, configuredModel: textBytes, provider: textBytes }),
   accepted: objectBytes(acceptedFields),
   dispatched: objectBytes({ at: numberBytes, retry: JSON.stringify("transport").length }),
@@ -36,7 +36,7 @@ export const HISTORY_RECORD_BYTES = {
 export class HistoryInvalid extends Error {}
 /** Opening found another connection holding SQLite's lock. Nothing was attempted. */
 export class HistoryBusy extends Error {}
-export interface HistoryScope { scope: string; root: string; session: string }
+export interface HistoryScope { root: string; session: string }
 export interface HistoryReview extends HistoryScope {
   permission: string; review: string; category: "bash" | "edit" | "mcp" | "custom" | "external_directory" | "skill" | "registered-tool" | "tool"
   configuredModel: string; provider: string
@@ -47,7 +47,7 @@ export type HistoryTarget = Pick<HistoryReview, "session" | "permission">
 export interface HistoryAccepted { safe: boolean; completedAt: number; reportedModel?: string; timing?: ReviewTiming }
 export interface HistoryPayload extends HistoryAccepted { desc: string; usage?: Usage; toolCalls?: number }
 export type HistoryOutcome = "auto" | "manual" | "approved" | "rejected" | "cancelled"
-/** Dispatched retriever tool kinds. Calls recorded before kinds existed stay unknown. */
+/** Dispatched retriever tool kinds. */
 const retrievalCallTools = ["read", "list", "glob", "grep", "ask_context"] as const
 export type RetrievalCallTool = typeof retrievalCallTools[number]
 export type HistoryEvent = (
@@ -60,23 +60,23 @@ export type HistoryEvent = (
   | { type: "approvalConfirmed"; context: HistoryReview; at: number; approval: string; automatic: boolean }
   /** Confirmed automatic steering rejection, with the steering that was sent. */
   | { type: "rejectionConfirmed"; context: HistoryReview; at: number; approval: string; steering: string }
-  /** Reason stays memory-only until resolution and outside the legacy payload. */
+  /** Reason stays memory-only until resolution. */
   | { type: "permissionResolved"; context: HistoryReview; at: number; outcome: HistoryOutcome; payload: HistoryPayload; reason?: string }
   | { type: "permissionOutcome"; context: HistoryReview; at: number; outcome: "approved" | "manual" | "rejected" }
   ) & { versions?: HistoryVersions }
   | { type: "sessionDeleted"; context: HistoryScope; at: number }
 export interface HistoryOrder { completed: number; tie: string; id: string }
 export type HistoryQuery =
-  | { type: "totals"; conversation?: { scope: string; root: string } }
-  | { type: "conversationTotals"; scope: string; root: string }
-  | { type: "history"; scope: string; root: string; entry?: string; permission?: HistoryTarget; direction?: "older" | "newer"; order?: HistoryOrder }
-  | { type: "resolution"; scope: string; root: string; session: string; permission: string }
+  | { type: "totals"; conversation?: { root: string } }
+  | { type: "conversationTotals"; root: string }
+  | { type: "history"; root: string; entry?: string; permission?: HistoryTarget; direction?: "older" | "newer"; order?: HistoryOrder }
+  | { type: "resolution"; root: string; session: string; permission: string }
 
 export const opaque = (...parts: string[]): string => createHash("sha256").update(JSON.stringify(parts)).digest("hex")
-export const entryID = (c: HistoryReview): string => opaque(c.scope, c.permission)
-export const rootID = (c: Pick<HistoryScope, "scope" | "root">): string => opaque(c.scope, c.root)
-export const sessionID = (c: HistoryScope): string => opaque(c.scope, c.session)
-export const reviewID = (c: HistoryReview): string => opaque(c.scope, c.review)
+export const entryID = (c: HistoryReview): string => opaque(c.permission)
+export const rootID = (c: Pick<HistoryScope, "root">): string => opaque(c.root)
+export const sessionID = (c: HistoryScope): string => opaque(c.session)
+export const reviewID = (c: HistoryReview): string => opaque(c.review)
 export const count = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0
 const amount = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0
 function requireValue(ok: unknown): asserts ok { if (!ok) throw new HistoryInvalid("Invalid history record") }
@@ -93,10 +93,10 @@ function text(v: unknown, max = HISTORY_TEXT_BYTES): asserts v is string {
 }
 function timestamp(v: unknown) { requireValue(count(v) && v <= 8.64e15) }
 export function validateScope(c: HistoryScope): void {
-  text(c.scope); requireValue(path.isAbsolute(c.scope)); text(c.root); text(c.session)
+  text(c.root); text(c.session)
 }
 export function validateReview(c: HistoryReview): void {
-  object(c, ["scope", "root", "session", "permission", "review", "category", "configuredModel", "provider"])
+  object(c, ["root", "session", "permission", "review", "category", "configuredModel", "provider"])
   validateScope(c); text(c.permission); text(c.review); text(c.configuredModel); text(c.provider)
   requireValue(["bash", "edit", "mcp", "custom", "external_directory", "skill", "registered-tool", "tool"].includes(c.category))
   const url = new URL(c.provider)
@@ -138,7 +138,7 @@ export function validateEvent(e: HistoryEvent): HistoryEvent {
   }
   requireValue(e && Object.hasOwn(extra, e.type)); object(e, ["type", "context", "at", ...extra[e.type], ...(e.type === "sessionDeleted" ? [] : ["versions"])])
   timestamp(e.at)
-  if (e.type === "sessionDeleted") { object(e.context, ["scope", "root", "session"]); validateScope(e.context); return e }
+  if (e.type === "sessionDeleted") { object(e.context, ["root", "session"]); validateScope(e.context); return e }
   if (e.versions !== undefined) {
     object(e.versions, ["reviewer", "opencode"])
     text(e.versions.reviewer, HISTORY_VERSION_BYTES)
@@ -177,18 +177,16 @@ export function validateQuery(q: HistoryQuery): void {
   if (q.type === "totals") {
     object(q, ["type", "conversation"])
     if (q.conversation !== undefined) {
-      object(q.conversation, ["scope", "root"]); text(q.conversation.scope); text(q.conversation.root)
-      requireValue(path.isAbsolute(q.conversation.scope))
+      object(q.conversation, ["root"]); text(q.conversation.root)
     }
     return
   }
-  text(q.scope); requireValue(path.isAbsolute(q.scope))
-  if (q.type === "conversationTotals") { object(q, ["type", "scope", "root"]); text(q.root); return }
+  if (q.type === "conversationTotals") { object(q, ["type", "root"]); text(q.root); return }
   if (q.type === "resolution") {
-    object(q, ["type", "scope", "root", "session", "permission"])
+    object(q, ["type", "root", "session", "permission"])
     validateScope(q); text(q.permission); return
   }
-  object(q, ["type", "scope", "root", "entry", "permission", "direction", "order"]); text(q.root)
+  object(q, ["type", "root", "entry", "permission", "direction", "order"]); text(q.root)
   if (q.permission !== undefined) {
     object(q.permission, ["session", "permission"]); text(q.permission.session); text(q.permission.permission)
     requireValue(q.entry === undefined && q.direction === undefined && q.order === undefined)

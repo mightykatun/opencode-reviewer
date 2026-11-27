@@ -10,6 +10,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { smokeEnvironment, smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { connectionProbe } from "./smoke-connection.mjs"
+import { managedReviewer, verifiedSnapshot } from "./smoke-v2-rpc.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
 async function monitorSetup(ctx) {
@@ -101,7 +102,7 @@ async function reviewerSetup(ctx) {
 
 const { scenario } = runtimeArguments("smoke-v2-steering.mjs")
 const fast = scenario === "fast-steering", cap = scenario === "normal-steering-cap", followUp = scenario === "normal-steering-follow-up"
-const cancelHeld = scenario === "normal-steering-cancel-held"
+const cancelHeld = scenario === "normal-steering-cancel-verification"
 const root = path.resolve(import.meta.dirname, ".."), host = process.env.OPENCODE_BIN ?? "opencode"
 const version = execFileSync(host, ["--version"], { encoding: "utf8" }).trim()
 assertV2HostVersion(version)
@@ -112,6 +113,7 @@ env.XDG_STATE_HOME = await mkdtemp("/tmp/reviewer-steering-state-")
 await mkdir(path.join(env.XDG_STATE_HOME, "opencode"), { mode: 0o700 })
 const project = path.join(temp, "project"), runtime = await smokeRuntime(temp)
 const fixture = { project, cancelHeld, monitor: path.join(artifacts, "monitor.json"), control: path.join(artifacts, "control.json"),
+  verification: path.join(artifacts, "verification.json"),
   notifications: path.join(artifacts, "notifications.json") }
 const publishers = new Map()
 const publish = async (file, value) => {
@@ -120,7 +122,7 @@ const publish = async (file, value) => {
   await publisher.publish(value); await publisher.flush()
 }
 const errors = [], reviews = [], mains = [], results = []
-let sequence = 0, sessionID, server, completed = 0
+let sequence = 0, sessionID, server, service, completed = 0
 const capture = () => runtime.tmux("capture-pane", "-p", "-t", "steering")
 const observe = () => readObservation(fixture.monitor, { optional: true })
 const until = async (label, check, timeout = 20000) => {
@@ -160,11 +162,11 @@ const finishReview = index => {
   sse(res, { content: fast ? '"}' : JSON.stringify(assessment) }); sse(res, {}, "stop"); res.end("data: [DONE]\n\n")
 }
 const database = async () => {
-  const file = path.join(env.XDG_STATE_HOME, "opencode/opencode-reviewer/history-v1.sqlite")
+  const file = path.join(env.XDG_STATE_HOME, "opencode/opencode-reviewer/history-v2.sqlite")
   let db
   try {
     db = new DatabaseSync(file, { readOnly: true })
-    return { rows: db.prepare("SELECT * FROM history ORDER BY completed").all(), reasons: db.prepare("SELECT * FROM review_reasons").all(),
+    return { rows: db.prepare("SELECT * FROM history ORDER BY completed").all(), reasons: db.prepare("SELECT id AS review,reason FROM reviews WHERE reason IS NOT NULL ORDER BY rowid").all(),
       rejections: db.prepare("SELECT * FROM auto_rejections").all(), totals: db.prepare("SELECT * FROM auto_rejection_totals").all(),
       meta: db.prepare("SELECT totals FROM meta WHERE id=1").get() }
   } catch (error) { if (error.code === "ERR_SQLITE_ERROR" && ((error.errcode & 255) === 5 || error.errcode === 14)) return; throw error }
@@ -216,7 +218,22 @@ try {
   await publish(path.join(monitor, "package.json"), { name: "steering-monitor", type: "module", exports: { "./tui": "./tui.mjs" } })
   await writeFile(path.join(monitor, "tui.mjs"), prelude + monitorSetup + '\nexport default {id:"fixture.steering.monitor",setup:monitorSetup}\n')
   await publish(path.join(reviewer, "package.json"), { name: "steering-production", type: "module", exports: { ".": "./index.mjs", "./tui": "./tui.mjs" } })
-  await writeFile(path.join(reviewer, "index.mjs"), `export {default} from ${JSON.stringify(pathToFileURL(path.join(root, "dist/server.js")).href)}\n`)
+  const serverBundle = JSON.stringify(pathToFileURL(path.join(root, "dist/server.js")).href)
+  await writeFile(path.join(reviewer, "index.mjs"), cancelHeld ? helpers + `
+import production from ${serverBundle}
+import { setTimeout as sleep } from "node:timers/promises"
+const file = ${JSON.stringify(fixture.verification)}
+export default { id: production.id, setup(ctx) {
+  const permission = { ...ctx.permission, async get(...args) {
+    const value = await ctx.permission.get(...args)
+    while ((await readObservation(file, { optional: true }))?.hold) await sleep(30)
+    return value
+  } }
+  return production.setup(new Proxy(ctx, { get(target, key) {
+    return key === "permission" ? permission : Reflect.get(target, key)
+  } }))
+} }
+` : `export {default} from ${serverBundle}\n`)
   await writeFile(path.join(reviewer, "tui.mjs"), prelude + `import * as production from ${JSON.stringify(bundle)}\n` + reviewerSetup + '\nexport default {id:"opencode-reviewer",setup:reviewerSetup}\n')
   await publish(path.join(title, "package.json"), { name: "steering-title", type: "module", exports: { ".": "./index.mjs" } })
   await writeFile(path.join(title, "index.mjs"), 'export default {id:"fixture.steering.title",async setup(ctx){const r=await ctx.session.hook("title",e=>{e.result="Steering fixture"});return ()=>r.dispose()}}\n')
@@ -227,17 +244,20 @@ try {
       models: { fixture: { name: "Fixture", capabilities: { tools: true }, limit: { context: 64000, output: 2000 } } } } } })
   const cliPath = path.join(temp, "config/opencode/cli.json")
   const cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, mouse: true, attention: { notifications: false, sound: false },
-    session: { permissions: "prompt" }, plugins: [{ package: reviewer, options: {
+    session: { permissions: "prompt" }, plugins: [reviewer, monitor] }
+  await publish(path.join(path.dirname(cliPath), "opencode-reviewer.json"), { server: {
       baseURL: origin + "/review", model: "steering-reviewer",
       autoApprove: false, autoRejectSteering: true, maxSteeringRejections: 1, fastMode: fast, stream: true, retrieval: false,
-      autoApproveDelaySeconds: fast ? 45 : 3, notify: true, notifySound: false, staleReminderSeconds: 0,
-      notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } }, monitor] }
+      autoApproveDelaySeconds: fast ? 45 : 3 }, tui: { notify: true, notifySound: false, staleReminderSeconds: 0,
+      notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } })
   await publish(cliPath, { ...cli, plugins: ["-opencode-reviewer", monitor] })
-  await runtime.start("-d", "-s", "steering", "-x", "160", "-y", "48", "-c", project, "env", "XDG_STATE_HOME=" + env.XDG_STATE_HOME, host, "--standalone")
+  service = await managedReviewer({ runtime, env, directory: project, host })
+  await runtime.start("-d", "-s", "steering", "-x", "160", "-y", "48", "-c", project, "env", "XDG_STATE_HOME=" + env.XDG_STATE_HOME, host)
   await until("monitor", record => record, 60000)
   await connectionProbe({ create: budget => command({ type: "connection-probe", ...budget }),
     remove: (id, budget) => command({ type: "remove-probe", sessionID: id, ...budget }), observe, directory: project })
   await publish(cliPath, cli)
+  await verifiedSnapshot(service, project)
   await until("production runtime", () => command({ type: "ready" }))
   sessionID = (await command({ type: "start" })).id
   const count = cap ? 3 : 1
@@ -253,8 +273,7 @@ try {
     if (cancelHeld) {
       await until("painted native Once choice", record => record.frame && record.mouse && record.mode === "base"
         && record.choices.once === true && !capture().includes("Finishing startup"))
-      runtime.tmux("send-keys", "-t", "steering", "Right")
-      await until("native Always hold before verdict", record => record.choices.always === true && record.choices.once === false)
+      await publish(fixture.verification, { hold: true })
     }
     if (fast) {
       sse(reviews[index].res, { content: '{"safe":false,"reason":' + JSON.stringify(reason) + ',"steering":' + JSON.stringify(steering).slice(0, -1) })
@@ -265,26 +284,27 @@ try {
     if (cancelHeld) {
       const pending = await command({ type: "pending", sessionID })
       assert.equal(pending.length, 1)
-      await until("unarmed Unsafe Checking and Cancel", record => record.choices.always === true
-        && capture().includes("Reason for rejection:") && capture().split("\n").some(row => row.includes("Checking…") && row.includes("Cancel")))
+      await until("Unsafe Checking and Cancel during verification", () =>
+        capture().includes("Reason for rejection:") && capture().split("\n").some(row => row.includes("Checking…") && row.includes("Cancel")))
       const unchanged = async () => {
         assert.deepEqual(await command({ type: "pending", sessionID }), pending)
         assert.doesNotMatch(capture(), /Rejected in/)
         assert.equal((await notifications()).filter(item => item.kind === "steered").length, 0)
       }
-      await quiet(index, 0, 1500, async record => { assert.equal(record.choices.always, true); await unchanged() })
+      await quiet(index, 0, 1500, unchanged)
       await writeFile(path.join(artifacts, "held-footer.txt"), capture())
       const rows = capture().split("\n"), row = rows.findIndex(line => line.includes("Checking…") && line.includes("Cancel"))
       assert.ok(row >= 0)
       const x = Array.from(rows[row].slice(0, rows[row].indexOf("Cancel"))).length + 2, y = row + 1
       runtime.tmux("send-keys", "-t", "steering", "-l", `\x1b[<0;${x};${y}M\x1b[<0;${x};${y}m`)
-      await until("Cancel while native Always remains selected", record => record.choices.always === true && capture().includes("Auto-rejection canceled"))
+      await until("server acknowledges Cancel", () => capture().includes("Auto-rejection canceled"))
+      await publish(fixture.verification, { hold: false })
+      const cancelled = (await service.snapshot()).views.find(item => item.view.request.id === pending[0].id)
+      assert.equal(cancelled.view.autoApproval.status, "cancelled")
       await command({ type: "away" })
       await until("home route", record => record.route.type === "home")
       await command({ type: "navigate", sessionID })
       await until("canceled report restored", record => record.route.sessionID === sessionID && capture().includes("Auto-rejection canceled"))
-      if ((await observe()).choices.always) runtime.tmux("send-keys", "-t", "steering", "Left")
-      await until("native hold released", record => record.choices.once === true && record.choices.always === false && record.choices.reject === false)
       await quiet(index, 0, 4500, async () => { await unchanged(); assert.match(capture(), /Auto-rejection canceled/) })
       await writeFile(path.join(artifacts, "cancel-restored.txt"), capture())
       await command({ type: "interrupt", sessionID })
@@ -376,6 +396,7 @@ try {
 } catch (error) {
   let screen = ""
   try { screen = capture() } catch { /* Startup may fail before the pane exists. */ }
+  if (service) await service.snapshot().then(value => publish(path.join(artifacts, "server-failure.json"), value)).catch(() => {})
   await writeFile(path.join(artifacts, "failure.txt"), String(error.stack) + "\n" + screen)
   throw error
 } finally {

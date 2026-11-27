@@ -4,8 +4,6 @@ import type { NotificationProcesses } from "./notification-process.js"
 
 /** Explicit embedding dependencies; these are never plugin configuration keys. */
 export interface PluginDependencies {
-  /** Adapter-only fixture seam. Not read from user configuration. */
-  adapterOnly?: true
   observer?: DiagnosticObserver
   historyProbe?: HistoryRenderProbe
   notifications?: NotificationBackendFactory

@@ -9,6 +9,7 @@ import { FileAccess } from "../src/file-access.js"
 import { snapshotRequest } from "../src/host-request.js"
 import { parseConfig } from "../src/config.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
+import { rpcTestAccess } from "./companion-rpc-access.js"
 
 const location = { directory: "/project/nested" }
 const scope = { location, epoch: "10000000-1000-4000-8000-100000000000" }
@@ -60,7 +61,7 @@ function fixture(child = false) {
   }
   const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", notify: false, retrieval: false })
   const evaluate = (identify = () => {}, signal = new AbortController().signal) => evaluateHostReview(client as unknown as OpenCodeClient, snapshot, config,
-    BUILTIN_PROMPTS, signal, identify, { fetcher: async (_url, init) => {
+    BUILTIN_PROMPTS, signal, identify, { access: rpcTestAccess(client, scope), fetcher: async (_url, init) => {
       posts.push(JSON.parse(String(init?.body)))
       return Response.json({ choices: [{ message: { content: '{"safe":false,"reason":"Decisive reason.","desc":"Synthetic assessment."}' } }] })
     } })

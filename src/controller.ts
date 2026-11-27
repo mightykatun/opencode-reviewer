@@ -14,6 +14,8 @@ import { ReviewAdmission, type ReviewEvaluation } from "./review-admission.js"
 import type { NativeApprovalTransport, NativeDecision } from "./host-permissions.js"
 import { ApprovalTransaction } from "./approval-transaction.js"
 import { steeringMessage, steeringReady } from "./steering.js"
+import { displayText } from "./display-text.js"
+export { displayText }
 
 export type AutoApproval = { status: "countdown"; seconds: number } | { status: "waiting" | "checking" | "allowing" | "cancelled" | "failed" | "approved" }
 
@@ -21,6 +23,8 @@ export interface RequestIdentity { readonly id: string; readonly sessionID: stri
 
 export interface View<R extends RequestIdentity = HostRequest> {
   request: R
+  /** Identity of this review attempt. Viewer controls must name it. */
+  review?: string
   status: "identifying" | "unidentified" | "analyzing" | "complete" | "unavailable" | "unrelated" | "suspended"
   assessment?: ReviewResult
   progress?: ReviewProgress
@@ -103,6 +107,8 @@ export type NativeFront<R extends RequestIdentity = HostRequest> = (root: string
 export interface ControllerCheckpoint<R extends RequestIdentity> {
   manual: ReadonlyMap<string, "cancelled" | "failed">
   pending: ReadonlyMap<string, { request: R; deadline?: number }>
+  /** Consecutive dispatched steering rejections per session. A policy edit never resets the cap. */
+  steered?: ReadonlyMap<string, number>
 }
 
 export interface ControllerOptions<R extends RequestIdentity = HostRequest> {
@@ -129,6 +135,13 @@ export interface ControllerOptions<R extends RequestIdentity = HostRequest> {
   onLifecycle?: ReviewLifecycleObserver<R>
   /** Review category named in the steering message's closing sentence. */
   steeringCategory?: (request: R) => ReviewKind | undefined
+  /** Native head of one session's own queue. When present it replaces the family
+   * front for automatic replies: other sessions progress independently. */
+  sessionHead?: (sessionID: string, pending: readonly R[]) => string | undefined
+  /** Durable reservation immediately before the single native write. False means no write. */
+  reserve?: (request: R, review: string) => boolean
+  /** Durable record of an explicit cancellation before it is acknowledged. */
+  cancelled?: (request: R, review: string) => boolean
 }
 
 /** Reviews remain advisory unless explicitly configured with a once-only writer. */
@@ -161,13 +174,21 @@ export class Controller<R extends RequestIdentity = HostRequest> {
   private previous: Map<string, { request: R; deadline?: number }>
   private unavailable?: ControllerOptions<R>["unavailable"]
   private category?: ControllerOptions<R>["steeringCategory"]
+  private sessionHead?: ControllerOptions<R>["sessionHead"]
+  private reserve?: ControllerOptions<R>["reserve"]
+  private cancelRecord?: ControllerOptions<R>["cancelled"]
   constructor(private evaluate: Evaluate<R>, private changed: (views: View<R>[]) => void,
     { reviewOptions = { reviewBash: true, reviewEdits: true }, nativeApproval, clock: time = clock, modes,
-      onApproval, onRating, onLifecycle, session, candidate = () => false, nativeFront, approvalReady, checkpoint, unavailable, steeringCategory }: ControllerOptions<R> = {}) {
+      onApproval, onRating, onLifecycle, session, candidate = () => false, nativeFront, approvalReady, checkpoint, unavailable, steeringCategory,
+      sessionHead, reserve, cancelled }: ControllerOptions<R> = {}) {
     this.unavailable = unavailable
     this.category = steeringCategory
+    this.sessionHead = sessionHead
+    this.reserve = reserve
+    this.cancelRecord = cancelled
     this.manual = new Map(checkpoint?.manual)
     this.previous = new Map(checkpoint?.pending)
+    this.steered = new Map(checkpoint?.steered)
     this.options = reviewOptions
     this.nativeApproval = nativeApproval
     this.time = time
@@ -185,6 +206,13 @@ export class Controller<R extends RequestIdentity = HostRequest> {
    * continue publishing synchronously during reconciliation. */
   get reconciling() { return this.reconciliation > 0 }
   get views() { return [...this.entries.values()].map((entry) => entry.view) }
+  /** The resolved conversation root of a pending request, once its ancestry read completed. */
+  root(requestID: string): string | undefined { return this.entries.get(requestID)?.root }
+  /** Whether a request waits on a failed saved-mode or ancestry read. Only an accepted fresh snapshot retries it. */
+  suspendedUnavailable(): boolean {
+    for (const entry of this.entries.values()) if (entry.view.status === "suspended" && entry.suspension === "unavailable") return true
+    return false
+  }
   get pendingViews() { return this.views.filter(view => !view.resolved) }
   modeRoots() {
     const roots = new Set<string>()
@@ -201,7 +229,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     const pending = new Map(this.previous)
     for (const [id, entry] of this.entries)
       pending.set(id, { request: structuredClone(entry.view.request), deadline: entry.deadline })
-    return { manual: new Map(this.manual), pending }
+    return { manual: new Map(this.manual), pending, steered: new Map(this.steered) }
   }
   retained(root: string, target: HistoryTarget) {
     const entry = this.entries.get(target.permission)
@@ -222,6 +250,13 @@ export class Controller<R extends RequestIdentity = HostRequest> {
 
   private nativeFront(root: string) {
     try { return this.priority?.(root, this.pendingViews.map(view => view.request)) }
+    catch { return undefined }
+  }
+
+  /** The request this entry must be for an automatic reply: its session's native
+   * head when per-session ordering is configured, otherwise the family front. */
+  private frontFor(entry: Entry<R>, root: string, pending = this.pendingViews.map(view => view.request)) {
+    try { return this.sessionHead ? this.sessionHead(entry.view.request.sessionID, pending) : this.priority?.(root, pending) }
     catch { return undefined }
   }
 
@@ -267,13 +302,12 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     const pending = this.pendingViews.map(view => view.request), fronts = new Map<string, string | undefined>()
     for (const entry of this.entries.values()) {
       if (!this.automatic(entry) || this.manual.has(entry.view.request.id)) continue
-      if (this.priority) {
+      if (this.priority || this.sessionHead) {
         const root = entry.root ?? (this.session ? conversationRoot(entry.view.request.sessionID, this.session) : entry.view.request.sessionID)
         if (!root) continue
-        if (!fronts.has(root)) {
-          try { fronts.set(root, this.priority(root, pending)) } catch { fronts.set(root, undefined) }
-        }
-        if (fronts.get(root) !== entry.view.request.id) continue
+        const key = this.sessionHead ? entry.view.request.sessionID : root
+        if (!fronts.has(key)) fronts.set(key, this.frontFor(entry, root, pending))
+        if (fronts.get(key) !== entry.view.request.id) continue
       }
       this.startApproval(entry)
       if (entry.view.autoApproval?.status === "waiting" && !entry.approvalAbort && !entry.approvalRefresh && this.eligible(entry)) {
@@ -313,10 +347,15 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     this.schedule(entry)
   }
 
-  cancelAutoApproval(id: string) {
+  /** Returns whether the cancellation was recorded durably. The in-memory
+   * tombstone always holds, so a failed record can only delay recovery, never
+   * dispatch. */
+  cancelAutoApproval(id: string): boolean {
     const entry = this.entries.get(id)
     if (!entry || !this.active(entry) || entry.view.resolved || entry.approvalDispatched || this.manual.has(id)
-      || (!entry.approvalArmed && !this.automatic(entry))) return
+      || (!entry.approvalArmed && !this.automatic(entry))) return false
+    let durable = true
+    if (this.cancelRecord) { try { durable = this.cancelRecord(entry.view.request, entry.review) } catch { durable = false } }
     this.lifecycleFact({ type: "cancelled", request: entry.view.request, reason: "explicit" })
     entry.cancelTimer?.()
     entry.cancelTimer = undefined
@@ -325,6 +364,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     this.manual.set(id, "cancelled")
     entry.view = { ...entry.view, autoDecision: decision, autoApproval: { status: "cancelled" } }
     this.publish()
+    return durable
   }
 
   private active(entry: Entry<R>) {
@@ -438,12 +478,12 @@ export class Controller<R extends RequestIdentity = HostRequest> {
   }
 
   private approvalState(entry: Entry<R>): "pending" | "ready" {
-    if (!this.nativeApproval || !this.priority || !this.approvalReady || !this.active(entry) || entry.view.resolved
+    if (!this.nativeApproval || (!this.priority && !this.sessionHead) || !this.approvalReady || !this.active(entry) || entry.view.resolved
       || entry.fastApproval || (this.options.autoApprove !== true && this.options.autoRejectSteering !== true)
       || (this.modes && (entry.root === undefined || !this.modes.enabled(entry.root)))) return "pending"
     try {
       const root = entry.root ?? (this.session ? conversationRoot(entry.view.request.sessionID, this.session) : entry.view.request.sessionID)
-      if (!root || this.nativeFront(root) !== entry.view.request.id) return "pending"
+      if (!root || this.frontFor(entry, root) !== entry.view.request.id) return "pending"
       return this.approvalReady(entry.view.request, root) ? "ready" : "pending"
     } catch { return "pending" }
   }
@@ -565,6 +605,11 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     finally { if (this.approvalRead === read) this.approvalRead = undefined }
   }
 
+  /** Whether an expedite control would start a dispatch attempt right now. */
+  expeditable(id: string): boolean {
+    const entry = this.entries.get(id)
+    return !!entry && !!this.nativeApproval && !entry.approvalRefresh && entry.view.autoApproval?.status === "countdown" && this.approvalEligible(entry)
+  }
   async approveNow(id: string, automatic = false) {
     const entry = this.entries.get(id)
     if (!entry || !this.nativeApproval || entry.approvalRefresh || !(entry.view.autoApproval?.status === "countdown"
@@ -607,6 +652,7 @@ export class Controller<R extends RequestIdentity = HostRequest> {
               if (!isDeepStrictEqual(verified, entry.view.request)) throw requestChanged
               return true
             },
+            ...(this.reserve ? { reserve: () => { try { return this.reserve!(entry.view.request, entry.review) } catch { return false } } } : {}),
             dispatch: () => {
               this.manual.set(id, "failed")
               entry.approvalDispatched = true
@@ -730,15 +776,17 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     const enabled = !!error || this.candidate(request, this.options)
     const previous = this.previous.get(request.id)
     if (previous && !isDeepStrictEqual(previous.request, request)) this.manual.set(request.id, "failed")
+    const review = randomUUID()
     const entry: Entry<R> = {
       abort: new AbortController(),
-      review: randomUUID(),
+      review,
       attempt: -1, progressGeneration: 0,
       gateRevision: this.version,
       previousModeRoot,
       ...(previous && isDeepStrictEqual(previous.request, request) ? { deadline: previous.deadline } : {}),
       view: {
         request,
+        review,
         status: enabled ? "identifying" : "unrelated",
         ...(this.manual.has(request.id) ? { autoApproval: { status: this.manual.get(request.id)! } } : {}),
       },
@@ -893,6 +941,8 @@ export class Controller<R extends RequestIdentity = HostRequest> {
     for (const transaction of this.approvalTransactions)
       if (transaction.request.sessionID === sessionID || transaction.root === sessionID) transaction.abort()
     for (const entry of this.entries.values()) if (entry.view.request.sessionID === sessionID || entry.root === sessionID) this.replied(entry.view.request.id, false)
+    this.steered.delete(sessionID)
+    this.modeChanges.delete(sessionID)
     // Carried checkpoints retain only their exact session, never a root.
     for (const [id, value] of this.previous) if (value.request.sessionID === sessionID && !this.entries.has(id)) {
       this.previous.delete(id); this.manual.delete(id)
@@ -984,11 +1034,4 @@ export function visibleReview<R extends RequestIdentity = HostRequest>(
     const first = pending.find(view => view.request.id === id)
     return retained ?? (first && first.status !== "unrelated" && first.status !== "identifying" && first.status !== "suspended" ? first : undefined)
   }
-}
-
-export function displayText(text: string): string {
-  // Escape controls rather than letting source/model text issue terminal commands
-  // or reorder the displayed rating through bidi controls.
-  return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,
-    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)
 }

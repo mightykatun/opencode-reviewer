@@ -11,7 +11,8 @@ import { reviewVersions } from "./review-versions.js"
 type Store = Pick<HistoryStore, "admit" | "query" | "onCommit">
 interface Candidate {
   context: HistoryReview
-  reports: Map<string, { context: HistoryReview; payload: HistoryPayload; reason?: string }>
+  payload: HistoryPayload
+  reason?: string
   removed: boolean
   reply?: "once" | "always" | "reject"
   confirmed?: "auto" | "manual"
@@ -39,7 +40,7 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
   private abort = new AbortController()
   private unsubscribe: () => void
   private readonly versions: ReturnType<typeof reviewVersions>
-  constructor(readonly scope: string, private store: Store,
+  constructor(private store: Store,
     private ancestry: AncestryReader,
     private now: () => number = Date.now,
     private monotonicNow: () => number = () => performance.now(), opencodeVersion?: string) {
@@ -52,9 +53,12 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
     try { return this.store.admit({ ...event, versions: { ...this.versions } }) } catch { return false }
   }
   observation(request: R, kind: ReviewKind, config: Config, execution: { review: string; root?: string }): ReviewObservation {
-    const context: HistoryReview | undefined = execution.root ? { scope: this.scope, root: execution.root,
+    const context: HistoryReview | undefined = execution.root ? { root: execution.root,
       session: request.sessionID, permission: request.id, review: execution.review, category: category(kind),
       configuredModel: config.model, provider: config.baseURL } : undefined
+    const previous = this.candidates.get(request.id)
+    if (context && previous && previous.context.root === context.root && previous.context.session === context.session
+      && previous.context.review !== context.review) this.candidates.delete(request.id)
     // Early approval needs identity/accounting before an accepted report exists.
     // No provisional rating or explanation enters persistent history.
     if (!this.stopped && context && (config.autoApprove || config.autoRejectSteering) && config.fastMode) this.early.set(request.id, { context })
@@ -75,7 +79,7 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
     if (fact.type === "accepted") {
       const m = fact.result.metadata
       if (!m || !fact.root || m.review !== fact.review) return
-      const context: HistoryReview = { scope: this.scope, root: fact.root, session: fact.request.sessionID,
+      const context: HistoryReview = { root: fact.root, session: fact.request.sessionID,
         permission: id, review: m.review, category: category(m.kind), configuredModel: m.configuredModel, provider: m.provider }
       const accepted = { safe: fact.result.safe, completedAt: fact.completedAt, timing: { ...fact.timing },
         ...(m.reportedModel ? { reportedModel: m.reportedModel } : {}) }
@@ -84,12 +88,12 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
       if (old && (old.context.session !== context.session || old.context.root !== context.root)) return
       const early = this.early.get(id)
       const confirmed = early?.context.review === fact.review ? early.confirmed : undefined
-      const candidate: Candidate = old ?? { context, reports: new Map(), removed: false,
-        confirmed,
+      const candidate: Candidate = { removed: false, confirmed, ...old, context,
+        reason: fact.result.reason,
+        payload: { ...accepted, desc: fact.result.desc,
+          ...(fact.result.toolCalls !== undefined ? { toolCalls: fact.result.toolCalls } : {}),
+          ...(fact.result.usage ? { usage: { ...fact.result.usage } } : {}) },
         ...(early?.context.review === fact.review && early.reply ? { reply: early.reply } : {}) }
-      candidate.reports.set(fact.review, { context, ...(fact.result.reason ? { reason: fact.result.reason } : {}), payload: { ...accepted, desc: fact.result.desc,
-        ...(fact.result.toolCalls !== undefined ? { toolCalls: fact.result.toolCalls } : {}),
-        ...(fact.result.usage ? { usage: { ...fact.result.usage } } : {}) } })
       this.candidates.set(id, candidate)
       const resolved = this.resolved.get(id)
       if (resolved?.context.session === context.session && resolved.context.root === context.root) this.finish(candidate, resolved.outcome)
@@ -139,7 +143,7 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
     // the report as rejected, and confirmation records the steering that was sent.
     if (fact.decision === "reject") {
       if (fact.type === "dispatched") {
-        const context = early?.context.review === fact.review ? early.context : c?.reports.get(fact.review)?.context
+        const context = early?.context.review === fact.review ? early.context : c?.context.review === fact.review ? c.context : undefined
         if (context && context.session === fact.request.sessionID) this.rejections.set(fact.approval, context)
       } else {
         const context = this.rejections.get(fact.approval)
@@ -150,7 +154,7 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
       return
     }
     if (fact.type === "dispatched") {
-      const context = early?.context.review === fact.review ? early.context : c?.reports.get(fact.review)?.context
+      const context = early?.context.review === fact.review ? early.context : c?.context
       if (!context || context.review !== fact.review || context.session !== fact.request.sessionID) return
       const d = { context, approval: fact.approval, automatic: fact.automatic }
       this.dispatches.set(fact.approval, d)
@@ -186,8 +190,7 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
   }
   private finish(c: Candidate, outcome: HistoryOutcome): true {
     if (this.expired(c)) return true
-    for (const report of c.reports.values())
-      this.admit({ type: "permissionResolved", ...report, outcome, at: this.now() })
+    this.admit({ type: "permissionResolved", context: c.context, payload: c.payload, reason: c.reason, outcome, at: this.now() })
     this.candidates.delete(c.context.permission) // Admission failure cannot create a second outage queue.
     if (this.resolved.size >= 4096) this.resolved.delete(this.resolved.keys().next().value!)
     this.resolved.set(c.context.permission, { context: c.context, outcome })
@@ -217,8 +220,8 @@ export class HistoryCoordinator<R extends RequestIdentity = HostRequest> {
     try {
       for (const c of this.candidates.values()) {
         if (this.stopped || c.expires === undefined || this.expired(c)) continue
-        const { scope, root, session, permission } = c.context
-        const read = this.store.query({ type: "resolution", scope, root, session, permission }, this.abort.signal)
+        const { root, session, permission } = c.context
+        const read = this.store.query({ type: "resolution", root, session, permission }, this.abort.signal)
         try {
           const result = await read as HistoryResolution
           if (this.stopped || this.candidates.get(permission) !== c || this.expired(c)) continue

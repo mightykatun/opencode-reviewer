@@ -14,6 +14,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { runtimeArguments, assertV2HostVersion } from "./runtime-inventory.mjs"
 import { smokeEnvironment, smokeGit, smokeGitInit, smokeRuntime } from "./smoke-runtime.mjs"
 import { connectionProbe } from "./smoke-connection.mjs"
+import { managedReviewer, verifiedSnapshot } from "./smoke-v2-rpc.mjs"
 import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 
 async function monitorSetup(ctx) {
@@ -152,7 +153,7 @@ const answer = (pending, message, finish = "stop") => {
   else { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ choices: [{ message, finish_reason: finish }] })) }
 }
 const database = async () => {
-  const file = path.join(env.XDG_STATE_HOME, "opencode/opencode-reviewer/history-v1.sqlite")
+  const file = path.join(env.XDG_STATE_HOME, "opencode/opencode-reviewer/history-v2.sqlite")
   let db
   try {
     db = new DatabaseSync(file, { readOnly: true })
@@ -160,8 +161,6 @@ const database = async () => {
   } catch (error) { if (error.code === "ERR_SQLITE_ERROR" && ((error.errcode & 255) === 5 || error.errcode === 14)) return; throw error }
   finally { db?.close() }
 }
-// Independent transcription of hostHistoryScope: the home directory's index.
-const homeScope = path.join("/opencode-reviewer-v2", createHash("sha256").update(project).digest("hex"))
 try {
   await mkdir(project, { recursive: true }); await mkdir(path.join(temp, "config/opencode"), { recursive: true })
   smokeGitInit(temp, project)
@@ -206,18 +205,21 @@ try {
     "commit", "--quiet", "--no-gpg-sign", "-m", "Initial fixture commit"])
   const cliPath = path.join(temp, "config/opencode/cli.json")
   const cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, mouse: true, attention: { notifications: false, sound: false },
-    session: { permissions: "prompt" }, plugins: [{ package: reviewer, options: {
+    session: { permissions: "prompt" }, plugins: [reviewer, monitor] }
+  await publish(path.join(path.dirname(cliPath), "opencode-reviewer.json"), { server: {
       baseURL: origin + "/review", model: "worktree-reviewer",
-      autoApprove: true, fastMode: false, stream: true, retrieval: false, autoApproveDelaySeconds: 3,
+      autoApprove: true, fastMode: false, stream: true, retrieval: false, autoApproveDelaySeconds: 3 }, tui: {
       notify: true, notifySound: false, staleReminderSeconds: 0,
-      notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } }, monitor] }
+      notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } })
   await publish(cliPath, { ...cli, plugins: ["-opencode-reviewer", monitor] })
-  await runtime.start("-d", "-s", "worktree", "-x", "160", "-y", "48", "-c", project, "env", "XDG_STATE_HOME=" + env.XDG_STATE_HOME, host, "--standalone")
+  const service = await managedReviewer({ runtime, env, directory: project, host })
+  await runtime.start("-d", "-s", "worktree", "-x", "160", "-y", "48", "-c", project, "env", "XDG_STATE_HOME=" + env.XDG_STATE_HOME, host)
   await until("monitor", record => record, 60000)
   await connectionProbe({ create: budget => command({ type: "connection-probe", ...budget }),
     remove: (id, budget) => command({ type: "remove-probe", sessionID: id, ...budget }), observe, directory: project })
   const enableReviewer = async () => {
     await publish(cliPath, cli)
+    await verifiedSnapshot(service, project)
     await until("production runtime", () => command({ type: "ready" }))
   }
   if (!removed) await enableReviewer()
@@ -249,6 +251,7 @@ try {
     assert.equal(await command({ type: "child-queue", sessionID: child.id }), "unreadable")
     await enableReviewer()
   }
+  await verifiedSnapshot(service, directory)
   await command({ type: "prompt", sessionID: owner, text: prompt })
   await until("permission owner's main model", () => mains.length === 2)
   answer(mains[1], { role: "assistant", content: null, tool_calls: [{ index: 0, id: "worktree-shell", type: "function",
@@ -276,7 +279,7 @@ try {
   const db = await until("saved report", async () => (await database())?.rows.length === 1 && database())
   assert.equal(db.reviews.length, 1, "Exactly one composition reviewed the request")
   const context = JSON.parse(db.reviews[0].context)
-  assert.equal(context.scope, homeScope, "History is indexed by the conversation's home")
+  assert.equal(db.rows[0].root, createHash("sha256").update(JSON.stringify([sessionID])).digest("hex"), "History is indexed by the native root session")
   assert.equal(context.root, sessionID); assert.equal(context.session, owner); assert.equal(context.permission, asked.id)
   assert.deepEqual((await notifications()).filter(item => item.kind === "attention"), [], "An automatic approval never needs attention")
   const native = await observe()

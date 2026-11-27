@@ -72,15 +72,7 @@ test("every declared scenario and flag has at least one valid invocation under i
   }
 })
 
-test("a multi-scenario fixture can retain its default while explicitly selecting advisory review", () => {
-  assert.equal(runtimePlan("smoke-v2-invocation.mjs").scenario, "default")
-  assert.equal(runtimePlan("smoke-v2-invocation.mjs", ["review"]).scenario, "review")
-  assert.throws(() => runtimePlan("smoke-v2-invocation.mjs", ["review", "extra"]), /Unexpected arguments/)
-  assert.throws(() => runtimePlan("smoke-v2-invocation.mjs", ["unsupported"]), /Unknown scenario/)
-})
-
-test("cold startup has an explicit production-host invocation with the normal lifecycle default retained", () => {
-  assert.equal(runtimePlan("smoke-v2-lifecycle.mjs").scenario, "default")
+test("cold startup exercises the installed viewer", () => {
   const cold = runtimePlan("smoke-v2-lifecycle.mjs", ["cold-startup"])
   assert.equal(cold.classification, "production-host")
   assert.deepEqual(cold.args, ["cold-startup"])
@@ -88,7 +80,7 @@ test("cold startup has an explicit production-host invocation with the normal li
 })
 
 test("actual network recovery reserves two supervised hosts without increasing other review host counts", () => {
-  for (const scenario of ["normal-reconnect", "normal-reconnect-visible", "normal-stalled-stream"])
+  for (const scenario of ["viewer-reconnect-idle", "viewer-reconnect-countdown", "viewer-stalled-stream"])
     assert.equal(runtimePlan("smoke-v2-review.mjs", [scenario]).hosts, 2)
   assert.equal(runtimePlan("smoke-v2-review.mjs", ["normal"]).hosts, 1)
 })
@@ -105,18 +97,23 @@ test("session instructions selects one installed production host with the existi
 
 test("V2 acceptance includes each production review case exactly once and retains explicit synthetic classifications", () => {
   const cases = profilePlan("v2-acceptance")
-  assert.equal(cases.length, 61, "Includes separate retrieval models, Code Mode decisions, instructions, recovery, location tabs, held steering Cancel and live and removed worktrees")
+  assert.equal(cases.length, 72)
   assert.equal(cases.length, new Set(cases.map(value => value.id)).size)
+  assert.deepEqual(cases.filter(value => value.entrypoint === "scripts/smoke-v2-lifecycle.mjs").map(value => value.scenario),
+    ["cold-startup", "viewer-attach-detach", "viewer-settings-sounds"])
   const reviews = cases.filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs")
-  const expectedReviews = ["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "normal-retrieval", "normal-retrieval-model", "fast", "normal-mouse-off", "normal-cancel", "normal-descendant", "fast-descendant",
+  const expectedReviews = ["advisory", "advisory-evidence-timeout", "advisory-history-once", "advisory-history-always", "advisory-history-reject", "normal", "normal-retrieval", "normal-retrieval-model", "fast", "normal-mouse-off", "normal-cancel", "normal-native-enter", "normal-native-enter-click", "child-route-progress", "fast-descendant",
     "normal-history", "normal-history-default-home", "normal-history-cover", "normal-history-keyboard-mouse-off", "fast-history-cover", "fast-notifications",
-      "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-route-wait", "normal-location-tab", "normal-decision", "fast-decision", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-code-mode-tool", "fast-code-mode-tool", "normal-project-transition", "normal-long-session", "normal-large-source", "normal-reconnect", "normal-reconnect-visible", "normal-stalled-stream", "normal-instructions"].sort()
+      "normal-hide", "normal-dialog", "normal-resize", "fast-dialog", "normal-hidden-complete", "normal-home-route", "normal-location-tab", "normal-highlighted-choice", "fast-highlighted-choice", "normal-edit", "normal-directory-edit", "normal-skill", "fast-skill", "normal-tool", "fast-tool", "normal-code-mode-tool", "fast-code-mode-tool", "normal-project-transition", "normal-long-session", "normal-large-source", "viewer-reconnect-idle", "viewer-reconnect-countdown", "viewer-stalled-stream", "normal-instructions"].sort()
   assert.deepEqual(reviews.map(value => value.scenario).sort(), expectedReviews)
   assert.deepEqual([...runtimeInventory["smoke-v2-review.mjs"].scenarios].sort(), expectedReviews)
   assert.ok(reviews.every(value => value.classification === "production-host"))
   const steering = cases.filter(value => value.entrypoint === "scripts/smoke-v2-steering.mjs")
-  assert.deepEqual(steering.map(value => value.scenario).sort(), ["fast-steering", "normal-steering", "normal-steering-cancel-held", "normal-steering-cap", "normal-steering-follow-up"])
+  assert.deepEqual(steering.map(value => value.scenario).sort(), ["fast-steering", "normal-steering", "normal-steering-cancel-verification", "normal-steering-cap", "normal-steering-follow-up"])
   assert.ok(steering.every(value => value.classification === "production-host" && value.hosts === 1 && value.timeoutMs === 240000))
+  const headless = cases.filter(value => value.entrypoint === "scripts/smoke-v2-headless.mjs")
+  assert.deepEqual(headless.map(value => value.scenario).sort(), ["advisory", "once", "steering", "unconfigured"])
+  assert.ok(headless.every(value => value.classification === "production-host" && value.hosts === 1))
   const worktree = cases.filter(value => value.entrypoint === "scripts/smoke-v2-worktree.mjs")
   assert.deepEqual(worktree.map(value => value.scenario), ["normal-worktree-descendant", "normal-removed-worktree"])
   assert.ok(worktree.every(value => value.classification === "production-host" && value.hosts === 1 && value.requires.includes("bundle")))
@@ -126,7 +123,7 @@ test("V2 acceptance includes each production review case exactly once and retain
   assert.deepEqual([...runtimeInventory["smoke-v2-review.mjs"].scenarios].sort(),
     profilePlan("ci").filter(value => value.entrypoint === "scripts/smoke-v2-review.mjs").map(value => value.scenario).sort(),
     "ci lists every production review scenario, so acceptance needs no expansion")
-  assert.ok(cases.some(value => value.id === "smoke-v2-lifecycle/cold-startup"), "CI prevents pre-connection handshake regression")
+  assert.ok(cases.some(value => value.id === "smoke-v2-lifecycle/cold-startup"), "CI prevents cold viewer startup regression")
   for (const id of ["smoke-v2-root-presentation/mouse-on", "smoke-v2-root-presentation/mouse-off", "smoke-v2-native-queue/default"])
     assert.equal(cases.find(value => value.id === id)?.classification, "synthetic-host")
   const defaultHome = cases.find(value => value.id === "smoke-v2-review/normal-history-default-home")
@@ -155,25 +152,24 @@ test("listing and all profile planning work with no host, fixture directory, or 
   const runner = new URL("../scripts/test-runtime.mjs", import.meta.url).pathname
   const env = { PATH: "", HOME: "/missing-fixture-home", OPENCODE_BIN: "/missing-opencode" }
   for (const args of [["--list"], ...Object.keys(runtimeProfiles).map(name => ["--plan", "--profile", name]),
-    ["--plan", "smoke-notification-desktop.ts", "--sounds"], ["--plan", "smoke-v2-invocation.mjs", "review"]]) {
+    ["--plan", "smoke-notification-desktop.ts", "--sounds"], ["--plan", "smoke-v2-review.mjs", "normal-edit"]]) {
     assert.equal(typeof JSON.parse(execFileSync(process.execPath, [runner, ...args], { env, cwd: "/", encoding: "utf8" })), "object")
   }
   const ci = profilePlan("ci")
-  for (const file of ["smoke-v2-lifecycle", "smoke-v2-invocation", "smoke-v2-root-presentation", "smoke-v2-native-queue"])
+  for (const file of ["smoke-v2-lifecycle", "smoke-v2-root-presentation", "smoke-v2-native-queue"])
     assert.ok(ci.some(item => item.id.startsWith(file + "/")))
   assert.ok(ci.every(item => item.hostMajor === 2 && item.hosts <= 2))
-  assert.ok(ci.some(item => item.id === "smoke-v2-invocation/review"))
 })
 
-test("only V2 host fixtures and profiles remain; permissions selects invocation, native edit and project migration", () => {
+test("the permissions profile selects native edits and project migration", () => {
   assert.deepEqual(Object.keys(runtimeProfiles).sort(), ["ci", "v2-acceptance", "v2-permissions"])
   for (const name of ["ci-v1", "f34", "w6-affected", "w6-extended"]) assert.throws(() => profilePlan(name), /Unknown runtime profile/)
-  for (const name of ["smoke.mjs", "smoke-permissions.mjs", "audit-usage-history.mjs"]) assert.throws(() => runtimePlan(name), /Unknown runnable fixture/)
+  for (const name of ["smoke.mjs", "smoke-permissions.mjs", "smoke-v2-invocation.mjs", "audit-usage-history.mjs"]) assert.throws(() => runtimePlan(name), /Unknown runnable fixture/)
   for (const [file, entry] of Object.entries(runtimeInventory)) if (entry.hosts) {
     assert.ok(file.startsWith("smoke-v2-"))
     assert.equal(entry.hostMajor, 2)
   }
-  assert.deepEqual(profilePlan("v2-permissions").map(item => item.id), ["smoke-v2-invocation/default", "smoke-v2-invocation/review",
+  assert.deepEqual(profilePlan("v2-permissions").map(item => item.id), [
     "smoke-v2-review/normal-edit", "smoke-v2-review/normal-directory-edit", "smoke-v2-review/normal-project-transition"])
 })
 

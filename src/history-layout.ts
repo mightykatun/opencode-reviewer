@@ -1,4 +1,4 @@
-import { displayText } from "./controller.js"
+import { displayText } from "./display-text.js"
 import type { HistorySelection } from "./history-schema.js"
 import { usageText } from "./usage.js"
 import { uiText } from "./ui-text.js"

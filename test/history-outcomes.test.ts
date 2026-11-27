@@ -5,23 +5,21 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { HistorySQL, type HistoryTotals } from "../src/history-schema.js"
-import { encodeEvent, rootID, type HistoryEvent, type HistoryOutcome, type HistoryReview } from "../src/history-records.js"
-import { HISTORY_BOOTSTRAP_STEPS } from "../src/history-migration.js"
-import { empty } from "../src/lifetime.js"
+import { encodeEvent, type HistoryEvent, type HistoryOutcome, type HistoryReview } from "../src/history-records.js"
 
-const context: HistoryReview = { scope: "/project", root: "root", session: "child", permission: "permission", review: "review",
+const context: HistoryReview = { root: "root", session: "child", permission: "permission", review: "review",
   category: "bash", configuredModel: "fixture", provider: "https://example.com/v1" }
 const resolved = (outcome: HistoryOutcome, c = context): HistoryEvent => ({ type: "permissionResolved", context: c,
   at: 2, outcome, payload: { safe: false, completedAt: 1, desc: "Resolved report" } })
 const deleted = (): HistoryEvent => ({ type: "sessionDeleted", at: 4,
-  context: { scope: context.scope, root: context.root, session: context.session } })
+  context: { root: context.root, session: context.session } })
 
 function fixture(t: TestContext) {
   const directory = mkdtempSync(path.join(tmpdir(), "history-outcomes-")), file = path.join(directory, "history.sqlite")
   const db = new DatabaseSync(file), sql = new HistorySQL(db), clients = [sql]
   t.after(() => { clients.forEach(client => client.close()); rmSync(directory, { recursive: true, force: true }) })
   let sequence = 0
-  const totals = (client = sql, c = context) => client.query({ type: "totals", conversation: { scope: c.scope, root: c.root } }) as HistoryTotals
+  const totals = (client = sql, c = context) => client.query({ type: "totals", conversation: { root: c.root } }) as HistoryTotals
   return { db, sql, totals, apply: (event: HistoryEvent) => sql.apply("writer", ++sequence, encodeEvent(event)),
     reopen() {
       const connection = new DatabaseSync(file)
@@ -45,7 +43,7 @@ test("permission outcomes deduplicate across reports, writers and restart while 
   // A separate approval confirmation proves the same permission, not another approval.
   f.apply({ type: "approvalConfirmed", context, at: 3, approval: "confirmation", automatic: false })
   assert.deepEqual(outcomes(f.totals(second)), { lifetime: [1, 1], conversation: [1, 1] })
-  const other = { ...context, scope: "/other-host" }
+  const other = { ...context, root: "other", session: "other", permission: "other", review: "other" }
   f.apply(resolved("manual", other))
   assert.deepEqual(outcomes(f.totals(second)), { lifetime: [2, 1], conversation: [1, 1] })
   assert.deepEqual(outcomes(f.totals(second, other)), { lifetime: [2, 1], conversation: [1, 0] })
@@ -100,46 +98,4 @@ test("manual confirmation before a report is counted once when the final report 
   f.apply(resolved("approved"))
   f.apply({ type: "approvalConfirmed", context, at: 1, approval: "write", automatic: false })
   assert.deepEqual(outcomes(f.totals()), { lifetime: [1, 0], conversation: [1, 0] })
-})
-
-test("older aggregate records gain counters internally without reconstructing lifetime history", t => {
-  const f = fixture(t)
-  f.apply(resolved("manual"))
-  const legacy = { ...empty(), safe: 3200, ratingsSince: 1,
-    activity: { ...empty().activity, reviews: 3200, autoApproved: 2610, since: 1 } }
-  delete (legacy.activity as any).manuallyApproved; delete (legacy.activity as any).rejected
-  f.db.prepare("UPDATE meta SET totals=?").run(JSON.stringify(legacy))
-  f.db.prepare("UPDATE conversation_totals SET totals=?").run(JSON.stringify(legacy))
-  f.db.exec("DROP TABLE permission_statistics")
-  const migrated = f.reopen(), result = f.totals(migrated)
-  assert.deepEqual(result.totals, { ...legacy, activity: { ...legacy.activity, manuallyApproved: 0, rejected: 0 } })
-  assert.deepEqual(result.conversation!.totals, result.totals)
-  migrated.apply("new", 1, encodeEvent(resolved("rejected", { ...context, permission: "new", review: "new" })))
-  assert.deepEqual(outcomes(f.totals(migrated)), { lifetime: [0, 1], conversation: [0, 1] })
-  assert.equal(f.totals(migrated).totals.safe, 3200)
-  f.db.prepare("UPDATE meta SET totals=?").run(JSON.stringify({ ...legacy, activity: { ...legacy.activity, rejected: 1 } }))
-  assert.throws(() => f.reopen(), /Invalid lifetime activity totals/)
-})
-
-test("conversation bootstrap pages permission accounting and leaves lifetime totals untouched", t => {
-  const f = fixture(t)
-  for (let i = 0; i < 300; i++) f.apply(resolved(i % 2 ? "manual" : "rejected",
-    { ...context, permission: `p-${i}`, review: `r-${i}` }))
-  const before = f.totals()
-  // All details can disappear while aggregate accounting remains attributable.
-  f.apply(deleted())
-  f.db.exec("DELETE FROM conversation_totals")
-  const root = rootID(context)
-  assert.deepEqual(f.sql.queryReady({ type: "totals", conversation: { scope: context.scope, root: context.root } }), { pending: root })
-  let slices = 0
-  for (;;) {
-    const result = f.sql.bootstrap(root)
-    assert.ok(result.steps <= HISTORY_BOOTSTRAP_STEPS)
-    slices++
-    if (result.done) break
-  }
-  assert.ok(slices >= 3)
-  const after = f.totals(f.reopen())
-  assert.deepEqual(after.totals, before.totals)
-  assert.deepEqual(outcomes(after), { lifetime: [150, 150], conversation: [150, 150] })
 })

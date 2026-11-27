@@ -1,5 +1,6 @@
 import { test, type TestContext } from "node:test"
 import assert from "node:assert/strict"
+import { rpcTestAccess, type RPCTestClient } from "./companion-rpc-access.js"
 import { setImmediate as nextTurn, setTimeout as sleep } from "node:timers/promises"
 import { open } from "node:fs/promises"
 import type { FileHandle } from "node:fs/promises"
@@ -184,6 +185,7 @@ for (const outcome of ["slow", "timeout", "cancel"] as const) {
     const config = parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture", retrieval: false })
     let evidence: any, posts = 0
     const pending = withDeadline(parent.signal, 1500, s => evaluateHostReview(reader, owned.snapshot, config, BUILTIN_PROMPTS, s, () => {}, {
+      access: rpcTestAccess(reader as unknown as RPCTestClient, owned.snapshot.scope),
       observeEvidence: value => { evidence = value }, fetcher: async () => { posts++; return Response.json({ choices: [{ message: { content: '{"safe":true,"reason":"Decisive reason.","desc":"Captured."}' } }] }) },
     }))
     try {

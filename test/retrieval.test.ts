@@ -8,6 +8,7 @@ import type { ContextAsker } from "../src/clarification.js"
 import type { JSONObject } from "../src/host-types.js"
 import type { ReviewAttemptEvent, ReviewProgress } from "../src/types.js"
 import { editEvidence, shellEvidence } from "./review-fixtures.js"
+import { rpcTestAccess, type RPCTestClient } from "./companion-rpc-access.js"
 
 type Reply = Record<string, unknown> | ((body: any) => Response | Promise<Response>)
 const call = (id: string, name: string, args: unknown) => ({ id, type: "function", function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args) } })
@@ -251,8 +252,10 @@ test("host evaluation runs the agent's reads through the scoped companion agains
   const owned = nativeInvocation("shell", { command: "./deploy.sh", workdir: "scripts" }, undefined, dir, ["./deploy.sh"])
   const posts: any[] = []
   const replies = [tools(call("a", "read", { path: "deploy.sh" })), tools(call("f", "finish", { items: ["c1"] })), verdict(false)]
-  const result = await evaluateHostReview(nativeClient(owned, new FileAccess()), owned.snapshot,
+  const client = nativeClient(owned, new FileAccess())
+  const result = await evaluateHostReview(client, owned.snapshot,
     parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture" }), BUILTIN_PROMPTS, new AbortController().signal, () => {}, {
+      access: rpcTestAccess(client as unknown as RPCTestClient, owned.snapshot.scope),
       fetcher: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return Response.json(replies.shift()) } })
   assert.equal(result?.safe, false)
   assert.equal(posts.length, 3)
@@ -363,6 +366,7 @@ test("host evaluation asks the root session through native session generation on
   })
   const result = await evaluateHostReview(client, owned.snapshot, parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture" }),
     BUILTIN_PROMPTS, new AbortController().signal, () => {}, {
+      access: rpcTestAccess(client as unknown as RPCTestClient, owned.snapshot.scope),
       fetcher: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return Response.json(replies.shift()) } })
   assert.equal(result?.safe, true)
   assert.equal(generated.length, 1)
@@ -573,8 +577,10 @@ test("scoped companion inspections page at 100 lines while direct attachment rea
   const posts: any[] = []
   const replies = [tools(call("r", "read", { path: "deploy.sh" })), tools(call("r2", "read", { path: "deploy.sh", limit: 151 })),
     tools(call("f", "finish", { items: [{ path: "deploy.sh" }] })), verdict()]
-  await evaluateHostReview(nativeClient(owned, new FileAccess()), owned.snapshot,
+  const client = nativeClient(owned, new FileAccess())
+  await evaluateHostReview(client, owned.snapshot,
     parseConfig({ baseURL: "http://fixture.invalid/v1", model: "fixture" }), BUILTIN_PROMPTS, signal(), () => {}, {
+      access: rpcTestAccess(client as unknown as RPCTestClient, owned.snapshot.scope),
       fetcher: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return Response.json(replies.shift()) } })
   const first = JSON.parse(posts[1].messages[3].content)
   assert.deepEqual([first.startLine, first.endLine, first.nextOffset, first.truncated], [1, 100, 101, true])

@@ -9,6 +9,8 @@ import { MAX_SOUND_BYTES, normalizedSound } from "./notification-codec.js"
 import { actionable, NotificationQueue, notificationWait } from "./notification-queue.js"
 
 export interface BundledSound { format: "mp3" | "wav"; data: string }
+/** One configured sound of one format from the server, or null when that format is absent. */
+export type ViewerSound = (kind: NotificationKind, signal: AbortSignal, format: "wav" | "mp3") => Promise<BundledSound | null>
 declare const __REVIEW_SOUNDS__: Partial<Record<NotificationKind, BundledSound>>
 const bundled = typeof __REVIEW_SOUNDS__ === "undefined" ? {} : __REVIEW_SOUNDS__
 
@@ -27,7 +29,7 @@ export class NotificationAudio {
   private lastApproval = -Infinity
   private approvalStarting?: symbol
   private wake?: ReturnType<typeof setTimeout>
-  constructor(private processes: NotificationProcesses, private directory?: string,
+  constructor(private processes: NotificationProcesses, private custom?: string | ViewerSound,
     private sounds: Partial<Record<NotificationKind, BundledSound>> = bundled,
     private io = { open, mkdtemp, writeFile, rm }) {}
   private async capture(file: string, signal: AbortSignal) {
@@ -51,9 +53,23 @@ export class NotificationAudio {
   }
   private async prepare(kind: NotificationKind, signal: AbortSignal) {
     let pcm: Buffer | undefined
-    if (this.directory) for (const format of ["wav", "mp3"] as const) {
+    // WAV first, then MP3, like the local directory. A sound that fails to decode never hides the next format.
+    if (typeof this.custom === "function") for (const format of ["wav", "mp3"] as const) {
       signal.throwIfAborted()
-      try { pcm = await normalizedSound(await this.capture(path.join(this.directory, `${kind}.${format}`), signal), format, signal); break }
+      try {
+        const sound = await this.custom(kind, signal, format)
+        signal.throwIfAborted()
+        if (!sound || sound.format !== format || typeof sound.data !== "string" || sound.data.length > 4 * Math.ceil(MAX_SOUND_BYTES / 3)) continue
+        pcm = await normalizedSound(Buffer.from(sound.data, "base64"), format, signal)
+        break
+      } catch { signal.throwIfAborted() }
+    }
+    if (typeof this.custom === "string") for (const format of ["wav", "mp3"] as const) {
+      signal.throwIfAborted()
+      try {
+        pcm = await normalizedSound(await this.capture(path.join(this.custom, `${kind}.${format}`), signal), format, signal)
+        break
+      }
       catch { signal.throwIfAborted() }
     }
     if (!pcm) {

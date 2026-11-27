@@ -7,6 +7,8 @@ export type ApprovalTransactionState = "preparing" | "dispatched" | "acknowledge
 interface SubmissionPolicy {
   /** Final synchronous policy check. No observers or publications here. */
   guard(): boolean
+  /** Durable reservation after the final guard, immediately before the native call. */
+  reserve?(): boolean
   /** Controller-only bookkeeping, immediately before the native invocation. */
   dispatch(): void
   /** Native UI publication is deferred until after the invocation. */
@@ -85,6 +87,7 @@ export class ApprovalTransaction<R extends RequestIdentity> {
           reviewStage(signal, "Approval verification")
           reviewStage(bounded, "Approval acknowledgement")
           if (!policy.guard()) return false
+          if (policy.reserve && !policy.reserve()) return false
           this.sent = true
           this.current = "dispatched"
           policy.dispatch()

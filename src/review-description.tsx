@@ -2,7 +2,7 @@ import { createMemo, onCleanup } from "solid-js"
 import { CodeRenderable, type SyntaxStyle, type MarkdownRenderable, type Renderable } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import { generateSyntax } from "@opencode/theme/tui"
-import { displayText } from "./controller.js"
+import { displayText } from "./display-text.js"
 import { retireDefaultMarkdownStyle } from "./syntax-retirement.js"
 
 function latestHighlights(node: Renderable | undefined): Promise<void>[] {

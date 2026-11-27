@@ -1,21 +1,16 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { sameLocation, type CompanionHandshake } from "./companion-protocol.js"
+import type { HostLocation } from "./host-types.js"
 import { conversationRoot } from "./route-approval.js"
 
-/** Exactly the fields a companion handshake binds a composition to. */
-export type ReviewLocation = CompanionHandshake["location"]
+export type ReviewLocation = HostLocation
 
-/** A conversation is reviewed by the composition at its root's location, its
- * home. A subagent can live elsewhere, for example after moving into a git
- * worktree, and its permissions belong to that location's companion. Members are
- * those other locations, so the home reads their permissions too. */
+/** A root sidebar may display a permission from a member in another location. */
 export interface ReviewHome {
   location: ReviewLocation
   members: ReviewLocation[]
 }
 
-/** Every home and member costs a companion handshake and a pending poll.
- * Locations past this bound stay manual. */
+/** Bound the number of live snapshot subscriptions. */
 export const MAX_REVIEW_LOCATIONS = 8
 
 /** Normalize a public location value. Anything without a directory is unknown. */
@@ -34,7 +29,7 @@ export function locationKey(location: ReviewLocation): string {
 /** Whether a public location value normalizes to exactly this location. */
 export function atLocation(value: unknown, location: ReviewLocation): boolean {
   const normalized = reviewLocation(value)
-  return !!normalized && sameLocation(normalized, location)
+  return !!normalized && normalized.directory === location.directory && normalized.workspaceID === location.workspaceID
 }
 
 /** The host's current location follows the focused conversation. Before its
@@ -70,7 +65,7 @@ export function reviewHomes(context: Plugin.Context): ReviewHome[] {
       for (const id of context.data.session.family(root)) {
         const location = reviewLocation(session(id)?.location)
         const key = location && JSON.stringify([locationKey(value.location), locationKey(location)])
-        if (!location || !key || sameLocation(location, value.location) || members.has(key) || scopes >= MAX_REVIEW_LOCATIONS) continue
+        if (!location || !key || atLocation(location, value.location) || members.has(key) || scopes >= MAX_REVIEW_LOCATIONS) continue
         members.add(key)
         value.members.push(location)
         scopes++
@@ -83,7 +78,7 @@ export function reviewHomes(context: Plugin.Context): ReviewHome[] {
     if (route.type === "session") conversation(conversationRoot(route.sessionID, session))
   } catch { /* Without a readable route only tabs add homes. */ }
   try {
-    if (context.ui.tabs.enabled()) for (const tab of context.ui.tabs.list()) conversation(tab.sessionID)
+    if (context.ui.tabs.enabled()) for (const tab of context.ui.tabs.list()) conversation(conversationRoot(tab.sessionID, session))
   } catch { /* Without readable tabs only the current location is reviewed. */ }
   return [...homes.values()]
 }
@@ -99,7 +94,7 @@ export function sessionAtLocation(context: Plugin.Context, sessionID: string, lo
  * current host location. */
 export function routeAtLocation(context: Plugin.Context, location: ReviewLocation): boolean {
   const route = context.ui.router.current()
-  if (route.type !== "session") return sameLocation(hostLocation(context), location)
+  if (route.type !== "session") return atLocation(hostLocation(context), location)
   const root = conversationRoot(route.sessionID, id => context.data.session.get(id))
   return sessionAtLocation(context, root ?? route.sessionID, location)
 }

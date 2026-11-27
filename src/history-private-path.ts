@@ -18,10 +18,10 @@ import { HistoryInvalid } from "./history-records.js"
  * Inspect existing files with lstat in this trusted namespace: opening/closing
  * them can release SQLite's process-wide POSIX locks, even from another worker.
  */
-export function privateDatabase(file: string, create = true): boolean {
+export function privateDatabase(file: string, create = true, names: readonly string[] = ["history-v1.sqlite"]): boolean {
   const uid = process.geteuid?.()
   if (process.platform !== "linux" || uid === undefined || !path.isAbsolute(file)
-    || path.normalize(file) !== file || path.basename(file) !== "history-v1.sqlite") throw new HistoryInvalid("Invalid history path")
+    || path.normalize(file) !== file || !names.includes(path.basename(file))) throw new HistoryInvalid("Invalid history path")
   const directory = path.dirname(file)
   let current = "/"
   for (const part of ["", ...directory.split("/").filter(Boolean)]) {

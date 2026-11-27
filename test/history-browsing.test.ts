@@ -31,7 +31,7 @@ test("1k/10k/100k valid roots have constant warm selection work with fresh same/
     const sql = new HistorySQL(measured)
     try {
       seedLarge(db, size, 0, true)
-      const selected = { ...c, permission: `p${Math.floor(size / 2)}` }, query = { type: "history" as const, scope: c.scope, root: c.root, entry: entryID(selected) }
+      const selected = { ...c, permission: `p${Math.floor(size / 2)}`, review: `r${Math.floor(size / 2)}` }, query = { type: "history" as const, root: c.root, entry: reviewID(selected) }
       visits = 0; const start = performance.now()
       const cold = sql.query(query) as HistorySelection, coldMs = performance.now() - start, coldVisits = visits
       assert.equal(cold.total, size); assert.equal(cold.rank, Math.floor(size / 2) + 1)
@@ -42,9 +42,7 @@ test("1k/10k/100k valid roots have constant warm selection work with fresh same/
       measurements.push({ rows: size, visits: coldVisits, warmVisits: visits, coldMs, warmMs, statements: statements / 20 })
       assert.equal(visits, 0, "unchanged selections perform no validation/count/rank scans")
       assert.ok(statements / 20 <= 10)
-      // The baseline is irrelevant to browsing work. Establish it directly so
-      // these dispatches do not charge this test to a separate legacy bootstrap.
-      db.prepare("INSERT INTO conversation_totals VALUES (?,?,0)").run(rootID(c), JSON.stringify(empty()))
+      db.prepare("INSERT INTO conversation_totals VALUES (?,?)").run(rootID(c), JSON.stringify(empty()))
       const pending = { ...c, permission: "unsaved", review: "unsaved" }
       const activity: HistoryEvent[] = [
         { type: "attemptDispatched", context: pending, at: 1, attempt: "post", retry: "initial" },
@@ -66,7 +64,7 @@ test("1k/10k/100k valid roots have constant warm selection work with fresh same/
       other.prepare("DELETE FROM reviews WHERE id=?").run(reviewID(pending))
       // Reinsert without attempt children so SQLite's unchanged FK policy permits
       // the raw primary-key mutation, rather than disabling foreign keys.
-      other.prepare("INSERT INTO reviews VALUES (?,?,?,?,?,NULL)").run(
+      other.prepare("INSERT INTO reviews (id,entry,root,session,context,accepted) VALUES (?,?,?,?,?,NULL)").run(
         reviewID(pending), entryID(pending), rootID(pending), sessionID(pending), JSON.stringify(pending))
       other.prepare("UPDATE reviews SET id=?,entry=?,root=?,session=? WHERE id=?").run(
         "f".repeat(64), "e".repeat(64), "d".repeat(64), "b".repeat(64), reviewID(pending))
@@ -103,18 +101,18 @@ test("1k/10k/100k valid roots have constant warm selection work with fresh same/
       // Raw SQL need not remember to bump roots.revision. Both adapters' writes
       // must invalidate cached validation, including an unselected corrupt row.
       for (const connection of [other, db]) {
-        const id = entryID(c)
+        const id = reviewID(c)
         connection.prepare("UPDATE history SET completed=-1 WHERE id=?").run(id)
         assert.throws(() => sql.query(query), /index/)
         connection.prepare("UPDATE history SET completed=1 WHERE id=?").run(id)
         assert.deepEqual(sql.query(query), cold)
         connection.prepare("UPDATE sessions SET root='wrong' WHERE id=?").run(sessionID(c))
         assert.throws(() => sql.query(query), /index/)
-        connection.prepare("UPDATE sessions SET root=? WHERE id=?").run(c.root, sessionID(c))
+        connection.prepare("UPDATE sessions SET root=? WHERE id=?").run(rootID(c), sessionID(c))
         assert.deepEqual(sql.query(query), cold)
       }
-      const plans = db.prepare(`EXPLAIN QUERY PLAN SELECT * FROM history WHERE scope=? AND root=? AND outcome IS NOT NULL
-        AND (completed,tie,id)<(?,?,?) ORDER BY completed DESC,tie DESC,id DESC LIMIT 1`).all(c.scope, rootID(c), cold.order!.completed, cold.order!.tie, cold.entry!)
+      const plans = db.prepare(`EXPLAIN QUERY PLAN SELECT * FROM history WHERE root=? AND outcome IS NOT NULL
+        AND (completed,tie,id)<(?,?,?) ORDER BY completed DESC,tie DESC,id DESC LIMIT 1`).all(rootID(c), cold.order!.completed, cold.order!.tie, cold.entry!)
       assert.match(JSON.stringify(plans), /SEARCH history USING INDEX history_visible_order/)
       assert.doesNotMatch(JSON.stringify(plans), /SCAN history|TEMP B-TREE/)
       other.prepare("UPDATE history SET outcome=NULL WHERE id!=?").run(cold.entry!)
@@ -142,10 +140,10 @@ test("referenced review identities invalidate actual history roots through raw c
   for (const [n, context] of owners.entries()) sql.apply("seed", n + 1, encodeEvent({ type: "permissionResolved", context,
     at: n + 1, outcome: "manual", payload: { safe: true, completedAt: n + 1, desc: context.review } }))
   const owner = owners[0]!, target = owners[2]!, id = reviewID(owner)
-  const query = { type: "history" as const, scope: c.scope, root: owner.root }
+  const query = { type: "history" as const, root: owner.root }
   const targetQuery = { ...query, root: target.root }
   const original = sql.query(query), originalTarget = sql.query(targetQuery), totals = sql.query({ type: "totals" })
-  const generation = (root: string) => db.prepare("SELECT generation FROM history_generations WHERE id=?").get(rootID({ scope: c.scope, root }))!.generation as number
+  const generation = (root: string) => db.prepare("SELECT generation FROM history_generations WHERE id=?").get(rootID({ root }))!.generation as number
   for (const connection of [db, other]) {
     for (const [column, changed, prior] of [
       ["id", "a".repeat(64), id], ["entry", entryID(target), entryID(owner)],
@@ -167,7 +165,7 @@ test("referenced review identities invalidate actual history roots through raw c
     assert.throws(() => sql.query(query), /index/)
     assert.deepEqual(sql.query(targetQuery), originalTarget)
     const beforeInsert = generation(owner.root)
-    connection.prepare("INSERT INTO reviews VALUES (?,?,?,?,?,?)").run(row.id!, row.entry!, row.root!, row.session!, row.context!, row.accepted!)
+    connection.prepare("INSERT INTO reviews (id,entry,root,session,context,accepted) VALUES (?,?,?,?,?,?)").run(row.id!, row.entry!, row.root!, row.session!, row.context!, row.accepted!)
     assert.ok(generation(owner.root) > beforeInsert)
     assert.deepEqual(sql.query(query), original, "owner reinsert restores fresh structural validation")
 
@@ -180,16 +178,16 @@ test("referenced review identities invalidate actual history roots through raw c
     assert.ok(generation(owner.root) > beforeIdentityMove[0]!); assert.ok(generation(target.root) > beforeIdentityMove[1]!)
     assert.throws(() => sql.query(query), /index/); assert.throws(() => sql.query(targetQuery), /index/)
     connection.prepare("UPDATE reviews SET id=? WHERE id=?").run(id, targetID)
-    connection.prepare("INSERT INTO reviews VALUES (?,?,?,?,?,?)").run(
+    connection.prepare("INSERT INTO reviews (id,entry,root,session,context,accepted) VALUES (?,?,?,?,?,?)").run(
       targetRow.id!, targetRow.entry!, targetRow.root!, targetRow.session!, targetRow.context!, targetRow.accepted!)
     assert.deepEqual(sql.query(query), original); assert.deepEqual(sql.query(targetQuery), originalTarget)
 
     const move = (root: string) => {
       connection.exec("BEGIN IMMEDIATE")
       try {
-        connection.prepare("UPDATE sessions SET root=? WHERE id=?").run(root, sessionID(owner))
-        connection.prepare("UPDATE reviews SET root=?,context=? WHERE id=?").run(rootID({ scope: c.scope, root }), JSON.stringify({ ...owner, root }), id)
-        connection.prepare("UPDATE history SET root=? WHERE id=?").run(rootID({ scope: c.scope, root }), reviewID(owner))
+        connection.prepare("UPDATE sessions SET root=? WHERE id=?").run(rootID({ root }), sessionID(owner))
+        connection.prepare("UPDATE reviews SET root=?,context=? WHERE id=?").run(rootID({ root }), JSON.stringify({ ...owner, root }), id)
+        connection.prepare("UPDATE history SET root=? WHERE id=?").run(rootID({ root }), reviewID(owner))
         connection.exec("COMMIT")
       } catch (error) { connection.exec("ROLLBACK"); throw error }
     }
@@ -211,7 +209,7 @@ test("repeated identical outcomes rewrite nothing, so browsing and privacy gener
   const db = new DatabaseSync(file)
   t.after(() => { db.close(); rmSync(directory, { recursive: true, force: true }) })
   const sql = new HistorySQL(db as unknown as HistoryDatabase)
-  const context = { scope: "/noop", root: "root", session: "root", permission: "permission", review: "review",
+  const context = { root: "root", session: "root", permission: "permission", review: "review",
     category: "bash" as const, configuredModel: "model", provider: "https://example.com/v1" }
   const payload = { safe: true, completedAt: 1, desc: "Same report." }
   sql.apply("w", 1, encodeEvent({ type: "reviewAccepted", context, at: 1, accepted: { safe: true, completedAt: 1 } }))

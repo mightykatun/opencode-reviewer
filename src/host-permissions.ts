@@ -1,5 +1,5 @@
 import type { OpenCodeClient } from "@opencode/client"
-import { companionRpc, readHandshake } from "./companion-protocol.js"
+import type { CompanionAccess } from "./companion-access.js"
 import { hostRequestWire, readHostScope, readPendingInventory, sameRequest, snapshotRequest } from "./host-request.js"
 import { transportOwnership } from "./transport-ownership.js"
 import type { HostPendingSnapshot, HostRequestSnapshot, HostScope } from "./host-types.js"
@@ -35,9 +35,24 @@ export interface HostPermissionTransport extends NativeApprovalTransport<HostReq
  * rejection is a steering reject with its message. Each instance is pinned to
  * one connected client/location/companion epoch.
  */
-export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): HostPermissionTransport {
+/** Native permission reads and writes the transport needs. The terminal supplies
+ * the connected client. The server supplies its in-process context for writes and
+ * the verified self-client for the location-wide pending list. */
+export type PermissionClient = {
+  permission: Pick<OpenCodeClient["permission"], "get" | "list" | "reply"> & { request: Pick<OpenCodeClient["permission"]["request"], "list"> }
+  session: Pick<OpenCodeClient["session"], "get">
+}
+
+export interface HostPermissionTransportOptions {
+  /** Final asynchronous proof immediately before admission: for example rebinding the
+   * running invocation and comparing its fingerprint. False keeps the request manual. */
+  verify?: (snapshot: HostRequestSnapshot, signal: AbortSignal) => Promise<boolean>
+}
+
+export function hostPermissionTransport(client: PermissionClient, at: HostScope, access: CompanionAccess, transportOptions: HostPermissionTransportOptions = {}): HostPermissionTransport {
   const scope = readHostScope(at)
   if (!scope) throw Error("Permission connection scope unavailable")
+  const companion = access
   type Reservation = { decision: NativeDecision; dispatched: boolean; acknowledged: boolean; uncertain?: boolean; resolution?: string; cleanup?: () => void }
   const reservations = new Map<string, Reservation>()
   // Keep original snapshots spent without strongly retaining successful IDs.
@@ -60,9 +75,9 @@ export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): 
   }
   const currentEpoch = async (signal: AbortSignal) => {
     signal.throwIfAborted()
-    const handshake = readHandshake(await owned(signal, client.rpc(companionRpc).handshake(scope.location, options(signal))), scope.location)
+    const epoch = await owned(signal, companion.epoch(signal))
     signal.throwIfAborted()
-    return handshake?.epoch === scope.epoch
+    return epoch === scope.epoch
   }
   const get = async (sessionID: string, requestID: string, signal: AbortSignal) => {
     if (!await session(sessionID, signal) || !await currentEpoch(signal)) return
@@ -88,6 +103,8 @@ export function hostPermissionTransport(client: OpenCodeClient, at: HostScope): 
       signal.throwIfAborted()
       const current = await get(snapshot.request.sessionID, snapshot.request.id, signal)
       if (!current || !sameRequest(current, snapshot)) return { status: "unavailable" }
+      signal.throwIfAborted()
+      if (transportOptions.verify && !await owned(signal, transportOptions.verify(snapshot, signal))) return { status: "unavailable" }
       signal.throwIfAborted()
       // The callback admits and records actual invocation. Nothing fallible or
       // asynchronous may separate it from the fixed native reply call.

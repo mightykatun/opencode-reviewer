@@ -1,8 +1,9 @@
 import path from "node:path"
 import os from "node:os"
 import { privateDatabase } from "./history-private-path.js"
+import { HISTORY_DATABASE_FILE } from "./history-records.js"
 
-/** Terminal-owned history/mode state only. Never an invocation evidence directory. */
+/** Server-owned history/mode state only. Never an invocation evidence directory. */
 export function localStateRoot(environment: NodeJS.ProcessEnv = process.env, home = os.homedir()): string {
   const configured = environment.XDG_STATE_HOME
   if (configured && path.isAbsolute(configured) && !configured.includes("\0")) return path.join(configured, "opencode")
@@ -10,17 +11,17 @@ export function localStateRoot(environment: NodeJS.ProcessEnv = process.env, hom
   return path.join(home, ".local", "state", "opencode")
 }
 
-/** Keep safely accessible history in place, including concurrent terminal writes.
+/** Keep safely accessible history in place, including writes from several server processes.
  * An unsuitable host-owned directory gets a plugin-owned sibling instead. Once
  * that sibling contains history it wins on restart, even if host modes change.
  * Mode records deliberately continue using localStateRoot, not this selection.
  */
 export function historyStateRoot(stateDirectory: string): string {
   const sibling = path.join(path.dirname(stateDirectory), "opencode-reviewer-state")
-  const database = (root: string) => path.join(root, "opencode-reviewer/history-v1.sqlite")
-  try { if (privateDatabase(database(sibling), false)) return sibling } catch { /* Never read an unsafe existing sibling. */ }
+  const probe = (root: string) => privateDatabase(path.join(root, "opencode-reviewer", HISTORY_DATABASE_FILE), false, [HISTORY_DATABASE_FILE])
+  try { if (probe(sibling)) return sibling } catch { /* Never read an unsafe existing sibling. */ }
   try {
-    privateDatabase(database(stateDirectory), false)
+    probe(stateDirectory)
     return stateDirectory
   } catch {
     // The worker validates the entire sibling namespace again before creation.

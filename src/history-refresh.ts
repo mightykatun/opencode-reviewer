@@ -1,7 +1,13 @@
-import type { HistoryStore } from "./history-store.js"
+import type { HistoryRead } from "./history-store.js"
 import type { HistoryQuery } from "./history-records.js"
 import { snapshotQuery } from "./history-records.js"
 import type { HistoryResult } from "./history-schema.js"
+
+export interface HistoryReader {
+  query(query: HistoryQuery, signal?: AbortSignal): HistoryRead
+  onCommit(listener: () => void): () => void
+  onWriteFailure?(listener: () => void): () => void
+}
 
 /** One actual store read and one coalesced follow-up. Only hard invalidations
  * discard snapshots; ordinary commits request fresher data without starving reads.
@@ -15,15 +21,15 @@ export class HistoryRefresh {
   private timer: ReturnType<typeof setInterval>
   private offCommit: () => void
   private offFailure: () => void
-  constructor(private store: Pick<HistoryStore, "query" | "onCommit" | "onWriteFailure">,
+  constructor(private store: HistoryReader,
     private query: HistoryQuery, private publish: (result: HistoryResult | undefined) => void) {
     this.query = snapshotQuery(query)
     this.offCommit = store.onCommit(() => this.request())
     // A write outage does not hide readable history. Analytics retains its unavailable policy.
-    this.offFailure = store.onWriteFailure(() => {
+    this.offFailure = store.onWriteFailure?.(() => {
       if ((this.query.type !== "totals" && this.query.type !== "conversationTotals") || this.stopped) return
       this.revision++; this.again = false; this.publish(undefined)
-    })
+    }) ?? (() => {})
     // A healthy read taking over two seconds must still be publishable.
     this.timer = setInterval(() => this.request(), 2000)
     this.request()

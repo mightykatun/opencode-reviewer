@@ -17,13 +17,13 @@ throw Error("Never execute package code during inspection");`
 const archived = bundle => {
   const layout = packageLayout("2.9.0")
   const files = inspectPackageArchive(archiveFixture({ pkg: fixturePackage("2.9.0") }), layout).files
-  assertNoBundledHistoryWorker(files.get("dist/server.js").toString("utf8"))
-  files.set("dist/tui.js", Buffer.from(bundle))
+  assertNoBundledHistoryWorker(files.get("dist/tui.js").toString("utf8"))
+  files.set("dist/server.js", Buffer.from(bundle))
   const archive = archiveFixture({ entries: [...files].map(([name, content]) => ({ name: `package/${name}`, content })) })
-  return inspectPackageArchive(archive, layout).files.get("dist/tui.js").toString("utf8")
+  return inspectPackageArchive(archive, layout).files.get("dist/server.js").toString("utf8")
 }
 
-test("one canonical worker source feeds the terminal constructor without evaluation", () => {
+test("one canonical worker source feeds the server constructor without evaluation", () => {
   assert.throws(() => assertNoBundledHistoryWorker(emit()))
   assert.equal(verifyBundledHistoryWorker(emit(), worker), worker)
   assert.equal(verifyBundledHistoryWorker(archived(emit()), worker), worker)

@@ -1,5 +1,5 @@
 import type { NotificationConfig } from "./notification-config.js"
-import { NotificationAudio } from "./notification-audio.js"
+import { NotificationAudio, type ViewerSound } from "./notification-audio.js"
 import { OwnedNotificationProcesses, NotificationProcessPool, type NotificationProcesses } from "./notification-process.js"
 import { activateGnomeTerminal, gnomeTerminalIdentity, type TerminalIdentity } from "./notification-terminal.js"
 import { notificationMarkup, notificationText, type NotificationBackend, type NotificationMessage, type NotificationClick, type NotificationClickLease } from "./notification-types.js"
@@ -24,9 +24,9 @@ export class LinuxNotifications implements NotificationBackend {
   constructor(config: Pick<NotificationConfig, "notificationSoundDirectory" | "notify" | "notifySound">, private click: NotificationClick,
     private processes: NotificationProcesses = new OwnedNotificationProcesses(),
     private identity: TerminalIdentity | null = gnomeTerminalIdentity() ?? null,
-    private platform: string = process.platform) {
+    private platform: string = process.platform, viewerSound?: ViewerSound) {
     if (!(processes instanceof NotificationProcessPool)) this.processes = new NotificationProcessPool(processes)
-    this.audio = new NotificationAudio(this.processes, config.notificationSoundDirectory)
+    this.audio = new NotificationAudio(this.processes, viewerSound ?? config.notificationSoundDirectory)
   }
   async show(message: NotificationMessage, parent: AbortSignal) {
     if (this.stopped || parent.aborted || this.platform !== "linux") return

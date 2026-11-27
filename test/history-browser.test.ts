@@ -15,13 +15,13 @@ const tick = async () => { for (let n = 0; n < 8; n++) await Promise.resolve() }
 const entry = "a".repeat(64)
 const selection: HistorySelection = { revision: 1, total: 1, rank: 1, entry,
   order: { completed: 1, tie: "r", id: entry }, record: { outcome: "manual",
-    context: { scope: "/project", root: "root", session: "root", permission: "p", review: "r", category: "bash", configuredModel: "m", provider: "https://example.com" },
+    context: { root: "root", session: "root", permission: "p", review: "r", category: "bash", configuredModel: "m", provider: "https://example.com" },
     payload: { safe: true, completedAt: 1, desc: "report" } } }
 function fixture(t: any, ancestry: (id: string, signal: AbortSignal) => Promise<string> = async () => "root") {
   const pending: { query: HistoryQuery; resolve: (s: HistorySelection) => void; reject: () => void }[] = []
   let commit = () => {}
   let published: HistoryViewState | undefined
-  const controller = new HistoryController("/project", {
+  const controller = new HistoryController({
     query: query => new Promise((resolve, reject) => pending.push({ query, resolve, reject: () => reject(Error()) })),
     onCommit: cb => { commit = cb; return () => {} }, onWriteFailure: () => () => {},
   }, ancestry, state => { published = state })
@@ -81,7 +81,7 @@ test("unavailable ancestry retries after two seconds and close cancels further r
 })
 test("open, insertion refresh, replacement and repeat preserve identity but reset appropriate scroll", async t => {
   const f = fixture(t), c = f.controller
-  c.open("child"); await tick(); assert.deepEqual(f.pending[0]!.query, { type: "history", scope: "/project", root: "root" })
+  c.open("child"); await tick(); assert.deepEqual(f.pending[0]!.query, { type: "history", root: "root" })
   f.pending.shift()!.resolve(selection); await tick(); c.scroll = 17
   f.commit(); f.pending.shift()!.resolve({ ...selection, total: 2 }); await tick()
   assert.equal(c.scroll, 17); assert.equal(c.state.selection?.entry, entry)
@@ -167,13 +167,13 @@ test("durable selected-child removal refreshes by saved cursor and retains adjac
   assert.equal(f.published?.selection?.record?.payload.desc, "deleted child plaintext")
   c.recordScroll(23); const reset = c.state.reset
   f.commit()
-  assert.deepEqual(f.pending[0]!.query, { type: "history", scope: "/project", root: "root", entry: child.entry, order: child.order })
+  assert.deepEqual(f.pending[0]!.query, { type: "history", root: "root", entry: child.entry, order: child.order })
   const adjacent: HistorySelection = { ...selection, entry: child.newer, order: { completed: 2, tie: "next", id: child.newer! }, older: child.older }
   f.pending.shift()!.resolve(adjacent); await tick()
   assert.equal(c.state.selection, adjacent); assert.equal(c.state.status, "ready")
   assert.equal(c.scroll, 0); assert.ok(c.state.reset > reset)
   c.navigate("older")
-  assert.deepEqual(f.pending[0]!.query, { type: "history", scope: "/project", root: "root", entry: adjacent.entry, order: adjacent.order, direction: "older" })
+  assert.deepEqual(f.pending[0]!.query, { type: "history", root: "root", entry: adjacent.entry, order: adjacent.order, direction: "older" })
 })
 
 const target = { session: "root", permission: "p" }
@@ -186,7 +186,7 @@ test("notification selection waits for its exact committed entry, then retains i
   c.openPermission("root", target, () => ready++)
   await tick()
   assert.equal(c.state.open, false)
-  assert.deepEqual(f.pending[0]!.query, { type: "history", scope: "/project", root: "root", permission: target })
+  assert.deepEqual(f.pending[0]!.query, { type: "history", root: "root", permission: target })
   f.pending.shift()!.resolve({ revision: 1, total: 2, rank: 0 }); await tick()
   assert.equal(c.state.open, false)
   f.commit(); f.pending.shift()!.resolve({ ...targeted, total: 3, rank: 1, newer: "b".repeat(64) }); await tick()
@@ -201,7 +201,7 @@ test("notification selection waits for its exact committed entry, then retains i
 test("missing, unreadable, wrong-scope or wrong-permission targets never show another saved report", async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] })
   for (const value of [{ revision: 1, total: 4, rank: 0 }, { ...targeted, record: undefined, unreadable: true },
-    ...["scope", "root", "session", "permission"].map(field => ({ ...targeted,
+    ...["root", "session", "permission"].map(field => ({ ...targeted,
       record: { ...targeted.record!, context: { ...targeted.record!.context, [field]: "wrong" } } }))]) {
     const f = fixture(t); let ready = 0
     f.controller.openPermission("root", target, () => ready++); await tick()
@@ -241,7 +241,7 @@ test("targeted history waits for its report and retains actual read cleanup owne
   let reads = 0, ready = 0
   const read = Object.assign(new Promise<HistorySelection>(resolve => { finish = resolve }),
     { settled: new Promise<void>(resolve => { settleRead = resolve }) })
-  const c = new HistoryController("/project", {
+  const c = new HistoryController({
     onCommit: cb => { commit = cb; return () => {} }, onWriteFailure: () => () => {},
     query: () => ++reads === 1 ? read : Promise.resolve(targeted),
   }, async () => "root", () => {})
@@ -257,7 +257,7 @@ test("targeted history waits for its report and retains actual read cleanup owne
 test("production ancestry composition coalesces history reopen storms until the actual read settles", async t => {
   const pending: { id: string; resolve: (v: { id: string }) => void }[] = []
   const ancestry = new SessionAncestry(id => new Promise(resolve => pending.push({ id, resolve })))
-  const h = new HistoryCoordinator("/project", { admit: () => true, query: async () => ({ revision: 0, total: 0, rank: 0 }), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
+  const h = new HistoryCoordinator({ admit: () => true, query: async () => ({ revision: 0, total: 0, rank: 0 }), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
     f.controller.open("old"); await settle()
@@ -282,7 +282,7 @@ for (const outcome of ["resolve", "reject"] as const) test(`production history d
   const ancestry = new SessionAncestry(async () => {
     calls++; try { return await actual } finally { await cleaning }
   })
-  const h = new HistoryCoordinator("/project", { admit: () => true, query: async () => ({ revision: 0, total: 0, rank: 0 }), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
+  const h = new HistoryCoordinator({ admit: () => true, query: async () => ({ revision: 0, total: 0, rank: 0 }), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
     f.controller.open("old"); await settle(); clock.tick(5000); await settle()

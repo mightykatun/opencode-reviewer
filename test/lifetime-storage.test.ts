@@ -6,7 +6,7 @@ import path from "node:path"
 import { build } from "esbuild"
 import { HistoryStore } from "../src/history-store.js"
 import type { HistoryEvent, HistoryReview } from "../src/history-records.js"
-import type { HistoryTotals } from "../src/history-schema.js"
+import type { HistorySelection, HistoryTotals } from "../src/history-schema.js"
 import { empty, lifetimeReport } from "../src/lifetime.js"
 
 test("fresh SQL totals exclude all legacy files, resume across workers and count correlated events once across clients", async t => {
@@ -38,7 +38,7 @@ test("fresh SQL totals exclude all legacy files, resume across workers and count
   })
   const a = client(), b = client()
   assert.deepEqual(await totals(a), empty()); assert.deepEqual(await totals(b), empty())
-  const context: HistoryReview = { scope: "/fixture", root: "root", session: "root", permission: "permission",
+  const context: HistoryReview = { root: "root", session: "root", permission: "permission",
     review: "review-a", category: "bash", configuredModel: "model", provider: "https://example.com/v1" }
   const events: HistoryEvent[] = [
     { type: "attemptDispatched", context, at: 1, attempt: "post-1", retry: "initial" },
@@ -50,6 +50,7 @@ test("fresh SQL totals exclude all legacy files, resume across workers and count
     { type: "permissionResolved", context, at: 7, outcome: "auto", payload: { safe: true, completedAt: 5, desc: "Resolved report" } },
   ]
   for (const event of events) { await apply(a, event); await apply(b, event) }
+  await apply(b, { type: "approvalConfirmed", context, at: 7, approval: "writer-b-confirmation", automatic: true })
   const first = await totals(a)
   assert.deepEqual(await totals(b), first)
   assert.equal(first.requests, 1); assert.equal(first.activity.usageRequests, 1)
@@ -71,8 +72,29 @@ test("fresh SQL totals exclude all legacy files, resume across workers and count
   assert.equal(shared.activity.meanFullReportMs, 3000); assert.equal(shared.activity.meanRatingMs, 750)
   await apply(other, { type: "permissionResolved", context: next, at: 10, outcome: "auto",
     payload: { safe: false, completedAt: 9, desc: "Newer report" } })
-  await apply(other, { type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.root }, at: 11 })
-  assert.deepEqual(await totals(resumed), shared, "history replacement and deletion do not change accounting")
+  const history = () => resumed.query({ type: "history", root: context.root }) as Promise<HistorySelection>
+  const replaced = await history()
+  assert.equal(replaced.total, 1)
+  assert.equal(replaced.record?.context.review, "review-b")
+  assert.equal(replaced.record?.payload.desc, "Newer report")
+  await apply(other, { type: "sessionDeleted", context: { root: context.root, session: context.root }, at: 11 })
+  assert.deepEqual(await totals(resumed), shared, "a session invalidation does not change accounting")
+  assert.deepEqual(await history(), replaced)
+  const otherPermission = { ...context, permission: "other-permission", review: "review-c" }
+  const manual: HistoryEvent = { type: "permissionResolved", context: otherPermission, at: 12, outcome: "manual",
+    payload: { safe: true, completedAt: 12, desc: "Other permission" } }
+  await Promise.all([apply(other, manual), apply(resumed, manual)])
+  assert.equal((await history()).total, 2)
+  const exact = async (permission: string) => (await resumed.query({ type: "history", root: context.root,
+    permission: { session: context.session, permission } }) as HistorySelection).record
+  assert.equal((await exact(context.permission))?.payload.desc, "Newer report")
+  assert.equal((await exact(otherPermission.permission))?.payload.desc, "Other permission")
+  assert.equal(await exact("unknown"), undefined)
+  const final = await other.query({ type: "totals", conversation: { root: context.root } }) as HistoryTotals
+  assert.deepEqual(final.conversation?.totals, final.totals)
+  assert.equal(final.totals.activity.manuallyApproved, 1)
+  assert.equal(final.totals.activity.autoApproved, 1)
+  assert.equal(final.totals.requests, 2)
   for (const [file, text] of files) {
     assert.equal(await readFile(file, "utf8"), text)
     assert.equal((await readdir(path.dirname(file))).length, 2, "no legacy dual writes")

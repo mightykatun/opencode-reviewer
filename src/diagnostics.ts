@@ -1,5 +1,5 @@
 /** Fixed labels plus monotonic milliseconds and local ordinals only. No host/model data. */
-export type DiagnosticPhase = "dispatch" | "headers" | "first-content" | "first-rating" | "final-validation"
+export type DiagnosticPhase = "dispatch" | "headers" | "first-content" | "first-rating" | "final-validation" | "viewer-snapshot"
 export interface DiagnosticEvent {
   phase: DiagnosticPhase
   at: number

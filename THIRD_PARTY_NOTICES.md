@@ -44,9 +44,9 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-# Bundled dependency: @opencode/theme 2.3.2
+# Bundled dependency: @opencode/theme 2.4.1
 
-https://github.com/anomalyco/opencode/tree/v2.3.2/packages/theme
+https://github.com/anomalyco/opencode/tree/v2.4.1/packages/theme
 
 The source-fingerprinted theme syntax helper is bundled in the terminal payload.
 A build-time adapter replaces its public barrel with a syntax-only re-export.
@@ -55,7 +55,37 @@ The syntax rules remain unchanged;
 unused theme parsers, schemas and their Effect dependency are not bundled.
 Solid and OpenTUI remain host-provided external dependencies.
 
-License source: https://github.com/anomalyco/opencode/blob/v2.3.2/LICENSE
+License source: https://github.com/anomalyco/opencode/blob/v2.4.1/LICENSE
+
+```text
+MIT License
+
+Copyright (c) 2025 opencode
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+# Bundled OpenCode client
+
+The server bundle embeds the OpenCode TypeScript client `@opencode/client` 2.4.1
+(promise client and local service discovery) and the parts of `@opencode/protocol`
+and `@opencode/schema` it imports: https://github.com/anomalyco/opencode
 
 ```text
 MIT License

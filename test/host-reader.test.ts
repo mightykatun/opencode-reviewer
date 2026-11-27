@@ -5,6 +5,7 @@ import { preparePendingInvocation, finalizePendingInvocation, readPendingInvocat
 import { snapshotRequest } from "../src/host-request.js"
 import { TransportOwnership, bindTransportOwnership } from "../src/transport-ownership.js"
 import { withDeadline } from "../src/deadline.js"
+import { rpcTestAccess } from "./companion-rpc-access.js"
 
 const scope = { epoch: "10000000-1000-4000-8000-100000000000", location: { directory: "/server/project" } }
 const request = () => ({ id: "request", sessionID: "session", action: "shell", resources: ["python3 task.py"],
@@ -19,10 +20,10 @@ function fixture() {
     input: invocation().input, messageSession: "session" }
   const client = {
     rpc: () => ({
-      invocation: async (query: unknown, options: { location: unknown }) => {
+      invocation: async (query: unknown, options: { signal: AbortSignal }) => {
         calls.push("capture")
         assert.deepEqual(query, { ...scope, sessionID: "session", requestID: "request" })
-        assert.deepEqual(options.location, scope.location)
+        assert.ok(options.signal instanceof AbortSignal)
         return state.response
       },
       handshake: async () => {
@@ -45,12 +46,12 @@ function fixture() {
       return { data: input.type === "assistant" ? [] : [{ id: "user", type: "user", text: "Inspect the task" }], cursor: {} }
     } },
   }
-  return { client: client as unknown as OpenCodeClient, rawClient: client, state, calls }
+  return { client: client as unknown as OpenCodeClient, rawClient: client, access: rpcTestAccess(client, scope), state, calls }
 }
 
 test("reader joins actual source and root intent, then rechecks pending identity and connected epoch", async () => {
   const f = fixture()
-  const result = await readPendingInvocation(f.client, scope, request(), new AbortController().signal)
+  const result = await readPendingInvocation(f.client, scope, request(), new AbortController().signal, f.access)
   assert.equal(result?.invocation.input.command, "python3 task.py")
   assert.equal(result?.conversation.userPrompt, "Inspect the task")
   assert.equal(result?.conversation.rootMessageID, "user")
@@ -59,21 +60,21 @@ test("reader joins actual source and root intent, then rechecks pending identity
 
 test("preparation owns capture binding and conversation, while explicit finalization performs only fresh identity and epoch checks", async () => {
   const f = fixture(), abort = new AbortController(), snapshot = snapshotRequest(request(), scope)!
-  const prepared = await preparePendingInvocation(f.client, snapshot, abort.signal)
+  const prepared = await preparePendingInvocation(f.client, snapshot, abort.signal, f.access)
   assert.ok(prepared)
   assert.equal(prepared.snapshot, snapshot)
   assert.equal(prepared.conversation.userPrompt, "Inspect the task")
   assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions"])
-  assert.equal(await finalizePendingInvocation(f.client, prepared, abort.signal), prepared)
+  assert.equal(await finalizePendingInvocation(f.client, prepared, abort.signal, f.access), prepared)
   assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "permission", "handshake"])
 })
 
 test("missing source and changed capture request cannot dispatch message/context lookups", async () => {
   const f = fixture(), { source: _, ...unlinked } = request()
-  assert.equal(await readPendingInvocation(f.client, scope, unlinked, new AbortController().signal), undefined)
+  assert.equal(await readPendingInvocation(f.client, scope, unlinked, new AbortController().signal, f.access), undefined)
   assert.deepEqual(f.calls, [])
   f.state.response.request.resources = ["different"]
-  assert.equal(await readPendingInvocation(f.client, scope, request(), new AbortController().signal), undefined)
+  assert.equal(await readPendingInvocation(f.client, scope, request(), new AbortController().signal, f.access), undefined)
   assert.deepEqual(f.calls, ["capture"])
 })
 
@@ -86,7 +87,7 @@ test("invocation contention retries exact scope/identity but a changed returned 
     f.state.response.request.resources = ["changed while waiting"]
     return methods.invocation(...args)
   } })
-  assert.equal(await readPendingInvocation(f.client, scope, request(), new AbortController().signal), undefined)
+  assert.equal(await readPendingInvocation(f.client, scope, request(), new AbortController().signal, f.access), undefined)
   assert.equal(attempts, 2, "Invalid identity is not retried as contention")
   assert.deepEqual(f.calls, ["capture"])
 })
@@ -97,7 +98,7 @@ test("argument rewrites, late permission mutation and companion replacement reje
     if (change === "arguments") f.state.input.command = "different"
     if (change === "permission") f.state.current.resources = ["different"]
     if (change === "epoch") f.state.epoch = "20000000-1000-4000-8000-100000000000"
-    assert.equal(await readPendingInvocation(f.client, scope, request(), new AbortController().signal), undefined, change)
+    assert.equal(await readPendingInvocation(f.client, scope, request(), new AbortController().signal, f.access), undefined, change)
   }
 })
 
@@ -109,7 +110,7 @@ test("captured source, session, epoch and location mismatches stop before conver
     if (change === "session") captured.sessionID = "other-session"
     if (change === "epoch") captured.epoch = "20000000-1000-4000-8000-100000000000"
     if (change === "location") captured.location = { directory: "/other-project" }
-    assert.equal(await readPendingInvocation(f.client, scope, request(), new AbortController().signal), undefined, change)
+    assert.equal(await readPendingInvocation(f.client, scope, request(), new AbortController().signal, f.access), undefined, change)
     assert.deepEqual(f.calls, ["capture", "message"], change)
   }
 })
@@ -121,7 +122,7 @@ test("request previews and invocation arguments each receive their own 16 MiB RP
   f.state.current = pending
   f.state.response.invocation.input.command = command
   f.state.input.command = command
-  const result = await readPendingInvocation(f.client, scope, pending, new AbortController().signal)
+  const result = await readPendingInvocation(f.client, scope, pending, new AbortController().signal, f.access)
   assert.equal(result?.invocation.input.command, command)
   assert.deepEqual(result?.snapshot.request.metadata, pending.metadata)
   assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "permission", "handshake"])
@@ -139,7 +140,7 @@ test("invalid invocation envelope framing and over-cap components stop before so
     const f = fixture(), methods = f.rawClient.rpc()
     f.rawClient.rpc = () => ({ ...methods, invocation: async (...args: Parameters<typeof methods.invocation>) =>
       change(await methods.invocation(...args)) as typeof f.state.response })
-    assert.equal(await readPendingInvocation(f.client, scope, request(), new AbortController().signal), undefined)
+    assert.equal(await readPendingInvocation(f.client, scope, request(), new AbortController().signal, f.access), undefined)
     assert.deepEqual(f.calls, ["capture"])
   }
   assert.equal(accessed, 0)
@@ -154,7 +155,7 @@ test("deadline expiry keeps the actual capture RPC owned until late settlement a
     throw Error("Must not dispatch handshake after timeout")
   } })
   await assert.rejects(withDeadline(abort.signal, 10,
-    signal => readPendingInvocation(f.client, scope, request(), signal)), /timed out/)
+    signal => readPendingInvocation(f.client, scope, request(), signal, f.access)), /timed out/)
   let settled = false
   const actual = ownership.settled().then(() => { settled = true })
   await new Promise(resolve => setImmediate(resolve))
@@ -176,7 +177,7 @@ test("standalone final reads remain owned through cancellation and cannot yield 
       const methods = f.rawClient.rpc()
       f.rawClient.rpc = () => ({ ...methods, handshake: async () => { f.calls.push("handshake"); started(); return pending } })
     }
-    const reading = readPendingInvocation(f.client, scope, request(), abort.signal)
+    const reading = readPendingInvocation(f.client, scope, request(), abort.signal, f.access)
     await dispatched
     abort.abort(Error("Stop standalone read"))
     await assert.rejects(reading, /Stop standalone read/)

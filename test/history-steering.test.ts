@@ -12,7 +12,7 @@ import { parseConfig } from "../src/config.js"
 import { historyOutcome } from "../src/review-lines.js"
 import type { HostRequest } from "../src/host-types.js"
 
-const context: HistoryReview = { scope: "/project", root: "root", session: "child", permission: "permission", review: "review",
+const context: HistoryReview = { root: "root", session: "child", permission: "permission", review: "review",
   category: "bash", configuredModel: "model", provider: "https://example.com/v1" }
 const accepted = (c = context): HistoryEvent => ({ type: "reviewAccepted", context: c, at: 100,
   accepted: { safe: false, completedAt: 100 } })
@@ -27,23 +27,23 @@ function fixture(t: TestContext) {
   return { db, sql, apply: (e: HistoryEvent) => sql.apply("writer", ++sequence, encodeEvent(e)),
     open: () => { const client = new HistorySQL(new DatabaseSync(file)); clients.push(client); return client } }
 }
-const totals = (sql: HistorySQL, c = context) => sql.query({ type: "totals", conversation: { scope: c.scope, root: c.root } }) as HistoryTotals
-const selection = (sql: HistorySQL) => sql.query({ type: "history", scope: context.scope, root: context.root }) as HistorySelection
+const totals = (sql: HistorySQL, c = context) => sql.query({ type: "totals", conversation: { root: c.root } }) as HistoryTotals
+const selection = (sql: HistorySQL) => sql.query({ type: "history", root: context.root }) as HistorySelection
 
-test("reasons and confirmed steering are side-table details, the payload keeps its shape and the outcome label is Auto rejected", t => {
+test("reasons and confirmed steering are stored separately from the payload, the payload keeps its shape and the outcome label is Auto rejected", t => {
   const f = fixture(t)
   f.apply(accepted()); f.apply(rejection()); f.apply(resolved(context, "Deletes the whole tree."))
   const record = selection(f.sql).record!
   assert.equal(record.reason, "Deletes the whole tree.")
   assert.equal(record.steering, "Please narrow it.")
-  assert.equal(record.outcome, "rejected", "stored outcome stays readable by older workers")
+  assert.equal(record.outcome, "rejected")
   assert.deepEqual(Object.keys(JSON.parse(String(f.db.prepare("SELECT body FROM payloads").get()!.body))).sort(), ["completedAt", "desc", "safe"])
   assert.deepEqual(Object.keys(JSON.parse(String(f.db.prepare("SELECT accepted FROM reviews").get()!.accepted))).sort(), ["completedAt", "safe"])
   assert.equal(historyOutcome(record.outcome, record.steering), "Auto rejected")
   assert.equal(historyOutcome("rejected"), "Rejected")
   const manual = { ...context, permission: "manual", review: "manual-review" }
   f.apply(accepted(manual)); f.apply(resolved(manual))
-  const older = f.sql.query({ type: "history", scope: context.scope, root: context.root, permission: { session: manual.session, permission: manual.permission } }) as HistorySelection
+  const older = f.sql.query({ type: "history", root: context.root, permission: { session: manual.session, permission: manual.permission } }) as HistorySelection
   assert.equal(older.record!.reason, undefined, "a report without a reason shows desc only")
   assert.equal(older.record!.steering, undefined)
 })
@@ -60,28 +60,27 @@ test("the automatic rejection ledger counts once per permission in both scopes a
   assert.equal(value.conversation!.totals.activity.autoRejected, 1)
   assert.equal(value.totals.activity.rejected, 2, "confirmed fast rejections count even without a completed report")
   assert.equal(totals(f.sql, other).conversation!.totals.activity.autoRejected, 1)
-  f.apply({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.session }, at: 300 })
-  assert.equal(f.db.prepare("SELECT count(*) n FROM auto_rejections").get()!.n, 1, "only the deleted conversation's details are removed")
-  assert.equal(f.db.prepare("SELECT count(*) n FROM review_reasons").get()!.n, 0)
+  f.apply({ type: "sessionDeleted", context: { root: context.root, session: context.session }, at: 300 })
+  assert.equal(f.db.prepare("SELECT count(*) n FROM auto_rejections").get()!.n, 2, "session invalidation preserves the ledger")
+  assert.equal(f.db.prepare("SELECT count(*) n FROM reviews WHERE reason IS NOT NULL").get()!.n, 0)
   assert.equal(totals(f.sql).totals.activity.autoRejected, 2, "deletion never reduces recorded totals")
   f.apply(rejection())
   assert.equal(totals(f.sql).totals.activity.autoRejected, 2, "replay after deletion cannot count again")
 })
 
-test("invalid steering events are rejected and old databases gain the tables on open", t => {
+test("invalid steering events are rejected and valid reasons survive reopening", t => {
   for (const steering of ["", " ", 7, null]) assert.throws(() => encodeEvent({ ...rejection(), steering } as any))
   assert.throws(() => encodeEvent({ ...resolved(), reason: "" } as any))
   const f = fixture(t)
-  f.db.exec("DROP TABLE review_reasons; DROP TABLE auto_rejections; DROP TABLE auto_rejection_totals")
   const reopened = f.open()
   assert.equal(totals(reopened).totals.activity.autoRejected, undefined, "no ledger row reads as zero without changing the shape")
   reopened.apply("reopened", 1, encodeEvent(resolved(context, "Reason.")))
-  assert.equal(f.db.prepare("SELECT reason FROM review_reasons").get()!.reason, "Reason.")
+  assert.equal(f.db.prepare("SELECT reason FROM reviews WHERE reason IS NOT NULL").get()!.reason, "Reason.")
 })
 
 test("the coordinator saves the reason and records a confirmed steering rejection without approval accounting", t => {
   const f = fixture(t), events: HistoryEvent[] = []
-  const coordinator = new HistoryCoordinator(context.scope, {
+  const coordinator = new HistoryCoordinator({
     admit(event) { events.push(event); f.apply(event); return true }, query: async query => f.sql.query(query), onCommit: () => () => {},
   }, async () => context.root, () => 100)
   t.after(() => coordinator.dispose())
@@ -91,7 +90,7 @@ test("the coordinator saves the reason and records a confirmed steering rejectio
   const result = { safe: false, reason: "Deletes too much.", steering: "Please narrow it.", desc: "Removes everything.",
     metadata: { review: context.review, kind: "shell" as const, configuredModel: context.configuredModel, provider: context.provider } }
   coordinator.lifecycle({ type: "accepted", request, root: context.root, review: context.review, result, completedAt: 100, timing: { fullReportMs: 1, ratingMs: 1 } })
-  assert.equal(f.db.prepare("SELECT count(*) n FROM review_reasons").get()!.n, 0, "unresolved reasons remain memory-only")
+  assert.equal(f.db.prepare("SELECT count(*) n FROM reviews WHERE reason IS NOT NULL").get()!.n, 0, "unresolved reasons remain memory-only")
   const fact = { request, automatic: true, approval: "steer-1", review: context.review, decision: "reject" as const, steering: "Please narrow it." }
   coordinator.approval({ ...fact, type: "dispatched" })
   coordinator.reply({ requestID: request.id, sessionID: request.sessionID, reply: "reject" })
@@ -111,7 +110,7 @@ test("another coordinator recovers a confirmed fast rejection whose remaining re
   const f = fixture(t), secondSQL = f.open()
   const coordinator = (sql: HistorySQL, writer: string) => {
     let sequence = 0
-    const result = new HistoryCoordinator(context.scope, {
+    const result = new HistoryCoordinator({
       admit(event) { sql.apply(writer, ++sequence, encodeEvent(event)); return true },
       query: async query => sql.query(query), onCommit: () => () => {},
     }, async () => context.root, () => 100)
@@ -143,9 +142,9 @@ test("another coordinator recovers a confirmed fast rejection whose remaining re
 test("shared rejection resolution validates exact ownership and conflicts only with proven approvals", t => {
   const f = fixture(t)
   f.apply(rejection())
-  const query = () => f.sql.query({ type: "resolution", scope: context.scope, root: context.root, session: context.session, permission: context.permission })
+  const query = () => f.sql.query({ type: "resolution", root: context.root, session: context.session, permission: context.permission })
   assert.deepEqual(query(), { outcome: "rejected", uncertain: false, conflict: false, deleted: false })
-  assert.equal((f.sql.query({ type: "resolution", scope: "/other", root: context.root, session: context.session, permission: context.permission }) as any).outcome, undefined)
+  assert.equal((f.sql.query({ type: "resolution", root: context.root, session: context.session, permission: "unknown" }) as any).outcome, undefined)
   f.apply({ type: "approvalDispatched", context, at: 120, approval: "pending", automatic: true })
   assert.deepEqual(query(), { outcome: "rejected", uncertain: true, conflict: false, deleted: false })
   f.apply({ type: "approvalConfirmed", context, at: 130, approval: "pending", automatic: true })

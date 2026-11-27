@@ -1,7 +1,7 @@
 import { createMemo, createSignal } from "solid-js"
 import type { BoxRenderable } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
-import { displayText } from "./controller.js"
+import { displayText } from "./display-text.js"
 import { metadataText } from "./metadata-text.js"
 
 /** Text nodes do not forward size callbacks. Measure their padding-free container. */

@@ -11,6 +11,7 @@ import { withDeadline } from "../src/deadline.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
 import { nativeClient, nativeInvocation, shellEvidence } from "./review-fixtures.js"
 import { snapshotRequest } from "../src/host-request.js"
+import { rpcTestAccess, type RPCTestClient } from "./companion-rpc-access.js"
 
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void
@@ -52,7 +53,8 @@ for (const held of ["session", "history"] as const) for (const success of [true,
         await hold(options!.signal!)
         return list(input, options)
       }
-      return evaluateHostReview(client, owned.snapshot, config, BUILTIN_PROMPTS, parent, identify, { fetcher: async () => {
+      return evaluateHostReview(client, owned.snapshot, config, BUILTIN_PROMPTS, parent, identify, {
+        access: rpcTestAccess(client as unknown as RPCTestClient, owned.snapshot.scope), fetcher: async () => {
         posts++
         throw Error("Expired mandatory context cannot reach the reviewer")
       } })

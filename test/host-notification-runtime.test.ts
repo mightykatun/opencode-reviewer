@@ -3,16 +3,13 @@ import { test } from "node:test"
 import { setImmediate as tick } from "node:timers/promises"
 import type { FormInfo, OpenCodeEvent, PermissionRequest, SessionInfo, ShellInfo, PersistentPtyInfo } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin/tui"
-import { setupCli, type CliPluginState } from "../src/cli-plugin.js"
-import type { setupHostHistory } from "../src/host-history-runtime.js"
+import type { ViewerNotifications } from "../src/host-notifications.js"
+import type { HostRequest } from "../src/host-types.js"
 import type { NotificationMessage } from "../src/notification-types.js"
 import type { AncestryReader } from "../src/session-ancestry.js"
 import { setupHostNotificationOnly } from "../src/host-notification-runtime.js"
-import { setupCliReconnect } from "../src/cli-reconnect.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
-import { parseConfig } from "../src/config.js"
 import { parseNotificationConfig } from "../src/notification-config.js"
-import { BUILTIN_PROMPTS } from "../src/prompts.js"
 
 const location = { directory: "/server/project", workspaceID: "workspace" }
 const permission = (id: string, sessionID = "root"): PermissionRequest => ({ id, sessionID,
@@ -89,17 +86,16 @@ function contextFixture(unavailable: "configuration" | "companion" = "configurat
     keymap: { mode: { current: () => "base" } },
   } as unknown as Plugin.Context
   const options = { notifySound: false, staleReminderSeconds: 0, ...notificationOptions }
-  const state: CliPluginState = { stateRoot: "/unused", prompts: BUILTIN_PROMPTS, connectionID,
+  const state: ViewerNotifications = {
     notificationConfig: parseNotificationConfig(options), dependencies: { notifications: () => ({
       async show(message, signal) { banners.push(message); signals.push(signal); return { close() {} } },
       dispose() { backendDisposed++ },
-    }) }, ...(unavailable === "configuration" ? { configError: "Invalid review configuration" }
-      : { config: parseConfig({ baseURL: "http://fixture.invalid/v1", model: "unused", autoApprove: true, ...options }) }) }
-  const records = { location, history: { root: (id: string, signal: AbortSignal) => hooks.ancestry(id, signal) } } as unknown as ReturnType<typeof setupHostHistory>
+    }) } }
+  const records = { location, root: (id: string, signal: AbortSignal) => hooks.ancestry(id, signal),
+    project: (request: HostRequest) => ({ request, status: unavailable === "configuration" ? "unavailable" as const : "suspended" as const }) }
   let runtime: NonNullable<ReturnType<typeof setupHostNotificationOnly>>
-  const compose = (pluginState: CliPluginState) => {
-    runtime = setupCliReconnect(ctx, pluginState, life, { locations: () => [{ location, members: [] }],
-      install: (context, state, child) => setupHostNotificationOnly(context, state, child, records)! }).current()!
+  const compose = (pluginState: ViewerNotifications) => {
+    runtime = setupHostNotificationOnly(ctx, pluginState, life, records)!
     assert.ok(runtime)
     return runtime
   }
@@ -212,51 +208,6 @@ test("notification-only fallback retires inactive visits without losing a live r
   assert.equal(f.runtime.notifications.trackedSessions().size, 256)
 })
 
-for (const failure of ["companion", "configuration", "empty", "timeout", "unobserved", "conflicting"] as const) {
-  test(`failed CLI ${failure} state composes attention with only its verified initial echo exempted`, async t => {
-    const f = contextFixture(); t.after(() => f.life.stop())
-    let now = 0, handshakes = 0
-    if (failure === "timeout") {
-      t.mock.method(performance, "now", () => now)
-      t.mock.timers.enable({ apis: ["setTimeout"] })
-    }
-    const cli = { ...f.ctx, options: failure === "empty" ? {} : { baseURL: "http://fixture.invalid/v1", model: failure === "configuration" ? "" : "unused",
-      notifySound: false, staleReminderSeconds: 0 },
-      client: { ...f.ctx.client, event: { async *subscribe() {
-        if (failure !== "unobserved") yield { type: "server.connected", id: "event-initial" }
-      } }, rpc: () => ({ handshake: async (_location: unknown, { signal }: { signal: AbortSignal }) => {
-        handshakes++
-        if (failure === "timeout") await new Promise((_, reject) => {
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true })
-        })
-        throw Error("Companion unavailable")
-      } }) },
-      data: { ...f.ctx.data, on: (_type: string, listener: (event: { id: string }) => void) => {
-        if (failure === "conflicting") listener({ id: "event-conflict" })
-        return () => {}
-      } },
-    } as unknown as Plugin.Context
-    const startup = setupCli(cli, f.life, { ...f.state.dependencies, adapterOnly: true })
-    if (failure === "timeout") { await tick(); now = 10000; t.mock.timers.tick(10000); await tick() }
-    const state = await startup
-    const verified = failure !== "unobserved" && failure !== "conflicting"
-    assert.equal(state.companion, undefined)
-    assert.equal(state.connectionID, verified ? "event-initial" : undefined)
-    const runtime = f.compose(state)
-    await f.flush()
-    f.emit("server.connected", {}, location, "event-initial"); await f.flush()
-    assert.equal(f.listening(), verified)
-    const pending = permission("after-echo")
-    f.permissions.set("root", [pending]); f.ask(pending); await f.flush()
-    assert.equal(f.banners.length, verified ? 1 : 0)
-    const calls = handshakes
-    f.emit("server.connected", {}, location, "event-distinct"); await runtime.dispose()
-    f.emit("server.connected", {}, location, "event-initial"); await f.flush()
-    assert.equal(f.listening(), false); assert.equal(f.backendDisposed(), 1)
-    assert.equal(handshakes, calls, "fallback never promotes or retries startup")
-    assert.deepEqual(f.unexpected, [], "the cloned CLI seam cannot acquire caller-owned UI")
-  })
-}
 
 for (const soundOnly of [false, true]) {
   test(`delivered ${soundOnly ? "sound-only" : "banner"} question stays silent after unrelated shell activity with reminders disabled`, async t => {
@@ -399,22 +350,6 @@ test("another home's events are ignored wherever they occur, and later visits ca
   assert.deepEqual(f.banners.map(value => [value.kind, value.sessionID]), [["attention", "unvisited"]])
 })
 
-test("the admitted initial connection echo leaves notification fallback active, but a new marker revokes it", async () => {
-  const f = fixture("companion", [], "event-initial")
-  try {
-    await f.flush()
-    f.emit("server.connected", {}, location, "event-initial")
-    await f.flush()
-    assert.equal(f.listening(), true)
-    const pending = permission("after-initial-echo")
-    f.permissions.set("root", [pending]); f.ask(pending); await f.flush()
-    assert.equal(f.banners.length, 1)
-    f.emit("server.connected", {}, location, "event-replacement")
-    await f.flush()
-    assert.equal(f.listening(), false)
-    assert.equal(f.backendDisposed(), 1)
-  } finally { await f.life.stop() }
-})
 
 test("server.connected permanently shuts down the old notification generation", async () => {
   const f = fixture(); await f.flush()
@@ -477,7 +412,7 @@ test("descendant failures and interrupted/aborted executions do not produce term
 test("notification backend setup failure does not acquire listeners, polling or UI", async t => {
   const f = fixture(); t.after(() => f.life.stop()); await f.runtime.dispose()
   f.state.dependencies.notifications = () => { throw Error("Desktop unavailable") }
-  const records = { location } as ReturnType<typeof setupHostHistory>
+  const records = { location, root: async (id: string) => id, project: (request: HostRequest) => ({ request, status: "unavailable" as const }) }
   assert.equal(setupHostNotificationOnly(f.ctx, f.state, f.life, records), undefined)
   assert.equal(f.listening(), false)
   assert.deepEqual(f.unexpected, [])

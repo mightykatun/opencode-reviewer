@@ -1,368 +1,103 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { EventEmitter } from "node:events"
-import path from "node:path"
-import { createHash } from "node:crypto"
-import type { Plugin } from "@opencode/plugin/tui"
-import type { KeymapLayer } from "@opencode/plugin/tui/context"
+import { setImmediate as tick } from "node:timers/promises"
 import { CliRenderEvents } from "@opentui/core"
-import { hostHistoryScope, setupHostHistory, setupHostHistoryOnly } from "../src/host-history-runtime.js"
-import { PluginLifecycle } from "../src/plugin-lifecycle.js"
-import { BUILTIN_PROMPTS } from "../src/prompts.js"
-import { parseConfig } from "../src/config.js"
-import { empty } from "../src/lifetime.js"
-import { entryID, snapshotQuery, type HistoryQuery } from "../src/history-records.js"
-import type { HistorySelection } from "../src/history-schema.js"
-import type { HistoryTransport } from "../src/history-store.js"
-import { setupCli } from "../src/cli-plugin.js"
-import type { CliPluginState } from "../src/cli-plugin.js"
-import { setupCliReconnect } from "../src/cli-reconnect.js"
-import manifest from "../package.json" with { type: "json" }
+import { viewerFixture } from "./viewer-fixture.js"
 
-const location = { directory: "/server/project", workspaceID: "workspace" }
-const tick = () => new Promise<void>(resolve => setImmediate(resolve))
-const config = () => parseConfig({ baseURL: "http://fixture.invalid/v1", model: "unused" })
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>(yes => { resolve = yes })
-  return { promise, resolve }
-}
-function contextFixture(unavailable: "configuration" | "companion" = "configuration", observeHistoryInput = false) {
-  const life = new PluginLifecycle(), commands: NonNullable<KeymapLayer["commands"]>[number][] = []
-  const layers: KeymapLayer[] = []
-  const slots: { prepend?: string; append?: string; render: unknown; removed?: boolean }[] = []
-  const wire: Record<string, unknown>[] = [], serverReads: string[] = [], unexpected: string[] = []
-  const renderer = Object.assign(new EventEmitter(), { width: 140, height: 40, useMouse: false })
-  const sessions = new Map([
-    ["root", { id: "root", location }],
-    ["child", { id: "child", parentID: "root", location }],
-    ["other", { id: "other", location: { ...location, directory: "/server/other" } }],
-  ])
-  let route: { type: "session"; sessionID: string } | { type: "home" } = { type: "session", sessionID: "root" }
-  let listener: ((event: any) => void) | undefined, dialogClose: (() => void) | undefined
-  let native: ((event: any) => void) | undefined
-  let terminated = 0
-  let mode = "base"
-  const scope = hostHistoryScope(location.directory)
-  const context = { scope, root: "root", session: "root", permission: "saved-permission", review: "saved-review",
-    category: "bash" as const, configuredModel: "saved-model", provider: "https://fixture.invalid/v1" }
-  const sample: HistorySelection = { revision: 7, total: 1, rank: 1, entry: entryID(context),
-    record: { context, payload: { safe: true, desc: "Saved assessment", completedAt: 1 }, outcome: "manual" } }
-  const totals = { ...empty(), requests: 2 }
-  const transport: HistoryTransport = {
-    async call(message) {
-      wire.push(message)
-      if (message.type === "open") return { cleanup: false }
-      assert.equal(message.type, "query", "read-only history must not write, bootstrap or maintain stored detail")
-      const query = message.query as HistoryQuery
-      if (query.type === "history") return sample
-      assert.equal(query.type, "totals")
-      return { revision: 7, totals, ...("conversation" in query && query.conversation
-        ? { conversation: { totals, partialHistory: false } } : {}) }
-    },
-    async terminate() { terminated++ },
-  }
-  const server = { read: async (id: string) => sessions.get(id)! }
-  const ctx = {
-    location,
-    client: { event: { async *subscribe({ signal }: { signal: AbortSignal }) {
-      // Native-only unit fixture: no independent fresh marker can admit a replacement.
-      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
-    } }, session: { get: async ({ sessionID }: { sessionID: string }) => { serverReads.push(sessionID); return server.read(sessionID) } },
-      rpc: () => { unexpected.push("companion"); throw Error("unavailable") },
-      permission: { request: { list: () => { unexpected.push("permissions"); throw Error("unavailable") } } },
-      model: { list: () => { unexpected.push("models"); throw Error("unavailable") } } },
-    data: { listen: (callback: typeof listener) => { listener = callback; return () => { listener = undefined } },
-      on: (_type: string, callback: typeof native) => { native = callback; return () => { native = undefined } },
-      session: { get: (id: string) => sessions.get(id) }, location: { default: () => location } },
-    keymap: { layer: (factory: () => KeymapLayer) => {
-      const layer = factory(); layers.push(layer); commands.push(...layer.commands ?? [])
-    }, mode: { current: () => mode } },
-    renderer,
-    ui: { slot: (slot: typeof slots[number]) => { slots.push(slot); return () => { slot.removed = true } },
-      router: { current: () => route }, dialog: { show: (_render: unknown, close: () => void) => { dialogClose = close },
-        clear: () => { dialogClose?.(); dialogClose = undefined } } },
-  } as unknown as Plugin.Context
-  const state = { stateRoot: "/tmp/opencode/reviewer-history-source", prompts: BUILTIN_PROMPTS,
-    dependencies: observeHistoryInput ? { historyProbe: { observe: () => {} } } : {},
-    ...(unavailable === "configuration" ? { configError: "Invalid review configuration", companion: {
-      protocol: 2 as const, hostVersion: "2.0.26", epoch: "10000000-1000-4000-8000-100000000000", location,
-      project: { id: "project", directory: "/server", canonical: "/server" },
-    } }
-      : { config: config() }) }
-  const compose = (pluginState: CliPluginState) => setupCliReconnect(ctx, pluginState, life, { locations: () => [{ location, members: [] }],
-    install: (context, state, child) => setupHostHistoryOnly(context, state, child, { transport: () => transport }) }).current()!
-  return { life, ctx, state, compose, commands, layers, slots, renderer, sessions, wire, serverReads, unexpected, server,
-    mode: (value: string) => { mode = value },
-    sample, totals, terminated: () => terminated, listening: () => !!listener,
-    route: (value: typeof route) => { route = value },
-    event: (type: string, data: unknown, eventLocation?: typeof location, id?: string) => {
-      const details = { type, data, id, ...(eventLocation ? { location: eventLocation } : {}) }
-      if (type === "server.connected") native?.(details)
-      listener?.({ details })
-    },
-    command: (id: string) => {
-      const command = commands.find(value => value.id === id)!
-      assert.equal(typeof command.enabled, "function")
-      return { ...command, enabled: command.enabled as () => boolean }
-    },
-  }
-}
-
-function fixture(unavailable: "configuration" | "companion" = "configuration", observeHistoryInput = false) {
-  const f = contextFixture(unavailable, observeHistoryInput)
-  return { ...f, runtime: f.compose(f.state) }
-}
-
-for (const failure of ["companion", "configuration", "empty", "unobserved", "conflicting"] as const) {
-  test(`failed CLI ${failure} state composes history with only its verified initial echo exempted`, async t => {
-    const f = contextFixture(); t.after(() => f.life.stop())
-    const cli = { ...f.ctx, options: failure === "empty" ? {} : { baseURL: "http://fixture.invalid/v1", model: failure === "configuration" ? "" : "unused" },
-      client: { ...f.ctx.client, event: { async *subscribe() {
-        if (failure !== "unobserved") yield { type: "server.connected", id: "event-initial" }
-      } }, rpc: () => ({ handshake: async () => { throw Error("Companion unavailable") } }) },
-      data: { ...f.ctx.data, on: (_type: string, listener: (event: { id: string }) => void) => {
-        if (failure === "conflicting") listener({ id: "event-conflict" })
-        return () => {}
-      } },
-    } as unknown as Plugin.Context
-    const state = await setupCli(cli, f.life, { adapterOnly: true })
-    const verified = failure !== "unobserved" && failure !== "conflicting"
-    assert.equal(state.companion, undefined)
-    assert.equal(state.connectionID, verified ? "event-initial" : undefined)
-    const runtime = f.compose({ ...state, stateRoot: f.state.stateRoot })
-    assert.equal(runtime.active(), true)
-    f.event("server.connected", {}, location, "event-initial")
-    assert.equal(runtime.active(), verified)
-    assert.equal(f.command("reviewer.history").enabled(), verified)
-    assert.equal(f.command("reviewer.lifetime").enabled(), verified)
-    if (verified) {
-      f.command("reviewer.history").run(); await tick(); await tick()
-      assert.deepEqual(runtime.records.state().selection, f.sample)
-    }
-    f.event("server.connected", {}, location, "event-distinct")
-    f.event("server.connected", {}, location, "event-initial")
-    assert.equal(runtime.active(), false, "an old admitted marker cannot revive a revoked fallback")
-    assert.equal(f.command("reviewer.history").enabled(), false)
-    assert.equal(f.command("reviewer.lifetime").enabled(), false)
-    assert.deepEqual(f.unexpected, [], "the cloned startup context cannot invoke the fixture's ordinary RPC")
-  })
-}
-
-test("V2 history uses the existing absolute normalized directory index, independently of ownership", () => {
-  const directory = "/server/project/../project"
-  const scope = hostHistoryScope(directory)
-  assert.equal(scope, path.join("/", "opencode-reviewer-v2", createHash("sha256").update("/server/project").digest("hex")))
-  assert.equal(scope, hostHistoryScope("/server/project"))
-  assert.notEqual(scope, hostHistoryScope("/server/other"))
-  assert.equal(path.isAbsolute(scope), true)
-  assert.deepEqual(snapshotQuery({ type: "history", scope, root: "root" }), { type: "history", scope, root: "root" })
-  assert.throws(() => hostHistoryScope("relative"), /absolute/)
-  assert.throws(() => hostHistoryScope("/server/\0project"), /absolute/)
-})
-
-test("history captures the public TUI app version rather than guessing from the companion or package", async t => {
-  const f = contextFixture()
+test("history reads indexed RPC records with review disabled and refreshes on changes", async t => {
+  const f = viewerFixture()
   t.after(() => f.life.stop())
-  const events: any[] = []
-  const ctx = { ...f.ctx, app: { ...f.ctx.app, version: "2.0.999-cli.fixture" } }
-  const records = setupHostHistory(ctx, f.state, f.life, {
-    rootRoute: () => "root", sidebarOwner: () => undefined, sidebarGeometry: () => undefined,
-    storeOptions: { transport: () => ({ async call(message) {
-      if (message.type === "open") return { cleanup: false }
-      assert.equal(message.type, "apply")
-      events.push(JSON.parse(String(message.event)))
-      return { replay: false }
-    }, async terminate() {} }) },
-  })
-  t.after(() => records.dispose())
-  const observation = records.history.observation({ id: "permission", sessionID: "root" }, "shell", config(), { review: "review", root: "root" })
-  observation.observe!({ type: "dispatched", review: "review", attempt: "post", retry: "initial" })
-  await records.dispose()
-  assert.equal(events.length, 1)
-  assert.deepEqual(events[0].versions, { reviewer: manifest.version, opencode: "2.0.999-cli.fixture" })
-  assert.notEqual(events[0].versions.opencode, (f.state as CliPluginState).companion?.hostVersion)
+  f.snapshot.review = { enabled: false, reason: "no-policy" }
+  f.command("reviewer.history").run()
+  await tick()
+  assert.deepEqual(f.runtime.records.state().selection, f.sample)
+  assert.deepEqual(f.calls.find(call => call.method === "history")?.location, f.home.feed.location)
+  assert.ok(f.calls.every(call => call.method === "history" || call.method === "statistics"))
+  f.handlers.history = async () => { throw Error("Unavailable") }
+  f.runtime.changed(f.home)
+  await tick()
+  assert.equal(f.runtime.records.state().status, "error")
 })
 
-test("history input observation is opt-in and logical browsing never fabricates mounted input ownership", async t => {
-  const production = fixture(), observed = fixture("configuration", true)
-  t.after(async () => { await Promise.all([production.life.stop(), observed.life.stop()]) })
-  assert.equal(production.runtime.records.historyInput, undefined, "ordinary production composition creates no observation seam")
-  const input = observed.runtime.records.historyInput
-  assert.ok(input)
-  assert.equal(input.interactive(), false, "unmounted history starts disabled")
-  input.scroll(1, false)
-  assert.equal(observed.runtime.records.browser.scroll, 0)
-  observed.command("reviewer.history").run()
-  await tick(); await tick()
-  assert.equal(observed.runtime.records.state().status, "ready")
-  assert.equal(observed.runtime.records.state().open, true)
-  assert.equal(observed.runtime.records.historyInput, input, "the observation object stays stable across history state changes")
-  observed.renderer.emit(CliRenderEvents.FRAME)
-  assert.equal(input.interactive(), false, "real FRAME without a mounted view cannot grant keyboard ownership")
-  input.scroll(1, true)
-  assert.equal(observed.runtime.records.browser.scroll, 0)
-  assert.equal(observed.renderer.useMouse, false)
-  assert.deepEqual(observed.unexpected, [])
-  observed.runtime.records.browser.close()
+test("history input observations stay opt-in and unmounted history never owns input", async t => {
+  const f = viewerFixture({ historyProbe: { observe() {} } })
+  const production = viewerFixture()
+  t.after(() => Promise.all([f.life.stop(), production.life.stop()]))
+  assert.equal(production.runtime.records.historyInput, undefined)
+  const input = f.runtime.records.historyInput!
+  f.command("reviewer.history").run()
+  await tick()
+  assert.equal(f.runtime.records.state().status, "ready")
+  f.renderer.emit(CliRenderEvents.FRAME)
   assert.equal(input.interactive(), false)
+  input.scroll(1, true)
+  assert.equal(f.runtime.records.browser.scroll, 0)
+  assert.equal(f.renderer.useMouse, false)
 })
 
-for (const unavailable of ["configuration", "companion"] as const) {
-  test(`history/statistics remain available without review ${unavailable}, using current indexed samples`, async t => {
-    const f = fixture(unavailable)
-    t.after(async () => { await f.life.stop(); await f.life.settled() })
-    assert.deepEqual(f.commands.filter(value => value.id).map(value => value.id), ["reviewer.lifetime", "reviewer.history", "reviewer.history.toggle"])
-    assert.deepEqual(f.slots.map(slot => slot.prepend ?? slot.append), ["sidebar.content", "app"])
-    assert.equal(f.command("reviewer.history").enabled!(), true)
-    assert.equal(f.command("reviewer.lifetime").enabled!(), true)
-    f.command("reviewer.history").run()
-    await tick(); await tick()
-    assert.equal(f.runtime.records.state().status, "ready")
-    assert.deepEqual(f.runtime.records.state().selection, f.sample)
-    assert.deepEqual(f.wire.filter(value => (value.query as HistoryQuery | undefined)?.type === "history")
-      .map(value => value.query), [{ type: "history", scope: hostHistoryScope(location.directory), root: "root" }])
-    assert.deepEqual(f.serverReads, ["root"])
-    f.route({ type: "session", sessionID: "child" })
-    assert.equal(f.runtime.rootRoute(), undefined)
-    assert.equal(f.command("reviewer.history").enabled!(), false)
-    f.command("reviewer.lifetime").run()
-    f.runtime.records.statistics.select("conversation")
-    await tick(); await tick()
-    assert.equal(f.runtime.records.statisticsState().ancestry, "ready")
-    assert.deepEqual(f.runtime.records.statisticsState().conversation?.totals, f.totals)
-    assert.ok(f.wire.some(value => JSON.stringify(value.query) === JSON.stringify({ type: "totals",
-      conversation: { scope: hostHistoryScope(location.directory), root: "root" } })))
-    assert.deepEqual(f.unexpected, [], "no model, review or companion reads")
-    assert.equal(f.renderer.useMouse, false)
-  })
-}
-
-test("Alt+H toggles history only on an active root in base mode, with a configurable named binding and no Backspace interception", async t => {
-  const f = fixture()
+test("Alt+H toggles in base mode on roots and palette and slash always open newest", async t => {
+  const f = viewerFixture()
   t.after(() => f.life.stop())
-  const layer = f.layers.find(value => value.commands?.some(command => command.id === "reviewer.history.toggle"))!
-  const toggle = layer.commands![0]
-  assert.ok(toggle)
-  assert.equal(layer.mode, "global", "palette discovery survives its modal mode")
+  const toggle = f.command("reviewer.history.toggle")
+  const layer = f.layers.find(layer => layer.commands?.includes(toggle))!
+  assert.equal(layer.mode, "global")
   assert.equal(layer.priority, 100)
-  assert.equal(toggle.id, "reviewer.history.toggle")
   assert.equal(toggle.title, "Reviewer: Report history")
   assert.equal(toggle.bind, "alt+h")
   assert.equal(toggle.palette, true)
-  assert.equal(f.command("reviewer.history").palette, undefined, "one palette entry owns the configurable shortcut")
   assert.equal(toggle.slash, undefined)
-  assert.ok(f.commands.every(command => !["ctrl+h", "backspace", "ctrl+backspace"].includes(String(command.bind))))
-  assert.equal(f.command("reviewer.history").bind, undefined)
-  const press = () => toggle.run(undefined, { sequence: "\x1bh" } as any)
+  const slash = f.command("reviewer.history")
+  assert.equal(slash.palette, undefined)
+  assert.equal(slash.bind, undefined)
+  assert.deepEqual(slash.slash, { name: "reviewer-history" })
+  assert.ok(f.layers.flatMap(layer => layer.commands ?? []).every(command => !["ctrl+h", "backspace", "ctrl+backspace"].includes(String(command.bind))))
+  const press = () => toggle.run(undefined, { sequence: "\x1bh" } as never)
   press()
   assert.equal(f.runtime.records.state().open, true)
   press()
-  await tick(); await tick()
-  assert.equal(f.runtime.records.state().open, false, "closing during loading cannot reopen from a late read")
+  await tick()
+  assert.equal(f.runtime.records.state().open, false)
   press()
-  await tick(); await tick()
+  await tick()
   assert.equal(f.runtime.records.state().status, "ready")
   f.mode("modal")
-  assert.equal(press(), false, "modal keyboard input falls through")
-  assert.equal(f.runtime.records.state().open, true, "native modal input is not consumed")
+  assert.equal(press(), false)
+  assert.equal(f.runtime.records.state().open, true)
   f.mode("base")
   toggle.run()
-  assert.equal(f.runtime.records.state().open, true, "palette selection opens rather than toggling closed")
-  toggle.run(undefined, { name: "command", sequence: "", raw: "" } as any)
-  assert.equal(f.runtime.records.state().open, true, "the host's synthetic programmatic event is not keyboard input")
+  assert.equal(f.runtime.records.state().open, true)
+  toggle.run(undefined, { sequence: "" } as never)
+  assert.equal(f.runtime.records.state().open, true)
   press()
-  assert.equal(f.runtime.records.state().open, false)
-  for (const route of [{ type: "home" }, { type: "session", sessionID: "child" },
-    { type: "session", sessionID: "missing" }] as const) {
+  for (const route of [{ type: "home" }, ...["child", "missing", "other"].map(sessionID => ({ type: "session", sessionID } as const))] as const) {
     f.route(route)
     assert.equal((layer.enabled as () => boolean)(), false)
     press()
     assert.equal(f.runtime.records.state().open, false)
   }
   f.route({ type: "session", sessionID: "root" })
-  f.event("server.connected", {})
+  f.available(false)
   assert.equal((layer.enabled as () => boolean)(), false)
-  press()
-  assert.equal(f.runtime.records.state().open, false)
-  assert.deepEqual(f.unexpected, [])
   assert.equal(f.renderer.useMouse, false)
 })
 
-test("history-only route identity uses known native scoped ancestry, not review modes or remembered paint", async t => {
-  const f = fixture()
+test("a targeted click opens only its own report on a real root frame", async t => {
+  const f = viewerFixture()
   t.after(() => f.life.stop())
-  assert.equal(f.runtime.rootRoute(), "root")
+  const abort = new AbortController()
+  const lease = { current: () => !abort.signal.aborted, signal: abort.signal, cancel() {}, commit() {} }
+  f.runtime.openHistory("root", { session: "child", permission: "missing" }, lease)
+  await tick()
+  assert.equal(f.runtime.records.state().open, false)
+  assert.deepEqual(f.dispatched, [])
+  f.runtime.openHistory("root", { session: "child", permission: "saved" }, lease)
+  await tick()
+  assert.equal(f.runtime.records.state().selection?.entry, f.sample.entry)
+  assert.deepEqual(f.dispatched, [])
   f.renderer.emit(CliRenderEvents.FRAME)
-  assert.equal(f.runtime.geometry(), undefined, "a root route alone cannot manufacture sidebar geometry")
-  for (const sessionID of ["child", "missing", "other"]) {
-    f.route({ type: "session", sessionID })
-    assert.equal(f.runtime.rootRoute(), undefined)
-    assert.equal(f.command("reviewer.history").enabled!(), false)
-  }
-  f.route({ type: "home" })
-  assert.equal(f.runtime.rootRoute(), undefined)
-  assert.equal(f.command("reviewer.lifetime").enabled!(), true)
-  assert.deepEqual(f.serverReads, [])
-})
-
-test("known scoped live deletion invalidates only volatile history, never persistent rows or maintenance", async t => {
-  const f = fixture()
-  t.after(() => f.life.stop())
-  f.command("reviewer.history").run()
-  await tick(); await tick()
-  f.event("session.deleted", { sessionID: "missing" })
-  f.event("session.deleted", { sessionID: "other" })
-  f.event("session.deleted", { sessionID: "root" }, { ...location, workspaceID: "other-workspace" })
-  assert.equal(f.runtime.records.state().open, true)
-  assert.equal(f.runtime.rootRoute(), "root")
-  f.event("session.deleted", { sessionID: "root" }, location)
-  assert.equal(f.runtime.records.state().open, false)
-  assert.equal(f.runtime.rootRoute(), undefined, "native stale cache cannot resurrect the known deleted root")
-  assert.equal(f.runtime.records.store.pendingOperations, 0)
-  assert.ok(f.wire.every(value => value.type === "open" || value.type === "query"))
-})
-
-test("server replacement permanently revokes commands and ignores subsequent deletion events", async t => {
-  const f = fixture()
-  t.after(() => f.life.stop())
-  f.command("reviewer.history").run()
-  await tick(); await tick()
-  f.event("server.connected", {})
-  assert.equal(f.runtime.records.state().open, false)
-  assert.equal(f.command("reviewer.history").enabled!(), false)
-  assert.equal(f.command("reviewer.lifetime").enabled!(), false)
-  const reads = f.serverReads.length, queries = f.wire.length
-  f.command("reviewer.history").run()
-  f.command("reviewer.lifetime").run()
-  f.event("session.deleted", { sessionID: "root" }, location)
-  await tick()
-  assert.equal(f.runtime.routes.get("root")?.id, "root", "a replacement stream cannot invalidate old client facts")
-  assert.equal(f.serverReads.length, reads)
-  assert.equal(f.wire.length, queries)
-})
-
-test("history-only signal cleanup removes owned listeners/slots and drains actual ancestry settlement", async () => {
-  const f = fixture(), late = deferred<{ id: string; location: typeof location }>()
-  f.server.read = () => late.promise
-  const root = f.runtime.records.history.root("root", new AbortController().signal)
-  void root.catch(() => {})
-  await tick()
-  assert.deepEqual(f.serverReads, ["root"])
-  let settled = false
-  const stop = f.life.stop()
-  const physical = f.life.settled().then(() => { settled = true })
-  await tick()
-  assert.equal(f.life.signal.aborted, true)
-  assert.equal(f.listening(), false)
-  assert.equal(f.renderer.listenerCount(CliRenderEvents.FRAME), 0)
-  assert.ok(f.slots.every(slot => slot.removed))
-  assert.equal(f.runtime.sidebar(), undefined)
-  assert.equal(f.runtime.geometry(), undefined)
-  assert.equal(settled, false, "logical ancestry abort does not release the underlying client read")
-  late.resolve({ id: "root", location })
-  await stop; await physical
-  assert.equal(settled, true)
-  assert.equal(f.terminated(), 1)
-  assert.deepEqual(f.unexpected, [])
+  assert.deepEqual(f.dispatched, ["session.sidebar.toggle"])
+  assert.deepEqual(f.calls.filter(call => call.method === "history").map(call => call.input), [
+    { sessionID: "root", permission: { session: "child", permission: "missing" } },
+    { sessionID: "root", permission: { session: "child", permission: "saved" } },
+  ])
 })

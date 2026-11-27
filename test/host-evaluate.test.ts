@@ -9,6 +9,7 @@ import { readHostInvocation, snapshotRequest } from "../src/host-request.js"
 import { BUILTIN_PROMPTS } from "../src/prompts.js"
 import type { ReviewAttemptEvent } from "../src/types.js"
 import type { SteeringRecord } from "../src/steering-follow-up.js"
+import { rpcTestAccess } from "./companion-rpc-access.js"
 
 const scope = { epoch: "10000000-1000-4000-8000-100000000000", location: { directory: "/server/project" } }
 const project = { id: "project", directory: "/server", canonical: "/server" }
@@ -45,13 +46,13 @@ function fixture() {
     posts.push(JSON.parse(String(init?.body)))
     return Response.json({ choices: [{ message: { role: "assistant", content: state.response }, finish_reason: "stop" }] })
   }
-  return { client: client as unknown as OpenCodeClient, snapshot, calls, posts, state, fetcher }
+  return { client: client as unknown as OpenCodeClient, access: rpcTestAccess(client, scope), snapshot, calls, posts, state, fetcher }
 }
 
 test("native evaluation sends exact V2 evidence as data under the correct guidance, not a fabricated legacy request", async () => {
   const f = fixture(), events: string[] = []
   const result = await evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, new AbortController().signal,
-    () => { events.push("identified") }, { fetcher: f.fetcher })
+    () => { events.push("identified") }, { access: f.access, fetcher: f.fetcher })
   assert.equal(result?.safe, true)
   assert.deepEqual(events, ["identified"])
   assert.deepEqual(f.calls, ["invocation", "evidence", "POST"])
@@ -80,7 +81,7 @@ test("disabled evidence skips review while missed capture stays visibly unavaila
     f.state.missing = missing
     let identified = false, observed = false
     const evaluation = evaluateHostReview(f.client, f.snapshot, { ...config(), reviewEdits: missing }, BUILTIN_PROMPTS,
-      new AbortController().signal, () => { identified = true }, { fetcher: f.fetcher,
+      new AbortController().signal, () => { identified = true }, { access: f.access, fetcher: f.fetcher,
         observeEvidence: () => { observed = true; return { review: "must-not-exist" } } })
     if (missing) await assert.rejects(evaluation, /Exact operation evidence unavailable/)
     else assert.equal(await evaluation, null)
@@ -93,7 +94,7 @@ test("disabled evidence skips review while missed capture stays visibly unavaila
 test("native accounting observation is created after ready evidence validation and keeps exact execution identity", async () => {
   const f = fixture(), attempts: ReviewAttemptEvent[] = []
   const result = await evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, new AbortController().signal,
-    () => { f.calls.push("identified") }, { fetcher: f.fetcher, observeEvidence: evidence => {
+    () => { f.calls.push("identified") }, { access: f.access, fetcher: f.fetcher, observeEvidence: evidence => {
       f.calls.push("observation")
       assert.equal(evidence.kind, "edit")
       assert.deepEqual(evidence.permission.source, { assistantID: "assistant", id: "call" })
@@ -114,7 +115,7 @@ test("invalid native evidence never creates an accounting observation", async ()
   f.state.invalidEvidence = true
   let observed = false, identified = false
   await assert.rejects(evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, new AbortController().signal,
-    () => { identified = true }, { fetcher: f.fetcher, observeEvidence: () => { observed = true; return { review: "invalid" } } }),
+    () => { identified = true }, { access: f.access, fetcher: f.fetcher, observeEvidence: () => { observed = true; return { review: "invalid" } } }),
     /Exact operation evidence unavailable/)
   assert.equal(identified, false)
   assert.equal(observed, false)
@@ -125,7 +126,7 @@ for (const behavior of ["factory-throw", "observer-throw", "observer-reject"] as
   test(`native accounting ${behavior} cannot change the assessment`, async () => {
     const f = fixture()
     const result = await evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, new AbortController().signal,
-      () => {}, { fetcher: f.fetcher, observeEvidence: () => {
+      () => {}, { access: f.access, fetcher: f.fetcher, observeEvidence: () => {
         if (behavior === "factory-throw") throw Error("observational setup failure")
         return { review: "execution", observe: () => {
           if (behavior === "observer-throw") throw Error("observational delivery failure")
@@ -144,7 +145,7 @@ test("native format correction retains byte-exact initial evidence and the faile
     f.posts.push(JSON.parse(String(init?.body)))
     return Response.json({ choices: [{ message: { content: posted++ ? '{"safe":true,"reason":"Decisive reason.","desc":"Bounded replacement."}' : "invalid assessment" }, finish_reason: "stop" }] })
   }
-  assert.equal((await evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, new AbortController().signal, () => {}, { fetcher }))?.safe, true)
+  assert.equal((await evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, new AbortController().signal, () => {}, { access: f.access, fetcher }))?.safe, true)
   assert.equal(f.posts.length, 2)
   assert.equal(f.posts[1].messages[1].content, f.posts[0].messages[1].content)
   assert.deepEqual(f.posts[1].messages[2], { role: "assistant", content: "invalid assessment" })
@@ -153,11 +154,12 @@ test("native format correction retains byte-exact initial evidence and the faile
 test("pre-dispatch cancellation starts no native evidence read, and late reviewer response remains physically owned", async () => {
   const f = fixture(), abort = new AbortController()
   abort.abort()
-  await assert.rejects(evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, abort.signal, () => {}, { fetcher: f.fetcher }))
+  await assert.rejects(evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, abort.signal, () => {}, { access: f.access, fetcher: f.fetcher }))
   assert.deepEqual(f.calls, [])
   let dispatched!: () => void, resolve!: (response: Response) => void, canceled = false
   const started = new Promise<void>(yes => { dispatched = yes }), live = new AbortController()
   const evaluation = evaluateHostReview(f.client, f.snapshot, config(), BUILTIN_PROMPTS, live.signal, () => {}, {
+    access: f.access,
     fetcher: async () => { dispatched(); return new Promise(yes => { resolve = yes }) },
   })
   await started
@@ -192,7 +194,7 @@ test("a paired steering reaches only the verdict, and a category mismatch or new
       return f.fetcher(url, init)
     }
     const value = parseConfig({ baseURL: "http://127.0.0.1:40999/v1", model: "reviewer", stream: false, notify: false, retrieval, retrievalKinds: { edit: true }, autoRejectSteering: true })
-    await evaluateHostReview(f.client, f.snapshot, value, BUILTIN_PROMPTS, new AbortController().signal, () => {}, { fetcher, steeringRecord: record })
+    await evaluateHostReview(f.client, f.snapshot, value, BUILTIN_PROMPTS, new AbortController().signal, () => {}, { access: f.access, fetcher, steeringRecord: record })
     assert.equal(retrievalPosts > 0, retrieval)
     const [system, user] = f.posts.at(-1).messages
     return { system: system.content as string, evidence: JSON.parse(user.content) }

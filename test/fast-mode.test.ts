@@ -27,7 +27,7 @@ async function fixture(t: TestContext, options: Record<string, unknown> = {}, ho
     fastMode: true, autoApproveDelaySeconds: 999, notifySound: false, staleReminderSeconds: 0, ...options })
   const sql = new HistorySQL(new DatabaseSync(":memory:")), events: HistoryEvent[] = [], banners: NotificationMessage[] = [], facts: ApprovalFact[] = []
   let sequence = 0, enabled = true, ready = true, failedStorage = false
-  const history = new HistoryCoordinator("/host", {
+  const history = new HistoryCoordinator({
     admit: event => { if (failedStorage) return false; events.push(event); sql.apply("fixture", ++sequence, encodeEvent(event)); return true },
     query: query => Promise.resolve(sql.query(query)), onCommit: () => () => {},
   }, async () => "root")
@@ -82,7 +82,7 @@ async function fixture(t: TestContext, options: Record<string, unknown> = {}, ho
     mode: (value: boolean) => { enabled = value; controller.modeChanged("root") },
     ready: (value: boolean) => { ready = value; controller.refreshApprovalEligibility() },
     list: (fn: typeof list) => { list = fn }, failStorage: () => { failedStorage = true },
-    saved: () => sql.query({ type: "history", scope: "/host", root: "root" }) as HistorySelection,
+    saved: () => sql.query({ type: "history", root: "root" }) as HistorySelection,
     totals: () => (sql.query({ type: "totals" }) as HistoryTotals).totals }
 }
 

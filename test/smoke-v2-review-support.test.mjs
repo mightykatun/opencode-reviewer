@@ -10,15 +10,15 @@ const opaque = (...parts) => createHash("sha256").update(JSON.stringify(parts)).
 function records(count) {
   const expected = Array.from({ length: count }, (_, index) => ({ action: count === 2 && index === 0 ? "external_directory" : "edit",
     request: { id: `permission-${index}` }, description: `report-${index}` }))
-  const rows = expected.map((stage, index) => ({ id: opaque("scope", `review-${index}`), entry: opaque("scope", stage.request.id), review: opaque("scope", `review-${index}`),
-    root: opaque("scope", "root"), session: opaque("scope", "root"), outcome: "auto", resolution: "auto", approving: opaque("scope", `review-${index}`),
-    context: JSON.stringify({ scope: "scope", root: "root", session: "root", permission: stage.request.id,
+  const rows = expected.map((stage, index) => ({ id: opaque(`review-${index}`), entry: opaque(stage.request.id), review: opaque(`review-${index}`),
+    root: opaque("root"), session: opaque("root"), outcome: "auto", resolution: "auto", approving: opaque(`review-${index}`),
+    context: JSON.stringify({ root: "root", session: "root", permission: stage.request.id,
       review: `review-${index}`, category: stage.action, configuredModel: "v2-production-reviewer" }), accepted: '{"safe":true}',
     body: JSON.stringify({ safe: true, desc: stage.description, usage: { input: 23, output: 11 } }) }))
   const totals = { requests: count, tokenRequests: count, input: 23 * count, output: 11 * count, safe: count, unsafe: 0,
     priced: 0, cost: 0, activity: { reviews: count, autoApproved: count, usageRequests: count, retries: 0, timedReviews: count } }
-  return { expected, value: { rows, payloadCount: count, meta: { version: 1, totals: JSON.stringify(totals) },
-    conversations: [{ id: opaque("scope", "root"), totals: JSON.stringify(totals), partial: 0 }],
+  return { expected, value: { rows, payloadCount: count, meta: { version: 2, totals: JSON.stringify(totals) },
+    conversations: [{ id: opaque("root"), totals: JSON.stringify(totals) }],
     reviews: rows.map(row => ({ id: row.review, root: row.root, session: row.session, context: row.context, accepted: row.accepted })),
     attempts: rows.map(row => ({ review: row.review, dispatched: '{"retry":"initial"}', finalized: '{"usage":{"input":23,"output":11}}' })),
     approvals: rows.map(row => ({ review: row.review, state: "confirmed", entry: row.entry, automatic: 1 })) } }
@@ -63,7 +63,7 @@ test("native write evidence expectations reject full target snapshots, raw write
 
 test("read-only production SQL probes never initialize missing databases or mutate committed bytes", async () => {
   const directory = await mkdtemp("/tmp/opencode/reviewer-sql-probe-")
-  const file = path.join(directory, "history-v1.sqlite")
+  const file = path.join(directory, "history-v2.sqlite")
   try {
     assert.equal(await readProductionHistory(file), undefined)
     const db = new DatabaseSync(file)
@@ -73,11 +73,12 @@ test("read-only production SQL probes never initialize missing databases or muta
       assert.deepEqual(await readFile(file), empty)
       db.exec("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE")
       db.exec(`CREATE TABLE history(id TEXT,review TEXT,completed INTEGER,tie TEXT);
-        CREATE TABLE reviews(id TEXT,context TEXT,accepted TEXT,root TEXT,session TEXT);
+        CREATE TABLE reviews(id TEXT,context TEXT,accepted TEXT,root TEXT,session TEXT,reviewer_version TEXT,opencode_version TEXT);
+        CREATE TABLE retrieval_calls(review TEXT,tool TEXT);
         CREATE TABLE payloads(id TEXT,body TEXT); CREATE TABLE attempts(id TEXT,review TEXT,dispatched TEXT,finalized TEXT);
         CREATE TABLE approvals(id TEXT); CREATE TABLE meta(id INTEGER,version INTEGER,revision INTEGER,totals TEXT);
-        CREATE TABLE conversation_totals(id TEXT,totals TEXT,partial INTEGER);
-        INSERT INTO meta VALUES(1,1,7,'{}');`)
+        CREATE TABLE conversation_totals(id TEXT,totals TEXT);
+        INSERT INTO meta VALUES(1,2,7,'{}');`)
       assert.equal(await readProductionHistory(file), undefined, "Uncommitted schema remains pending")
       db.exec("COMMIT; PRAGMA wal_checkpoint(TRUNCATE)")
     } finally { db.close() }
@@ -85,7 +86,7 @@ test("read-only production SQL probes never initialize missing databases or muta
     const value = await readProductionHistory(file)
     assert.equal(value.meta.revision, 7)
     assert.equal(value.payloadCount, 0)
-    for (const key of ["rows", "reviews", "attempts", "approvals", "conversations"]) assert.deepEqual(value[key], [])
+    for (const key of ["rows", "reviews", "attempts", "calls", "approvals", "conversations"]) assert.deepEqual(value[key], [])
     assert.deepEqual(await readFile(file), before)
     const alias = path.join(directory, "alias.sqlite"); await symlink(file, alias)
     await assert.rejects(readProductionHistory(alias), /Actual isolated production database/)

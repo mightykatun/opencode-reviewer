@@ -35,7 +35,7 @@ function fakeClock() {
 function fixture(t: any, ancestry: AncestryReader = async session => session === "child" ? "root" : session, clock?: StatisticsClock) {
   const queries: HistoryQuery[] = [], calls: { value: ReturnType<typeof deferred<HistoryResult>>; cleanup: ReturnType<typeof deferred<void>> }[] = []
   const commits = new Set<() => void>(), failures = new Set<() => void>()
-  const controller = new StatisticsController("/host", {
+  const controller = new StatisticsController({
     query(query): HistoryRead {
       queries.push(query)
       const value = deferred<HistoryResult>(), cleanup = deferred<void>(); calls.push({ value, cleanup })
@@ -62,7 +62,7 @@ test("Conversation resolves descendant ancestry without mode loading; both views
   f.controller.select("conversation"); await settle()
   assert.equal(f.calls.length, 2)
   f.finish(1); await settle()
-  assert.deepEqual(f.queries[2], { type: "totals", conversation: { scope: "/host", root: "root" } })
+  assert.deepEqual(f.queries[2], { type: "totals", conversation: { root: "root" } })
   f.finish(2, 200); await settle()
   assert.equal(f.controller.state.conversation?.totals.input, 200)
   f.controller.select("lifetime"); f.finish(3, 300); await settle()
@@ -84,7 +84,7 @@ test("returning from lifetime retains this conversation's report until its refre
   assert.equal(f.state().conversation, conversation, "Lifetime-only reads must not clear the loaded conversation")
   f.controller.select("conversation")
   assert.equal(f.state().conversation, conversation, "No loading frame while a fresh scoped read is pending")
-  assert.deepEqual(f.queries[4], { type: "totals", conversation: { scope: "/host", root: "root" } })
+  assert.deepEqual(f.queries[4], { type: "totals", conversation: { root: "root" } })
   await settle()
   assert.equal(f.state().conversation, conversation)
   f.finish(4, 400); await settle()
@@ -113,7 +113,7 @@ test("old aggregate results and old dialog cleanup cannot replace a newly opened
   f.finish(2, 999); await settle()
   assert.equal(f.controller.state.conversation, undefined)
   assert.equal(f.controller.state.open, true)
-  assert.deepEqual(f.queries[3], { type: "totals", conversation: { scope: "/host", root: "b" } })
+  assert.deepEqual(f.queries[3], { type: "totals", conversation: { root: "b" } })
   f.finish(3, 20); await settle()
   assert.equal(f.state().conversation?.totals.input, 20)
 })
@@ -141,7 +141,7 @@ test("Conversation retries transient ancestry failures every two seconds without
   time.tick(2000); await settle(); assert.equal(count, 3); assert.equal(f.state().ancestry, "ready")
   assert.equal(time.pending.size, 0)
   f.finish(1); await settle()
-  assert.deepEqual(f.queries[2], { type: "totals", conversation: { scope: "/host", root: "root" } })
+  assert.deepEqual(f.queries[2], { type: "totals", conversation: { root: "root" } })
   f.finish(2, 30); await settle()
   time.tick(20000); f.controller.select("lifetime"); f.controller.select("conversation"); await settle()
   assert.equal(count, 3); assert.equal(f.state().conversation?.totals.input, 30)
@@ -165,7 +165,7 @@ for (const outcome of ["resolve", "reject"] as const) test(`timed-out noncoopera
   time.tick(1999); await settle(); assert.equal(count, 1)
   time.tick(1); await settle(); assert.equal(count, 2); assert.equal(f.state().ancestry, "ready")
   f.finish(1); await settle()
-  assert.deepEqual(f.queries[2], { type: "totals", conversation: { scope: "/host", root: "root" } })
+  assert.deepEqual(f.queries[2], { type: "totals", conversation: { root: "root" } })
   time.tick(20000); await settle(); assert.equal(count, 2)
 })
 
@@ -221,7 +221,7 @@ test("a new root dominates an old dequeued ancestry retry without another lookup
   dequeued(); f.controller.close(old); time.tick(20000); await settle()
   assert.deepEqual(sessions, ["old", "new"]); assert.equal(f.state().ancestry, "ready"); assert.equal(f.state().open, true)
   f.finish(1); await settle()
-  assert.deepEqual(f.queries[2], { type: "totals", conversation: { scope: "/host", root: "new" } })
+  assert.deepEqual(f.queries[2], { type: "totals", conversation: { root: "new" } })
 })
 
 test("a new root supersedes a failed ancestry lookup only after its actual settlement", async t => {
@@ -239,7 +239,7 @@ test("a new root supersedes a failed ancestry lookup only after its actual settl
   cleanup.resolve(); await settle()
   assert.deepEqual(sessions, ["old", "new-19"]); assert.equal(time.pending.size, 0)
   f.finish(1); await settle()
-  assert.deepEqual(f.queries[2], { type: "totals", conversation: { scope: "/host", root: "new-19" } })
+  assert.deepEqual(f.queries[2], { type: "totals", conversation: { root: "new-19" } })
 })
 
 test("noncooperative ancestry retains one actual lookup through rapid reopen and disposal", async t => {
@@ -251,7 +251,7 @@ test("noncooperative ancestry retains one actual lookup through rapid reopen and
   await settle(); assert.equal(count, 1)
   root.resolve("old"); await settle(); assert.equal(count, 2)
   f.finish(1); await settle()
-  assert.deepEqual(f.queries[2], { type: "totals", conversation: { scope: "/host", root: "root-49" } })
+  assert.deepEqual(f.queries[2], { type: "totals", conversation: { root: "root-49" } })
   f.controller.dispose(); f.finish(2, 999); await settle()
   assert.equal(f.controller.state.conversation, undefined)
 })
@@ -275,7 +275,7 @@ test("write failures and actual read cleanup guard scoped snapshots and recover 
 test("production ancestry composition retains physical ownership through statistics reopen storms", async t => {
   const pending: { id: string; resolve: (v: { id: string }) => void }[] = []
   const ancestry = new SessionAncestry(id => new Promise(resolve => pending.push({ id, resolve })))
-  const h = new HistoryCoordinator("/host", { admit: () => true, query: async () => ({ revision: 0, total: 0, rank: 0 }), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
+  const h = new HistoryCoordinator({ admit: () => true, query: async () => ({ revision: 0, total: 0, rank: 0 }), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
     f.finish(0); await settle()
@@ -286,7 +286,7 @@ test("production ancestry composition retains physical ownership through statist
     assert.deepEqual(pending.map(p => p.id), ["old", "new-24"])
     pending[1]!.resolve({ id: "new-24" }); await settle()
     f.finish(1); await settle()
-    assert.deepEqual(f.queries[2], { type: "totals", conversation: { scope: "/host", root: "new-24" } })
+    assert.deepEqual(f.queries[2], { type: "totals", conversation: { root: "new-24" } })
   } finally {
     f.controller.dispose(); h.dispose()
     for (const p of pending) p.resolve({ id: p.id })
@@ -300,7 +300,7 @@ for (const outcome of ["resolve", "reject"] as const) test(`production statistic
   const ancestry = new SessionAncestry(async () => {
     calls++; try { return await actual.promise } finally { await cleanup.promise }
   })
-  const h = new HistoryCoordinator("/host", { admit: () => true, query: async () => ({ revision: 0, total: 0, rank: 0 }), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
+  const h = new HistoryCoordinator({ admit: () => true, query: async () => ({ revision: 0, total: 0, rank: 0 }), onCommit: () => () => {} }, (id, signal) => ancestry.root(id, signal))
   const f = fixture(t, (id, signal) => h.root(id, signal))
   try {
     f.finish(0); await settle(); f.controller.open("old"); f.controller.select("conversation"); await settle()

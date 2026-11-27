@@ -39,6 +39,14 @@ export const uiText = {
     safe: "✓ Safe",
     unsafe: "✗ Unsafe",
     unavailable: "! Analysis unavailable",
+    viewerUnavailable: "Reviewer unavailable. Use native controls.",
+    /** The server answers but reviews nothing, by `review.reason`. 42 columns. */
+    serverReviewDisabled: {
+      "no-policy": "No reviewer policy on the server.",
+      "invalid-policy": "Reviewer policy invalid on the server.",
+      hosting: "Reviewer needs the background service.",
+    } as Record<string, string>,
+    controlUnavailable: "Reviewer control unavailable.",
     retrieving: "Retrieving",
     /** The retriever is asking the conversation's own model a question. */
     asking: "Asking",
@@ -63,7 +71,8 @@ export const uiText = {
     /** Detail line under "Analysis unavailable". */
     failures: {
       // Reviewer configuration
-      apiKeyMissing: (variable: string) => `API key environment variable ${variable} is unset or empty`,
+      /** The selector name stays on the server. */
+      apiKeyMissing: "API key environment variable is unset or empty on the server",
       // Reviewer HTTP transport
       http: (status: number) => `Reviewer HTTP ${status}`,
       network: "Reviewer network request failed",
@@ -153,9 +162,7 @@ export const uiText = {
     saved: (enabled: boolean) => enabled
       ? "Reviewer enabled for this conversation."
       : "Reviewer disabled for this conversation.",
-    saveFailed: (enabled: boolean) => enabled
-      ? "Reviewer enabled locally, but saving failed. Resume may use the previous setting."
-      : "Reviewer disabled locally, but saving failed. Resume may use the previous setting.",
+    saveFailed: "Reviewer mode could not be saved.",
     unavailable: "Reviewer setting unavailable. Session ancestry or saved mode could not be read.",
   },
   sessionInstructions: {

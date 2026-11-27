@@ -223,7 +223,7 @@ test("the last pending request releases its root mode before a new request can r
   assert.equal(controller.views[0]?.status, "suspended")
 })
 
-test("a fresh snapshot applies a local enable to its existing request before persistence settles", async t => {
+test("a fresh snapshot applies a local enable to its existing request only once its record is durable", async t => {
   const saving = deferred<void>(), evaluated: string[] = []
   let reads = 0
   const gate = new SessionModes({ read: async () => { reads++; return false }, write: () => saving.promise, flush: async () => {} },
@@ -238,10 +238,16 @@ test("a fresh snapshot applies a local enable to its existing request before per
   controller.modeChanged("root")
   controller.reconcile([req], controller.revision)
   await settle()
-  assert.deepEqual(evaluated, ["pending"])
-  assert.equal(reads, 1)
+  // A positive mode is published only after its write committed. Until then the request stays suspended.
+  assert.deepEqual(evaluated, [])
+  assert.equal(controller.views[0]?.status, "suspended")
   saving.resolve()
   await savingMode
+  controller.modeChanged("root")
+  controller.reconcile([req], controller.revision)
+  await settle()
+  assert.deepEqual(evaluated, ["pending"])
+  assert.equal(reads, 1)
 })
 
 test("a mode refresh deadline cancels an armed approval while the store still holds the read", async t => {
@@ -370,7 +376,8 @@ for (const outcome of ["resolve", "reject"] as const) test(`many reconciliation 
   controller.reconcile(requests, controller.revision); await settle()
   assert.equal(pending.length, 3); assert.equal(pending[2]!.root, "rootA"); assert.equal(actual, 2)
   available = true; pending[2]!.value.resolve(true); pending[2]!.cleanup.resolve(); await settle()
-  assert.deepEqual(evaluated.toSorted(), ["a-first", "a-second"])
+  // Queued loads of the other roots are served once a slot frees. Only rootB's stalled read and the disabled root wait.
+  assert.deepEqual(evaluated.toSorted(), ["a-first", "a-second", "other-D", "other-E", "other-F", "other-G", "other-H"])
   for (let cycle = 0; cycle < 12; cycle++) {
     controller.reconcile(requests, controller.revision); await settle(); assert.equal(actual, 1)
   }

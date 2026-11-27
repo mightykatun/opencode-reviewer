@@ -31,14 +31,14 @@ function fixture(t: TestContext) {
     const serialized = encodeEvent(e)
     events.push(JSON.parse(serialized)); sql.apply("writer", ++sequence, serialized); return true
   }, query: (q: HistoryQuery) => query(q), onCommit: (fn: () => unknown) => { commits.add(fn); return () => { commits.delete(fn) } } }
-  const make = (ancestry = async () => "root") => new HistoryCoordinator("/host", store, ancestry, () => now, () => monotonic)
+  const make = (ancestry = async () => "root") => new HistoryCoordinator(store, ancestry, () => now, () => monotonic)
   const h = make()
   t.after(() => { h.dispose(); sql.close() })
   return { h, make, events, store, db,
     query: (fn: typeof query) => { query = fn }, advance: (ms: number) => { now += ms; monotonic += ms },
     jumpWall: (ms: number) => { now += ms }, wall: () => now,
     admission: (value: boolean) => { admit = value }, commit: () => { for (const fn of commits) fn() },
-    history: () => sql.query({ type: "history", scope: "/host", root: "root" }) as HistorySelection,
+    history: () => sql.query({ type: "history", root: "root" }) as HistorySelection,
     totals: () => (sql.query({ type: "totals" }) as HistoryTotals).totals }
 }
 
@@ -52,7 +52,7 @@ test("accepted bodies remain memory-only; actual evidence category and invocatio
   assert.equal(f.history().total, 0)
   assert.ok(f.events.every(e => !JSON.stringify(e).includes("private report")))
   assert.ok(f.events.every(e => !JSON.stringify(e).includes("secret command")))
-  assert.ok(f.events.every(e => "category" in e.context && e.context.category === "external_directory" && e.context.scope === "/host"))
+  assert.ok(f.events.every(e => "category" in e.context && e.context.category === "external_directory" && e.context.root === "root"))
   assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 0)
   assert.equal(f.totals().requests, 1)
   f.h.reply({ requestID: request.id, sessionID: "child", reply: "always" }); f.h.lifecycle(removed())
@@ -61,34 +61,29 @@ test("accepted bodies remain memory-only; actual evidence category and invocatio
   assert.equal(await f.h.root("child", new AbortController().signal), "root")
 })
 
-test("all completed reviews of one rejected permission survive independently of accepted accounting", async t => {
+test("one rejected permission keeps its latest validated report and both review counts", async t => {
   const f = fixture(t)
   f.h.lifecycle(accepted()); f.h.lifecycle(accepted(result("second", false), request, 200))
   f.h.reply({ requestID: request.id, sessionID: "child", reply: "reject" }); f.h.lifecycle(removed())
   assert.equal(f.history().record?.payload.desc, "private report second")
   assert.equal(f.history().record?.outcome, "rejected")
-  assert.equal(f.history().total, 2)
-  const older = await f.store.query({ type: "history", scope: "/host", root: "root", entry: f.history().older })
-  assert.equal((older as HistorySelection).record?.payload.desc, "private report review")
-  assert.equal((f.db.prepare("SELECT count(*) n FROM payloads").get()!).n, 2)
+  assert.equal(f.history().total, 1)
+  assert.equal(f.db.prepare("SELECT count(*) n FROM payloads").get()!.n, 1)
   assert.equal(f.totals().safe, 1); assert.equal(f.totals().unsafe, 1)
 })
 
-for (const automatic of [false, true]) test(`all completed reviews save on confirmed ${automatic ? "automatic" : "manual"} approval`, async t => {
+for (const automatic of [false, true]) test(`only the latest completed review saves on confirmed ${automatic ? "automatic" : "manual"} approval`, async t => {
   const f = fixture(t)
   f.h.lifecycle(accepted())
-  f.h.lifecycle(accepted(result("second", false), request, 200))
   const fact = { request, automatic, approval: "write", review: "review" }
   f.h.approval({ ...fact, type: "dispatched" })
+  f.h.lifecycle(accepted(result("second", false), request, 200))
   f.h.approval({ ...fact, type: "confirmed" })
   f.h.approval({ ...fact, type: "confirmed" })
   f.h.lifecycle(removed())
-  assert.equal(f.history().total, 2)
+  assert.equal(f.history().total, 1)
   assert.equal(f.history().record?.outcome, automatic ? "auto" : "manual")
-  const earlier = await f.store.query({ type: "history", scope: "/host", root: "root", entry: f.history().older }) as HistorySelection
-  assert.equal(earlier.record?.payload.safe, true)
-  assert.equal(earlier.record?.outcome, automatic ? "auto" : "manual")
-  assert.equal(f.events.filter(e => e.type === "permissionResolved").length, 2)
+  assert.equal(f.events.filter(e => e.type === "permissionResolved").length, 1)
   assert.equal(f.totals().activity.autoApproved, automatic ? 1 : 0)
   assert.equal(f.totals().activity.reviews, 2)
 })
@@ -188,7 +183,7 @@ test("two coordinators reconcile delayed remote confirmation with latest Unsafe 
   const fact = { request, automatic: true, approval: "approval", review: "review" }
   f.h.approval({ ...fact, type: "dispatched" })
   for (const h of [f.h, second]) { h.reply({ requestID: request.id, sessionID: "child", reply: "once" }); h.lifecycle(removed()) }
-  await settle(); assert.equal(f.history().total, 2)
+  await settle(); assert.equal(f.history().total, 1)
   assert.equal(f.history().record?.outcome, "approved")
   f.h.approval({ ...fact, type: "confirmed" }); f.h.approval({ ...fact, type: "settled" })
   f.advance(2000); f.commit(); await settle()
@@ -345,11 +340,12 @@ test("saturated resolved admission drops bodies, session invalidation drops cand
   assert.ok(f.events.every(event => event.type !== "sessionDeleted"))
 })
 
-test("real controller preserves completed candidate through disabled mode and failed replacement", async t => {
+test("a failed replacement never saves its predecessor as the current report", async t => {
   const f = fixture(t)
   let enabled = true, calls = 0
   const modes = { root: async () => "root", load: async () => {}, enabled: () => enabled }
   const controller = new Controller(async (_req, _signal, identified, _progress, execution) => {
+    f.h.observation(request, "shell", config, execution!)
     identified(); calls++
     if (calls > 1) throw new Error("replacement failed")
     return result(execution!.review)
@@ -357,12 +353,12 @@ test("real controller preserves completed candidate through disabled mode and fa
     onApproval: f.h.approval, onLifecycle: f.h.lifecycle })
   t.after(() => controller.dispose())
   controller.asked(request); await settle()
-  const original = controller.views[0]!.assessment!.desc
+  assert.ok(controller.views[0]!.assessment!.desc)
   enabled = false; controller.modeChanged("root")
   enabled = true; controller.modeChanged("root"); controller.reconcile([request], controller.revision); await settle()
   assert.equal(controller.views[0]!.status, "unavailable")
   f.h.reply({ requestID: request.id, sessionID: "child", reply: "always" }); controller.replied(request.id)
-  assert.equal(f.history().record?.payload.desc, original)
+  assert.equal(f.history().total, 0)
   assert.equal(f.totals().safe, 1)
 })
 
@@ -378,7 +374,7 @@ test("shutdown admits real received finalizers before closing storage with the o
 
 test("the generating coordinator stamps package and host versions on early, accepted and shutdown facts", async t => {
   const f = fixture(t)
-  const h = new HistoryCoordinator("/host", f.store, async () => "root", () => 1000, () => 0, "2.0.999-dev.fixture")
+  const h = new HistoryCoordinator(f.store, async () => "root", () => 1000, () => 0, "2.0.999-dev.fixture")
   t.after(() => h.dispose())
   const observer = h.observation(request, "shell", config, { root: "root", review: "versioned" })
   observer.observe!({ type: "dispatched", review: "versioned", attempt: "post", retry: "initial" })
@@ -392,7 +388,7 @@ test("the generating coordinator stamps package and host versions on early, acce
     assert.deepEqual(event.versions, { reviewer: manifest.version, opencode: "2.0.999-dev.fixture" })
     assert.equal(Object.hasOwn(event.context, "versions"), false, "the stored context keeps its old shape")
   }
-  assert.deepEqual({ ...f.db.prepare("SELECT reviewer_version,opencode_version FROM review_versions").get() },
+  assert.deepEqual({ ...f.db.prepare("SELECT reviewer_version,opencode_version FROM reviews").get() },
     { reviewer_version: manifest.version, opencode_version: "2.0.999-dev.fixture" })
   assert.equal(f.history().record?.payload.desc, "private report versioned")
   assert.equal(f.history().record?.payload.usage?.cost, 0)
@@ -403,7 +399,7 @@ test("an unavailable host version remains null without suppressing report storag
   const f = fixture(t)
   f.h.lifecycle(accepted())
   f.h.reply({ requestID: request.id, sessionID: request.sessionID, reply: "always" })
-  assert.deepEqual({ ...f.db.prepare("SELECT reviewer_version,opencode_version FROM review_versions").get() },
+  assert.deepEqual({ ...f.db.prepare("SELECT reviewer_version,opencode_version FROM reviews").get() },
     { reviewer_version: manifest.version, opencode_version: null })
   assert.equal(f.history().record?.payload.desc, "private report review")
 })

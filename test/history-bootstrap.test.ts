@@ -1,177 +1,62 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { DatabaseSync } from "node:sqlite"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { DatabaseSync } from "node:sqlite"
 import { build } from "esbuild"
-import { HistorySQL, type HistoryConversationTotals } from "../src/history-schema.js"
 import { HistoryStore, HistoryWorker } from "../src/history-store.js"
 import { privateDatabase } from "../src/history-storage-worker.js"
-import { HISTORY_BOOTSTRAP_STEPS } from "../src/history-migration.js"
-import { encodeEvent, rootID, type HistoryEvent } from "../src/history-records.js"
-import { largeContext as c, seedLarge } from "./history-large-fixture.js"
+import { HistorySQL } from "../src/history-schema.js"
+import { largeContext, seedLarge } from "./history-large-fixture.js"
+import { rootID } from "../src/history-records.js"
+import { empty } from "../src/lifetime.js"
 
-test("durable bounded per-review cursor serializes two writers, rollback, replay and deletion", t => {
-  const directory = mkdtempSync(path.join(tmpdir(), "history-bootstrap-")), file = path.join(directory, "history.sqlite")
-  const db = new DatabaseSync(file), first = new HistorySQL(db), second = new HistorySQL(new DatabaseSync(file))
-  t.after(() => { first.close(); second.close(); rmSync(directory, { recursive: true, force: true }) })
-  seedLarge(db, 2000, 20000, false, 4000)
-  const root = rootID(c), event: HistoryEvent = { type: "attemptFinalized", context: c, at: 10, attempt: "new", usage: { input: 7, output: 3 } }
-  const deletion = encodeEvent({ type: "sessionDeleted", context: { scope: c.scope, root: c.root, session: c.session }, at: 11 })
-  assert.deepEqual(first.applyReady("a", 1, encodeEvent(event)), { pending: root })
-  assert.deepEqual(second.applyReady("b", 1, deletion), { pending: root })
-  const lifetime = first.query({ type: "totals" })
-  let slices = 0, maximum = 0, sawAttempts = false, interruptedAttempts = false
-  for (;;) {
-    const sql = slices % 2 ? first : second
-    const before = db.prepare("SELECT * FROM conversation_bootstrap").all()
-    if (!interruptedAttempts && before[0]?.phase === 1 && before[0]?.after) {
-      assert.throws(() => sql.bootstrap(root, () => { throw Error("interrupted transaction") }))
-      assert.deepEqual(db.prepare("SELECT * FROM conversation_bootstrap").all(), before)
-      interruptedAttempts = true
-    }
-    const result = sql.bootstrap(root); slices++; maximum = Math.max(maximum, result.steps)
-    const cursor = db.prepare("SELECT * FROM conversation_bootstrap").get()
-    if (cursor?.phase === 1 && cursor.after) sawAttempts = true
-    assert.deepEqual(first.query({ type: "totals" }), lifetime, "bootstrap never reconstructs lifetime")
-    if (result.done) break
-    assert.deepEqual(second.applyReady("b", 1, deletion), { pending: root }, "deletion cannot remove the scan's snapshot")
-    assert.equal(db.prepare("SELECT count(*) n FROM writers").get()!.n, 0)
-  }
-  assert.ok(sawAttempts); assert.ok(interruptedAttempts); assert.ok(slices > 200); assert.ok(maximum <= HISTORY_BOOTSTRAP_STEPS)
-  assert.deepEqual(first.applyReady("a", 1, encodeEvent(event)), { replay: false })
-  assert.deepEqual(second.applyReady("a", 1, encodeEvent(event)), { replay: true })
-  assert.deepEqual(second.apply("b", 1, deletion), { replay: false })
-  const totals = first.query({ type: "conversationTotals", scope: c.scope, root: c.root }) as HistoryConversationTotals
-  assert.equal(totals.totals.safe, 2000); assert.equal(totals.totals.input, 20007)
-  assert.equal(totals.totals.activity.retries, 20000); assert.equal(totals.partialHistory, true)
-  assert.equal(totals.totals.activity.autoApproved, 4000)
-  assert.equal(db.prepare("SELECT count(*) n FROM reviews").get()!.n, 0)
-  assert.equal((first.query({ type: "totals" }) as any).totals.input, 7)
-  t.diagnostic(`26000 retained rows: ${slices} transactions, maximum ${maximum} steps`)
-})
-
-test("bootstrap prepares each fixed statement once per bounded transaction, not once per retained row", t => {
-  const db = new DatabaseSync(":memory:")
-  let prepares = 0
-  const sql = new HistorySQL({ exec: statement => db.exec(statement), prepare: statement => {
-    prepares++; return db.prepare(statement)
-  }, close: () => db.close() })
-  t.after(() => sql.close())
-  seedLarge(db, 200, 40)
-  const root = rootID(c)
-  let slices = 0
-  for (;;) {
-    prepares = 0
-    const result = sql.bootstrap(root)
-    // One additional fixed SELECT pages retrieval calls; the row/time budgets are unchanged.
-    assert.ok(prepares <= 10, `fixed SQL preparation must not scale with rows: ${prepares}`)
-    assert.ok(result.steps <= HISTORY_BOOTSTRAP_STEPS)
-    slices++
-    if (result.done) break
-  }
-  assert.ok(slices > 4, "the fixed row budget still requires separate committed slices")
-  const totals = sql.query({ type: "conversationTotals", scope: c.scope, root: c.root }) as HistoryConversationTotals
-  assert.equal(totals.totals.safe, 200)
-  assert.equal(totals.totals.input, 40)
-  assert.equal(totals.totals.activity.retries, 40)
-})
-
-test("80k legacy reviews progress under the actual watchdog after interrupted slow source worker, then FIFO deletion and unrelated root commit", { timeout: 120000 }, async t => {
-  const directory = mkdtempSync(path.join(tmpdir(), "history-slow-bootstrap-")), file = path.join(directory, "opencode-reviewer/history-v1.sqlite")
+test("a stalled transaction on a large database is rolled back by the real watchdog and replayed once", { timeout: 120000 }, async t => {
+  const directory = mkdtempSync(path.join(tmpdir(), "history-watchdog-"))
+  const file = path.join(directory, "opencode-reviewer/history-v2.sqlite")
   privateDatabase(file)
-  const db = new DatabaseSync(file), seed = new HistorySQL(db)
+  const db = new DatabaseSync(file), sql = new HistorySQL(db)
+  t.after(() => { sql.close(); rmSync(directory, { recursive: true, force: true }) })
   seedLarge(db, 80000, 10000)
-  const originalLifetime = seed.query({ type: "totals" })
+  const totals = empty()
+  totals.safe = totals.activity.reviews = 80000
+  totals.activity.since = totals.ratingsSince = 1
+  db.prepare("UPDATE meta SET totals=?").run(JSON.stringify(totals))
+  db.prepare("INSERT INTO conversation_totals VALUES (?,?)").run(rootID(largeContext), JSON.stringify(totals))
   const bundle = await build({ entryPoints: ["src/history-storage-worker.ts"], bundle: true, write: false,
     platform: "node", format: "cjs", external: ["bun:sqlite", "node:sqlite"] })
-  // Slow real SQLite reads, and once stall a slice before COMMIT beyond the real
-  // 3s watchdog. The replacement loads the actual production worker unchanged.
-  const instrumentation = (interrupt: boolean) => `
-    const sqlite = require('node:sqlite');
-    const prepare = sqlite.DatabaseSync.prototype.prepare, exec = sqlite.DatabaseSync.prototype.exec;
-    let reads=0, slices=0, bootstrapWrite=false;
-    const wait = new Int32Array(new SharedArrayBuffer(4));
-    // Shared numeric phases survive forced worker exit: prepare, scan, injected
-    // stall, commit, other exec. No SQL text, row data or paths leave the worker.
-    let trace;
-    require('node:worker_threads').parentPort.on('message', message => { trace = message.trace; });
-    const measured = (phase, call) => {
-      if(trace) Atomics.store(trace,0,phase);
-      const start = performance.now();
-      try { return call(); } finally {
-        if(trace) { Atomics.store(trace,1,Math.max(Atomics.load(trace,1),Math.ceil(performance.now()-start))); Atomics.store(trace,0,0); }
-      }
-    };
-    sqlite.DatabaseSync.prototype.prepare = function(sql) {
-      const statement = measured(1,()=>prepare.call(this, sql));
-      if (/FROM (reviews|attempts) WHERE .*id>.*LIMIT 1/.test(sql)) {
-        const get=statement.get.bind(statement);
-        statement.get=(...args)=>{if(++reads%8===0) Atomics.wait(wait,0,0,1); return measured(2,()=>get(...args))};
-      }
-      if(sql.includes('INSERT INTO conversation_bootstrap VALUES')) {
-        const run=statement.run.bind(statement);
-        statement.run=(...args)=>{bootstrapWrite=true;return run(...args)};
-      }
-      return statement;
-    };
-    sqlite.DatabaseSync.prototype.exec=function(sql) {
-      if(sql==='COMMIT' && bootstrapWrite) {
-        bootstrapWrite=false;
-        if(++slices===10 && ${interrupt}) measured(3,()=>Atomics.wait(wait,0,0,10000));
-      }
-      return measured(sql==='COMMIT'?4:5,()=>exec.call(this,sql));
-    };
-  `
-  let workers = 0, active = 0, maximumActive = 0, slices = 0, maximumSteps = 0, maximumSliceMs = 0, cursorAtRestart: any
-  const errors: string[] = [], slow: { phase: number; sqliteMs: number; roundTripMs: number }[] = []
-  const store = new HistoryStore(directory, { adapter: "node", transport: () => {
-    if (workers) cursorAtRestart = db.prepare("SELECT * FROM conversation_bootstrap").get()
-    const worker = new HistoryWorker(instrumentation(workers++ === 0) + bundle.outputFiles[0]!.text)
-    const trace = new Int32Array(new SharedArrayBuffer(8))
-    return { async call(message: Record<string, unknown>) {
-      active++; maximumActive = Math.max(maximumActive, active)
-      const start = performance.now()
-      try {
-        trace.fill(0)
-        const result = await worker.call({ ...message, trace })
-        if (message.type === "bootstrap") {
-          slices++; maximumSteps = Math.max(maximumSteps, result.steps); maximumSliceMs = Math.max(maximumSliceMs, performance.now() - start)
-        }
-        return result
-      } catch (error) { errors.push(`${message.type}: ${String(error)}`); throw error
-      } finally {
-        const roundTripMs = performance.now() - start
-        if (roundTripMs > 200 && slow.length < 20) slow.push({ phase: Atomics.load(trace, 0), sqliteMs: Atomics.load(trace, 1), roundTripMs })
-        active--
-      }
-    }, terminate: () => worker.terminate() }
-  } })
-  t.after(async () => { await store.dispose(performance.now() - 3500); seed.close(); rmSync(directory, { recursive: true, force: true }) })
-  const start = performance.now()
-  store.admit({ type: "reviewAccepted", context: { ...c, review: "new", permission: "new" }, at: 1, accepted: { safe: false, completedAt: 1 } })
-  store.admit({ type: "sessionDeleted", context: { scope: c.scope, root: c.root, session: c.session }, at: 2 })
-  store.admit({ type: "attemptFinalized", context: { ...c, root: "other", session: "other", review: "other", permission: "other" }, at: 3, attempt: "a", usage: { input: 9, output: 1 } })
-  let readDuringBootstrap = false
-  while (store.pendingOperations && performance.now() - start < 100000) {
-    if (errors.length > 3) break
-    if (!readDuringBootstrap && slices > 15) {
-      assert.equal((await store.query({ type: "history", scope: c.scope, root: "other" }) as any).total, 0)
-      assert.deepEqual(seed.query({ type: "totals" }), originalLifetime)
-      readDuringBootstrap = true
+  const stall = `
+    const sqlite = require("node:sqlite").DatabaseSync.prototype
+    const exec = sqlite.exec
+    let commits = 0
+    sqlite.exec = function (statement) {
+      if (statement === "COMMIT" && ++commits === 2) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)
+      return exec.call(this, statement)
     }
-    await new Promise(resolve => setTimeout(resolve, 20))
-  }
-  t.diagnostic(JSON.stringify({ workers, slices, errors, slow, cursor: db.prepare("SELECT review,phase,after FROM conversation_bootstrap").get() }))
-  assert.equal(store.pendingOperations, 0); assert.equal(maximumActive, 1); assert.equal(workers, 2)
-  assert.ok(cursorAtRestart?.review); assert.ok(readDuringBootstrap); assert.ok(slices > 1900)
-  assert.ok(maximumSteps <= HISTORY_BOOTSTRAP_STEPS); assert.ok(maximumSliceMs < 2000)
-  const conversation = await store.query({ type: "conversationTotals", scope: c.scope, root: c.root }) as HistoryConversationTotals
-  assert.equal(conversation.totals.safe, 80000); assert.equal(conversation.totals.unsafe, 1)
-  assert.equal(conversation.totals.input, 10000); assert.equal(conversation.totals.activity.retries, 10000)
-  const lifetime = await store.query({ type: "totals" }) as any
-  assert.equal(lifetime.totals.safe, 0); assert.equal(lifetime.totals.unsafe, 1); assert.equal(lifetime.totals.input, 9)
-  assert.equal(db.prepare("SELECT count(*) n FROM reviews WHERE root=?").get(rootID(c))!.n, 0)
-  t.diagnostic(`80k reviews + 10k attempts: ${slices} committed slices; max ${maximumSteps} steps / ${maximumSliceMs.toFixed(1)}ms; ${(performance.now() - start).toFixed(0)}ms including watchdog + retry`)
+  `
+  let workers = 0, failures = 0
+  const store = new HistoryStore(directory, { adapter: "node", transport: () =>
+    new HistoryWorker((workers++ === 0 ? stall : "") + bundle.outputFiles[0]!.text) })
+  t.after(() => store.dispose())
+  const committed = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(Error("Replay did not commit")), 10000)
+    store.onCommit(() => { clearTimeout(timeout); resolve() })
+  })
+  const failed = new Promise<void>(resolve => { store.onWriteFailure(() => { failures++; resolve() }) })
+  const start = performance.now()
+  assert.ok(store.admit({ type: "attemptFinalized", context: largeContext, at: 2, attempt: "new", usage: { input: 9, output: 1 } }))
+  await failed
+  assert.ok(performance.now() - start >= 3000)
+  assert.equal(db.prepare("SELECT count(*) AS n FROM writers").get()!.n, 0)
+  await committed
+  assert.equal(workers, 2)
+  assert.equal(failures, 1)
+  assert.equal(store.pendingOperations, 0)
+  const result = await store.query({ type: "totals", conversation: { root: largeContext.root } })
+  assert.ok("conversation" in result)
+  assert.deepEqual(result.conversation?.totals, result.totals)
+  assert.equal(result.totals.input, 9)
+  assert.equal(result.totals.activity.reviews, 80000)
+  assert.equal(db.prepare("SELECT count(*) AS n FROM attempts").get()!.n, 10001)
 })

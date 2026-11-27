@@ -1,5 +1,4 @@
-import { HistoryRefresh } from "./history-refresh.js"
-import type { HistoryStore } from "./history-store.js"
+import { HistoryRefresh, type HistoryReader } from "./history-refresh.js"
 import type { HistorySelection } from "./history-schema.js"
 import type { HistoryQuery, HistoryTarget } from "./history-records.js"
 import type { AncestryRead, AncestryReader } from "./session-ancestry.js"
@@ -23,7 +22,7 @@ export class HistoryController {
   private lookupAgain = false
   private target?: HistoryTarget & { until: number; ready: () => void }
   private targetTimeout?: ReturnType<typeof setTimeout>
-  constructor(private scope: string, private store: Pick<HistoryStore, "query" | "onCommit" | "onWriteFailure">,
+  constructor(private store: HistoryReader,
     private ancestry: AncestryReader, private publish: (state: HistoryViewState) => void) {}
   private update(value: Partial<HistoryViewState>) { this.state = { ...this.state, ...value }; this.publish(this.state) }
   recordScroll(offset: number) { if (this.state.status === "ready") this.scroll = offset }
@@ -65,7 +64,7 @@ export class HistoryController {
         if (target) {
           if (performance.now() >= target.until) { this.close(); return }
           const context = result.record?.context
-          if (!result.entry || !context || context.scope !== this.scope || context.root !== root
+          if (!result.entry || !context || context.root !== root
             || context.session !== target.session || context.permission !== target.permission) return
           clearTimeout(this.targetTimeout); this.target = undefined
         }
@@ -96,7 +95,7 @@ export class HistoryController {
   }
   private query(): HistoryQuery {
     const selected = this.state.selection
-    return { type: "history", scope: this.scope, root: this.root!, ...(this.target
+    return { type: "history", root: this.root!, ...(this.target
       ? { permission: { session: this.target.session, permission: this.target.permission } }
       : { entry: selected?.entry, order: selected?.order }) }
   }

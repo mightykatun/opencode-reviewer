@@ -5,18 +5,15 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { HistorySQL, type HistoryTotals, type HistorySelection } from "../src/history-schema.js"
-import { encodeEvent, reviewID, rootID, type HistoryEvent, type HistoryReview, type RetrievalCallTool } from "../src/history-records.js"
+import { encodeEvent, type HistoryEvent, type HistoryReview, type RetrievalCallTool } from "../src/history-records.js"
 import { HistoryCoordinator } from "../src/history-coordinator.js"
-import { HISTORY_DELETE_STEPS } from "../src/history-deletion.js"
-import { HISTORY_BOOTSTRAP_STEPS } from "../src/history-migration.js"
 import { historyMetadata } from "../src/history-layout.js"
-import { empty, validate } from "../src/lifetime.js"
 import { hostStatisticsMessage } from "../src/host-statistics-view.js"
 import { review } from "../src/reviewer.js"
 import { parseConfig } from "../src/config.js"
 import { shellEvidence } from "./review-fixtures.js"
 
-const context: HistoryReview = { scope: "/project", root: "root", session: "child", permission: "permission", review: "review",
+const context: HistoryReview = { root: "root", session: "child", permission: "permission", review: "review",
   category: "bash", configuredModel: "model", provider: "https://example.com/v1" }
 const tool = (call: string, c = context, kind?: RetrievalCallTool): HistoryEvent =>
   ({ type: "toolDispatched", context: c, at: 100, call, ...(kind ? { tool: kind } : {}) })
@@ -28,7 +25,7 @@ function fixture(t: TestContext) {
   return { db, sql, apply: (e: HistoryEvent) => sql.apply("writer", ++sequence, encodeEvent(e)),
     open: () => { const client = new HistorySQL(new DatabaseSync(file)); clients.push(client); return client } }
 }
-const totals = (sql: HistorySQL, c = context) => sql.query({ type: "totals", conversation: { scope: c.scope, root: c.root } }) as HistoryTotals
+const totals = (sql: HistorySQL, c = context) => sql.query({ type: "totals", conversation: { root: c.root } }) as HistoryTotals
 
 test("tool-call accounting commits both scopes atomically, deduplicates across writers and survives reopening and deletion", t => {
   const f = fixture(t), second = f.open()
@@ -50,81 +47,28 @@ test("tool-call accounting commits both scopes atomically, deduplicates across w
   assert.equal(result.conversation!.totals.activity.toolCalls, 2)
   assert.equal(totals(reopened, other).conversation!.totals.activity.toolCalls, 1)
   assert.deepEqual([result.totals.input, result.totals.output, result.totals.cost, result.totals.activity.reviews], [19, 3, 0.125, 0])
-  f.apply({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.session }, at: 200 })
+  f.apply({ type: "sessionDeleted", context: { root: context.root, session: context.session }, at: 200 })
   const after = totals(f.sql)
   f.apply(tool("one")); f.apply(tool("two")); f.apply(usage)
   assert.deepEqual(totals(f.open()), after, "detail deletion and replay cannot reduce or duplicate recorded totals")
-  assert.equal(f.db.prepare("SELECT count(*) n FROM retrieval_calls").get()!.n, 1, "deleted review calls are removed, unrelated calls remain")
+  assert.equal(f.db.prepare("SELECT count(*) n FROM retrieval_calls").get()!.n, 3, "session invalidation cannot delete persisted calls")
 })
 
-test("legacy totals normalize only the absent tool count and preserve all existing accounting", t => {
+test("retrieval calls retain their nullable kind without counting replays", t => {
   const f = fixture(t)
-  f.apply({ type: "attemptFinalized", context, at: 10, attempt: "old", usage: { input: 200, output: 30, cost: 0.2 } })
-  const expected = totals(f.sql)
-  for (const table of ["meta", "conversation_totals"]) {
-    const old = JSON.parse(String(f.db.prepare(`SELECT totals FROM ${table}`).get()!.totals))
-    delete old.activity.toolCalls
-    f.db.prepare(`UPDATE ${table} SET totals=?`).run(JSON.stringify(old))
+  f.apply(tool("unknown"))
+  for (const kind of ["grep", "ask_context"] as const) {
+    f.apply(tool(kind, context, kind))
+    f.apply(tool(kind, context, kind))
   }
-  f.db.exec("DROP TABLE retrieval_calls")
-  assert.deepEqual(totals(f.open()), expected)
-  f.apply(tool("new"))
-  const next = totals(f.open())
-  assert.deepEqual([next.totals.input, next.totals.output, next.totals.cost, next.totals.activity.toolCalls], [200, 30, 0.2, 1])
-  assert.deepEqual(next.totals, next.conversation!.totals)
-  for (const invalid of [-1, 0.5, null, "3", Infinity, undefined]) {
-    assert.throws(() => validate({ ...empty(), activity: { ...empty().activity, toolCalls: invalid } } as any))
-    if (invalid !== undefined) assert.throws(() => encodeEvent({ type: "permissionResolved", context, at: 1, outcome: "approved",
-      payload: { safe: true, desc: "report", completedAt: 1, toolCalls: invalid } } as any))
-  }
-})
-
-test("tool kinds use an additive side table: untyped and older calls stay unknown, invalid kinds are rejected, deletion removes kinds", t => {
-  const f = fixture(t)
-  f.apply(tool("old"))
-  // A database from before kinds existed, still written by an older worker's three-value insert.
-  f.db.exec("DROP TABLE retrieval_call_tools")
-  f.db.prepare("INSERT INTO retrieval_calls VALUES (?,?,?)").run("legacy", reviewID(context), 1)
-  const reopened = f.open()
-  assert.equal(f.db.prepare("SELECT count(*) n FROM retrieval_call_tools").get()!.n, 0, "no backfill guesses earlier kinds")
-  let sequence = 0
-  const apply = (e: HistoryEvent) => reopened.apply("upgraded", ++sequence, encodeEvent(e))
-  apply(tool("grep", context, "grep")); apply(tool("grep", context, "grep")); apply(tool("ask", context, "ask_context"))
-  assert.equal(totals(reopened).totals.activity.toolCalls, 3)
-  assert.deepEqual(f.db.prepare("SELECT tool FROM retrieval_call_tools ORDER BY tool").all().map(row => row.tool), ["ask_context", "grep"])
-  f.db.prepare("INSERT INTO retrieval_calls VALUES (?,?,?)").run("after-upgrade", reviewID(context), 2)
+  assert.equal(totals(f.open()).totals.activity.toolCalls, 3)
+  assert.deepEqual(f.db.prepare("SELECT tool FROM retrieval_calls ORDER BY tool").all().map(row => row.tool), [null, "ask_context", "grep"])
   for (const invalid of ["finish", "bash", "", null, 1]) assert.throws(() => encodeEvent({ ...tool("x"), tool: invalid } as any))
-  apply({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.session }, at: 200 })
-  assert.equal(f.db.prepare("SELECT count(*) n FROM retrieval_call_tools").get()!.n, 0)
-})
-
-test("retrieval-only bootstrap and deletion stay bounded while preserving lifetime totals", t => {
-  const f = fixture(t), count = HISTORY_BOOTSTRAP_STEPS * 3
-  for (let index = 0; index < count; index++) f.apply(tool(String(index)))
-  const before = totals(f.sql)
-  f.db.exec("DELETE FROM conversation_totals")
-  let slices = 0
-  for (;;) {
-    const result = f.sql.bootstrap(rootID(context))
-    assert.ok(result.steps <= HISTORY_BOOTSTRAP_STEPS)
-    slices++
-    if (result.done) break
-  }
-  assert.ok(slices > 1)
-  assert.deepEqual(totals(f.sql).totals, before.totals, "bootstrap never reconstructs or reapplies lifetime contributions")
-  assert.deepEqual(totals(f.sql).conversation!.totals, before.conversation!.totals)
-  const event = encodeEvent({ type: "sessionDeleted", context: { scope: context.scope, root: context.root, session: context.session }, at: 200 })
-  assert.deepEqual(f.sql.applyReady("delete", 1, event), { deleting: true })
-  assert.ok(Number(f.db.prepare("SELECT count(*) n FROM retrieval_calls").get()!.n) >= count - HISTORY_DELETE_STEPS,
-    "a review deletion cannot cascade through unbounded retrieval calls")
-  f.sql.apply("delete", 1, event)
-  assert.equal(f.db.prepare("SELECT count(*) n FROM retrieval_calls").get()!.n, 0)
-  assert.deepEqual(totals(f.open()).totals, before.totals)
 })
 
 test("real retrieval, report resolution and interrupted work feed history and identical statistics fields", async t => {
   const f = fixture(t), config = parseConfig({ baseURL: context.provider, model: context.configuredModel })
-  const coordinator = new HistoryCoordinator(context.scope, {
+  const coordinator = new HistoryCoordinator({
     admit(event) { f.apply(event); return true }, query: async query => f.sql.query(query), onCommit: () => () => {},
   }, async () => context.root, () => 100)
   t.after(() => coordinator.dispose())
@@ -141,12 +85,12 @@ test("real retrieval, report resolution and interrupted work feed history and id
   const result = await review(shellEvidence(), config, new AbortController().signal, { fetcher, observation,
     retrieval: { async execute(call) { return { tool: call.tool, status: "error", reason: "ENOENT" } } } })
   assert.equal(result.toolCalls, 2)
-  assert.deepEqual(f.db.prepare("SELECT tool FROM retrieval_call_tools ORDER BY tool").all().map(row => row.tool), ["list", "read"],
+  assert.deepEqual(f.db.prepare("SELECT tool FROM retrieval_calls ORDER BY tool").all().map(row => row.tool), ["list", "read"],
     "dispatched kinds are recorded beside the count")
   coordinator.lifecycle({ type: "accepted", request, root: context.root, review: context.review, result,
     completedAt: 100, timing: { fullReportMs: 20, ratingMs: 20 } })
   coordinator.reply({ requestID: request.id, sessionID: request.sessionID, reply: "reject" })
-  const saved = f.sql.query({ type: "history", scope: context.scope, root: context.root }) as HistorySelection
+  const saved = f.sql.query({ type: "history", root: context.root }) as HistorySelection
   assert.equal(saved.record!.payload.toolCalls, 2)
   assert.deepEqual(historyMetadata(saved.record!).split("\n").slice(0, 2), ["tokens: 30 in 6 out", "tool calls: 2"])
   const both = totals(f.sql)
@@ -161,6 +105,6 @@ test("real retrieval, report resolution and interrupted work feed history and id
     observation: coordinator.observation(request, "shell", config, interrupted),
     retrieval: { async execute() { abort.abort(Error("cancelled")); throw abort.signal.reason } } }), /cancelled/)
   assert.equal(totals(f.open()).totals.activity.toolCalls, 3, "interrupted work persists independently of saved reports")
-  assert.equal((f.sql.query({ type: "history", scope: context.scope, root: context.root }) as HistorySelection).total, 1)
+  assert.equal((f.sql.query({ type: "history", root: context.root }) as HistorySelection).total, 1)
   assert.equal(totals(f.sql).totals.activity.retries, 0, "tool calls and normal retrieval turns are not retries")
 })

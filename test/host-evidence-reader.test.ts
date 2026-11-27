@@ -2,7 +2,8 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import type { OpenCodeClient } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin"
-import { setupCompanion } from "../src/companion.js"
+import { CompanionBusyError, createCompanionServer } from "../src/companion-reads.js"
+import { directCompanionAccess, type CompanionAccess } from "../src/companion-access.js"
 import { PluginLifecycle } from "../src/plugin-lifecycle.js"
 import { readHostEvidence } from "../src/host-evidence-reader.js"
 import { readHostEvidenceOptions } from "../src/host-evidence-options.js"
@@ -21,7 +22,6 @@ const input = { path: "target.txt", content: "new\n" }
 
 async function fixture(pending = request, proposed: Record<string, string> = input, tool = "write") {
   const lifecycle = new PluginLifecycle(), hooks = new Map<string, (event: any) => void>()
-  let handlers: any
   const reads: string[] = [], queries: any[] = [], calls: string[] = []
   const state = { current: structuredClone(pending), directory: location.directory, changeAfterCollection: false,
     epoch: "", durable: { id: "assistant", type: "assistant", content: [
@@ -30,7 +30,6 @@ async function fixture(pending = request, proposed: Record<string, string> = inp
   const server = {
     app: { version: "2.0.26" }, location: { ...location, project },
     tool: { hook: async (name: string, callback: (event: any) => void) => { hooks.set(name, callback); return { dispose() {} } } },
-    rpc: { register: async (_definition: unknown, value: unknown) => { handlers = value; return { dispose() {} } } },
     permission: { get: async () => ({ ...state.current, save: undefined, message: undefined }) },
     session: { get: async () => ({ id: "session", projectID: "project", location: { directory: state.directory } }) },
   } as unknown as Plugin.Context
@@ -39,24 +38,27 @@ async function fixture(pending = request, proposed: Record<string, string> = inp
     if (tool === "shell") return path
     throw Error("Edit must not inspect filesystem")
   }, open: async (path: string) => { reads.push(path); throw Error("Targets unavailable") } } as unknown as FileIO
-  const handshake = await setupCompanion(server, lifecycle, io)
+  const companion = await createCompanionServer(server, lifecycle, io)
+  const { handshake } = companion
   state.epoch = handshake.epoch
   hooks.get("execute.before")!({ sessionID: "session", messageID: "assistant", id: "call", tool, input: proposed })
+  const direct = directCompanionAccess(companion)
+  const access: CompanionAccess = { ...direct,
+    epoch: async () => { calls.push("epoch"); return state.epoch },
+    invocation: async (...args) => {
+      calls.push("capture")
+      return direct.invocation(...args)
+    },
+    evidence: async (...args) => {
+      calls.push("evidence")
+      const [sessionID, requestID, options, timeoutMs] = args
+      queries.push({ sessionID, requestID, options, timeoutMs })
+      const value = await direct.evidence(...args)
+      if (state.changeAfterCollection) state.current.resources = ["other.txt"]
+      return value
+    },
+  }
   const client = {
-    rpc: () => ({
-      handshake: async () => { calls.push("handshake"); return { ...handshake, epoch: state.epoch } },
-      invocation: async (query: any, { signal }: { signal: AbortSignal }) => {
-        calls.push("capture")
-        return handlers.invocation(query, { signal, error: () => { throw Error("Scope mismatch") } })
-      },
-      evidence: async (query: any, { signal }: { signal: AbortSignal }) => {
-        calls.push("evidence")
-        queries.push(query)
-        const value = await handlers.evidence(query, { signal, error: () => { throw Error("Scope mismatch") } })
-        if (state.changeAfterCollection) state.current.resources = ["other.txt"]
-        return value
-      },
-    }),
     session: { get: async (...args: Parameters<typeof server.session.get>) => { calls.push("session"); return server.session.get(...args) },
       message: { get: async () => { calls.push("message"); return state.durable } } },
     message: { list: async (input: { type?: string }) => {
@@ -65,33 +67,33 @@ async function fixture(pending = request, proposed: Record<string, string> = inp
     } },
     permission: { get: async () => { calls.push("permission"); return state.current } },
   }
-  return { lifecycle, client: client as unknown as OpenCodeClient, raw: client, queries, state, reads, calls, scope: { epoch: handshake.epoch, location } }
+  return { lifecycle, companion, access, client: client as unknown as OpenCodeClient, raw: client, queries, state, reads, calls, scope: { epoch: handshake.epoch, location } }
 }
 
-test("server evidence RPC receives only owned identity and collection options, then CLI attaches root intent", async () => {
+test("in-process evidence receives only owned identity and collection options, then evaluation attaches root intent", async () => {
   const f = await fixture()
   try {
-    const value = await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal)
+    const value = await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal, f.access)
     assert.equal(value?.result.status, "ready")
     assert.ok(value?.result.status === "ready" && value.result.evidence.kind === "edit")
     assert.equal(value.result.evidence.changes[0]?.patch, request.metadata.files[0]!.patch)
     assert.equal(value.result.evidence.userPrompt, "Update target.txt")
     assert.deepEqual(f.reads, [])
-    assert.deepEqual(Object.keys(f.queries[0]).sort(), ["epoch", "location", "options", "requestID", "sessionID", "timeoutMs"])
+    assert.deepEqual(Object.keys(f.queries[0]).sort(), ["options", "requestID", "sessionID", "timeoutMs"])
     assert.ok(f.queries[0].timeoutMs > 0 && f.queries[0].timeoutMs <= 5000)
     assert.deepEqual(f.queries[0].options, options)
-    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "handshake"])
+    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "epoch"])
   } finally { await f.lifecycle.stop() }
 })
 
-test("unbound or ambiguous durable calls dispatch no evidence RPC or filesystem reads", async () => {
+test("unbound or ambiguous durable calls dispatch no evidence collection or filesystem reads", async () => {
   const shell = { ...request, action: "shell", resources: ["python3 task.py"] }, proposed = { command: "python3 task.py" }
   // Prove this fixture really performs server filesystem work when binding succeeds.
   const bound = await fixture(shell, proposed, "shell")
   try {
-    assert.equal((await readHostEvidence(bound.client, bound.scope, shell, options, new AbortController().signal))?.result.status, "ready")
+    assert.equal((await readHostEvidence(bound.client, bound.scope, shell, options, new AbortController().signal, bound.access))?.result.status, "ready")
     assert.ok(bound.reads.length > 0)
-    assert.deepEqual(bound.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "handshake"])
+    assert.deepEqual(bound.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "epoch"])
   } finally { await bound.lifecycle.stop() }
   for (const change of ["missing", "duplicate", "nested", "input", "name", "status", "message"] as const) {
     const f = await fixture(shell, proposed, "shell")
@@ -107,7 +109,7 @@ test("unbound or ambiguous durable calls dispatch no evidence RPC or filesystem 
       if (change === "name") entry.name = "custom_shell"
       if (change === "status") entry.state.status = "completed"
       if (change === "message") f.state.durable.id = "other-assistant"
-      assert.equal(await readHostEvidence(f.client, f.scope, shell, options, new AbortController().signal), undefined, change)
+      assert.equal(await readHostEvidence(f.client, f.scope, shell, options, new AbortController().signal, f.access), undefined, change)
       assert.deepEqual(f.calls, ["capture", "message"], change)
       assert.deepEqual(f.queries, [], change)
       assert.deepEqual(f.reads, [], change)
@@ -118,38 +120,38 @@ test("unbound or ambiguous durable calls dispatch no evidence RPC or filesystem 
 test("full evidence transaction shares one outer signal and budget across capture, collection and finalization", async () => {
   const f = await fixture(), signals: AbortSignal[] = []
   try {
-    const methods = f.raw.rpc(), permission = f.raw.permission.get
-    f.raw.rpc = () => ({ ...methods,
-      invocation: async (query: any, options: { signal: AbortSignal }) => {
-        signals.push(options.signal)
-        return methods.invocation(query, options)
+    const methods = { ...f.access }, permission = f.raw.permission.get
+    Object.assign(f.access, {
+      invocation: async (...args: Parameters<typeof methods.invocation>) => {
+        signals.push(args[2])
+        return methods.invocation(...args)
       },
-      evidence: async (query: any, options: { signal: AbortSignal }) => {
-        signals.push(options.signal)
-        return methods.evidence(query, options)
+      evidence: async (...args: Parameters<typeof methods.evidence>) => {
+        signals.push(args[4])
+        return methods.evidence(...args)
       },
-      handshake: async (...args: any[]) => { signals.push(args[1].signal); return methods.handshake() },
+      epoch: async (signal: AbortSignal) => { signals.push(signal); return methods.epoch(signal) },
     })
     f.raw.permission.get = async (...args: any[]) => { signals.push(args[1].signal); return permission() }
     await withDeadline(new AbortController().signal, 1000, async signal => {
-      assert.equal((await readHostEvidence(f.client, f.scope, request, options, signal))?.result.status, "ready")
+      assert.equal((await readHostEvidence(f.client, f.scope, request, options, signal, f.access))?.result.status, "ready")
     })
     assert.equal(signals.length, 4)
     assert.ok(signals.every(signal => signal === signals[0]))
     assert.ok(f.queries[0].timeoutMs > 0 && f.queries[0].timeoutMs <= 1000, "Collection must inherit the original enclosing deadline")
-    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "handshake"])
+    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "epoch"])
   } finally { await f.lifecycle.stop() }
 })
 
 test("disabled edits bypass evidence work and pending mutation after collection invalidates returned evidence", async () => {
   const f = await fixture()
   try {
-    const value = await readHostEvidence(f.client, f.scope, request, { ...options, reviewEdits: false }, new AbortController().signal)
+    const value = await readHostEvidence(f.client, f.scope, request, { ...options, reviewEdits: false }, new AbortController().signal, f.access)
     assert.equal(value?.result.status, "disabled")
-    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "handshake"])
+    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "epoch"])
     f.calls.length = 0
     f.state.changeAfterCollection = true
-    assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal), undefined)
+    assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal, f.access), undefined)
     assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission"])
     assert.deepEqual(f.reads, [])
   } finally { await f.lifecycle.stop() }
@@ -159,25 +161,22 @@ test("returned evidence cannot change mandatory source/targets or substitute a r
   for (const change of ["input", "request", "source", "project", "epoch", "location", "scope", "context", "patch-target"] as const) {
     const f = await fixture()
     try {
-      const original = f.raw.rpc
-      f.raw.rpc = () => {
-        const methods = original()
-        return { ...methods, evidence: async (...args: Parameters<typeof methods.evidence>) => {
-          const result = structuredClone(await methods.evidence(...args))
-          assert.equal(result.result.status, "ready")
-          if (change === "input") result.invocation.input.path = "other.txt"
-          if (change === "request") result.request.resources = ["other.txt"]
-          if (change === "source") result.request.source.id = "other-call"
-          if (change === "project") result.invocation.project.id = "other-project"
-          if (change === "epoch") result.invocation.epoch = "20000000-1000-4000-8000-100000000000"
-          if (change === "location") result.invocation.location.directory = "/other-project"
-          if (change === "scope") result.result.evidence.location.directory = "/terminal-local"
-          if (change === "context") result.result.evidence.userPrompt = "Fabricated root intent"
-          if (change === "patch-target") result.result.evidence.changes[0].file = "other.txt"
-          return result
-        } }
+      const evidence = f.access.evidence
+      f.access.evidence = async (...args) => {
+        const result = structuredClone(await evidence(...args)) as any
+        assert.equal(result.result.status, "ready")
+        if (change === "input") result.invocation.input.path = "other.txt"
+        if (change === "request") result.request.resources = ["other.txt"]
+        if (change === "source") result.request.source.id = "other-call"
+        if (change === "project") result.invocation.project.id = "other-project"
+        if (change === "epoch") result.invocation.epoch = "20000000-1000-4000-8000-100000000000"
+        if (change === "location") result.invocation.location.directory = "/other-project"
+        if (change === "scope") result.result.evidence.location.directory = "/terminal-local"
+        if (change === "context") result.result.evidence.userPrompt = "Fabricated root intent"
+        if (change === "patch-target") result.result.evidence.changes[0].file = "other.txt"
+        return result
       }
-      assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal), undefined, change)
+      assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal, f.access), undefined, change)
       assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence"], change)
     } finally { await f.lifecycle.stop() }
   }
@@ -194,12 +193,12 @@ test("collection options reject unknown paths, overflow, missing switches and ge
   assert.equal(read, false)
 })
 
-test("large write content and optional preview cross both RPCs without a shared 16 MiB cap", async () => {
+test("large write content and optional preview cross both reads without a shared 16 MiB cap", async () => {
   const content = "x".repeat(9 * 1024 * 1024), patch = "+" + "p".repeat(9 * 1024 * 1024)
   const pending = { ...request, metadata: { files: [{ ...request.metadata.files[0]!, patch }] } }
   const f = await fixture(pending, { ...input, content })
   try {
-    const value = await readHostEvidence(f.client, f.scope, pending, options, new AbortController().signal)
+    const value = await readHostEvidence(f.client, f.scope, pending, options, new AbortController().signal, f.access)
     assert.ok(value?.result.status === "ready" && value.result.evidence.kind === "edit")
     assert.equal(value.invocation.input.content, content)
     assert.deepEqual(value.snapshot.request.metadata, pending.metadata)
@@ -212,26 +211,23 @@ test("large write content and optional preview cross both RPCs without a shared 
   } finally { await f.lifecycle.stop() }
 })
 
-test("evidence RPC admits a separately bounded result larger than 16 MiB without weakening fresh proof", async () => {
+test("evidence access admits a separately bounded result larger than 16 MiB without weakening fresh proof", async () => {
   const f = await fixture(), reason = "r".repeat(18 * 1024 * 1024)
   try {
-    const original = f.raw.rpc
-    f.raw.rpc = () => {
-      const methods = original()
-      return { ...methods, evidence: async (...args: Parameters<typeof methods.evidence>) => {
-        const value = await methods.evidence(...args)
-        return { ...value, result: { status: "unsupported", reason } }
-      } }
+    const evidence = f.access.evidence
+    f.access.evidence = async (...args) => {
+      const value = await evidence(...args) as any
+      return { ...value, result: { status: "unsupported", reason } }
     }
-    const value = await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal)
+    const value = await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal, f.access)
     assert.deepEqual(value?.result, { status: "unsupported", reason })
-    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "handshake"])
+    assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", "permission", "epoch"])
     f.state.changeAfterCollection = true
-    assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal), undefined)
+    assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal, f.access), undefined)
   } finally { await f.lifecycle.stop() }
 })
 
-test("evidence RPC rejects extra fields, accessors, proxies, over-cap components and invalid result framing", async () => {
+test("evidence access rejects extra fields, accessors, proxies, over-cap components and invalid result framing", async () => {
   let accessed = 0
   for (const change of [
     (value: any) => ({ ...value, extra: true }),
@@ -245,12 +241,9 @@ test("evidence RPC rejects extra fields, accessors, proxies, over-cap components
   ]) {
     const f = await fixture()
     try {
-      const original = f.raw.rpc
-      f.raw.rpc = () => {
-        const methods = original()
-        return { ...methods, evidence: async (...args: Parameters<typeof methods.evidence>) => change(await methods.evidence(...args)) }
-      }
-      assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal), undefined)
+      const evidence = f.access.evidence
+      f.access.evidence = async (...args) => change(await evidence(...args))
+      assert.equal(await readHostEvidence(f.client, f.scope, request, options, new AbortController().signal, f.access), undefined)
       assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence"])
     } finally { await f.lifecycle.stop() }
   }
@@ -261,70 +254,74 @@ test("companion replacement or cancellation after collection prevents final evid
   for (const change of ["epoch", "abort"] as const) {
     const f = await fixture(), abort = new AbortController()
     try {
-      const methods = f.raw.rpc()
-      f.raw.rpc = () => ({ ...methods, evidence: async (...args: Parameters<typeof methods.evidence>) => {
-        const result = await methods.evidence(...args)
+      const evidence = f.access.evidence
+      f.access.evidence = async (...args) => {
+        const result = await evidence(...args) as any
         assert.equal(result.result.status, "ready")
         if (change === "epoch") f.state.epoch = "20000000-1000-4000-8000-100000000000"
         else abort.abort(Error("Stop collected evidence"))
         return result
-      } })
-      const reading = readHostEvidence(f.client, f.scope, request, options, abort.signal)
+      }
+      const reading = readHostEvidence(f.client, f.scope, request, options, abort.signal, f.access)
       if (change === "epoch") assert.equal(await reading, undefined)
       else await assert.rejects(reading, /Stop collected evidence/)
-      assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", ...(change === "epoch" ? ["permission", "handshake"] : [])])
+      assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence", ...(change === "epoch" ? ["permission", "epoch"] : [])])
     } finally { await f.lifecycle.stop() }
   }
 })
 
 test("evidence contention regenerates its budget and retains invalid-data and companion-epoch checks", async () => {
   for (const change of ["none", "invalid", "epoch"] as const) {
-    const f = await fixture(), methods = f.raw.rpc(), timeouts: number[] = []
+    const f = await fixture(), read = f.companion.read, timeouts: number[] = []
     try {
-      f.raw.rpc = () => ({ ...methods, evidence: async (...args: Parameters<typeof methods.evidence>) => {
-        timeouts.push(args[0].timeoutMs)
-        if (timeouts.length === 1) throw { type: "capacity_busy", data: {} }
-        const value = await methods.evidence(...args)
+      f.companion.read = async (...args) => {
+        if (!args[2]) return read(...args)
+        timeouts.push(args[2].timeoutMs)
+        if (timeouts.length === 1) throw new CompanionBusyError("Read capacity occupied")
+        const value = await read(...args) as any
         if (change === "invalid") return { ...value, request: { ...value.request, resources: ["other.txt"] } }
         if (change === "epoch") f.state.epoch = "20000000-1000-4000-8000-100000000000"
         return value
-      } })
+      }
       const value = await withDeadline(new AbortController().signal, 1000,
-        signal => readHostEvidence(f.client, f.scope, request, options, signal))
+        signal => readHostEvidence(f.client, f.scope, request, options, signal, f.access))
       assert.equal(value?.result.status, change === "none" ? "ready" : undefined)
       assert.equal(timeouts.length, 2, "Invalid data and replaced companions are not retried")
       assert.ok(timeouts[0]! <= 1000 && timeouts[1]! > 0 && timeouts[1]! < timeouts[0]!)
       assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence",
-        ...(change === "invalid" ? [] : ["permission", "handshake"])])
+        ...(change === "invalid" ? [] : ["permission", "epoch"])])
     } finally { await f.lifecycle.stop() }
   }
 })
 
-test("cancellation during evidence or final reads retains actual RPC ownership and prevents subsequent reads", async () => {
-  for (const stage of ["evidence", "permission", "handshake"] as const) {
+test("cancellation during evidence or final reads retains physical ownership and prevents subsequent reads", async () => {
+  for (const stage of ["evidence", "permission", "epoch"] as const) {
     const f = await fixture(), abort = new AbortController(), ownership = new TransportOwnership()
     bindTransportOwnership(abort.signal, ownership)
     let started!: () => void, resolve!: () => void
     const dispatched = new Promise<void>(yes => { started = yes }), pending = new Promise<void>(yes => { resolve = yes })
     try {
-      const methods = f.raw.rpc()
-      if (stage === "evidence") f.raw.rpc = () => ({ ...methods, evidence: async (...args: Parameters<typeof methods.evidence>) => {
-        const value = await methods.evidence(...args)
-        started()
-        await pending
+      const read = f.companion.read
+      if (stage === "evidence") f.companion.read = async (...args) => {
+        const value = await read(...args)
+        if (args[2]) {
+          started()
+          await pending
+        }
         return value
-      } })
+      }
       if (stage === "permission") {
         const get = f.raw.permission.get
         f.raw.permission.get = async () => { const value = await get(); started(); await pending; return value }
       }
-      if (stage === "handshake") f.raw.rpc = () => ({ ...methods, handshake: async () => {
-        const value = await methods.handshake()
+      const epoch = f.access.epoch
+      if (stage === "epoch") f.access.epoch = async signal => {
+        const value = await epoch(signal)
         started()
         await pending
         return value
-      } })
-      const reading = readHostEvidence(f.client, f.scope, request, options, abort.signal)
+      }
+      const reading = readHostEvidence(f.client, f.scope, request, options, abort.signal, f.access)
       await dispatched
       abort.abort(Error("Stop owned evidence read"))
       await assert.rejects(reading, /Stop owned evidence read/)
@@ -335,7 +332,7 @@ test("cancellation during evidence or final reads retains actual RPC ownership a
       resolve()
       await actual
       assert.deepEqual(f.calls, ["capture", "message", "session", "user", "questions", "evidence",
-        ...(stage !== "evidence" ? ["permission"] : []), ...(stage === "handshake" ? ["handshake"] : [])])
+        ...(stage !== "evidence" ? ["permission"] : []), ...(stage === "epoch" ? ["epoch"] : [])])
     } finally { resolve(); await ownership.settled(); await f.lifecycle.stop() }
   }
 })

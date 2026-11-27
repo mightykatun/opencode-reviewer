@@ -46,12 +46,6 @@ export function validate(value: LifetimeTotals): LifetimeTotals {
     || (value.safe + value.unsafe > 0 ? !count(value.ratingsSince) || value.ratingsSince > 8.64e15 : value.ratingsSince !== null)) {
     throw new Error("Invalid lifetime usage totals")
   }
-  // Older accumulators predate permission-outcome accounting. Normalize only the
-  // absent pair; malformed or partially written counters remain unavailable.
-  if (value.activity && !Object.hasOwn(value.activity, "manuallyApproved") && !Object.hasOwn(value.activity, "rejected"))
-    value = { ...value, activity: { ...value.activity, manuallyApproved: 0, rejected: 0 } }
-  if (value.activity && !Object.hasOwn(value.activity, "toolCalls"))
-    value = { ...value, activity: { ...value.activity, toolCalls: 0 } }
   const activity = value.activity
   if (!activity || ![activity.reviews, activity.usageRequests, activity.retries, activity.autoApproved,
     activity.manuallyApproved, activity.rejected, activity.toolCalls, activity.timedReviews].every(count)

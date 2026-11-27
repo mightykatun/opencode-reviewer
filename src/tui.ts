@@ -1,13 +1,12 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { setupCli, type CliPluginState } from "./cli-plugin.js"
 import { PluginLifecycle } from "./plugin-lifecycle.js"
-import { pluginID } from "./companion-protocol.js"
 import type { PluginDependencies } from "./plugin-dependencies.js"
 import type { DiagnosticObserver } from "./diagnostics.js"
 import type { HistoryRenderProbe, NotificationBackendFactory } from "./embedding-types.js"
 import type { NotificationProcesses } from "./notification-process.js"
 
-export { pluginID }
+export const pluginID = "opencode-reviewer"
 type Ready = { role: "cli"; state: CliPluginState }
 
 /** Embedding seam only. Never read from plugin options. */
@@ -28,7 +27,6 @@ function createPlugin(dependencies: PluginDependencies = {}, observe?: PluginSet
 }
 
 export function withPluginSetup(observe: PluginSetupObserver) { return createPlugin({}, observe) }
-export function withAdapterSetup(observe: PluginSetupObserver) { return createPlugin({ adapterOnly: true }, observe) }
 export function withDiagnostics(observer: DiagnosticObserver) { return createPlugin({ observer }) }
 export function withHistoryRenderProbe(historyProbe: HistoryRenderProbe, observer?: DiagnosticObserver) { return createPlugin({ historyProbe, observer }) }
 export function withHistoryObservations(observe: HistoryRenderProbe["observe"], observer?: DiagnosticObserver,
@@ -39,11 +37,5 @@ export function withNotificationProcesses(factory: () => NotificationProcesses) 
 }
 export type { HistoryRenderProbe, DiagnosticObserver, NotificationBackendFactory }
 export type { DiagnosticEvent } from "./diagnostics.js"
-/** Read-only embedding seam shared with the production host adapter. */
-export { readPendingInvocation } from "./host-reader.js"
-export { readHostEvidence } from "./host-evidence-reader.js"
-export { evaluateHostReview } from "./host-evaluate.js"
-export { HistoryStore, historyWorkerSource } from "./history-store.js"
-export { HistoryRefresh } from "./history-refresh.js"
 
 export default createPlugin()

@@ -3,9 +3,9 @@
 // advisory-evidence-timeout (actual pre-model deadline failure remains visible and manual),
 // normal (SSE), normal-retrieval (agentic list/read/grep retrieval, one native ask_context clarification shown as Asking,
 // and direct-to-reviewer finish attachments), fast (held SSE preview/remainder),
-// normal-mouse-off, normal-cancel, normal-descendant, fast-descendant,
+// normal-mouse-off, normal-cancel, child-route-progress, fast-descendant,
 // normal-hide, normal-dialog, normal-resize, fast-dialog, normal-hidden-complete,
-// normal-route-wait, normal-decision, fast-decision,
+// normal-home-route, normal-highlighted-choice, fast-highlighted-choice,
 // normal-location-tab (a request first asked in a background tab while another directory's tab is active),
 // normal-history / normal-history-default-home (actual saved report, browsing and native statistics dialog),
 // normal-history-cover / fast-history-cover (two genuine native requests in one root),
@@ -17,9 +17,9 @@
 // normal-project-transition (nongit to committed Git identity with the original companion still loaded).
 // normal-long-session (512 completed native Code Mode calls before direct review).
 // normal-large-source (bounded inspection, then a direct tail attachment via the installed companion).
-// normal-reconnect (real loopback socket loss, same TUI and fresh production generation).
-// normal-reconnect-visible (socket loss during a visible review and its countdown).
-// normal-stalled-stream (silently held SSE bytes, native idle recovery during review).
+// viewer-reconnect-idle (real loopback socket loss, same TUI and fresh production generation).
+// viewer-reconnect-countdown (socket loss during a visible review and its countdown).
+// viewer-stalled-stream (silently held SSE bytes, native idle recovery during review).
 // normal-instructions (real draft editing, committed persistence and root/descendant judge requests).
 // Build first. Do not execute a host until the main session grants approval.
 import assert from "node:assert/strict"
@@ -38,7 +38,7 @@ import { observationPublisher, readObservation } from "./smoke-observations.mjs"
 import { activatePalette, renditionRows, selectedPaletteResult } from "./smoke-ui.mjs"
 import { readProductionHistory, assertWriteInspection, assertWriteEvidence, assertEvidenceRequest,
   savedStageHistory } from "./smoke-v2-review-support.mjs"
-import { rpcDefinition } from "./smoke-v2-rpc.mjs"
+import { managedReviewer, verifiedSnapshot } from "./smoke-v2-rpc.mjs"
 
 // Title interception suppresses auxiliary model calls. Registered-tool cases
 // advertise one genuine MCP tool directly through its public Code Mode option.
@@ -80,9 +80,7 @@ async function serverSetup(ctx) {
 }
 
 async function monitorSetup(ctx) {
-  const { Rpc } = await import("@opencode/plugin/rpc")
   const { CliRenderEvents } = await import("@opentui/core")
-  const rpc = ctx.client.rpc(Rpc.define(rpcDefinition()))
   const publisher = observationPublisher(fixture.monitor), abort = new AbortController()
   // Keep real observations and consumed controls across public CLI hot reloads.
   const [memory, update] = ctx.storage.memory("review-monitor", { initial: { sequence: 0,
@@ -187,8 +185,7 @@ async function monitorSetup(ctx) {
         let value
         if (command.type === "status") {
           value = { plugins: await ctx.client.plugin.list({ location }, options()) }
-          try { value.handshake = await rpc.handshake(location, options()) }
-          catch (error) { value.failure = JSON.parse(JSON.stringify(error)) }
+          value.location = await ctx.client.location.get({ location }, options())
         }
          else if (command.type === "project-metadata") {
            assert.equal(fixture.projectTransition, true)
@@ -199,7 +196,7 @@ async function monitorSetup(ctx) {
            const session = await ctx.client.session.get({ sessionID: command.sessionID }, options())
            const projects = await ctx.client.project.list({}, options())
            const worktrees = await ctx.client.worktree.list({ projectID: session.projectID }, options())
-           value = { discovered, session, projects, worktrees, handshake: await rpc.handshake(location, options()) }
+           value = { discovered, session, projects, worktrees }
          }
          else if (command.type === "connection-probe") {
           value = await ctx.client.session.create({ title: "Review connection probe", location,
@@ -245,8 +242,6 @@ async function monitorSetup(ctx) {
           const request = await ctx.client.permission.get({ sessionID: command.sessionID, requestID: command.requestID }, options())
           value = { request, session: await ctx.client.session.get({ sessionID: command.sessionID }, options()),
             message: await ctx.client.session.message.get({ sessionID: command.sessionID, messageID: request.source.messageID }, options()),
-             captured: await rpc.invocation({ location, epoch: command.epoch, sessionID: command.sessionID,
-               requestID: command.requestID }, options()),
              native: { root: ctx.data.session.root(command.sessionID), family: ctx.data.session.family(command.sessionID),
                session: ctx.data.session.get(command.sessionID), permissions: ctx.data.session.permission.list(command.sessionID),
                route: ctx.ui.router.current() } }
@@ -303,16 +298,11 @@ async function monitorSetup(ctx) {
 async function observedReviewerSetup(ctx) {
   const panels = observationPublisher(reviewerPaths.presentation)
   const storage = observationPublisher(reviewerPaths.storage)
-  const facts = { events: [], failures: 0 }
-  if (reviewerPaths.reconnect) {
-    const [memory, update] = ctx.storage.memory("reconnect-setups", { initial: { count: 0 } })
-    facts.setups = memory.count + 1
-    update(draft => { draft.count++ })
-  }
+  const facts = {}
   const notifications = reviewerPaths.notifications ? observationPublisher(reviewerPaths.notifications) : undefined
   const abort = new AbortController(), handles = new Map()
   const attention = { events: [], errors: [], replies: {}, owned: 0, disposed: false, cleaned: false, historyCalls: [] }
-  let injectionClick, records, readyState, lastRuntime, generation = 0, notificationSequence = 0
+  let injectionClick, records, notificationSequence = 0
   const saveNotifications = () => {
     if (records) {
       const state = records.state()
@@ -322,11 +312,6 @@ async function observedReviewerSetup(ctx) {
     return notifications?.publish(attention)
   }
   const saveStorage = () => {
-    if (reviewerPaths.reconnect && readyState) {
-      const runtime = readyState.runtime
-      if (runtime && runtime !== lastRuntime) { generation++; lastRuntime = runtime }
-      facts.connection = { id: readyState.connectionID, active: !!runtime?.controller, generation }
-    }
     if (reviewerPaths.historyInput && records) {
       const state = records.state()
       facts.history = { open: state.open, status: state.status, entry: state.selection?.entry,
@@ -377,7 +362,6 @@ async function observedReviewerSetup(ctx) {
   } : undefined
   const cleanup = await production.withHistoryObservations(value => panels.publish(value), undefined, backend, ready => {
     if (ready.role !== "cli") return
-    readyState = ready.state
     const runtime = ready.state.runtime?.records
     if (!runtime) return
     records = runtime
@@ -392,23 +376,12 @@ async function observedReviewerSetup(ctx) {
         }
       }
     }
-    facts.stateRoot = ready.state.stateRoot
-    facts.scope = runtime.scope
-    facts.ready = !!ready.state.config && !!ready.state.companion
-    const admit = runtime.store.admit.bind(runtime.store)
-    runtime.store.admit = event => {
-      const accepted = admit(event)
-      facts.events.push({ type: event.type, accepted, ...(reviewerPaths.editCase ? {
-        context: event.context, ...(event.type === "permissionResolved" ? { outcome: event.outcome } : {}) } : {}) })
-      void storage.publish(facts)
-      return accepted
-    }
-    runtime.store.onWriteFailure(() => { facts.failures++; void storage.publish(facts) })
+    facts.ready = true
     void storage.publish(facts)
   }).setup(ctx)
   // Independent monitor has no production imports. Clicks arrive only through
   // this separate explicit driver control, never from observation or approval.
-   const loop = notifications || reviewerPaths.historyInput || reviewerPaths.reconnect ? (async () => {
+   const loop = notifications || reviewerPaths.historyInput ? (async () => {
     while (!abort.signal.aborted) {
        const command = notifications ? await readObservation(reviewerPaths.notificationControl, { optional: true }) : undefined
       if (command && command.sequence > notificationSequence) {
@@ -424,7 +397,10 @@ async function observedReviewerSetup(ctx) {
         attention.replies[notificationSequence] = { id: command.id, current }
       }
        if (notifications) { await saveNotifications(); await notifications.flush() }
-       if (reviewerPaths.historyInput || reviewerPaths.reconnect) { await saveStorage(); await storage.flush() }
+       if (reviewerPaths.historyInput) {
+         await saveStorage()
+         await storage.flush()
+       }
       await sleep(40, undefined, { signal: abort.signal })
     }
   })().catch(error => {
@@ -455,27 +431,28 @@ const coverCase = ["normal-history-cover", "fast-history-cover"].includes(scenar
 const dialogCase = ["normal-dialog", "fast-dialog"].includes(scenario)
 const visibilityLoss = ["normal-hide", "normal-dialog", "normal-resize"].includes(scenario)
 const hiddenComplete = scenario === "normal-hidden-complete"
-const routeWait = scenario === "normal-route-wait", decisionCase = scenario.endsWith("-decision")
+const routeWait = scenario === "normal-home-route", decisionCase = scenario.endsWith("-highlighted-choice")
 const locationTab = scenario === "normal-location-tab"
 const editCase = ["normal-edit", "normal-directory-edit"].includes(scenario)
 const codeModeTool = ["normal-code-mode-tool", "fast-code-mode-tool"].includes(scenario)
 const registeredTool = codeModeTool || ["normal-tool", "fast-tool"].includes(scenario)
 const skillCase = registeredTool || ["normal-skill", "fast-skill"].includes(scenario)
 const directoryEditCase = scenario === "normal-directory-edit"
-const notificationCase = scenario === "fast-notifications", savedCase = automatic && scenario !== "normal-cancel"
+const nativeEnterCase = scenario.startsWith("normal-native-enter"), nativeEnterClick = scenario === "normal-native-enter-click"
+const notificationCase = scenario === "fast-notifications", savedCase = automatic && scenario !== "normal-cancel" && !nativeEnterCase
 const projectTransition = scenario === "normal-project-transition"
 const instructionsCase = scenario === "normal-instructions"
 const evidenceTimeout = scenario === "advisory-evidence-timeout"
 const longSession = scenario === "normal-long-session", largeSource = scenario === "normal-large-source"
-const stalledStream = scenario === "normal-stalled-stream"
-const pendingReconnect = scenario === "normal-reconnect-visible" || stalledStream
-const reconnectCase = scenario === "normal-reconnect" || pendingReconnect
+const stalledStream = scenario === "viewer-stalled-stream"
+const pendingReconnect = scenario === "viewer-reconnect-countdown" || stalledStream
+const reconnectCase = scenario === "viewer-reconnect-idle" || pendingReconnect
 const warmupBatches = 16, warmupBatchSize = 32, warmupCalls = []
 const requestCount = projectTransition ? 4 : coverCase || directoryEditCase || instructionsCase ? 2 : 1
-const expectedReviewPOSTs = evidenceTimeout ? 0 : pendingReconnect ? stalledStream ? 2 : 3 : requestCount
+const expectedReviewPOSTs = evidenceTimeout ? 0 : requestCount
 const nativeCallCount = editCase ? 1 : requestCount
 const negative = scenario === "normal-cancel"
-const descendant = scenario.endsWith("-descendant")
+const descendant = scenario === "child-route-progress" || scenario === "fast-descendant"
 const mouseOff = scenario === "normal-mouse-off", approvalDelaySeconds = fast ? 45 : visibilityLoss || hiddenComplete || locationTab ? 5 : 8
 const root = path.resolve(import.meta.dirname, ".."), host = process.env.OPENCODE_BIN ?? "opencode"
 await mkdir(path.join(root, ".runtime"), { recursive: true })
@@ -503,8 +480,8 @@ const stateBase = defaultHomeCase ? path.join(env.HOME, ".local/state") : env.XD
 assert.ok(path.isAbsolute(stateBase))
 const stateRoot = path.join(stateBase, "opencode")
 const historyFile = path.join(defaultHomeCase ? path.join(stateBase, "opencode-reviewer-state") : stateRoot,
-  "opencode-reviewer/history-v1.sqlite")
-const oldHistoryFile = path.join(stateRoot, "opencode-reviewer/history-v1.sqlite")
+  "opencode-reviewer/history-v2.sqlite")
+const oldHistoryFile = path.join(stateRoot, "opencode-reviewer/history-v2.sqlite")
 const assertDefaultHomeStorage = async () => {
   if (!defaultHomeCase) return
   assert.equal(Object.hasOwn(env, "XDG_STATE_HOME"), false, "Default HOME state resolution has no XDG_STATE_HOME override")
@@ -569,9 +546,14 @@ const toolCall = codeModeTool ? { id: "v2-production-review-code-mode", name: "e
    : { id: "v2-production-review-shell", name: "shell", input: {
      command: "python3 fixture.py", workdir: "inputs" } }
 const publishers = new Map(), calls = [], errors = [], negativeWindows = []
-let version, modelServer, retrievalServer, mainResponse, reviewResponse, sessionID, childSession, request, inspection, handshake, sequence = 0
+let version, reviewerVersion, modelServer, retrievalServer, mainResponse, reviewResponse, sessionID, childSession, request, inspection, service, identity, startupProject, sequence = 0
 let networkProxy, networkBlocked = false, networkEvidence
 const eventResponses = new Set()
+const serviceReplies = [], servicePermissionEvents = []
+/** The native command palette title. Older hosts painted "Commands", 2.4.2 paints "Search commands". */
+const paletteTitle = /Commands|Search commands/
+const serviceEvents = new AbortController()
+let serviceSubscription
 const proxySockets = new Set(), proxyRequests = []
 let reviewPOSTs = 0, reviewCompleted = false, allowWrites = false, manualDecision = false
 let allowedReplies = 1, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, notificationSequence = 0
@@ -694,46 +676,42 @@ const noSavedBody = async () => {
   const value = await readHistory()
   if (value) assert.equal(value.payloadCount, 0, "Unresolved report text remains memory-only")
 }
-const recoverPendingConnection = async (label, { silent = false, outageMs = 1500 } = {}) => {
-  const before = await readObservation(path.join(artifacts, "storage-observations.json"))
-  assert.equal(before.connection.active, true)
-  const posts = reviewPOSTs, previous = reviewResponse, started = performance.now()
-  const transaction = reviewerTransactions.at(-1)
-  if (!transaction.completed) transaction.expectedAbort = true
+const reconnectViewer = async (label, silent = false, countdown = false) => {
+  const before = await observations()
+  const posts = reviewPOSTs
+  const started = performance.now()
   if (silent) {
-    assert.ok(eventResponses.size > 0, "Silence an existing live SSE response without closing its socket")
+    assert.ok(eventResponses.size > 0)
     for (const response of eventResponses) response.silent = true
   } else {
+    assert.ok(proxyRequests.some(item => /event-stream/.test(item.type)))
     networkBlocked = true
     for (const socket of proxySockets) socket.destroy()
-    await until(label + " runtime revoked", async () =>
-      (await readObservation(path.join(artifacts, "storage-observations.json"))).connection?.active === false, 10000)
-    const hold = performance.now()
     do {
-      assert.deepEqual((await observations()).replied, [])
-      assert.equal(await executed(), null); assert.equal(reviewPOSTs, posts)
-      await noSavedBody(); await sleep(75)
-    } while (performance.now() - hold < outageMs)
+      assert.equal(reviewPOSTs, posts)
+      if (!countdown) assert.equal(await executed(), null)
+      await sleep(75)
+    } while (performance.now() - started < (countdown ? approvalDelaySeconds * 1000 + 1500 : 1500))
+    if (countdown) {
+      // The server decided with the viewer disconnected. Execution is on disk at once, while the native
+      // reply event and the engine's confirmation reach the fixture's direct subscriptions a moment later.
+      assert.equal(await executed(), markerLine)
+      await until("disconnected countdown reply reaches the service subscription", () => serviceReplies.length === 1, 5000)
+      assert.deepEqual(serviceReplies, [{ requestID: request.id, sessionID, reply: "once" }])
+      await until("disconnected countdown confirmation is recent", async () =>
+        (await service.snapshot()).recent.filter(item => item.permissionID === request.id && item.decision === "once").length === 1, 5000)
+      assert.ok(networkBlocked)
+    }
     networkBlocked = false
   }
-  const after = await until(label + " fresh native/client admission", async record => {
-    const value = await readObservation(path.join(artifacts, "storage-observations.json"))
-    assert.deepEqual(record.replied, []); assert.equal(await executed(), null)
-    return value.connection?.active && value.connection.id !== before.connection.id
-      && record.connections?.some(item => item.id === value.connection.id) && value
-  })
-  assert.equal(after.setups, before.setups, "No plugin reload for network recovery")
-  assert.equal(after.connection.generation, before.connection.generation + 1)
-  await until(label + " new evidence-bound reviewer POST", () => reviewPOSTs === posts + 1 && reviewResponse !== previous)
-  if (transaction.expectedAbort) assert.equal(transaction.closed, true, "The old generation cancels its actual model response")
-  assert.deepEqual(await command({ type: "pending", sessionID }), [request])
-  assert.deepEqual((await command({ type: "status" })).handshake, handshake)
-  const proof = { label, silent, before, after, elapsedMs: performance.now() - started, posts: reviewPOSTs }
-  if (silent) assert.ok(proof.elapsedMs >= 44000, "A silent source must reach its actual native idle boundary")
+  await until(label + " receives a fresh native connection", record =>
+    (record.connections?.length ?? 0) > (before.connections?.length ?? 0))
+  assert.equal(reviewPOSTs, posts)
+  assert.deepEqual(await service.identity(), identity)
+  if (silent) assert.ok(performance.now() - started >= 44000)
   networkEvidence ??= []
-  networkEvidence.push(proof)
+  networkEvidence.push({ label, silent, elapsedMs: performance.now() - started, posts })
   await publish(path.join(artifacts, "network-reconnect.json"), networkEvidence)
-  await saveCapture(label + "-recovered")
 }
 /** The scoped companion executes file operations. Finish attachments bypass retriever tool replies. */
 function retrievalReply(body) {
@@ -837,23 +815,28 @@ const savedHistory = async () => {
     || value.approvals[0]?.state !== "confirmed") return undefined
   const totals = [JSON.parse(value.meta.totals), ...value.conversations.map(row => JSON.parse(row.totals))]
   if (totals.some(total => total.activity.reviews !== 1 || total.activity.autoApproved !== 1 || total.activity.usageRequests !== posts)) return undefined
-  assert.equal(value.meta.version, 1)
+  assert.equal(value.meta.version, 2)
   assert.equal(value.rows.length, 1, "One saved report, not an injected fixture entry")
   assert.equal(value.payloadCount, 1)
   assert.equal(value.reviews.length, 1)
+  assert.equal(value.reviews[0].reviewer_version, reviewerVersion)
+  assert.equal(value.reviews[0].opencode_version, version.slice("opencode v".length))
   assert.equal(value.attempts.length, posts, "One dispatched POST per retrieval turn plus the verdict")
   assert.equal(value.approvals.length, 1)
   assert.equal(value.conversations.length, 1)
   const row = value.rows[0], context = JSON.parse(row.context), payload = JSON.parse(row.body)
+  const kinds = retrievalCase ? largeSource ? ["list", "read", "read"] : ["ask_context", "grep", "list", "read", "read", "read"] : []
+  assert.deepEqual(value.calls.map(call => call.tool).sort(), kinds)
+  assert.ok(value.calls.every(call => call.review === row.review))
   const opaque = (...parts) => createHash("sha256").update(JSON.stringify(parts)).digest("hex")
   assert.equal(context.root, sessionID, "Saved root identity matches the real native root")
   assert.equal(context.session, sessionID)
   assert.equal(context.permission, request.id)
   assert.equal(context.configuredModel, "v2-production-reviewer")
-   assert.equal(row.id, opaque(context.scope, context.review))
-   assert.equal(row.entry, opaque(context.scope, request.id))
-  assert.equal(row.root, opaque(context.scope, sessionID))
-  assert.equal(row.session, opaque(context.scope, sessionID))
+   assert.equal(row.id, opaque(context.review))
+   assert.equal(row.entry, opaque(request.id))
+  assert.equal(row.root, opaque(sessionID))
+  assert.equal(row.session, opaque(sessionID))
   assert.equal(row.review, value.reviews[0].id)
   assert.equal(row.outcome, "auto")
   assert.equal(row.resolution, "auto")
@@ -872,7 +855,6 @@ const savedHistory = async () => {
    assert.equal(value.approvals[0].entry, row.entry)
   assert.equal(value.approvals[0].automatic, 1)
   assert.equal(value.conversations[0].id, row.root)
-  assert.equal(value.conversations[0].partial, 0)
   for (const total of totals) {
     assert.equal(total.requests, posts)
     assert.equal(total.tokenRequests, posts)
@@ -918,7 +900,6 @@ const historyScreen = (record, screen) => {
 const coverState = async () => {
   const value = await readObservation(path.join(artifacts, "storage-observations.json"))
   assert.equal(value.error, undefined)
-  assert.equal(value.failures, 0)
   return value
 }
 const selectedOriginal = async (record, screen, total = 1) => {
@@ -956,7 +937,7 @@ const savedPair = async () => {
     || value.approvals.some(approval => approval.state !== "confirmed")) return undefined
   const totals = [JSON.parse(value.meta.totals), ...value.conversations.map(row => JSON.parse(row.totals))]
   if (totals.some(total => total.activity.reviews !== 2 || total.activity.autoApproved !== 2 || total.activity.usageRequests !== 2)) return undefined
-  assert.equal(value.meta.version, 1)
+  assert.equal(value.meta.version, 2)
   for (const name of ["rows", "reviews", "attempts", "approvals"]) assert.equal(value[name].length, 2, name)
   assert.equal(value.payloadCount, 2)
   assert.equal(value.conversations.length, 1)
@@ -968,12 +949,11 @@ const savedPair = async () => {
     const context = JSON.parse(row.context), payload = JSON.parse(row.body)
     assert.equal(context.root, sessionID)
     assert.equal(context.session, sessionID)
-    assert.equal(context.scope, coverEvidence.first.context.scope)
     assert.equal(context.configuredModel, "v2-production-reviewer")
-     assert.equal(row.id, opaque(context.scope, context.review))
-     assert.equal(row.entry, opaque(context.scope, expected.id))
-    assert.equal(row.root, opaque(context.scope, sessionID))
-    assert.equal(row.session, opaque(context.scope, sessionID))
+     assert.equal(row.id, opaque(context.review))
+     assert.equal(row.entry, opaque(expected.id))
+    assert.equal(row.root, opaque(sessionID))
+    assert.equal(row.session, opaque(sessionID))
     assert.equal(row.outcome, "auto")
     assert.equal(row.resolution, "auto")
     assert.equal(row.approving, row.review)
@@ -997,7 +977,6 @@ const savedPair = async () => {
     assert.equal(approvals[0].state, "confirmed")
     assert.equal(value.conversations[0].id, row.root)
   }
-  assert.equal(value.conversations[0].partial, 0)
   for (const total of totals) {
     assert.equal(total.requests, 2)
     assert.equal(total.tokenRequests, 2)
@@ -1068,7 +1047,7 @@ const paletteCover = async (record, screen) => {
   assert.equal(record.mouse, true)
   assert.equal(record.mode, "modal", "Stock command palette owns the native modal input mode")
   assert.equal(record.frame?.mode, "modal", "Genuine native FRAME observes the modal owner")
-  assert.match(screen, /Commands/)
+  assert.match(screen, paletteTitle)
   const value = await presentation()
   assert.equal(value?.stage, "frame")
   assert.equal(value.selected, request.id)
@@ -1279,16 +1258,15 @@ const exerciseInstructions = async (cli, startupCli) => {
   instructionsEvidence.file = instructionsFile()
 }
 const limits = [
-   "Behavioral review activates through public CLI configuration only after an owned prompt-free session's exact genuine birth and deletion are observed on the native data stream. This is not pre-connection startup acceptance; the separate lifecycle fixture checks startup. No runtime reconnect policy is overridden.",
-     "One installed default archive with separate server companion and global CLI configuration. The independent monitor never imports production code or replies to permissions.",
-   `One ${reconnectCase ? "loopback server plus network-proxied TUI" : "standalone"} Linux OpenCode V2 verification host, ${codeModeTool ? "one native Code Mode invocation with two local MCP calls" : `${nativeCallCount} direct ${registeredTool ? "local MCP" : skillCase ? "native skill" : editCase ? "native write" : "native shell"} call(s)`}, ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal${reconnectCase ? "" : ", disconnect"} or tab-switch acceptance.`,
+   "The viewer loads after the terminal observes the creation and deletion of its own probe session. The lifecycle fixture covers cold startup.",
+     "One installed archive with server policy and an optionless viewer. The independent monitor uses native APIs.",
+   `One ${reconnectCase ? "loopback server plus network-proxied TUI" : "managed service"} Linux OpenCode V2 verification host, ${codeModeTool ? "one native Code Mode invocation with two local MCP calls" : `${nativeCallCount} direct ${registeredTool ? "local MCP" : skillCase ? "native skill" : editCase ? "native write" : "native shell"} call(s)`}, ${requestCount} genuine permission stage(s) and a loopback reviewer. No live-provider judgment, remote workspace, multi-terminal${reconnectCase ? "" : ", disconnect"} or tab-switch acceptance.`,
   "Mouse capture is explicitly configured only by the isolated fixture, never forced by production. UI changes use real native commands/navigation, keyboard choices or actual tmux resize; no synthesized paint, modes, hits or geometry. Individual cases do not imply full UI-matrix acceptance.",
-  projectTransition ? "The transition includes a real descendant-owned shell request in the root native queue. A distinct public location read discovers the committed repository and lets native worktree resolution adopt existing sessions; the original companion must retain its exact handshake and epoch. No fabricated events, location reload, database edits, remote changes or uncertain writes. Markerless startup IDs are observed, not assumed to be global on every V2 release."
+  projectTransition ? "The transition includes a real descendant-owned shell request in the root native queue. A distinct location read discovers the committed repository. The reviewer identity remains unchanged while existing sessions adopt the registered project."
     : instructionsCase ? "A real descendant-owned shell permission uses its root's saved instructions. No location migration, simultaneous multi-terminal editing, uncertain write or live-provider acceptance."
     : "Descendant cases navigate a real child while a root request is pending; they do not exercise descendant-owned native queue ordering. No disabled kinds or uncertain writes.",
       instructionsCase ? "Actual production palette, Alt+I and no-argument /reviewer-instructions editor activation with painted native completion, Enter newline, literal Tab, Escape discard, hit-tested mouse Clear/Close/Apply, Ctrl+S apply, private durable record inspection and public plugin unload/reload. A different root opens empty and a descendant cannot open the editor. Two real root/descendant judge HTTP bodies retain literal instructions while main-model messages do not. No full process restart, location migration or multi-terminal acceptance."
-      : pendingReconnect ? "An actual pending native shell permission survives a silently held event stream or TCP socket loss. Independent native connection markers and the production accessor prove fresh admission without plugin reload; every replacement review must recollect evidence. The visible-socket case disconnects during both analysis and a started countdown, holding the second outage beyond its original deadline. Exact once-only reply, native execution, final saved report and accounting are verified. No uncertain-write or cancellation host acceptance."
-      : reconnectCase ? "Actual TCP socket destruction and a 1.5-second network outage while the session's first model response is held, before its native tool call. Independent native connection markers and the production embedding accessor prove the old runtime is absent during loss and a fresh runtime is admitted without plugin reload. One subsequent real review, native once reply, tool execution and saved report prove live review resumes. Pending countdown, uncertain-write and cancellation continuity are source-tested, not host-accepted by this case."
+      : reconnectCase ? "The viewer reconnects to the same managed service after an interrupted connection."
       : evidenceTimeout ? "A genuine native shell permission with a one-millisecond production evidence deadline. Actual terminal captures must show Analysis unavailable and timed out while the native request stays pending, with no reviewer POST, reply, execution or saved report. No injected transport errors, protocol changes, missing-linkage substitution or model latency acceptance."
      : codeModeTool ? "One real local MCP permission inside native Code Mode after a completed sibling call. The judge receives unverified linkage and captured candidates, then its Safe response follows production normal/fast approval, actual MCP continuation and saved tool history. No live-provider judgment acceptance."
      : registeredTool ? "One real local MCP request advertised directly with a public Code Mode option, a scoped registered definition (normal omits the oversized description and reports the reason), one production once reply, actual MCP result continuation, saved tool category and confirmed approval totals. No ambiguous nested call, remote implementation inspection or live-provider acceptance."
@@ -1297,7 +1275,7 @@ const limits = [
        : projectTransition ? "Four genuine native shell permissions: nongit root, migrated root, migrated descendant and root after local disable/re-enable. Each review uses captured source linkage and the current registered project metadata. Held reviewer responses and disabled-state observation windows prove no execution; exact native once replies, completed tool results and worker-saved reports prove continuation. No claim that filesystem Git changes alone trigger immediate host discovery."
        : locationTab ? "The review conversation is a background tab behind an active session tab in another directory, which another server location owns, before its genuine shell permission is first asked. The reviewer POST, full countdown, one native once reply, execution, saved report and aggregates all happen while that other tab stays active and no panel is painted on it. No return to the review tab, tab-limit, tab-close or multi-terminal acceptance."
        : routeWait ? "A started normal countdown automatically approves while the native route stays on home and the conversation tab remains open. Saved report and aggregates are verified."
-      : decisionCase ? "Actual Right/Left native keyboard input selects Always then Once. Automatic approval waits without cancellation while Always is selected, then resumes with the original delay or fast preview semantics. No persistent native grant is submitted; saved automatic report is verified. Rejection editing is separately source-tested, not host-accepted here."
+      : decisionCase ? "Right highlights Always. The fixture does not submit that choice. The server sends once and the saved report records automatic approval."
       : dialogCase ? "Stock command.palette.show owns a real native modal. Normal and fast automatic replies proceed underneath it without closing it; final report and usage are verified in SQLite. No other modal-family acceptance."
       : visibilityLoss ? "One actual normal countdown continues through native sidebar hide or a real 160x8 tmux window. A single native once reply and saved report occur without restoring presentation first. No other geometry-family acceptance."
       : hiddenComplete ? "A never-displayed normal report completes on a real child route and approves after its delay without returning to root. SQLite verifies the saved report and aggregates. No descendant-owned permission queue acceptance."
@@ -1326,6 +1304,7 @@ try {
   }
   const { archive, packed, installed } = await packFixtureArchive({ root, temp, env, expectedFiles: archiveFiles })
   const manifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"))
+  reviewerVersion = manifest.version
   assert.equal(manifest.name, "opencode-reviewer")
   assert.equal(manifest.engines.opencode, ">=2.0.0 <3")
   assert.deepEqual(manifest.exports, { ".": "./dist/server.js", "./server": "./dist/server.js", "./tui": "./dist/tui.js" })
@@ -1371,6 +1350,27 @@ try {
            "Native generation answers from the root conversation's own context")
          assert.doesNotMatch(JSON.stringify(body.messages), /Reason for approval|retrieval stage/, "Reviewer guidance never reaches the session model")
          clarificationRequest = { res, body }
+         return
+       }
+       const lastUser = body.messages.filter(message => message.role === "user").at(-1)
+       if (req.url === "/v1/chat/completions" && typeof lastUser?.content === "string" && lastUser.content.startsWith("<background-result kind=\"subagent\"")) {
+         // The host wakes the parent with a background-result message when a child session finishes.
+         // That turn is the host's, not a fixture prompt. Record it apart and let the parent finish at once.
+         assert.equal(lastUser.content, `<background-result kind="subagent" sessionID="${childSession?.id}" state="completed" description="V2 production review descendant">\nV2 fixture complete.\n</background-result>`,
+           "The native report belongs to the exact completed descendant")
+         assert.ok(body.messages.some(message => message.role === "user" && message.content === prompt), "The report reaches the root conversation with its original prompt")
+         assert.ok(!JSON.stringify(body.messages).includes("SESSION_INSTRUCTIONS_LITERAL"), "Reviewer-local session instructions never reach the main model, including the report turn")
+         calls.push({ url: "descendant-report", body })
+         const message = { role: "assistant", content: "Noted." }
+         if (body.stream) {
+           res.writeHead(200, { "Content-Type": "text/event-stream" })
+           for (const [delta, finish_reason] of [[message, null], [{}, "stop"]])
+             res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason }] })}\n\n`)
+           res.end("data: [DONE]\n\n")
+         } else {
+           res.writeHead(200, { "Content-Type": "application/json" })
+           res.end(JSON.stringify({ choices: [{ message, finish_reason: "stop" }] }))
+         }
          return
        }
        calls.push({ url: req.url, body })
@@ -1444,6 +1444,14 @@ try {
            if (retrievalCase) assertRetrievedEvidence(evidence)
            else assert.deepEqual(evidence.retrieval, { status: "disabled" }, "Retrieval is off outside its dedicated cases")
         }
+         const scope = await service.snapshot()
+         const row = scope.views.find(item => item.view.request.id === evidence.permission.id)
+         assert.equal(row?.head, true)
+         assert.equal(row.root, sessionID)
+         assert.ok(row.attempt)
+         assert.deepEqual(row.view.request, { id: evidence.permission.id, sessionID: evidence.permission.sessionID,
+           action: evidence.permission.action, source: evidence.permission.source })
+         await publish(path.join(artifacts, `server-view-${reviewPOSTs}.json`), row)
          reviewCompleted = false
          reviewResponse = res
          const transaction = { res, completed: false }
@@ -1460,13 +1468,8 @@ try {
          "Reviewer-local session instructions are never sent to the main model")
       assert.ok(body.tools?.some(tool => tool.function.name === "execute"), "Native Code Mode search/execution remains installed")
       const mainCalls = calls.filter(call => call.url === req.url)
-         assert.ok(mainCalls.length <= nativeCallCount * 2 + (instructionsCase ? 1 : 0), "Only genuine prompts, tool-result continuations and the owned child report")
-         if (instructionsCase && mainCalls.length === 5) {
-           const lastUser = body.messages.filter(message => message.role === "user").at(-1)
-           assert.equal(lastUser?.content, `<subagent sessionID="${childSession.id}" state="completed" description="V2 production review descendant">\nV2 fixture complete.\n</subagent>`,
-             "The native report belongs to the exact completed descendant")
-           assert.ok(body.messages.some(message => message.role === "user" && message.content === prompt))
-         } else if (mainCalls.length === 1 || coverCase && mainCalls.length === 3 || (projectTransition || instructionsCase) && mainCalls.length % 2 === 1) {
+         assert.ok(mainCalls.length <= nativeCallCount * 2, "Only genuine prompts and tool-result continuations")
+         if (mainCalls.length === 1 || coverCase && mainCalls.length === 3 || (projectTransition || instructionsCase) && mainCalls.length % 2 === 1) {
           assert.ok(body.tools.some(tool => tool.function.name === toolCall.name), "Use the actually advertised direct native tool")
           if (skillCase) {
             assert.ok(body.messages.some(message => typeof message.content === "string" && message.content.includes(prompt)))
@@ -1543,7 +1546,7 @@ try {
     + `\nimport * as production from ${JSON.stringify(pathToFileURL(path.join(installed, "dist/tui.js")).href)}\n`
      + `\nconst reviewerPaths=${JSON.stringify({ presentation: presentationPath, storage: path.join(artifacts, "storage-observations.json"),
          ...(notificationCase ? { notifications: notificationPath, notificationControl: notificationControlPath } : {}), historyInput: coverCase,
-           keyboardMouseOff: keyboardMouseOffCase, editCase, reconnect: reconnectCase })}\n`
+           keyboardMouseOff: keyboardMouseOffCase })}\n`
      + observedReviewerSetup + '\nexport default {id:"opencode-reviewer",setup:observedReviewerSetup}\n'
     : archived("tui")))
   await Promise.all([observer, monitor].map(directory => mkdir(directory)))
@@ -1554,7 +1557,7 @@ try {
   await writeFile(path.join(observer, "index.mjs"), helpers + '\nconst fixture=' + JSON.stringify({ ...fixture, longSession,
     warmup: path.join(artifacts, "warmup.json") }) + '\n' + serverSetup + '\nexport default {id:"fixture.review.title",setup:serverSetup}\n')
   await publish(path.join(monitor, "package.json"), { name: "v2-review-independent-monitor", type: "module", exports: { "./tui": "./tui.mjs" } })
-  await writeFile(path.join(monitor, "tui.mjs"), prelude + rpcDefinition + "\n" + monitorSetup
+  await writeFile(path.join(monitor, "tui.mjs"), prelude + monitorSetup
     + '\nexport default {id:"fixture.review.monitor",setup:monitorSetup}\n')
   for (const file of [path.join(observer, "index.mjs"), path.join(monitor, "tui.mjs"), path.join(reviewer, "tui.mjs")])
     execFileSync(process.execPath, ["--check", file], { env, timeout: 10000 })
@@ -1570,7 +1573,7 @@ createInterface({input:process.stdin}).on('line',line=>{
  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result})+'\\n');
 });
 `)
-  const reviewerEntry = { package: reviewer, options: { baseURL: origin + "/review", model: "v2-production-reviewer",
+  await publish(path.join(path.dirname(cliPath), "opencode-reviewer.json"), { server: { baseURL: origin + "/review", model: "v2-production-reviewer",
         ...(retrievalModelCase ? { apiKey: "verdict-only-key", retrievalBaseURL: `http://127.0.0.1:${retrievalServer.address().port}/v1`,
           retrievalModel: "v2-retrieval-only", retrievalApiKey: "retrieval-only-key" } : {}),
         stream: streaming, autoApprove: automatic, fastMode: fast, autoApproveDelaySeconds: approvalDelaySeconds,
@@ -1578,8 +1581,8 @@ createInterface({input:process.stdin}).on('line',line=>{
         ...(directoryEditCase ? { reviewExternalDirectories: true } : {}),
          ...(registeredTool ? { reviewTools: true, maxEvidenceBytes: fast ? 131072 : 2048 } : {}),
          ...(largeSource ? { maxEvidenceBytes: 2048 } : {}),
-       timeoutMs: evidenceTimeout ? 1 : 120000, notify: notificationCase, notifySound: false, staleReminderSeconds: 0,
-       ...(notificationCase ? { notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } : {}) } }
+       timeoutMs: evidenceTimeout ? 1 : 120000 }, tui: { notify: notificationCase, notifySound: false, staleReminderSeconds: 0,
+       ...(notificationCase ? { notifications: { ended: { banner: false, sound: false }, error: { banner: false, sound: false } } } : {}) } })
   const config = { $schema: "https://opencode.ai/config.json", model: "fixture/fixture", update: "disable",
     ...(registeredTool ? { mcp: { servers: { fixture: { type: "local", command: [process.execPath, mcpFile] } } } } : {}),
     plugins: [reviewer, observer], permissions: [{ action: "*", resource: "*", effect: "allow" },
@@ -1592,7 +1595,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   // Native autoaccept is explicitly disabled.
   const cli = { $schema: "https://opencode.ai/v2/cli.json", animations: false, attention: { notifications: false, sound: false },
      ...(automatic ? { mouse: !mouseOff } : {}),
-    session: { permissions: "prompt" }, plugins: [reviewerEntry, monitor] }
+    session: { permissions: "prompt" }, plugins: [reviewer, monitor] }
   const startupCli = { ...cli, plugins: ["-opencode-reviewer", monitor] }
   await publish(path.join(project, "opencode.json"), config); await publish(cliPath, startupCli)
   await publish(path.join(artifacts, "setup.json"), { version, scenario, temp, archive, packed, installed,
@@ -1600,20 +1603,20 @@ createInterface({input:process.stdin}).on('line',line=>{
     environment: { HOME: env.HOME, XDG_STATE_HOME: env.XDG_STATE_HOME }, stateRoot, historyFile,
     ...(defaultHomeCase ? { oldHistoryFile, hostStateMode: "0775" } : {}),
     socket: runtime.socket, supervisorPID: runtime.supervisorPID })
-  let serverArguments = ["--standalone"]
+  service = await managedReviewer({ runtime, env, directory: initial, host })
+  let serverArguments = []
   if (reconnectCase) {
-    const reserve = createServer()
-    await new Promise(resolve => reserve.listen(0, "127.0.0.1", resolve))
-    const port = reserve.address().port
-    await new Promise(resolve => reserve.close(resolve))
-    await runtime.start("-d", "-s", "v2-review-server", "-c", initial, "env", "XDG_STATE_HOME=" + env.XDG_STATE_HOME,
-      host, "serve", "--service", "--hostname", "127.0.0.1", "--port", String(port))
-    const target = `http://127.0.0.1:${port}`
     const { Service } = await import("@opencode/client/service")
-    const endpoint = await until("isolated loopback service registration", async () => {
-      try { return await Service.discover({ file: path.join(env.XDG_STATE_HOME, "opencode/service.json") }) } catch { return false }
-    })
-    assert.equal(endpoint.url, target)
+    const { endpoint } = service
+    const target = endpoint.url
+    serviceSubscription = (async () => {
+      for await (const event of service.client.event.subscribe({ signal: serviceEvents.signal })) {
+        if (event.type.startsWith("permission.")) servicePermissionEvents.push({ type: event.type, location: event.location, data: event.data, at: Date.now() })
+        // The host publishes the engine's own in-process reply without a location, unlike a reply
+        // made over HTTP with a directory. Own the reply by the fixture's sessions instead.
+        if (event.type === "permission.replied" && [sessionID, childSession?.id].includes(event.data.sessionID)) serviceReplies.push(event.data)
+      }
+    })().catch(error => { if (!serviceEvents.signal.aborted) errors.push(String(error)) })
     // Only this fixture-owned loopback proxy authenticates to its private server.
     // Never publish its ephemeral service credentials in captures or artifacts.
     const authentication = Service.headers(endpoint)
@@ -1649,56 +1652,26 @@ createInterface({input:process.stdin}).on('line',line=>{
     create: ({ timeoutMs }) => command({ type: "connection-probe" }, timeoutMs),
     remove: (sessionID, { timeoutMs } = {}) => command({ type: "remove-probe", sessionID }, timeoutMs) })
   await publish(path.join(artifacts, "connection-probe.json"), probe)
+  const snapshot = await verifiedSnapshot(service, initial)
+  assert.deepEqual(snapshot.automation, { autoApprove: automatic, autoRejectSteering: false, fastMode: fast })
+  await publish(path.join(artifacts, "startup-snapshot.json"), snapshot)
   await publish(cliPath, cli)
-  await until("actual configured production CLI runtime", async () =>
-    (await command({ type: "runtime-ready" })).registered)
-  if (automatic) await until("actual production storage observer readiness", async () =>
+  await until("registered production viewer", async () => {
+    assert.doesNotMatch(capture(), /\b\d+ plugins? failed \/plugins\b/, "A terminal plugin failed to load")
+    return (await command({ type: "runtime-ready" })).registered
+  })
+  if (automatic) await until("viewer observations ready", async () =>
     (await readObservation(path.join(artifacts, "storage-observations.json"), { optional: true }))?.ready)
-   const status = await until("active production companion", async () => {
-     const value = await command({ type: "status" })
-     return value.handshake && value.plugins.data.find(item => item.id === "opencode-reviewer")?.state.status === "active" && value
-   })
-  assert.equal(status.plugins.data.find(item => item.id === "opencode-reviewer")?.state.status, "active")
-  handshake = status.handshake
-  assert.equal(handshake.protocol, 2)
-  assert.equal(handshake.hostVersion, version.slice("opencode v".length))
-  assert.deepEqual(handshake.location, { directory: initial })
-   assert.equal(handshake.project.directory, projectTransition ? initial : project)
-   currentProject = handshake.project
-  assert.match(handshake.epoch, /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i)
+  identity = await service.identity()
+  startupProject = (await command({ type: "status" })).location.project
+  assert.equal(startupProject.directory, projectTransition ? initial : project)
+  currentProject = startupProject
   const session = await command({ type: "start", text: prompt })
   sessionID = session.id
   await until("controlled initial native model request", () => mainResponse)
   if (reconnectCase && !pendingReconnect) {
-    const before = await until("initial production connection observation", async () => {
-      const value = await readObservation(path.join(artifacts, "storage-observations.json"))
-      return value.connection?.active && value.connection.id && value
-    })
-    assert.ok(proxyRequests.some(item => /event-stream/.test(item.type)), "Cut an actual live HTTP event stream")
-    networkBlocked = true
-    for (const socket of proxySockets) socket.destroy()
-    await until("production reviewer revoked during actual network outage", async () => {
-      const value = await readObservation(path.join(artifacts, "storage-observations.json"))
-      return value.connection?.active === false
-    }, 10000)
-    const start = performance.now()
-    do {
-      const record = await observations()
-      assert.deepEqual(record.replied, []); assert.equal(await executed(), null); assert.equal(reviewPOSTs, 0)
-      await sleep(75)
-    } while (performance.now() - start < 1500)
-    networkBlocked = false
-    const after = await until("fresh production reviewer admitted after actual socket reconnection", async record => {
-      const value = await readObservation(path.join(artifacts, "storage-observations.json"))
-      return value.connection?.active && value.connection.id !== before.connection.id
-        && record.connections?.some(item => item.id === value.connection.id) && value
-    })
-    assert.equal(after.setups, before.setups, "Network recovery must not depend on plugin reload")
-    assert.equal(after.connection.generation, before.connection.generation + 1)
-    assert.deepEqual((await command({ type: "status" })).handshake, handshake, "The same companion survives the outage")
-    assert.equal((await command({ type: "pending", sessionID })).length, 0)
-    networkEvidence = { before, after, outageMs: performance.now() - start, requests: proxyRequests }
-    await publish(path.join(artifacts, "network-reconnect.json"), networkEvidence)
+    await reconnectViewer("before permission")
+    assert.deepEqual(await command({ type: "pending", sessionID }), [])
   }
    if (longSession) {
      const completed = mainResponse.body.messages.filter(message => message.role === "tool" && message.tool_call_id.startsWith("warmup-"))
@@ -1715,7 +1688,7 @@ createInterface({input:process.stdin}).on('line',line=>{
       assert.ok(identities.length === 512 || identities.length === 1536, "Observe either shared or distinct native inner call IDs")
       const perIdentity = identities.length === 512 ? 3 : 1
       assert.ok(identities.every(counts => counts.before === perIdentity && counts.after === perIdentity))
-     assert.deepEqual((await command({ type: "status" })).handshake, handshake, "No restart or new capture epoch")
+     assert.deepEqual(await service.identity(), identity, "No restart or new capture epoch")
      await publish(path.join(artifacts, "warmup-model-calls.json"), warmupCalls)
    }
      if (instructionsCase) await exerciseInstructions(cli, startupCli)
@@ -1736,7 +1709,7 @@ createInterface({input:process.stdin}).on('line',line=>{
      releaseNativeCall()
     if (editCase) {
      // One direct native call remains running across both permission stages. The
-     // monitor reads native data and the companion RPC; only production replies.
+     // monitor reads native permissions and the bound tool message.
      for (const [index, action] of editActions.entries()) {
        allowedReplies = index
        request = await until(`native ${action} permission`, record => record?.asked[index])
@@ -1755,13 +1728,13 @@ createInterface({input:process.stdin}).on('line',line=>{
          assert.deepEqual(request.resources, [path.dirname(editTarget) + "/*"], "Exact outside-project directory boundary")
          assert.equal(request.metadata?.files, undefined, "Native access precedes edit preview construction")
        } else assert.deepEqual(request.resources, [writeTarget])
-       inspection = await command({ type: "inspect", sessionID, requestID: request.id, epoch: handshake.epoch })
+       inspection = await command({ type: "inspect", sessionID, requestID: request.id })
        inspections.push(inspection)
-       assertWriteInspection(inspection, request, toolCall, sessionID, handshake)
+       assertWriteInspection(inspection, request, toolCall, sessionID, initial, startupProject.id)
        await publish(path.join(artifacts, `inspection-stage-${index + 1}.json`), inspection)
        await until(`production ${action} reviewer POST`, () => reviewPOSTs === index + 1 && reviewResponse)
        const evidence = JSON.parse(calls.filter(call => call.url === "/review/chat/completions")[index].body.messages[1].content)
-       assertEvidenceRequest(evidence, request, sessionID, initial, handshake.project.id)
+       assertEvidenceRequest(evidence, request, sessionID, initial, startupProject.id)
        assertWriteEvidence(evidence, { action, target: writeTarget, prompt, initial, project })
        const stage = { action, request, evidence, description: editDescriptions[index], countdown: undefined }
        editStages.push(stage)
@@ -1775,9 +1748,6 @@ createInterface({input:process.stdin}).on('line',line=>{
            assert.equal(saved.payloadCount, index, "Current unresolved report remains memory-only")
            assert.ok(saved.rows.every(row => JSON.parse(row.context).permission !== request.id))
          }
-         const facts = await coverState()
-         assert.deepEqual(facts.events.filter(event => event.type === "permissionResolved" && event.accepted)
-           .map(event => event.context.permission), requests.slice(0, index).map(item => item.id))
          assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, 1,
            "No native tool completion before the final edit stage releases")
        }
@@ -1796,11 +1766,9 @@ createInterface({input:process.stdin}).on('line',line=>{
          assert.ok(seconds >= approvalDelaySeconds - 1, "Each stage gets its own fresh full normal countdown")
          return proof
        }, 15000)
-       const accepted = await coverState()
-       const acceptedEvents = accepted.events.filter(event => event.type === "reviewAccepted" && event.accepted
-         && event.context.permission === request.id)
-       assert.equal(acceptedEvents.length, 1, "One production accepted review for this exact permission stage")
-       assert.equal(acceptedEvents[0].context.category, action)
+       const accepted = (await service.snapshot()).views.find(item => item.view.request.id === request.id)
+       assert.equal(accepted.head, true)
+       assert.equal(accepted.view.autoApproval.status, "countdown")
        await saveCapture(`stage-${index + 1}-countdown`)
        await negativeWindow(`${action} countdown remains pending with no mutation`, [request], priorReplies,
          beforeEdit, index + 1, 1500, unresolved)
@@ -1819,12 +1787,6 @@ createInterface({input:process.stdin}).on('line',line=>{
        } else await until("native write applies exact requested contents", async () => await executed() === afterEdit)
        const saved = await until(`actual saved ${action} report and both aggregate scopes`, async () =>
          savedStageHistory(await readHistory(), editStages, sessionID), 20000)
-       const facts = await coverState()
-       const resolutions = facts.events.filter(event => event.type === "permissionResolved" && event.accepted
-         && event.context.permission === request.id)
-       assert.equal(resolutions.length, 1, "Exactly one qualifying production resolution saves this stage")
-        assert.ok(["approved", "auto"].includes(resolutions[0].outcome), "The native once saves independently of acknowledgement ordering")
-       assert.equal(resolutions[0].context.category, action)
        stage.savedEntry = saved.rows.find(row => JSON.parse(row.context).permission === request.id).id
        stage.savedRow = saved.rows.find(row => row.id === stage.savedEntry)
        await publish(path.join(artifacts, `history-saved-stage-${index + 1}.json`), saved)
@@ -1843,13 +1805,8 @@ createInterface({input:process.stdin}).on('line',line=>{
      for (const key of ["rows", "reviews", "attempts", "approvals"]) assert.equal(historyEvidence[key].length, requestCount)
      for (const stage of editStages) assert.deepEqual(historyEvidence.rows.find(row => row.id === stage.savedEntry), stage.savedRow,
        "Later native continuation never rewrites a previously saved report")
-     const finalFacts = await coverState()
-     for (const type of ["reviewAccepted", "permissionResolved", "approvalConfirmed", "attemptDispatched", "attemptFinalized"]) {
-       const events = finalFacts.events.filter(event => event.type === type && event.accepted)
-       assert.equal(events.length, requestCount, `Exact ${type} count across stages`)
-       assert.deepEqual(events.map(event => event.context.permission), requests.map(item => item.id))
-       assert.deepEqual(events.map(event => event.context.category), editActions)
-     }
+     const decisions = (await service.snapshot()).recent
+     for (const stage of editStages) assert.equal(decisions.filter(item => item.permissionID === stage.request.id && item.decision === "once").length, 1)
      const replies = (await observations()).replied
      const stable = async () => {
        assert.deepEqual(await savedStageHistory(await readHistory(), editStages, sessionID), historyEvidence)
@@ -1880,17 +1837,17 @@ createInterface({input:process.stdin}).on('line',line=>{
      runtime.tmux("send-keys", "-t", "v2-review", "Escape")
      await until("production edit history closes via real Escape", record => record?.mode === "base" && !capture().includes("Analysis history"))
      await publish(path.join(artifacts, "native-write-stages.json"), { toolCall, target: editTarget,
-       before: beforeEdit, after: afterEdit, stages: editStages, completed, historyEvidence, facts: finalFacts })
+       before: beforeEdit, after: afterEdit, stages: editStages, completed, historyEvidence, decisions })
    } else if (skillCase) {
      request = await until("native skill permission", record => record?.asked[0])
      requests.push(request)
       assert.equal(request.action, registeredTool ? "fixture_lookup" : "skill")
       if (!registeredTool) assert.deepEqual(request.resources, [skillID])
      assert.equal(request.source.id, toolCall.id)
-     inspection = await command({ type: "inspect", sessionID, requestID: request.id, epoch: handshake.epoch })
+     inspection = await command({ type: "inspect", sessionID, requestID: request.id })
      inspections.push(inspection)
-     assert.deepEqual(inspection.captured.invocation.input, toolCall.input)
-      assert.equal(inspection.captured.invocation.tool, toolCall.name)
+     assert.deepEqual(inspection.message.content.find(item => item.id === toolCall.id).state.input, toolCall.input)
+      assert.equal(inspection.message.content.find(item => item.id === toolCall.id).name, toolCall.name)
      await until("production skill reviewer POST", () => reviewResponse)
      const loaded = async () => {
        const message = await command({ type: "message", sessionID, messageID: request.source.messageID })
@@ -1938,23 +1895,21 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.deepEqual(request.resources, [toolCall.input.command])
   assert.equal(request.source.type, "tool")
   assert.equal(request.source.id, toolCall.id)
-    inspection = await command({ type: "inspect", sessionID, requestID: request.id, epoch: handshake.epoch })
+    inspection = await command({ type: "inspect", sessionID, requestID: request.id })
     inspections.push(inspection)
    await publish(path.join(artifacts, "inspection.json"), inspection)
   assert.deepEqual(inspection.request, request)
   assert.equal(inspection.session.id, sessionID)
   assert.equal(inspection.session.parentID, undefined)
   assert.equal(inspection.session.location.directory, initial)
-  assert.equal(inspection.session.projectID, handshake.project.id)
+  assert.equal(inspection.session.projectID, startupProject.id)
   assert.equal(inspection.message.id, request.source.messageID)
   const nativeTool = inspection.message.content.filter(item => item.type === "tool" && item.id === toolCall.id)
   assert.equal(nativeTool.length, 1)
   assert.equal(nativeTool[0].name, "shell")
   assert.equal(nativeTool[0].state.status, "running")
   assert.deepEqual(nativeTool[0].state.input, toolCall.input)
-  assert.deepEqual(inspection.captured.request, request)
-   assert.deepEqual(inspection.captured.invocation, { sessionID, assistantID: request.source.messageID, callID: toolCall.id,
-     tool: "shell", input: toolCall.input, location: handshake.location, project: handshake.project, epoch: handshake.epoch })
+
    if (evidenceTimeout) {
      const unavailable = (record, screen) => {
        assert.deepEqual(record.route, { type: "session", sessionID })
@@ -1988,7 +1943,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.equal(payload.conversation.current.id, sessionID)
   assert.equal(payload.conversation.root.id, sessionID)
   assert.equal(payload.conversation.current.location.directory, initial)
-  assert.equal(payload.conversation.current.projectID, handshake.project.id)
+  assert.equal(payload.conversation.current.projectID, startupProject.id)
    assert.deepEqual(payload.limitations, ["Optional effective native tool definition is not included; exact captured arguments and pending permission scope are retained.",
      ...(retrievalCase ? [] : ["Retrieval is disabled for this review category; no files were read."])])
   if (locationTab) {
@@ -2000,33 +1955,54 @@ createInterface({input:process.stdin}).on('line',line=>{
   } else await until("rendered production evaluating panel", () => capture().includes("Permission analysis"))
   await saveCapture("evaluating")
    await negativeWindow("review response held", [request], [], null, 1, 1500, notificationCase ? noAttention : savedCase ? noSavedBody : () => {})
-    if (pendingReconnect) {
-      await recoverPendingConnection(stalledStream ? "silent-review" : "visible-review", { silent: stalledStream })
-      await until("fresh visible evaluating report", () => capture().includes("Permission analysis"))
-      await negativeWindow("recovered pending review stays manual until a fresh assessment", [request], [], null, 2, 1500, noSavedBody)
-      finishReview()
-      await until("recovered validated countdown", () => /Allowed in \d+s/.test(capture()))
-      await saveCapture("recovered-countdown")
-      if (!stalledStream) {
-        await recoverPendingConnection("visible-countdown", { outageMs: approvalDelaySeconds * 1000 + 1500 })
-        await noSavedBody()
-        allowWrites = true
-        const resumed = performance.now()
-        finishReview()
-        await until("expired original countdown approves only after fresh assessment", async record =>
-          record.replied.length === 1 && await executed() === markerLine)
-        assert.ok(performance.now() - resumed < approvalDelaySeconds * 1000, "Recovery must not restart a full countdown")
-      } else {
-        await negativeWindow("silent-source recovery countdown remains native pending", [request], [], null, 2, 1500, noSavedBody)
-        allowWrites = true
-        await until("silent-source recovery approves once", async record => record.replied.length === 1 && await executed() === markerLine)
+    if (nativeEnterCase) {
+      // The review is still evaluating and the panel paints no button. The native prompt keeps
+      // the keyboard: Enter confirms the highlighted Allow once, the engine writes nothing, the
+      // held review ends without a report and the tool runs.
+      await until("native startup settled before the keyboard test", record =>
+        record?.frame && record.mode === "base" && !capture().includes("Finishing startup"))
+      assert.match(capture(), /Evaluating/)
+      assert.doesNotMatch(capture(), /Cancel|Allowed in/)
+      await saveCapture("native-enter-before")
+      if (nativeEnterClick) {
+        // A real left click on the live panel's text, as a user reading the report would do.
+        // Focus must stay with the native prompt: the panel owns no keyboard without buttons.
+        const rows = capture().split("\n"), y = rows.findIndex(row => row.includes("Evaluating")), x = rows[y].indexOf("Evaluating") + 3
+        assert.ok(y >= 0)
+        runtime.tmux("send-keys", "-t", "v2-review", "-l", `\x1b[<0;${x + 1};${y + 1}M\x1b[<0;${x + 1};${y + 1}m`)
+        await sleep(400)
+        await saveCapture("native-enter-clicked")
       }
+      reviewerTransactions.at(-1).expectedAbort = true
+      manualDecision = true; allowWrites = true
+      runtime.tmux("send-keys", "-t", "v2-review", "Enter")
+      const decision = await until("native Allow once by Enter during the running review", record => record?.replied.length === 1 && record, 10000)
+      assert.equal(decision.replied[0].requestID, request.id)
+      assert.equal(decision.replied[0].reply, "once")
+      await until("native execution after the keyboard decision", async () => await executed() === markerLine)
+      await until("held review ends without a report", () => !capture().includes("Permission analysis"))
+      await saveCapture("native-enter-after")
+      await negativeWindow("a review ended by the native keyboard saves no report", [], (await observations()).replied, markerLine, 1, 3000, noSavedBody)
+    } else if (pendingReconnect) {
+      const pending = (await service.snapshot()).views.find(item => item.view.request.id === request.id)
+      assert.equal(pending.head, true)
+      assert.ok(pending.attempt)
+      await reconnectViewer("pending review", stalledStream)
+      assert.equal((await service.snapshot()).views.find(item => item.view.request.id === request.id)?.attempt, pending.attempt)
+      await until("viewer restores the evaluating panel", () => capture().includes("Permission analysis"))
+      await negativeWindow("same pending review after reconnect", [request], [], null, 1, 1500, noSavedBody)
+      finishReview()
+      await until("validated countdown", () => /Allowed in \d+s/.test(capture()))
+      allowWrites = true
+      if (!stalledStream) await reconnectViewer("countdown", false, true)
+      await until("one automatic reply", async () => serviceReplies.length === 1 && await executed() === markerLine)
+      assert.deepEqual(serviceReplies, [{ requestID: request.id, sessionID, reply: "once" }])
     } else {
     if (descendant || hiddenComplete) {
     childSession = await command({ type: "child", sessionID })
     assert.equal(childSession.parentID, sessionID)
     assert.equal(childSession.location.directory, initial)
-    assert.equal(childSession.projectID, handshake.project.id)
+    assert.equal(childSession.projectID, startupProject.id)
     await publish(path.join(artifacts, "child.json"), childSession)
   }
    if (fast) {
@@ -2042,17 +2018,9 @@ createInterface({input:process.stdin}).on('line',line=>{
      if (decisionCase) {
        runtime.tmux("send-keys", "-t", "v2-review", "Right")
        await until("actual native Always selection before fast preview", record => record?.choices.always === true && record.choices.once === false)
-     } else allowWrites = true
-      sse(reviewResponse, '{"safe":true,"reason":"Decisive reason.","desc":' + JSON.stringify(description).slice(0, -1))
-      if (decisionCase) {
-        await negativeWindow("native Always selection holds fast Safe preview without a reply", [request], [], null, 1, 1500, async record => {
-          assert.equal(record.choices.always, true)
-          assert.equal(reviewCompleted, false)
-          await noSavedBody()
-        })
-        allowWrites = true
-        runtime.tmux("send-keys", "-t", "v2-review", "Left")
-      }
+     }
+     allowWrites = true
+     sse(reviewResponse, '{"safe":true,"reason":"Decisive reason.","desc":' + JSON.stringify(description).slice(0, -1))
        await until("production fast once reply and marker execution", async record => record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n")
        assert.equal(reviewCompleted, false, "Fast approval must precede terminal assessment/EOF")
        if (!descendant) await until("rendered retained fast report", () => {
@@ -2064,7 +2032,7 @@ createInterface({input:process.stdin}).on('line',line=>{
        if (descendant) hiddenDescendant(await observations(), capture())
        if (dialogCase) {
          assert.equal((await observations()).mode, "modal")
-         assert.match(capture(), /Commands/)
+         assert.match(capture(), paletteTitle)
        }
       if (notificationCase) {
         await until("native tool continuation while reviewer response remains held", () => calls.filter(call => call.url === "/v1/chat/completions").length === 2)
@@ -2143,8 +2111,8 @@ createInterface({input:process.stdin}).on('line',line=>{
         await saveCapture("location-tab-approved")
       } else if (hiddenComplete) {
        presentationEvidence.hiddenAccepted = await until("actual normal final acceptance while native child route hides reviewer", async () => {
-         const facts = await coverState(), saved = await readHistory()
-         if (!facts.events.some(event => event.type === "reviewAccepted" && event.accepted)
+         const facts = (await service.snapshot()).views.find(item => item.view.request.id === request.id), saved = await readHistory()
+         if (facts?.view.status !== "complete"
            || !saved?.reviews[0]?.accepted || !saved.attempts[0]?.finalized) return false
          assert.equal(saved.reviews.length, 1)
          assert.equal(saved.attempts.length, 1)
@@ -2244,7 +2212,7 @@ createInterface({input:process.stdin}).on('line',line=>{
            record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n")
          const record = await observations(), screen = capture()
          if (scenario === "normal-hide") hiddenSidebar(record, screen)
-         else if (dialogCase) { assert.equal(record.mode, "modal"); assert.match(screen, /Commands/) }
+         else if (dialogCase) { assert.equal(record.mode, "modal"); assert.match(screen, paletteTitle) }
          else assert.deepEqual(record.terminal, { width: 160, height: 8 })
          assert.doesNotMatch(screen, /Auto-approval canceled/)
          await saveCapture("native-presentation-background-approved")
@@ -2283,11 +2251,8 @@ createInterface({input:process.stdin}).on('line',line=>{
          if (decisionCase) {
            runtime.tmux("send-keys", "-t", "v2-review", "Right")
            await until("native Always choice owns the pending decision", record => record?.choices.always === true && record.choices.once === false)
-           await negativeWindow("Always selection waits past the original countdown without cancellation", [request], [], null, 1,
-             approvalDelaySeconds * 1000 + 1500, record => { assert.equal(record.choices.always, true); assert.doesNotMatch(capture(), /Auto-approval canceled/) })
-           assert.ok(capture().split("\n").some(line => line.includes("Checking…") && line.includes("Cancel")),
-             "A held approval retains both footer buttons on the same row")
-           assert.doesNotMatch(capture(), /Auto-approval waiting/)
+           allowWrites = true
+           await until("server resolves once with Always only highlighted", async record => record?.replied.length === 1 && await executed() === markerLine)
           } else {
             allowWrites = true
             const away = await command({ type: "away", destination: "home", sessionID })
@@ -2298,13 +2263,6 @@ createInterface({input:process.stdin}).on('line',line=>{
               assert.deepEqual(record?.route, away)
               return record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n"
             })
-          }
-          if (decisionCase) {
-            allowWrites = true
-            const resumed = performance.now()
-            runtime.tmux("send-keys", "-t", "v2-review", "Left")
-            await until("waiting request resumes with its expired original deadline", async record => record?.replied.length === 1 && await executed() === "V2_REVIEW_EXECUTED\n")
-            assert.ok(performance.now() - resumed < approvalDelaySeconds * 1000, "Resume must not restart the full countdown")
           }
       } else {
          await negativeWindow("normal countdown remains pending", [request], [], null, 1, 1500, savedCase ? noSavedBody : () => {})
@@ -2329,7 +2287,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   }
    if (projectTransition) {
      const baseline = await until("nongit review saved before Git initialization", savedHistory, 20000)
-     projectTransitionEvidence = { startup: handshake, baseline, stages: [] }
+     projectTransitionEvidence = { startup: identity, baseline, stages: [] }
      // Only fixture-owned Git files change. Never reload the original location:
      // its server companion must continue capturing the startup project identity.
      smokeGitInit(temp, project)
@@ -2339,10 +2297,10 @@ createInterface({input:process.stdin}).on('line',line=>{
        "commit", "--quiet", "--no-gpg-sign", "-m", "Initial fixture commit"])
      const commit = git(["rev-parse", "HEAD"])
      assert.deepEqual(git(["rev-list", "--max-parents=0", "HEAD"]).split("\n"), [commit])
-     assert.notEqual(commit, handshake.project.id)
+     assert.notEqual(commit, startupProject.id)
      const metadata = await until("native session adoption of the committed Git project", async () => {
        const value = await command({ type: "project-metadata", sessionID })
-       assert.deepEqual(value.handshake, handshake, "Original companion remains loaded with its startup project and exact epoch")
+       assert.deepEqual(await service.identity(), identity)
        return value.session.projectID === commit && value
      })
      assert.deepEqual(metadata.discovered, { directory: project, project: { id: commit, directory: project, canonical: project } })
@@ -2379,7 +2337,7 @@ createInterface({input:process.stdin}).on('line',line=>{
        assert.equal(request.source.type, "tool")
        assert.equal(request.source.id, toolCall.id)
        assert.equal(new Set(requests.map(item => item.id)).size, count)
-       inspection = await command({ type: "inspect", sessionID: owner, requestID: request.id, epoch: handshake.epoch })
+       inspection = await command({ type: "inspect", sessionID: owner, requestID: request.id })
        inspections.push(inspection)
        assert.deepEqual(inspection.request, request)
        assert.equal(inspection.session.projectID, commit, "Concrete mismatch with the still-loaded companion's startup project")
@@ -2387,9 +2345,7 @@ createInterface({input:process.stdin}).on('line',line=>{
        assert.equal(inspection.session.parentID, owner === sessionID ? undefined : sessionID)
        assert.equal(inspection.native.root, sessionID)
        assert.ok(inspection.native.family.includes(owner))
-       assert.deepEqual(inspection.captured.request, request)
-       assert.deepEqual(inspection.captured.invocation, { sessionID: owner, assistantID: request.source.messageID, callID: toolCall.id,
-         tool: "shell", input: toolCall.input, location: handshake.location, project: handshake.project, epoch: handshake.epoch })
+
        const running = inspection.message.content.filter(item => item.type === "tool" && item.id === toolCall.id)
        assert.equal(running.length, 1)
        assert.equal(running[0].state.status, "running")
@@ -2443,9 +2399,9 @@ createInterface({input:process.stdin}).on('line',line=>{
          return value
        }, 20000)
        const status = await command({ type: "status" })
-       assert.deepEqual(status.handshake, handshake, "Disable/re-enable and descendant work never replace the companion")
+       assert.deepEqual(await service.identity(), identity)
        assert.equal(status.plugins.data.find(item => item.id === "opencode-reviewer")?.state.status, "active")
-       projectTransitionEvidence.stages.push({ owner, request, inspection, evidence, completed, handshake: status.handshake })
+       projectTransitionEvidence.stages.push({ owner, request, inspection, evidence, completed, identity })
        await publish(path.join(artifacts, "project-transition.json"), projectTransitionEvidence)
      }
      assert.deepEqual((await observations()).replied.map(item => item.requestID), requests.map(item => item.id))
@@ -2464,11 +2420,11 @@ createInterface({input:process.stdin}).on('line',line=>{
       requests.push(request)
       assert.equal(request.sessionID, childSession.id)
       assert.notEqual(request.id, requests[0].id)
-      inspection = await command({ type: "inspect", sessionID: childSession.id, requestID: request.id, epoch: handshake.epoch })
+      inspection = await command({ type: "inspect", sessionID: childSession.id, requestID: request.id })
       inspections.push(inspection)
       assert.equal(inspection.native.root, sessionID)
       assert.equal(inspection.session.parentID, sessionID)
-      assert.deepEqual(inspection.captured.invocation.input, toolCall.input)
+      assert.deepEqual(inspection.message.content.find(item => item.id === toolCall.id).state.input, toolCall.input)
       await until("descendant judge receives root instructions", () => reviewPOSTs === 2 && reviewResponse)
       const payload = JSON.parse(instructionsEvidence.judge[1].body.messages[1].content)
       assert.equal(payload.conversation.root.id, sessionID)
@@ -2499,7 +2455,7 @@ createInterface({input:process.stdin}).on('line',line=>{
       }, 20000)
       assert.equal(instructionsEvidence.judge.length, 2)
       assert.equal(await committedInstructions(), instructionsText)
-      await until("native descendant completion report reaches the root", () => calls.filter(call => call.url === "/v1/chat/completions").length === 5)
+      await until("native descendant completion report reaches the root", () => calls.filter(call => call.url === "descendant-report").length === 1)
       await negativeWindow("instructions root and descendant remain once-only", [], (await observations()).replied,
         markerLine.repeat(2), 2, 1500, () => {}, childSession.id)
       await publish(path.join(artifacts, "session-instructions.json"), instructionsEvidence)
@@ -2546,22 +2502,20 @@ createInterface({input:process.stdin}).on('line',line=>{
      assert.equal(request.source.type, "tool")
      assert.equal(request.source.id, toolCall.id)
      assert.notEqual(request.source.messageID, requests[0].source.messageID)
-     inspection = await command({ type: "inspect", sessionID, requestID: request.id, epoch: handshake.epoch })
+     inspection = await command({ type: "inspect", sessionID, requestID: request.id })
      inspections.push(inspection)
      assert.deepEqual(inspection.request, request)
      assert.equal(inspection.session.id, sessionID)
      assert.equal(inspection.session.parentID, undefined)
      assert.equal(inspection.session.location.directory, initial)
-     assert.equal(inspection.session.projectID, handshake.project.id)
+     assert.equal(inspection.session.projectID, startupProject.id)
      assert.equal(inspection.message.id, request.source.messageID)
      const secondNative = inspection.message.content.filter(item => item.type === "tool" && item.id === toolCall.id)
      assert.equal(secondNative.length, 1)
      assert.equal(secondNative[0].name, "shell")
      assert.equal(secondNative[0].state.status, "running")
      assert.deepEqual(secondNative[0].state.input, toolCall.input)
-     assert.deepEqual(inspection.captured.request, request)
-     assert.deepEqual(inspection.captured.invocation, { sessionID, assistantID: request.source.messageID, callID: toolCall.id,
-       tool: "shell", input: toolCall.input, location: handshake.location, project: handshake.project, epoch: handshake.epoch })
+
      await publish(path.join(artifacts, "inspection-second.json"), inspection)
      await until("second production reviewer POST from actual captured native evidence", () => reviewPOSTs === 2 && reviewResponse)
      const secondPayload = JSON.parse(calls.filter(call => call.url === "/review/chat/completions")[1].body.messages[1].content)
@@ -2571,7 +2525,7 @@ createInterface({input:process.stdin}).on('line',line=>{
      assert.equal(secondPayload.conversation.current.id, sessionID)
      assert.equal(secondPayload.conversation.root.id, sessionID)
      assert.equal(secondPayload.conversation.current.location.directory, initial)
-     assert.equal(secondPayload.conversation.current.projectID, handshake.project.id)
+     assert.equal(secondPayload.conversation.current.projectID, startupProject.id)
      assert.deepEqual(secondPayload.limitations, payload.limitations)
      await phase("second-native-review-held-behind-history", { request })
      const unchangedFirst = async (record, screen) => {
@@ -2657,7 +2611,7 @@ createInterface({input:process.stdin}).on('line',line=>{
         await nativePresentationCommand("command.palette.show")
          const paletteFrame = await until("mouse-off native palette paints a real modal frame and revokes history input", async record => {
            if (record?.mouse !== false || record.mode !== "modal" || record.frame?.mode !== "modal"
-             || !(record.frame?.id > before.id) || !capture().includes("Commands")) return false
+             || !(record.frame?.id > before.id) || !paletteTitle.test(capture())) return false
            const facts = await coverState(), input = facts.historyInput
            if (!input || input.mode !== "modal" || input.frame <= before.id || input.keyboard !== false) return false
            assert.equal(input.mouse, false)
@@ -2666,7 +2620,7 @@ createInterface({input:process.stdin}).on('line',line=>{
         runtime.tmux("send-keys", "-t", "v2-review", "Escape")
          coverEvidence.keyboard.input = await until("actual mouse-off history keyboard ownership after a fresh native root FRAME", async record => {
            if (record?.mouse !== false || record.mode !== "base" || record.frame?.mode !== "base"
-             || !(record.frame?.id > paletteFrame.id) || capture().includes("Commands")) return false
+             || !(record.frame?.id > paletteFrame.id) || paletteTitle.test(capture())) return false
            const facts = await selectedOriginal(record, capture(), 2), proof = facts.historyInput
            if (!proof || proof.frame <= paletteFrame.id || proof.mode !== "base" || proof.keyboard !== true) return false
            assert.equal(proof.mouse, false)
@@ -2683,7 +2637,7 @@ createInterface({input:process.stdin}).on('line',line=>{
           assert.match(screen, /Analysis history/)
           assert.match(screen, /✓ Safe/)
           assert.match(screen, /Auto approved/)
-          assert.doesNotMatch(screen, /Permission analysis|Allowed in|Loading history|History could not be read|Commands/)
+          assert.doesNotMatch(screen, /Permission analysis|Allowed in|Loading history|History could not be read|Commands|Search commands/)
           const facts = await coverState()
           assert.equal(facts.history.open, true)
           assert.equal(facts.history.status, "ready")
@@ -2807,25 +2761,7 @@ createInterface({input:process.stdin}).on('line',line=>{
           })
       }
     }
-   if (pendingReconnect) {
-     historyEvidence = await until("recovery saves the final report and drains every actual POST", async () => {
-       const value = await readHistory()
-       if (value?.rows.length !== 1 || value.approvals[0]?.state !== "confirmed"
-         || value.attempts.length !== expectedReviewPOSTs || value.attempts.some(item => !item.finalized)) return
-       const totals = JSON.parse(value.meta.totals)
-       // The interrupted first response sends no usage. Count its dispatched and
-       // finalized attempt, but do not invent a usage-bearing request or zeros.
-       if (totals.activity.usageRequests !== expectedReviewPOSTs - 1 || totals.activity.reviews !== expectedReviewPOSTs - 1) return
-       assert.equal(value.payloadCount, 1); assert.equal(value.approvals.length, 1)
-       const row = value.rows[0], context = JSON.parse(row.context), body = JSON.parse(row.body)
-       assert.equal(context.permission, request.id); assert.equal(context.session, sessionID)
-       assert.equal(body.safe, true); assert.equal(body.desc, description); assert.equal(row.outcome, "auto")
-       assert.equal(totals.activity.autoApproved, 1); assert.equal(totals.activity.retries, 0)
-       assert.equal(value.attempts.filter(item => !JSON.parse(item.finalized).usage).length, 1)
-       assert.equal(totals.input, 23 * (expectedReviewPOSTs - 1)); assert.equal(totals.output, 11 * (expectedReviewPOSTs - 1))
-       return value
-     }, 20000)
-    } else if (savedCase && !coverCase && !historyCase && !notificationCase && !editCase && !skillCase && !projectTransition && !instructionsCase) {
+   if (savedCase && !coverCase && !historyCase && !notificationCase && !editCase && !skillCase && !projectTransition && !instructionsCase) {
      historyEvidence = await until("background automatic report and aggregates save normally", savedHistory, 20000)
      await publish(path.join(artifacts, "background-saved-history.json"), historyEvidence)
    }
@@ -2838,7 +2774,7 @@ createInterface({input:process.stdin}).on('line',line=>{
     historyEvidence = await until("actual worker-saved history and aggregate commits", savedHistory, 20000)
     if (defaultHomeCase) {
       assert.equal(historyEvidence.file, path.join(env.HOME,
-        ".local/state/opencode-reviewer-state/opencode-reviewer/history-v1.sqlite"), "Actual saved database uses the private plugin-owned sibling")
+        ".local/state/opencode-reviewer-state/opencode-reviewer/history-v2.sqlite"), "Actual saved database uses the private plugin-owned sibling")
       const pluginState = await lstat(path.join(stateBase, "opencode-reviewer-state"))
       assert.ok(pluginState.isDirectory() && !pluginState.isSymbolicLink())
       assert.equal(pluginState.mode & 0o777, 0o700, "Fallback namespace is private")
@@ -3069,12 +3005,14 @@ createInterface({input:process.stdin}).on('line',line=>{
    }
    }
     }
-  assert.equal(reviewCompleted, !evidenceTimeout)
+  assert.equal(reviewCompleted, !evidenceTimeout && !nativeEnterCase)
    assert.equal(reviewPOSTs, expectedReviewPOSTs)
-   assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, allowWrites ? nativeCallCount * 2 + (instructionsCase ? 1 : 0) : 1)
+   assert.equal(calls.filter(call => call.url === "/v1/chat/completions").length, allowWrites ? nativeCallCount * 2 : 1)
+   // A completed descendant wakes its parent exactly once. Other cases never finish a child session.
+   await until("exact descendant completion reports", () => calls.filter(call => call.url === "descendant-report").length === (instructionsCase || projectTransition ? 1 : 0))
   const final = await observations()
    assert.equal(final.asked.length, requestCount)
-    assert.equal(final.replied.length, allowWrites || manualHistoryCase ? requestCount : 0)
+    assert.equal((pendingReconnect ? serviceReplies : final.replied).length, allowWrites || manualHistoryCase ? requestCount : 0)
    assert.deepEqual(final.route, backgroundRoute ?? { type: "session", sessionID: fast && descendant ? childSession.id : sessionID })
   if (automatic) assert.equal(final.mouse, !mouseOff && !keyboardMouseOffCase)
   if (negative) assert.equal(await executed(), null)
@@ -3082,7 +3020,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   // Notification acceptance also verifies production/backend teardown while the
   // host is alive. Other cases disable only the independent observer as before.
    await publish(cliPath, { ...cli, ...(keyboardMouseOffCase ? { mouse: false } : {}), plugins: notificationCase ? ["-opencode-reviewer", "-fixture.review.monitor"]
-     : [reviewerEntry, "-fixture.review.monitor"] })
+     : [reviewer, "-fixture.review.monitor"] })
   const cleaned = await until("monitor final flush/close", record => record?.cleaned && record)
   if (notificationCase) {
     notificationEvidence.cleaned = await until("production notification backend disposed and publisher closed", async () => {
@@ -3096,20 +3034,23 @@ createInterface({input:process.stdin}).on('line',line=>{
   await assertDefaultHomeStorage()
   assert.deepEqual(await readObservation(monitorPath), cleaned, "No observer callback after final close")
   if (notificationCase) assert.deepEqual(await notificationObservations(), notificationEvidence.cleaned, "No backend publication after final close")
-  await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, temp, handshake, inspection,
+  await publish(path.join(artifacts, "results.json"), { outcome: "pass", version, scenario, temp, identity, inspection,
           assessment, reviewCompleted, reviewPOSTs, calls, warmupBatches: warmupCalls.length, requests, inspections, childSession, historyEvidence, coverEvidence, notificationEvidence, presentationEvidence, projectTransitionEvidence, networkEvidence, instructionsEvidence,
-        ...(editCase ? { editStages, editTarget, beforeEdit, afterEdit } : {}), negativeWindows, observations: cleaned, execution: await executed(), limits })
+        ...(editCase ? { editStages, editTarget, beforeEdit, afterEdit } : {}), ...(reconnectCase ? { serviceReplies } : {}),
+        negativeWindows, observations: cleaned, execution: await executed(), limits })
   console.log(`PASS V2 installed production review ${scenario}: ${artifacts}`)
   console.log(`Isolated files: ${temp}`)
 } catch (error) {
   await saveCapture("failed").catch(() => {})
   await publish(path.join(artifacts, "failure.json"), { version, scenario, temp, error: String(error), stack: error.stack,
-        errors, handshake, inspection, request, requests, inspections, coverEvidence, presentationEvidence, projectTransitionEvidence, calls, reviewPOSTs, reviewCompleted, negativeWindows, limits,
+        errors, identity, inspection, request, requests, inspections, coverEvidence, presentationEvidence, projectTransitionEvidence, calls, reviewPOSTs, reviewCompleted, negativeWindows, limits, servicePermissionEvents,
     ...(editCase ? { editStages, editTarget, beforeEdit, afterEdit } : {}),
     notifications: notificationCase ? await readObservation(notificationPath, { optional: true }).catch(() => null) : undefined,
     observations: await readObservation(monitorPath, { optional: true }).catch(() => null) })
   throw error
 } finally {
+  serviceEvents.abort()
+  await serviceSubscription
   try { await runtime.dispose() }
   finally {
     if (networkProxy) { for (const socket of proxySockets) socket.destroy(); await new Promise(resolve => networkProxy.close(resolve)) }

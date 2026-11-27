@@ -1,8 +1,8 @@
 import { createEffect, createMemo, createSignal, Index, Match, onCleanup, Show, Switch, untrack } from "solid-js"
 import { CliRenderEvents, CodeRenderable, RGBA, ScrollBoxRenderable, type BoxRenderable, type MarkdownRenderable, type Renderable } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
-import type { Config } from "./config.js"
-import { displayText, type RequestIdentity, type View } from "./controller.js"
+import type { RequestIdentity, View } from "./controller.js"
+import { displayText } from "./display-text.js"
 import { scannerFrame, SCANNER_FRAME_COUNT, SCANNER_INTERVAL_MS } from "./appearance.js"
 import { HostReviewDescription } from "./review-description.js"
 import { HostReviewMetadata } from "./host-review-metadata.js"
@@ -36,13 +36,12 @@ export interface HostReviewPanelProps {
   sidebarGeometry(): HostPanelBounds | undefined
   /** Stable app-slot parent can own the same measured absolute frame. */
   positionedByParent?: boolean
-  config?: Pick<Config, "autoApprove" | "fastMode"> & Partial<Pick<Config, "autoRejectSteering">>
   /** Host CLI animation preference, if available. Does not alter mouse tracking. */
   animations?: () => boolean
   lifetimeText?: () => string | undefined
   historyProbe?: HistoryRenderProbe
-  onApprove(id: string): void | Promise<void>
-  onCancel(id: string): void
+  onApprove(id: string, attempt: string): void
+  onCancel(id: string, attempt: string): void
 }
 
 /** Structural nodes let source tests exercise the real proof without a terminal. */
@@ -177,22 +176,23 @@ function HostReviewButton(props: { context: Plugin.Context; label: string; selec
     }}><text fg={foreground()}>{props.label}</text></box>
 }
 
-function HostReviewFooter(props: Pick<HostReviewPanelProps, "context" | "onApprove" | "onCancel"> & { view: View<RequestIdentity>; enabled: boolean;
-  approvals: boolean; ref(value: BoxRenderable): void }) {
+function HostReviewFooter(props: Pick<HostReviewPanelProps, "context" | "onApprove" | "onCancel"> & { view: View<RequestIdentity>
+  attempt: string
+  ref(value: BoxRenderable): void }) {
   const [selected, setSelected] = createSignal<"approve" | "cancel">("approve")
   const state = () => props.view.autoApproval
   const copy = () => automaticCopy(props.view)
   const label = () => { const current = state(); return current?.status === "countdown" ? copy().countdown(current.seconds) : copy().checking }
-  return <Show when={props.enabled && ((props.approvals && props.view.assessment?.safe) || props.view.steerable || !!state())}>
+  return <Show when={props.view.steerable || !!state()}>
     <box ref={props.ref} marginTop={1} paddingTop={1} minHeight={3} flexShrink={0} border={["top"]} borderColor={props.context.theme.border.base}>
       <Switch>
         <Match when={!state() || state()?.status === "countdown" || state()?.status === "checking" || state()?.status === "waiting"}>
           <box flexDirection="row" gap={1}>
             <HostReviewButton context={props.context} label={label()} disabled={state()?.status !== "countdown"}
               selected={selected() === "approve"} onHover={() => setSelected("approve")}
-              onClick={() => { void props.onApprove(props.view.request.id) }} />
+              onClick={() => props.onApprove(props.view.request.id, props.attempt)} />
             <HostReviewButton context={props.context} label={copy().cancel} selected={selected() === "cancel"}
-              onHover={() => setSelected("cancel")} onClick={() => props.onCancel(props.view.request.id)} />
+              onHover={() => setSelected("cancel")} onClick={() => props.onCancel(props.view.request.id, props.attempt)} />
           </box>
         </Match>
         <Match when={state()?.status === "allowing"}>
@@ -242,7 +242,7 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
       if (paintedAssessment && paintedAssessment === assessment && readyAssessment !== assessment
         && description && !description.isDestroyed && description.getChildrenCount() && highlightingComplete(description)) readyAssessment = assessment
       const anchor = props.sidebarOwner()
-      return proof.state({ width: context.renderer.width, height: context.renderer.height, fast: props.config?.fastMode === true,
+      return proof.state({ width: context.renderer.width, height: context.renderer.height, fast: !footer || !!view().retained,
         id, request: view().request, root: props.rootSession(), route: context.ui.router.current(),
         mode: context.keymap.mode.current(), mouse: context.renderer.useMouse,
         anchor: anchor && { ...anchor, node: anchor.node as HostPanelNode }, bounds: props.sidebarGeometry(),
@@ -320,8 +320,9 @@ export function HostReviewPanel(props: HostReviewPanelProps) {
         <Show when={props.lifetimeText?.()}>{text => <HostReviewMetadata context={context} id="reviewer.review.lifetime" text={text()} />}</Show>
       </>}</Show>
     </scrollbox>
-    <HostReviewFooter ref={value => { footer = value }} context={context} view={view()} onApprove={props.onApprove} onCancel={props.onCancel}
-      enabled={props.config?.autoApprove === true || props.config?.autoRejectSteering === true}
-      approvals={props.config?.autoApprove === true} />
+    <Show when={view().review} keyed>{attempt =>
+      <HostReviewFooter ref={value => { footer = value }} context={context} attempt={attempt}
+        view={view()} onApprove={props.onApprove} onCancel={props.onCancel} />
+    }</Show>
   </box>
 }

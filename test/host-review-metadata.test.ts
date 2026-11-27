@@ -30,7 +30,7 @@ test("live and history metadata use measured width, never wrap, and restore text
         insert(value: Record<string, unknown>, content: () => string) { solid.createRenderEffect(() => { value.content = content() }) },
         insertNode(parent: unknown, child: unknown) { assert.equal(parent, container); assert.equal(child, node) },
       },
-      "./controller.js": { displayText }, "./metadata-text.js": { metadataText },
+      "./display-text.js": { displayText }, "./metadata-text.js": { metadataText },
     }
     const module = { exports: {} as { HostReviewMetadata(props: unknown): unknown } }
     new Function("require", "module", "exports", compiled.code)((name: string) => {

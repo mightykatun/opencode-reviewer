@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { setImmediate as settle } from "node:timers/promises"
 import type { FormInfo, OpenCodeEvent, PermissionRequest, SessionInfo, ShellInfo, PersistentPtyInfo } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin/tui"
-import type { CliPluginState } from "../src/cli-plugin.js"
+import type { ViewerNotifications } from "../src/host-notifications.js"
 import type { HostRequest } from "../src/host-types.js"
 import type { View } from "../src/controller.js"
 import type { AncestryReader } from "../src/session-ancestry.js"
@@ -11,8 +11,7 @@ import type { HistoryTarget } from "../src/history-records.js"
 import type { NotificationBackend, NotificationClick, NotificationMessage } from "../src/notification-types.js"
 import { HostNotifications, setupHostNotifications, type HostNotificationCheckpoint } from "../src/host-notifications.js"
 import { hostQueueSnapshot, type HostQueueSnapshot } from "../src/host-queue.js"
-import { parseConfig } from "../src/config.js"
-import { BUILTIN_PROMPTS } from "../src/prompts.js"
+import { parseNotificationConfig } from "../src/notification-config.js"
 import type { PluginDependencies } from "../src/plugin-dependencies.js"
 
 const request = (id: string, sessionID = "root"): HostRequest => ({ id, sessionID, action: "shell", resources: ["pwd"] })
@@ -65,9 +64,8 @@ function fixture(options: Record<string, unknown> = {}, resolveRoot: AncestryRea
     } },
     keymap: { mode: { current: () => mode }, dispatch: () => { throw new Error("Must not toggle sidebar blindly") } },
   } as unknown as Plugin.Context
-  const state: CliPluginState = {
-    config: parseConfig({ baseURL: "http://localhost", model: "fixture", autoApprove: true, notifySound: false,
-      staleReminderSeconds: 0, ...options }), prompts: BUILTIN_PROMPTS, stateRoot: "/unused",
+  const state: ViewerNotifications = {
+    notificationConfig: parseNotificationConfig({ notifySound: false, staleReminderSeconds: 0, ...options }),
     dependencies: dependencies ?? { notifications: click => {
       clicked = click
       return backend ?? { async show(message, signal) { banners.push(message); signals.push(signal); return { close() {} } }, dispose() {} }
@@ -366,7 +364,8 @@ test("Safe automation waits silently, mode suspension needs attention, and remin
   const f = fixture({ staleReminderSeconds: 1 }); f.host.visit("root")
   const p = request("safe"), disabled = request("disabled")
   f.permissions.set("root", [p]); f.ask(p)
-  const safe: View<HostRequest> = { request: p, status: "complete", assessment: { safe: true, desc: "ok" } }
+  const safe: View<HostRequest> = { request: p, status: "complete", assessment: { safe: true, desc: "ok" },
+    autoApproval: { status: "waiting" } }
   f.host.snapshot([safe], true); await f.advance(5000); assert.equal(f.banners.length, 0)
   f.host.snapshot([{ ...safe, autoApproval: { status: "countdown", seconds: 1 } }]); await settle(); assert.equal(f.banners.length, 0)
   f.host.snapshot([{ request: p, status: "suspended" }]); await settle(); assert.equal(f.banners.length, 1)
@@ -381,18 +380,19 @@ test("Safe automation waits silently, mode suspension needs attention, and remin
   await f.host.dispose()
 })
 
-test("automatic approval requires matching confirmed dispatch and preserves the child's exact history target", async () => {
+test("approved snapshots need a fresh matching birth and preserve the child's exact history target", async () => {
   const f = fixture(); f.host.visit("root")
   const automatic = request("auto", "deep"), manual = request("manual"), uncertain = request("uncertain")
   for (const [value, auto] of [[automatic, true], [manual, false], [uncertain, true]] as const) {
-    f.host.approval({ type: "confirmed", request: value, automatic: auto })
-    f.host.approval({ type: "dispatched", request: value, automatic: auto, approval: value.id })
-    assert.equal(f.banners.length, 0, "process delivery is not on the approval critical path")
+    const view: View<HostRequest> = { request: value, status: "complete", autoDecision: "once",
+      resolved: true, autoApproval: { status: "approved" } }
+    f.host.confirmed(view)
+    f.ask(value)
     f.reply(value); f.host.snapshot([], true)
-    f.host.approval({ type: "confirmed", request: { ...value, sessionID: "other" }, automatic: auto, approval: value.id })
-    f.host.approval({ type: value === uncertain ? "settled" : "confirmed", request: value, automatic: auto,
-      approval: value.id, ...(value === uncertain ? { result: "uncertain" as const } : {}) })
-    f.host.approval({ type: "confirmed", request: value, automatic: auto, approval: value.id })
+    f.host.confirmed({ ...view, request: { ...value, sessionID: "other" } })
+    const final = { ...view, autoApproval: auto ? view.autoApproval : undefined, resolved: value !== uncertain }
+    f.host.confirmed(final)
+    f.host.confirmed(final)
   }
   await settle()
   assert.deepEqual(f.banners.map(value => [value.kind, value.sessionID, value.history]), [
@@ -755,8 +755,7 @@ test("a failed public metadata observer revokes attention without throwing into 
   f.context.data.session.get = () => { throw new Error("native metadata unavailable") }
   assert.doesNotThrow(() => f.host.snapshot([{ request: value, status: "unavailable" }], true))
   assert.equal(f.signals[0]?.aborted, true)
-  assert.doesNotThrow(() => f.host.approval({ type: "dispatched", request: value, automatic: true }))
-  assert.doesNotThrow(() => f.host.approval({ type: "confirmed", request: value, automatic: true }))
+  assert.doesNotThrow(() => f.host.confirmed({ request: value, status: "complete", resolved: true, autoApproval: { status: "approved" } }))
   await f.host.dispose()
 })
 
@@ -765,7 +764,7 @@ test("optional notification factory failures and disabled config cannot stop run
   f.state.dependencies.notifications = () => { throw new Error("observer failure") }
   assert.equal(setupHostNotifications(f.context, f.state, { resolveRoot: async id => id, nativeQueue: () => ({ state: "unknown" }),
     signal: f.abort.signal }), undefined)
-  f.state.config!.notify = false
+  f.state.notificationConfig.notify = false
   assert.equal(setupHostNotifications(f.context, f.state, { resolveRoot: async id => id, nativeQueue: () => ({ state: "unknown" }),
     signal: f.abort.signal }), undefined)
   void f.host.dispose()
